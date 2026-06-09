@@ -36,10 +36,23 @@ Print mesh statistics without opening the viewer:
 python src/mesh/import_mesh.py path\to\model.stl --no-viewer
 ```
 
+Extract a section and print curve-fit diagnostics without opening the viewer:
+
+```powershell
+python src/mesh/import_mesh.py path\to\model.stl --no-viewer --section-axis Z --section-offset 0
+```
+
 Hide the vertex-normal overlay:
 
 ```powershell
 python src/mesh/import_mesh.py path\to\model.ply --hide-normals
+```
+
+Open the desktop app, load a mesh, then use the section controls to choose X/Y/Z,
+set an offset, recompute the section, and show or hide the section curve:
+
+```powershell
+python src/main.py
 ```
 
 Do not commit secrets, API keys, credentials, or large scan files. Dont be stupid.
