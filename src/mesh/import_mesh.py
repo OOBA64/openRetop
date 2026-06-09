@@ -169,6 +169,75 @@ def build_polyline_lines(
     return line_set
 
 
+def build_polyline_tubes(
+    polylines: Iterable[SectionPolyline | object],
+    *,
+    color: Sequence[float],
+    radius: float,
+) -> list[o3d.geometry.TriangleMesh]:
+    """Build tube meshes for a more visible section overlay."""
+
+    o3d = _load_open3d()
+    np = _load_numpy()
+
+    tubes: list[o3d.geometry.TriangleMesh] = []
+    for polyline in polylines:
+        points = getattr(polyline, "points", polyline)
+        points_array = np.asarray(points, dtype=float)
+        if len(points_array) < 2:
+            continue
+
+        for start, end in zip(points_array[:-1], points_array[1:]):
+            segment = end - start
+            length = float(np.linalg.norm(segment))
+            if length <= 1e-12:
+                continue
+
+            tube = o3d.geometry.TriangleMesh.create_cylinder(
+                radius=radius,
+                height=length,
+                resolution=10,
+            )
+            tube.paint_uniform_color(list(color))
+            tube.rotate(
+                _rotation_from_z_axis(segment / length),
+                center=(0.0, 0.0, 0.0),
+            )
+            tube.translate(((start + end) * 0.5).tolist())
+            tube.compute_vertex_normals()
+            tubes.append(tube)
+
+    return tubes
+
+
+def _rotation_from_z_axis(direction: object) -> object:
+    """Return a rotation matrix that points the local Z axis along direction."""
+
+    o3d = _load_open3d()
+    np = _load_numpy()
+
+    z_axis = np.asarray([0.0, 0.0, 1.0])
+    target = np.asarray(direction, dtype=float)
+    dot = float(np.clip(np.dot(z_axis, target), -1.0, 1.0))
+
+    if np.isclose(dot, 1.0):
+        return np.identity(3)
+
+    if np.isclose(dot, -1.0):
+        return o3d.geometry.get_rotation_matrix_from_axis_angle(
+            np.asarray([1.0, 0.0, 0.0]) * np.pi
+        )
+
+    axis = np.cross(z_axis, target)
+    axis_length = float(np.linalg.norm(axis))
+    if axis_length <= 1e-12:
+        return np.identity(3)
+
+    axis /= axis_length
+    angle = float(np.arccos(dot))
+    return o3d.geometry.get_rotation_matrix_from_axis_angle(axis * angle)
+
+
 def show_mesh(
     mesh: o3d.geometry.TriangleMesh,
     *,
@@ -193,12 +262,13 @@ def show_mesh(
             geometries.append(normal_lines)
 
     if show_section and section_result is not None:
-        section_lines = build_polyline_lines(
+        mesh_extent = max(float(mesh.get_axis_aligned_bounding_box().get_max_extent()), 1.0)
+        section_tubes = build_polyline_tubes(
             section_result.polylines,
-            color=[1.0, 0.32, 0.05],
+            color=[1.0, 0.88, 0.05],
+            radius=mesh_extent * 0.003,
         )
-        if section_lines is not None:
-            geometries.append(section_lines)
+        geometries.extend(section_tubes)
 
     if show_fitted_curve and curve_results:
         fitted_polylines = [result.fitted_points for result in curve_results]
@@ -231,7 +301,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hide-normals",
         action="store_true",
-        help="Do not show vertex normals in the viewer.",
+        help="Deprecated; normals are hidden by default.",
+    )
+    parser.add_argument(
+        "--show-normals",
+        action="store_true",
+        help="Show vertex normals in the viewer.",
     )
     parser.add_argument(
         "--normal-scale",
@@ -317,7 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.no_viewer:
         show_mesh(
             loaded.mesh,
-            show_normals=not args.hide_normals,
+            show_normals=bool(args.show_normals and not args.hide_normals),
             normal_scale=max(args.normal_scale, 0.0),
             section_result=section_result,
             curve_results=curve_results,

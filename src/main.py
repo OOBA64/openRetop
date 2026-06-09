@@ -36,6 +36,10 @@ class OpenRetopApp:
         self.section_axis = StringVar(value="Z")
         self.section_offset = StringVar(value="0")
         self.show_section = BooleanVar(value=True)
+        self.show_normals = BooleanVar(value=False)
+        self.section_plane_text = StringVar(value=self._format_section_plane_label())
+        self.section_axis.trace_add("write", self._update_section_plane_label)
+        self.section_offset.trace_add("write", self._update_section_plane_label)
 
         self.status = Label(
             self.root,
@@ -80,7 +84,13 @@ class OpenRetopApp:
             pady=4,
             sticky="ew",
         )
-        Button(controls, text="Recompute Section", command=self.recompute_section).grid(
+        self.compute_section_button = Button(
+            controls,
+            text="Compute Section",
+            command=self.recompute_section,
+            state="disabled",
+        )
+        self.compute_section_button.grid(
             row=1,
             column=0,
             columnspan=2,
@@ -92,7 +102,17 @@ class OpenRetopApp:
             controls,
             text="Show section curve",
             variable=self.show_section,
-        ).grid(row=1, column=2, columnspan=3, pady=4, sticky="w")
+        ).grid(row=1, column=2, columnspan=2, pady=4, sticky="w")
+        Checkbutton(
+            controls,
+            text="Show normals",
+            variable=self.show_normals,
+        ).grid(row=1, column=4, columnspan=2, pady=4, sticky="w")
+        Label(
+            controls,
+            textvariable=self.section_plane_text,
+            anchor="w",
+        ).grid(row=2, column=0, columnspan=6, pady=(4, 0), sticky="ew")
 
         controls.columnconfigure(1, weight=1)
         controls.columnconfigure(5, weight=1)
@@ -125,6 +145,7 @@ class OpenRetopApp:
             return
 
         self.mesh_state = MeshState.from_loaded_mesh(loaded)
+        self.compute_section_button.config(state="normal")
         self.recompute_section(show_error=False)
         self.view_mesh()
 
@@ -147,6 +168,7 @@ class OpenRetopApp:
                 messagebox.showerror("Section failed", str(exc))
             return
 
+        self._update_section_plane_label()
         self.status.config(text=self._status_text())
 
     def view_mesh(self) -> None:
@@ -156,12 +178,20 @@ class OpenRetopApp:
 
         show_mesh(
             self.mesh_state.mesh,
-            show_normals=True,
+            show_normals=self.show_normals.get(),
             normal_scale=0.02,
             section_result=self.section_result,
             curve_results=self.curve_results,
             show_section=self.show_section.get(),
         )
+
+    def _format_section_plane_label(self) -> str:
+        axis = self.section_axis.get() or "Z"
+        offset = self.section_offset.get().strip() or "0"
+        return f"Section: {axis} = {offset}"
+
+    def _update_section_plane_label(self, *_args: object) -> None:
+        self.section_plane_text.set(self._format_section_plane_label())
 
     def _status_text(self) -> str:
         lines = []
@@ -169,7 +199,9 @@ class OpenRetopApp:
             lines.extend([str(self.mesh_state.file_path), ""])
 
         lines.extend(format_diagnostic_lines(self.mesh_state))
-        lines.extend(["", *get_section_summary_lines(self.section_result, self.curve_results)])
+        lines.extend(
+            ["", *get_section_summary_lines(self.section_result, self.curve_results)]
+        )
         return "\n".join(lines)
 
     def run(self) -> None:
