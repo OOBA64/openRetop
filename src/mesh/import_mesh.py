@@ -42,6 +42,24 @@ def _format_vector(values: Sequence[float]) -> str:
     return ", ".join(f"{value:.6g}" for value in values)
 
 
+def get_mesh_summary_lines(mesh: o3d.geometry.TriangleMesh) -> list[str]:
+    """Return core mesh counts and bounds as display-ready lines."""
+    vertex_count = len(mesh.vertices)
+    triangle_count = len(mesh.triangles)
+    bounding_box = mesh.get_axis_aligned_bounding_box()
+
+    return [
+        "Mesh summary",
+        f"  Vertices: {vertex_count}",
+        f"  Triangles: {triangle_count}",
+        f"  Bounding box min: {_format_vector(bounding_box.get_min_bound())}",
+        f"  Bounding box max: {_format_vector(bounding_box.get_max_bound())}",
+        f"  Bounding box extent: {_format_vector(bounding_box.get_extent())}",
+        f"  Vertex normals: {'yes' if mesh.has_vertex_normals() else 'no'}",
+        f"  Triangle normals: {'yes' if mesh.has_triangle_normals() else 'no'}",
+    ]
+
+
 def load_mesh(path: Path) -> o3d.geometry.TriangleMesh:
     """Load a mesh file and ensure normals are available when possible."""
     mesh_path = path.expanduser().resolve()
@@ -72,18 +90,7 @@ def load_mesh(path: Path) -> o3d.geometry.TriangleMesh:
 
 def print_mesh_summary(mesh: o3d.geometry.TriangleMesh) -> None:
     """Print core mesh counts and bounds."""
-    vertex_count = len(mesh.vertices)
-    triangle_count = len(mesh.triangles)
-    bounding_box = mesh.get_axis_aligned_bounding_box()
-
-    print("Mesh summary")
-    print(f"  Vertices: {vertex_count}")
-    print(f"  Triangles: {triangle_count}")
-    print(f"  Bounding box min: {_format_vector(bounding_box.get_min_bound())}")
-    print(f"  Bounding box max: {_format_vector(bounding_box.get_max_bound())}")
-    print(f"  Bounding box extent: {_format_vector(bounding_box.get_extent())}")
-    print(f"  Vertex normals: {'yes' if mesh.has_vertex_normals() else 'no'}")
-    print(f"  Triangle normals: {'yes' if mesh.has_triangle_normals() else 'no'}")
+    print("\n".join(get_mesh_summary_lines(mesh)))
 
 
 def build_normal_lines(

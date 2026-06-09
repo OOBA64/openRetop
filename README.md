@@ -15,10 +15,16 @@ Initial MVP:
 Install the prototype dependency:
 
 ```powershell
-python -m pip install -r thirdparty/requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Load a mesh and open the basic 3D viewer:
+Open the very simple mesh picker menu:
+
+```powershell
+python src/main.py
+```
+
+You can also load a mesh directly from the import script:
 
 ```powershell
 python src/mesh/import_mesh.py path\to\model.obj
