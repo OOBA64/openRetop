@@ -47,8 +47,8 @@ class OpenRetopApp:
         )
         self.status.pack(fill="both", expand=True)
 
-        controls = Frame(self.root, padx=18, pady=(0, 16))
-        controls.pack(fill="x")
+        controls = Frame(self.root, padx=18)
+        controls.pack(fill="x", pady=(0, 16))
 
         Button(controls, text="Open Mesh...", command=self.open_mesh).grid(
             row=0,
