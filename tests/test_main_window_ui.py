@@ -84,12 +84,16 @@ class FakeViewport:
         self.reset_count = 0
         self.closed = False
         self.selection_callback = None
+        self.pointer_callback = None
 
     def start(self) -> None:
         return None
 
     def set_selection_callback(self, callback: object) -> None:
         self.selection_callback = callback
+
+    def set_pointer_callback(self, callback: object) -> None:
+        self.pointer_callback = callback
 
     def set_scene(self, mesh: object, **kwargs: object) -> None:
         self.scene_calls.append({"mesh": mesh, **kwargs})
@@ -260,6 +264,103 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_hotkey_move_cancel_and_confirm_update_mesh_location(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            self.assertIsNotNone(window.viewport.selection_callback)
+            self.assertIsNotNone(window.viewport.pointer_callback)
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            start_location = window.mesh_object.location.copy()
+            window._on_viewport_pointer_event("motion", 10, 10)
+            window._handle_shortcut("G")
+            self.assertEqual(window.status_text.get(), "Move mode")
+
+            handled = window._on_viewport_pointer_event("motion", 80, 10)
+            self.assertTrue(handled)
+            moved_location = window.mesh_object.location.copy()
+            self.assertGreater(moved_location[0], start_location[0])
+            self.assertEqual(window.location_x.get(), f"{moved_location[0]:.3f}")
+
+            window._handle_shortcut("Escape")
+            self.assertEqual(window.status_text.get(), "Transform canceled")
+            self.assertTrue(np.allclose(window.mesh_object.location, start_location))
+            self.assertEqual(window.location_x.get(), f"{start_location[0]:.3f}")
+
+            window._handle_shortcut("G")
+            window._on_viewport_pointer_event("motion", 150, 10)
+            confirmed_location = window.mesh_object.location.copy()
+            window._handle_shortcut("Enter")
+            self.assertEqual(window.status_text.get(), "Transform confirmed")
+            self.assertTrue(np.allclose(window.mesh_object.location, confirmed_location))
+            self.assertGreater(confirmed_location[0], start_location[0])
+        finally:
+            window.root.destroy()
+
+    def test_hotkey_rotate_axis_constraint_updates_mesh_rotation_about_pivot(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            window._on_viewport_pointer_event("motion", 0, 0)
+            window._handle_shortcut("R")
+            window._handle_shortcut("X")
+            self.assertEqual(window.status_text.get(), "Rotate mode: X axis")
+
+            window._on_viewport_pointer_event("motion", 40, 0)
+            self.assertGreater(window.mesh_object.rotation[0], 0.0)
+            self.assertEqual(window.rotation_x.get(), f"{window.mesh_object.rotation[0]:.3f}")
+            self.assertEqual(window.rotation_y.get(), "0.000")
+            self.assertEqual(window.rotation_z.get(), "0.000")
+
+            mapped_origin = window._current_object_matrix() @ np.append(
+                window.mesh_object.origin,
+                1.0,
+            )
+            self.assertTrue(np.allclose(mapped_origin[:3], window.mesh_object.location))
+        finally:
+            window.root.destroy()
+
     def test_selecting_section_plane_shows_section_context_and_compute_clear(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
@@ -310,6 +411,60 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertIsNone(window.viewport.scene_calls[-1]["section_result"])
             self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], True)
+        finally:
+            window.root.destroy()
+
+    def test_section_plane_hotkey_move_cancel_confirm_and_rotate_cycle(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_section_plane()
+            start_offset = window.section_offset.get()
+            window._on_viewport_pointer_event("motion", 0, 0)
+            window._handle_shortcut("G")
+            window._on_viewport_pointer_event("motion", 50, 0)
+            moved_offset = window.section_offset.get()
+            self.assertGreater(moved_offset, start_offset)
+            self.assertEqual(window.section_offset_text.get(), f"{moved_offset:.3f}")
+
+            handled = window._on_viewport_pointer_event("right_release", 50, 0)
+            self.assertTrue(handled)
+            self.assertEqual(window.status_text.get(), "Transform canceled")
+            self.assertAlmostEqual(window.section_offset.get(), start_offset)
+
+            window._handle_shortcut("G")
+            window._on_viewport_pointer_event("motion", 100, 0)
+            confirmed_offset = window.section_offset.get()
+            handled = window._on_viewport_pointer_event("left_release", 100, 0)
+            self.assertTrue(handled)
+            self.assertEqual(window.status_text.get(), "Transform confirmed")
+            self.assertAlmostEqual(window.section_offset.get(), confirmed_offset)
+            self.assertGreater(confirmed_offset, start_offset)
+
+            self.assertEqual(window.section_axis.get(), "Z")
+            window._handle_shortcut("R")
+            self.assertEqual(window.section_axis.get(), "X")
+            self.assertEqual(window.status_text.get(), "Section plane axis cycled to X")
         finally:
             window.root.destroy()
 

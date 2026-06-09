@@ -42,6 +42,20 @@ class MeshObjectState:
     scale: float = 1.0
 
 
+@dataclass
+class ActiveTransformState:
+    """Start values for one viewport hotkey transform."""
+
+    selected_item: str
+    mode: str
+    mouse_start: tuple[int, int]
+    axis_constraint: str | None
+    location: np.ndarray
+    rotation: np.ndarray
+    section_axis: str
+    section_offset: float
+
+
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
 
@@ -56,6 +70,8 @@ class OpenRetopWindow:
         self.selected_item: str | None = None
         self.active_transform_mode: str | None = None
         self.active_transform_axis: str | None = None
+        self.transform_state: ActiveTransformState | None = None
+        self._last_viewport_mouse = (0, 0)
         self.section_result: SectionResult | None = None
         self.curve_results: list[CurveFitResult] = []
 
@@ -98,6 +114,8 @@ class OpenRetopWindow:
         self._bind_keyboard_shortcuts()
 
         self.viewport = EmbeddedVTKViewport(self.viewport_frame)
+        self.viewport.set_selection_callback(self._on_viewport_selection)
+        self.viewport.set_pointer_callback(self._on_viewport_pointer_event)
         self.root.after(100, self._start_viewport)
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
 
@@ -643,9 +661,13 @@ class OpenRetopWindow:
         self._set_selected_item(None, status="No selection")
 
     def _set_selected_item(self, selected_item: str | None, *, status: str | None = None) -> None:
+        if self.transform_state is not None:
+            self._end_active_transform(commit=False, status="Transform canceled")
+
         self.selected_item = selected_item
         self.active_transform_mode = None
         self.active_transform_axis = None
+        self.transform_state = None
         self._show_context(selected_item)
         self._refresh_viewport(reset_camera=False)
         if status is not None:
@@ -658,6 +680,25 @@ class OpenRetopWindow:
             self.select_section_plane()
         else:
             self.clear_selection()
+
+    def _on_viewport_pointer_event(self, event_type: str, x_position: int, y_position: int) -> bool:
+        self._last_viewport_mouse = (int(x_position), int(y_position))
+        if self.transform_state is None:
+            return False
+
+        if event_type == "motion":
+            self._update_active_transform((int(x_position), int(y_position)))
+            return True
+
+        if event_type == "left_release":
+            self._end_active_transform(commit=True, status="Transform confirmed")
+            return True
+
+        if event_type == "right_release":
+            self._end_active_transform(commit=False, status="Transform canceled")
+            return True
+
+        return True
 
     def compute_section(self) -> None:
         if not self.mesh_state.is_loaded or self.mesh_state.mesh is None:
@@ -1009,6 +1050,175 @@ class OpenRetopWindow:
         self.selected_triangle_count_text.set(str(self.mesh_state.triangle_count))
         self.selected_bbox_size_text.set(_format_vector(self.mesh_state.bounding_box_extent))
 
+    def _start_active_transform(self, mode: str) -> None:
+        if self.selected_item is None or self.mesh_object is None:
+            self.status_text.set("No selection")
+            return
+
+        if self.selected_item == SELECT_SECTION_PLANE and mode == "rotate":
+            self._cycle_section_axis_for_rotation()
+            return
+
+        self.transform_state = ActiveTransformState(
+            selected_item=self.selected_item,
+            mode=mode,
+            mouse_start=self._last_viewport_mouse,
+            axis_constraint=None,
+            location=self.mesh_object.location.copy(),
+            rotation=self.mesh_object.rotation.copy(),
+            section_axis=self.section_axis.get(),
+            section_offset=self.section_offset.get(),
+        )
+        self.active_transform_mode = mode
+        self.active_transform_axis = None
+        self.status_text.set(self._active_transform_status())
+
+    def _set_transform_axis_constraint(self, axis: str) -> None:
+        if self.transform_state is None:
+            self.active_transform_axis = axis
+            self.status_text.set(f"Axis constraint: {axis}")
+            return
+
+        self.transform_state.axis_constraint = axis
+        self.active_transform_axis = axis
+        if self.transform_state.selected_item == SELECT_SECTION_PLANE:
+            self.section_axis.set(axis)
+            self._configure_offset_range(reset=False)
+            self.transform_state.section_axis = axis
+            self.transform_state.section_offset = self.section_offset.get()
+            self.transform_state.mouse_start = self._last_viewport_mouse
+            self._update_section_plane_label(set_status=False)
+            self._refresh_viewport(reset_camera=False)
+
+        self.status_text.set(self._active_transform_status())
+
+    def _update_active_transform(self, mouse_position: tuple[int, int]) -> None:
+        state = self.transform_state
+        if state is None:
+            return
+
+        if state.selected_item == SELECT_MODEL:
+            if state.mode == "move":
+                self._update_mesh_move_transform(state, mouse_position)
+            elif state.mode == "rotate":
+                self._update_mesh_rotate_transform(state, mouse_position)
+        elif state.selected_item == SELECT_SECTION_PLANE and state.mode == "move":
+            self._update_section_plane_move_transform(state, mouse_position)
+
+    def _update_mesh_move_transform(
+        self,
+        state: ActiveTransformState,
+        mouse_position: tuple[int, int],
+    ) -> None:
+        if self.mesh_object is None:
+            return
+
+        delta = self._mouse_delta(state, mouse_position)
+        scale = max(float(self.mesh_state.approximate_size), 1.0) * 0.004
+        drag_amount = (delta[0] - delta[1]) * scale
+        axis = state.axis_constraint
+        if axis == "X":
+            movement = np.asarray([drag_amount, 0.0, 0.0], dtype=float)
+        elif axis == "Y":
+            movement = np.asarray([0.0, drag_amount, 0.0], dtype=float)
+        elif axis == "Z":
+            movement = np.asarray([0.0, 0.0, drag_amount], dtype=float)
+        else:
+            movement = np.asarray([delta[0] * scale, -delta[1] * scale, 0.0], dtype=float)
+
+        self.mesh_object.location = state.location + movement
+        self._set_transform_inputs_from_object()
+        self._apply_object_transform(reset_camera=False)
+        self.status_text.set(self._active_transform_status())
+
+    def _update_mesh_rotate_transform(
+        self,
+        state: ActiveTransformState,
+        mouse_position: tuple[int, int],
+    ) -> None:
+        if self.mesh_object is None:
+            return
+
+        delta = self._mouse_delta(state, mouse_position)
+        angle_delta = (delta[0] - delta[1]) * 0.5
+        axis = state.axis_constraint or "Z"
+        rotation = state.rotation.copy()
+        rotation[AXIS_TO_INDEX[axis]] += angle_delta
+        self.mesh_object.rotation = rotation
+        self._set_transform_inputs_from_object()
+        self._apply_object_transform(reset_camera=False)
+        self.status_text.set(self._active_transform_status())
+
+    def _update_section_plane_move_transform(
+        self,
+        state: ActiveTransformState,
+        mouse_position: tuple[int, int],
+    ) -> None:
+        delta = self._mouse_delta(state, mouse_position)
+        minimum, maximum = self._section_offset_bounds
+        offset_scale = max(abs(maximum - minimum), 1.0) / 300.0
+        offset_delta = (delta[0] - delta[1]) * offset_scale
+        self._set_section_offset(
+            state.section_offset + offset_delta,
+            clamp=True,
+            refresh=True,
+        )
+        self.status_text.set(self._active_transform_status())
+
+    def _end_active_transform(self, *, commit: bool, status: str) -> None:
+        state = self.transform_state
+        if state is None:
+            return
+
+        if not commit:
+            self._restore_transform_start_state(state)
+
+        self.transform_state = None
+        self.active_transform_mode = None
+        self.active_transform_axis = None
+        self.status_text.set(status)
+
+    def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
+        if state.selected_item == SELECT_MODEL and self.mesh_object is not None:
+            self.mesh_object.location = state.location.copy()
+            self.mesh_object.rotation = state.rotation.copy()
+            self._set_transform_inputs_from_object()
+            self._apply_object_transform(reset_camera=False)
+            return
+
+        if state.selected_item == SELECT_SECTION_PLANE:
+            self.section_axis.set(state.section_axis)
+            self._configure_offset_range(reset=False)
+            self._set_section_offset(state.section_offset, clamp=True, refresh=True)
+
+    def _cycle_section_axis_for_rotation(self) -> None:
+        current_index = SECTION_AXES.index(self.section_axis.get())
+        next_axis = SECTION_AXES[(current_index + 1) % len(SECTION_AXES)]
+        self.section_axis.set(next_axis)
+        self._configure_offset_range(reset=False)
+        self._update_section_plane_label(set_status=False)
+        self._clear_section_for_plane_change()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Section plane axis cycled to {next_axis}")
+
+    def _active_transform_status(self) -> str:
+        if self.transform_state is None:
+            return "No selection" if self.selected_item is None else "Transform"
+
+        mode_label = "Move mode" if self.transform_state.mode == "move" else "Rotate mode"
+        axis = self.transform_state.axis_constraint
+        return mode_label if axis is None else f"{mode_label}: {axis} axis"
+
+    def _mouse_delta(
+        self,
+        state: ActiveTransformState,
+        mouse_position: tuple[int, int],
+    ) -> tuple[float, float]:
+        return (
+            float(mouse_position[0] - state.mouse_start[0]),
+            float(mouse_position[1] - state.mouse_start[1]),
+        )
+
     def _handle_shortcut(self, key: str) -> None:
         if key == "F":
             self.frame_selected()
@@ -1019,44 +1229,33 @@ class OpenRetopWindow:
             return
 
         if key == "Escape":
-            self.active_transform_mode = None
-            self.active_transform_axis = None
-            self.status_text.set("Transform canceled")
+            if self.transform_state is None:
+                self.active_transform_mode = None
+                self.active_transform_axis = None
+                self.status_text.set("Transform canceled")
+            else:
+                self._end_active_transform(commit=False, status="Transform canceled")
             return
 
         if key == "Enter":
-            self.active_transform_mode = None
-            self.active_transform_axis = None
-            self.status_text.set("Transform confirmed")
+            if self.transform_state is None:
+                self.active_transform_mode = None
+                self.active_transform_axis = None
+                self.status_text.set("Transform confirmed")
+            else:
+                self._end_active_transform(commit=True, status="Transform confirmed")
             return
 
         if key in {"X", "Y", "Z"}:
-            self.active_transform_axis = key
-            if self.active_transform_mode is None:
-                self.status_text.set(f"Axis constraint: {key}")
-            else:
-                self.status_text.set(f"{self.active_transform_mode.title()} axis: {key}")
+            self._set_transform_axis_constraint(key)
             return
 
         if key == "G":
-            if self.selected_item == SELECT_MODEL:
-                self.active_transform_mode = "move"
-                self.status_text.set("Move mode: selected model")
-            elif self.selected_item == SELECT_SECTION_PLANE:
-                self.active_transform_mode = "move"
-                self.status_text.set("Move mode: section plane offset")
-            else:
-                self.status_text.set("No selection")
+            self._start_active_transform("move")
             return
 
         if key == "R":
-            if self.selected_item == SELECT_MODEL:
-                self.active_transform_mode = "rotate"
-                self.status_text.set("Rotate mode: selected model")
-            elif self.selected_item == SELECT_SECTION_PLANE:
-                self.status_text.set("Section plane rotation is not implemented")
-            else:
-                self.status_text.set("No selection")
+            self._start_active_transform("rotate")
 
     def _delete_selected_if_safe(self) -> None:
         if self.selected_item != SELECT_MODEL or self.mesh_object is None:

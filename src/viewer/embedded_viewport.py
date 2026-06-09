@@ -61,6 +61,7 @@ class EmbeddedVTKViewport:
         self._mesh_actor: vtkActor | None = None
         self._section_plane_actors: list[vtkActor] = []
         self._selection_callback: Callable[[str | None], None] | None = None
+        self._pointer_callback: Callable[[str, int, int], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
         self._last_mouse_position = (0, 0)
 
@@ -107,6 +108,12 @@ class EmbeddedVTKViewport:
         callback: Callable[[str | None], None] | None,
     ) -> None:
         self._selection_callback = callback
+
+    def set_pointer_callback(
+        self,
+        callback: Callable[[str, int, int], bool] | None,
+    ) -> None:
+        self._pointer_callback = callback
 
     def set_scene(
         self,
@@ -297,9 +304,16 @@ class EmbeddedVTKViewport:
 
     def _on_left_button_press(self, event: Event[Canvas]) -> None:
         self._left_press_position = (int(event.x), int(event.y))
+        if self._dispatch_pointer_event("left_press", event):
+            return
+
         self._forward_mouse_event(event, "LeftButtonPressEvent")
 
     def _on_left_button_release(self, event: Event[Canvas]) -> None:
+        if self._dispatch_pointer_event("left_release", event):
+            self._left_press_position = None
+            return
+
         self._forward_mouse_event(event, "LeftButtonReleaseEvent")
         if self._selection_callback is None:
             return
@@ -311,18 +325,33 @@ class EmbeddedVTKViewport:
         self._selection_callback(target)
 
     def _on_middle_button_press(self, event: Event[Canvas]) -> None:
+        if self._dispatch_pointer_event("middle_press", event):
+            return
+
         self._forward_mouse_event(event, "MiddleButtonPressEvent")
 
     def _on_middle_button_release(self, event: Event[Canvas]) -> None:
+        if self._dispatch_pointer_event("middle_release", event):
+            return
+
         self._forward_mouse_event(event, "MiddleButtonReleaseEvent")
 
     def _on_right_button_press(self, event: Event[Canvas]) -> None:
+        if self._dispatch_pointer_event("right_press", event):
+            return
+
         self._forward_mouse_event(event, "RightButtonPressEvent")
 
     def _on_right_button_release(self, event: Event[Canvas]) -> None:
+        if self._dispatch_pointer_event("right_release", event):
+            return
+
         self._forward_mouse_event(event, "RightButtonReleaseEvent")
 
     def _on_mouse_move(self, event: Event[Canvas]) -> None:
+        if self._dispatch_pointer_event("motion", event):
+            return
+
         self._forward_mouse_event(event, "MouseMoveEvent")
 
     def _on_mouse_wheel(self, event: Event[Canvas]) -> None:
@@ -354,6 +383,15 @@ class EmbeddedVTKViewport:
         self._set_interactor_event(event)
         getattr(self.interactor, interactor_event)()
         self._render()
+
+    def _dispatch_pointer_event(self, event_type: str, event: Event[Canvas]) -> bool:
+        if self._pointer_callback is None:
+            return False
+
+        x_position = int(getattr(event, "x", self._last_mouse_position[0]))
+        y_position = int(getattr(event, "y", self._last_mouse_position[1]))
+        self._last_mouse_position = (x_position, y_position)
+        return bool(self._pointer_callback(event_type, x_position, y_position))
 
     def _set_interactor_event(self, event: Event[Canvas]) -> None:
         if self.interactor is None:
