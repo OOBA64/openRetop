@@ -44,7 +44,7 @@ class OpenRetopWindow:
         self.bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0")
 
-        self._build_menu()
+        self._build_top_menu()
         self._build_layout()
         self._set_section_controls_enabled(False)
 
@@ -62,25 +62,41 @@ class OpenRetopWindow:
             self.status_text.set("Viewport failed to start")
             messagebox.showerror("Viewport failed to start", str(exc))
 
-    def _build_menu(self) -> None:
-        menu_bar = Menu(self.root)
+    def _build_top_menu(self) -> None:
+        style = ttk.Style(self.root)
+        style.configure("TopMenu.TMenubutton", padding=(14, 5))
 
-        file_menu = Menu(menu_bar, tearoff=False)
+        top_bar = ttk.Frame(self.root, padding=(8, 4, 8, 2))
+        top_bar.pack(fill="x", side="top")
+
+        file_button = ttk.Menubutton(
+            top_bar,
+            text="File",
+            style="TopMenu.TMenubutton",
+            direction="below",
+        )
+        file_button.pack(side="left")
+        file_menu = Menu(file_button, tearoff=False)
         file_menu.add_command(label="Open Model", command=self.open_model)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_exit)
-        menu_bar.add_cascade(label="File", menu=file_menu)
+        file_button.configure(menu=file_menu)
 
-        self.view_menu = Menu(menu_bar, tearoff=False)
+        view_button = ttk.Menubutton(
+            top_bar,
+            text="View",
+            style="TopMenu.TMenubutton",
+            direction="below",
+        )
+        view_button.pack(side="left", padx=(4, 0))
+        self.view_menu = Menu(view_button, tearoff=False)
         self.view_menu.add_command(label="Reset Camera", command=self.reset_camera)
         self.view_menu.add_checkbutton(
             label="Show Normals",
             variable=self.show_normals,
             command=self._on_show_normals_changed,
         )
-        menu_bar.add_cascade(label="View", menu=self.view_menu)
-
-        self.root.config(menu=menu_bar)
+        view_button.configure(menu=self.view_menu)
 
     def _build_layout(self) -> None:
         main = ttk.Frame(self.root)
