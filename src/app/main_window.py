@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import open3d as o3d
 import open3d.visualization.gui as gui
@@ -47,6 +47,7 @@ class OpenRetopWindow:
 
         self._sidebar = self._build_sidebar()
         self._status = gui.Label("No model loaded")
+        self._last_error: str | None = None
 
         self.window.add_child(self._scene)
         self.window.add_child(self._sidebar)
@@ -63,7 +64,7 @@ class OpenRetopWindow:
         sidebar = gui.Vert(0.45 * em, gui.Margins(em, em, em, em))
 
         self._open_button = gui.Button("Open Model")
-        self._open_button.set_on_clicked(self._on_open_model)
+        self._open_button.set_on_clicked(lambda: self._post_ui(self._on_open_model))
         sidebar.add_child(self._open_button)
         sidebar.add_fixed(0.25 * em)
 
@@ -101,16 +102,31 @@ class OpenRetopWindow:
         sidebar.add_child(self._section_plane_label)
 
         self._compute_section_button = gui.Button("Compute Section")
-        self._compute_section_button.set_on_clicked(self._on_compute_section)
+        self._compute_section_button.set_on_clicked(
+            lambda: self._post_ui(self._on_compute_section)
+        )
         sidebar.add_child(self._compute_section_button)
 
-        self._axis_dropdown.set_on_selection_changed(self._on_section_axis_changed)
-        self._offset_input.set_on_value_changed(self._on_section_offset_changed)
+        self._axis_dropdown.set_on_selection_changed(
+            lambda text, index: self._post_ui(
+                self._on_section_axis_changed,
+                text,
+                index,
+            )
+        )
+        self._offset_input.set_on_value_changed(
+            lambda value: self._post_ui(self._on_section_offset_changed, value)
+        )
 
         sidebar.add_fixed(0.75 * em)
         self._show_normals_checkbox = gui.Checkbox("Show Normals")
         self._show_normals_checkbox.checked = False
-        self._show_normals_checkbox.set_on_checked(self._set_show_normals)
+        self._show_normals_checkbox.set_on_checked(
+            lambda checked: self._post_ui(
+                self._on_show_normals_checkbox,
+                checked,
+            )
+        )
         sidebar.add_child(self._show_normals_checkbox)
         sidebar.add_stretch()
 
@@ -142,16 +158,40 @@ class OpenRetopWindow:
         menu.add_menu("View", view_menu)
         gui.Application.instance.menubar = menu
 
-        self.window.set_on_menu_item_activated(self.MENU_OPEN, self._on_open_model)
-        self.window.set_on_menu_item_activated(self.MENU_EXIT, self._on_exit)
+        self.window.set_on_menu_item_activated(
+            self.MENU_OPEN,
+            lambda: self._post_ui(self._on_open_model),
+        )
+        self.window.set_on_menu_item_activated(
+            self.MENU_EXIT,
+            lambda: self._post_ui(self._on_exit),
+        )
         self.window.set_on_menu_item_activated(
             self.MENU_RESET_CAMERA,
-            self._reset_camera,
+            lambda: self._post_ui(self._reset_camera),
         )
         self.window.set_on_menu_item_activated(
             self.MENU_SHOW_NORMALS,
-            self._toggle_show_normals,
+            lambda: self._post_ui(self._toggle_show_normals),
         )
+
+    def _post_ui(self, callback: Callable[..., None], *args: object) -> None:
+        gui.Application.instance.post_to_main_thread(
+            self.window,
+            lambda: self._run_ui_callback(callback, *args),
+        )
+
+    def _run_ui_callback(
+        self,
+        callback: Callable[..., None],
+        *args: object,
+    ) -> None:
+        try:
+            callback(*args)
+        except Exception as exc:
+            self._last_error = str(exc)
+            self._set_status(f"UI error: {exc}")
+            self.window.show_message_box("openRetop UI error", str(exc))
 
     def _on_layout(self, layout_context: gui.LayoutContext) -> None:
         content = self.window.content_rect
@@ -199,7 +239,7 @@ class OpenRetopWindow:
 
     def _on_file_dialog_done(self, file_path: str) -> None:
         self.window.close_dialog()
-        self.load_model(Path(file_path))
+        self._post_ui(self.load_model, Path(file_path))
 
     def load_model(self, file_path: Path) -> None:
         self._set_status(f"Loading model: {file_path.name}")
@@ -249,16 +289,34 @@ class OpenRetopWindow:
     def _toggle_show_normals(self) -> None:
         menubar = gui.Application.instance.menubar
         checked = not menubar.is_checked(self.MENU_SHOW_NORMALS)
-        self._set_show_normals(checked)
+        self._set_show_normals(checked, update_checkbox=True)
 
-    def _set_show_normals(self, checked: bool) -> None:
-        self.show_normals = bool(checked)
-        self._show_normals_checkbox.checked = self.show_normals
+    def _on_show_normals_checkbox(self, checked: bool) -> None:
+        self._set_show_normals(checked, update_checkbox=False)
+
+    def _set_show_normals(
+        self,
+        checked: bool,
+        *,
+        update_checkbox: bool = True,
+    ) -> None:
+        new_value = bool(checked)
+        if self.show_normals == new_value:
+            gui.Application.instance.menubar.set_checked(
+                self.MENU_SHOW_NORMALS,
+                new_value,
+            )
+            return
+
+        self.show_normals = new_value
+        if update_checkbox:
+            self._show_normals_checkbox.checked = self.show_normals
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_NORMALS,
             self.show_normals,
         )
-        self._refresh_scene(reset_camera=False)
+        if self.mesh_state.is_loaded:
+            self._refresh_scene(reset_camera=False)
 
     def _on_exit(self) -> None:
         gui.Application.instance.quit()
