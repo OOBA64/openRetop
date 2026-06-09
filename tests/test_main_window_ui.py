@@ -66,6 +66,10 @@ class FakeMesh:
         transformed = (np.asarray(matrix, dtype=float) @ homogeneous.T).T[:, :3]
         self.vertices = [tuple(point) for point in transformed]
 
+    def translate(self, offset: list[float]) -> None:
+        points = np.asarray(self.vertices, dtype=float) + np.asarray(offset, dtype=float)
+        self.vertices = [tuple(point) for point in points]
+
     def compute_vertex_normals(self) -> None:
         return None
 
@@ -79,12 +83,20 @@ class FakeViewport:
         self.frame_count = 0
         self.reset_count = 0
         self.closed = False
+        self.selection_callback = None
+        self.key_callback = None
 
     def start(self) -> None:
         return None
 
     def set_scene(self, mesh: object, **kwargs: object) -> None:
         self.scene_calls.append({"mesh": mesh, **kwargs})
+
+    def set_selection_callback(self, callback: object) -> None:
+        self.selection_callback = callback
+
+    def set_key_callback(self, callback: object) -> None:
+        self.key_callback = callback
 
     def frame_model(self) -> None:
         self.frame_count += 1
@@ -110,7 +122,7 @@ def _create_window() -> OpenRetopWindow:
 
 
 class MainWindowUiTests(unittest.TestCase):
-    def test_menu_bar_and_initial_sidebar_state_match_instructions(self) -> None:
+    def test_menu_bar_and_initial_no_selection_context_match_instructions(self) -> None:
         with patch("app.main_window.EmbeddedOpen3DViewport", FakeViewport):
             window = _create_window()
 
@@ -122,7 +134,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.view_menu.entrycget(0, "label"), "Show Grid")
             self.assertEqual(window.view_menu.entrycget(1, "label"), "Show Axes")
             self.assertEqual(window.view_menu.entrycget(2, "label"), "Show Normals")
-            self.assertEqual(window.view_menu.entrycget(4, "label"), "Frame Model")
+            self.assertEqual(window.view_menu.entrycget(4, "label"), "Frame All")
             self.assertEqual(window.view_menu.entrycget(5, "label"), "Reset View")
             self.assertEqual(window.view_menu.type(0), "checkbutton")
             self.assertEqual(window.view_menu.type(1), "checkbutton")
@@ -132,12 +144,12 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.show_axes.get())
             self.assertFalse(window.show_normals.get())
             self.assertTrue(window.show_section_plane.get())
-            self.assertEqual(window.status_text.get(), "No model loaded")
-            self.assertEqual(str(window.axis_dropdown.cget("state")), "disabled")
-            self.assertEqual(str(window.offset_input.cget("state")), "disabled")
-            self.assertEqual(str(window.compute_section_button.cget("state")), "disabled")
-            self.assertEqual(str(window.clear_section_button.cget("state")), "disabled")
-            self.assertEqual(str(window.apply_transform_button.cget("state")), "disabled")
+            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertIsNone(window.selected_item)
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
+            self.assertEqual(window.model_context_frame.winfo_manager(), "")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertFalse(hasattr(window, "apply_transform_button"))
             self.assertEqual(window.compute_section_button.cget("text"), "Compute Section")
             self.assertEqual(window.clear_section_button.cget("text"), "Clear Section")
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
@@ -146,7 +158,7 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_loading_mesh_updates_workspace_controls_and_keeps_normals_off(self) -> None:
+    def test_loading_mesh_starts_with_scene_context_and_keeps_normals_off(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
             file_path=Path("sample.stl"),
@@ -174,12 +186,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.vertex_count_text.get(), "3")
             self.assertEqual(window.triangle_count_text.get(), "1")
             self.assertEqual(window.bbox_size_text.get(), "1, 2, 3")
-            self.assertEqual(window.status_text.get(), "Loaded: sample.stl")
-            self.assertEqual(str(window.axis_dropdown.cget("state")), "readonly")
-            self.assertEqual(str(window.offset_input.cget("state")), "normal")
-            self.assertEqual(str(window.compute_section_button.cget("state")), "normal")
-            self.assertEqual(str(window.clear_section_button.cget("state")), "normal")
-            self.assertEqual(str(window.apply_transform_button.cget("state")), "normal")
+            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertIsNone(window.selected_item)
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
+            self.assertEqual(window.model_context_frame.winfo_manager(), "")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "")
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
             self.assertTrue(window.show_section_plane.get())
@@ -191,10 +202,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(scene["show_section_plane"], True)
             self.assertEqual(scene["section_axis"], "Z")
             self.assertEqual(scene["section_offset"], 0.0)
+            self.assertIsNone(scene["selected_item"])
         finally:
             window.root.destroy()
 
-    def test_frame_reset_compute_and_clear_use_new_workspace_controls(self) -> None:
+    def test_selecting_model_shows_object_context_and_live_transform(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
             file_path=Path("sample.stl"),
@@ -218,9 +230,72 @@ class MainWindowUiTests(unittest.TestCase):
             ):
                 window.load_model(Path("sample.stl"))
 
-            window.frame_model()
+            window.select_model()
+            self.assertEqual(window.selected_item, "model")
+            self.assertEqual(window.status_text.get(), "Selected: sample.stl")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.model_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertEqual(window.selected_object_text.get(), "sample.stl")
+            self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "model")
+            self.assertIsNotNone(window.viewport.scene_calls[-1]["object_origin"])
+
+            window.location_x.set("1.500")
+            window._on_object_transform_changed()
+            self.assertEqual(window.status_text.get(), "Transforms update live")
+            center = window.mesh_state.mesh.get_axis_aligned_bounding_box().get_center()
+            self.assertAlmostEqual(center[0], 1.5)
+
+            window.rotation_z.set("90.000")
+            window._on_object_transform_changed()
+            mapped_origin = window._current_object_matrix() @ np.append(
+                window.mesh_object.origin,
+                1.0,
+            )
+            self.assertTrue(np.allclose(mapped_origin[:3], window.mesh_object.location))
+
+            window.frame_selected()
             self.assertEqual(window.viewport.frame_count, 1)
-            self.assertEqual(window.status_text.get(), "View framed")
+            self.assertEqual(window.status_text.get(), "Selected: sample.stl")
+        finally:
+            window.root.destroy()
+
+    def test_selecting_section_plane_shows_section_context_and_compute_clear(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedOpen3DViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_section_plane()
+            self.assertEqual(window.selected_item, "section_plane")
+            self.assertEqual(window.status_text.get(), "Selected: Section Plane")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.model_context_frame.winfo_manager(), "")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
+
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.500")
+            self.assertEqual(window.status_text.get(), "Section plane: Z = 0.500")
+            self.assertEqual(window.viewport.scene_calls[-1]["section_offset"], 0.5)
 
             window.reset_view()
             self.assertEqual(window.viewport.reset_count, 1)

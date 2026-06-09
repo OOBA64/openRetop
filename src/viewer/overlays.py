@@ -68,11 +68,49 @@ def build_world_axes(reference_extent: float) -> list[o3d.geometry.Geometry]:
     return [frame, origin]
 
 
+def build_bounding_box_outline(
+    min_bound: Sequence[float],
+    max_bound: Sequence[float],
+    *,
+    color: Sequence[float] = (1.0, 0.82, 0.1),
+) -> o3d.geometry.LineSet:
+    """Build a highlighted bounding box outline for the selected mesh."""
+
+    box = o3d.geometry.AxisAlignedBoundingBox(
+        min_bound=np.asarray(min_bound, dtype=float),
+        max_bound=np.asarray(max_bound, dtype=float),
+    )
+    line_set = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(box)
+    line_set.paint_uniform_color(list(color))
+    return line_set
+
+
+def build_origin_marker(
+    origin: Sequence[float],
+    reference_extent: float,
+) -> list[o3d.geometry.Geometry]:
+    """Build a small marker that shows the selected object's pivot/origin."""
+
+    size = max(float(reference_extent) * 0.045, 0.04)
+    marker = o3d.geometry.TriangleMesh.create_sphere(radius=size, resolution=14)
+    marker.paint_uniform_color([1.0, 0.74, 0.12])
+    marker.translate(np.asarray(origin, dtype=float).tolist())
+    marker.compute_vertex_normals()
+
+    axes = o3d.geometry.TriangleMesh.create_coordinate_frame(
+        size=max(float(reference_extent) * 0.14, 0.18),
+        origin=np.asarray(origin, dtype=float).tolist(),
+    )
+    return [marker, axes]
+
+
 def build_section_plane_preview(
     axis: str,
     offset: float,
     min_bound: Sequence[float],
     max_bound: Sequence[float],
+    *,
+    selected: bool = False,
 ) -> o3d.geometry.LineSet:
     """Build a visible, non-occluding section plane preview."""
 
@@ -113,9 +151,9 @@ def build_section_plane_preview(
         lines.append((start_index, start_index + 1))
         colors.append(color)
 
-    border_color = [0.0, 0.92, 1.0]
+    border_color = [1.0, 0.82, 0.1] if selected else [0.0, 0.92, 1.0]
     inner_color = [0.0, 0.42, 0.48]
-    center_color = [0.58, 1.0, 1.0]
+    center_color = [1.0, 0.95, 0.35] if selected else [0.58, 1.0, 1.0]
 
     for index in range(4):
         add_line(corners[index], corners[(index + 1) % 4], border_color)
