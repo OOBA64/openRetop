@@ -99,45 +99,58 @@ class EmbeddedOpen3DViewport:
         self.visualizer.clear_geometries()
         self._geometry_names.clear()
         self._update_view_metrics(mesh)
+        reset_next_geometry = bool(reset_camera)
+
+        def add_geometry(
+            geometry: o3d.geometry.Geometry,
+            *,
+            may_reset_bounds: bool = False,
+        ) -> None:
+            nonlocal reset_next_geometry
+            reset_bounds = bool(reset_next_geometry and may_reset_bounds)
+            self.visualizer.add_geometry(
+                geometry,
+                reset_bounding_box=reset_bounds,
+            )
+            if reset_bounds:
+                reset_next_geometry = False
+
+        if mesh is not None:
+            if not mesh.has_vertex_colors():
+                mesh.paint_uniform_color([0.72, 0.74, 0.78])
+
+            add_geometry(mesh, may_reset_bounds=True)
 
         if show_grid:
-            self.visualizer.add_geometry(
+            add_geometry(
                 build_xy_grid(self._mesh_min_bound, self._mesh_max_bound),
-                reset_bounding_box=False,
+                may_reset_bounds=(mesh is None),
             )
 
         if show_axes:
             for geometry in build_world_axes(
                 reference_extent(self._mesh_min_bound, self._mesh_max_bound)
             ):
-                self.visualizer.add_geometry(geometry, reset_bounding_box=False)
+                add_geometry(geometry, may_reset_bounds=(mesh is None))
 
         if mesh is not None:
-            if not mesh.has_vertex_colors():
-                mesh.paint_uniform_color([0.72, 0.74, 0.78])
-
-            self.visualizer.add_geometry(mesh, reset_bounding_box=False)
             if show_normals:
                 normal_lines = build_normal_lines(mesh, normal_scale=0.012)
                 if normal_lines is not None:
-                    self.visualizer.add_geometry(
-                        normal_lines,
-                        reset_bounding_box=False,
-                    )
+                    add_geometry(normal_lines)
 
             if (
                 show_section_plane
                 and self._mesh_min_bound is not None
                 and self._mesh_max_bound is not None
             ):
-                self.visualizer.add_geometry(
+                add_geometry(
                     build_section_plane_preview(
                         section_axis,
                         section_offset,
                         self._mesh_min_bound,
                         self._mesh_max_bound,
-                    ),
-                    reset_bounding_box=False,
+                    )
                 )
 
         if section_result is not None:
@@ -147,7 +160,7 @@ class EmbeddedOpen3DViewport:
                 color=[1.0, 0.88, 0.05],
                 radius=mesh_extent * 0.003,
             ):
-                self.visualizer.add_geometry(tube, reset_bounding_box=False)
+                add_geometry(tube)
 
         if curve_results:
             fitted_lines = build_polyline_lines(
@@ -155,10 +168,7 @@ class EmbeddedOpen3DViewport:
                 color=[0.1, 0.78, 0.28],
             )
             if fitted_lines is not None:
-                self.visualizer.add_geometry(
-                    fitted_lines,
-                    reset_bounding_box=False,
-                )
+                add_geometry(fitted_lines)
 
         if reset_camera:
             self.reset_view()
