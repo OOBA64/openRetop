@@ -27,9 +27,9 @@ class ViewerOverlayTests(unittest.TestCase):
     def test_world_axes_include_axis_frame_and_origin_marker(self) -> None:
         axes = build_world_axes(4.0)
 
-        self.assertEqual(len(axes), 2)
-        self.assertGreater(len(axes[0].vertices), 0)
-        self.assertGreater(len(axes[1].vertices), 0)
+        self.assertEqual(len(axes.lines), 3)
+        self.assertEqual(len(axes.points), 6)
+        self.assertTrue(np.allclose(axes.points[0], [0.0, 0.0, 0.0]))
 
     def test_section_plane_preview_uses_selected_axis_and_offset(self) -> None:
         plane = build_section_plane_preview(

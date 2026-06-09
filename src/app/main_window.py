@@ -15,7 +15,7 @@ from geometry.curves import CurveFitResult, fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, SectionResult, extract_section
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
-from viewer.embedded_viewport import EmbeddedOpen3DViewport
+from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
 MESH_FILE_TYPES = (
@@ -97,7 +97,7 @@ class OpenRetopWindow:
         self._show_context(None)
         self._bind_keyboard_shortcuts()
 
-        self.viewport = EmbeddedOpen3DViewport(self.viewport_frame)
+        self.viewport = EmbeddedVTKViewport(self.viewport_frame)
         self.root.after(100, self._start_viewport)
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
 

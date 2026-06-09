@@ -1,21 +1,28 @@
-"""Open3D geometry helpers for CAD-style viewport overlays."""
+"""Plain geometry helpers for CAD-style viewport overlays."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import ceil, floor, log10
 from typing import Sequence
 
 import numpy as np
-import open3d as o3d
 
 
 AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
 
 
+@dataclass(frozen=True)
+class LineGeometry:
+    points: np.ndarray
+    lines: np.ndarray
+    colors: np.ndarray
+
+
 def build_xy_grid(
     min_bound: Sequence[float] | None,
     max_bound: Sequence[float] | None,
-) -> o3d.geometry.LineSet:
+) -> LineGeometry:
     """Build a subtle XY grid centered on the world origin."""
 
     half_size, step = grid_size_and_step(min_bound, max_bound)
@@ -43,29 +50,22 @@ def build_xy_grid(
         add_line((-half_extent, value, 0.0), (half_extent, value, 0.0), color)
         add_line((value, -half_extent, 0.0), (value, half_extent, 0.0), color)
 
-    line_set = o3d.geometry.LineSet()
-    line_set.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=float))
-    line_set.lines = o3d.utility.Vector2iVector(np.asarray(lines, dtype=int))
-    line_set.colors = o3d.utility.Vector3dVector(np.asarray(colors, dtype=float))
-    return line_set
+    return _line_geometry(points, lines, colors)
 
 
-def build_world_axes(reference_extent: float) -> list[o3d.geometry.Geometry]:
-    """Build colored axes and a visible marker at the world origin."""
-
-    size = max(float(reference_extent) * 0.28, 0.4)
-    frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
-        size=size,
-        origin=(0.0, 0.0, 0.0),
-    )
-
-    origin = o3d.geometry.TriangleMesh.create_sphere(
-        radius=max(size * 0.045, 0.025),
-        resolution=12,
-    )
-    origin.paint_uniform_color([1.0, 0.95, 0.3])
-    origin.compute_vertex_normals()
-    return [frame, origin]
+def build_world_axes(reference_extent: float) -> LineGeometry:
+    size = max(float(reference_extent) * 0.35, 0.5)
+    points = [
+        [0.0, 0.0, 0.0],
+        [size, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [0.0, size, 0.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, size],
+    ]
+    lines = [(0, 1), (2, 3), (4, 5)]
+    colors = [[0.95, 0.18, 0.18], [0.2, 0.85, 0.25], [0.22, 0.48, 1.0]]
+    return _line_geometry(points, lines, colors)
 
 
 def build_bounding_box_outline(
@@ -73,35 +73,51 @@ def build_bounding_box_outline(
     max_bound: Sequence[float],
     *,
     color: Sequence[float] = (1.0, 0.82, 0.1),
-) -> o3d.geometry.LineSet:
-    """Build a highlighted bounding box outline for the selected mesh."""
+) -> LineGeometry:
+    minimum = np.asarray(min_bound, dtype=float)
+    maximum = np.asarray(max_bound, dtype=float)
+    points = [
+        [minimum[0], minimum[1], minimum[2]],
+        [maximum[0], minimum[1], minimum[2]],
+        [maximum[0], maximum[1], minimum[2]],
+        [minimum[0], maximum[1], minimum[2]],
+        [minimum[0], minimum[1], maximum[2]],
+        [maximum[0], minimum[1], maximum[2]],
+        [maximum[0], maximum[1], maximum[2]],
+        [minimum[0], maximum[1], maximum[2]],
+    ]
+    lines = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ]
+    colors = [list(color) for _ in lines]
+    return _line_geometry(points, lines, colors)
 
-    box = o3d.geometry.AxisAlignedBoundingBox(
-        min_bound=np.asarray(min_bound, dtype=float),
-        max_bound=np.asarray(max_bound, dtype=float),
-    )
-    line_set = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(box)
-    line_set.paint_uniform_color(list(color))
-    return line_set
 
-
-def build_origin_marker(
-    origin: Sequence[float],
-    reference_extent: float,
-) -> list[o3d.geometry.Geometry]:
-    """Build a small marker that shows the selected object's pivot/origin."""
-
-    size = max(float(reference_extent) * 0.045, 0.04)
-    marker = o3d.geometry.TriangleMesh.create_sphere(radius=size, resolution=14)
-    marker.paint_uniform_color([1.0, 0.74, 0.12])
-    marker.translate(np.asarray(origin, dtype=float).tolist())
-    marker.compute_vertex_normals()
-
-    axes = o3d.geometry.TriangleMesh.create_coordinate_frame(
-        size=max(float(reference_extent) * 0.14, 0.18),
-        origin=np.asarray(origin, dtype=float).tolist(),
-    )
-    return [marker, axes]
+def build_origin_marker(origin: Sequence[float], reference_extent: float) -> LineGeometry:
+    center = np.asarray(origin, dtype=float)
+    size = max(float(reference_extent) * 0.08, 0.08)
+    points = [
+        (center + [-size, 0.0, 0.0]).tolist(),
+        (center + [size, 0.0, 0.0]).tolist(),
+        (center + [0.0, -size, 0.0]).tolist(),
+        (center + [0.0, size, 0.0]).tolist(),
+        (center + [0.0, 0.0, -size]).tolist(),
+        (center + [0.0, 0.0, size]).tolist(),
+    ]
+    lines = [(0, 1), (2, 3), (4, 5)]
+    colors = [[1.0, 0.74, 0.12] for _ in lines]
+    return _line_geometry(points, lines, colors)
 
 
 def build_section_plane_preview(
@@ -111,7 +127,7 @@ def build_section_plane_preview(
     max_bound: Sequence[float],
     *,
     selected: bool = False,
-) -> o3d.geometry.LineSet:
+) -> LineGeometry:
     """Build a visible, non-occluding section plane preview."""
 
     axis_key = axis.upper()
@@ -173,11 +189,7 @@ def build_section_plane_preview(
             color,
         )
 
-    line_set = o3d.geometry.LineSet()
-    line_set.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=float))
-    line_set.lines = o3d.utility.Vector2iVector(np.asarray(lines, dtype=int))
-    line_set.colors = o3d.utility.Vector3dVector(np.asarray(colors, dtype=float))
-    return line_set
+    return _line_geometry(points, lines, colors)
 
 
 def grid_size_and_step(
@@ -214,6 +226,18 @@ def reference_extent(
     minimum = np.asarray(min_bound, dtype=float)
     maximum = np.asarray(max_bound, dtype=float)
     return max(float(np.max(maximum - minimum)), 1.0)
+
+
+def _line_geometry(
+    points: Sequence[Sequence[float]],
+    lines: Sequence[tuple[int, int]],
+    colors: Sequence[Sequence[float]],
+) -> LineGeometry:
+    return LineGeometry(
+        points=np.asarray(points, dtype=float).reshape((-1, 3)),
+        lines=np.asarray(lines, dtype=int).reshape((-1, 2)),
+        colors=np.asarray(colors, dtype=float).reshape((-1, 3)),
+    )
 
 
 def _plane_point(

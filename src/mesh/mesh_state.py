@@ -5,12 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import sqrt
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from mesh.loader import LoadedMesh, MeshMetadata
-
-if TYPE_CHECKING:
-    import open3d as o3d
+from mesh.triangle_mesh import TriangleMeshData
 
 
 Vector3 = tuple[float, float, float]
@@ -18,7 +15,7 @@ ZERO_VECTOR: Vector3 = (0.0, 0.0, 0.0)
 
 
 def _to_vector3(values: object) -> Vector3:
-    sequence = list(values)  # Open3D vectors and numpy arrays are iterable.
+    sequence = list(values)
     if len(sequence) < 3:
         return ZERO_VECTOR
 
@@ -29,7 +26,7 @@ def _to_vector3(values: object) -> Vector3:
 class MeshState:
     """The mesh currently loaded into the application."""
 
-    mesh: o3d.geometry.TriangleMesh | None = None
+    mesh: TriangleMeshData | object | None = None
     file_path: Path | None = None
     file_name: str = ""
     vertex_count: int = 0
@@ -55,7 +52,7 @@ class MeshState:
     @classmethod
     def from_mesh(
         cls,
-        mesh: o3d.geometry.TriangleMesh,
+        mesh: object,
         *,
         file_path: str | Path | None = None,
         metadata: MeshMetadata | None = None,

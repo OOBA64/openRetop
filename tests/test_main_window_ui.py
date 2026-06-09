@@ -83,9 +83,13 @@ class FakeViewport:
         self.frame_count = 0
         self.reset_count = 0
         self.closed = False
+        self.selection_callback = None
 
     def start(self) -> None:
         return None
+
+    def set_selection_callback(self, callback: object) -> None:
+        self.selection_callback = callback
 
     def set_scene(self, mesh: object, **kwargs: object) -> None:
         self.scene_calls.append({"mesh": mesh, **kwargs})
@@ -115,7 +119,7 @@ def _create_window() -> OpenRetopWindow:
 
 class MainWindowUiTests(unittest.TestCase):
     def test_menu_bar_and_initial_no_selection_context_match_instructions(self) -> None:
-        with patch("app.main_window.EmbeddedOpen3DViewport", FakeViewport):
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
 
         try:
@@ -166,7 +170,7 @@ class MainWindowUiTests(unittest.TestCase):
             computed_triangle_normals=False,
         )
 
-        with patch("app.main_window.EmbeddedOpen3DViewport", FakeViewport):
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
 
         try:
@@ -216,7 +220,7 @@ class MainWindowUiTests(unittest.TestCase):
             computed_triangle_normals=False,
         )
 
-        with patch("app.main_window.EmbeddedOpen3DViewport", FakeViewport):
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
 
         try:
@@ -270,7 +274,7 @@ class MainWindowUiTests(unittest.TestCase):
             computed_triangle_normals=False,
         )
 
-        with patch("app.main_window.EmbeddedOpen3DViewport", FakeViewport):
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
 
         try:
@@ -312,3 +316,4 @@ class MainWindowUiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
