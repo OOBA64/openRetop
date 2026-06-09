@@ -18,7 +18,7 @@ Install the prototype dependency:
 python -m pip install -r requirements.txt
 ```
 
-Open the very simple mesh picker menu:
+Open the integrated app window:
 
 ```powershell
 python src/main.py
@@ -48,8 +48,11 @@ Show the vertex-normal overlay:
 python src/mesh/import_mesh.py path\to\model.ply --show-normals
 ```
 
-Open the desktop app, load a mesh, then use the section controls to choose X/Y/Z,
-set an offset, compute the section, and show or hide the section curve or normals:
+The desktop app opens one main window with a menu bar, left control panel,
+embedded viewport, and bottom status bar. Load a mesh from File > Open Model or
+the sidebar Open Model button, then use the section controls to choose X/Y/Z,
+set an offset, and compute the section. Normals are hidden by default and can be
+enabled from View > Show Normals or the sidebar checkbox.
 
 ```powershell
 python src/main.py
