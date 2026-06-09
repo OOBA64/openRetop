@@ -8,6 +8,7 @@ from tkinter import Frame
 from ctypes import wintypes
 from typing import Sequence
 
+import numpy as np
 import open3d as o3d
 
 from geometry.curves import CurveFitResult
@@ -16,6 +17,12 @@ from mesh.import_mesh import (
     build_normal_lines,
     build_polyline_lines,
     build_polyline_tubes,
+)
+from viewer.overlays import (
+    build_section_plane_preview,
+    build_world_axes,
+    build_xy_grid,
+    reference_extent,
 )
 
 
@@ -40,6 +47,10 @@ class EmbeddedOpen3DViewport:
         self._is_started = False
         self._is_closed = False
         self._geometry_names: list[str] = []
+        self._view_center = np.asarray([0.0, 0.0, 0.0], dtype=float)
+        self._view_extent = 2.0
+        self._mesh_min_bound: np.ndarray | None = None
+        self._mesh_max_bound: np.ndarray | None = None
 
         self.parent.bind("<Configure>", self._on_resize)
 
@@ -72,7 +83,12 @@ class EmbeddedOpen3DViewport:
         self,
         mesh: o3d.geometry.TriangleMesh | None,
         *,
+        show_grid: bool,
+        show_axes: bool,
         show_normals: bool,
+        show_section_plane: bool,
+        section_axis: str,
+        section_offset: float,
         section_result: SectionResult | None = None,
         curve_results: Sequence[CurveFitResult] | None = None,
         reset_camera: bool = False,
@@ -82,28 +98,50 @@ class EmbeddedOpen3DViewport:
 
         self.visualizer.clear_geometries()
         self._geometry_names.clear()
+        self._update_view_metrics(mesh)
 
-        if mesh is None:
-            self.visualizer.update_renderer()
-            return
+        if show_grid:
+            self.visualizer.add_geometry(
+                build_xy_grid(self._mesh_min_bound, self._mesh_max_bound),
+                reset_bounding_box=False,
+            )
 
-        if not mesh.has_vertex_colors():
-            mesh.paint_uniform_color([0.72, 0.74, 0.78])
+        if show_axes:
+            for geometry in build_world_axes(
+                reference_extent(self._mesh_min_bound, self._mesh_max_bound)
+            ):
+                self.visualizer.add_geometry(geometry, reset_bounding_box=False)
 
-        self.visualizer.add_geometry(mesh, reset_bounding_box=reset_camera)
-        if show_normals:
-            normal_lines = build_normal_lines(mesh, normal_scale=0.02)
-            if normal_lines is not None:
+        if mesh is not None:
+            if not mesh.has_vertex_colors():
+                mesh.paint_uniform_color([0.72, 0.74, 0.78])
+
+            self.visualizer.add_geometry(mesh, reset_bounding_box=False)
+            if show_normals:
+                normal_lines = build_normal_lines(mesh, normal_scale=0.012)
+                if normal_lines is not None:
+                    self.visualizer.add_geometry(
+                        normal_lines,
+                        reset_bounding_box=False,
+                    )
+
+            if (
+                show_section_plane
+                and self._mesh_min_bound is not None
+                and self._mesh_max_bound is not None
+            ):
                 self.visualizer.add_geometry(
-                    normal_lines,
+                    build_section_plane_preview(
+                        section_axis,
+                        section_offset,
+                        self._mesh_min_bound,
+                        self._mesh_max_bound,
+                    ),
                     reset_bounding_box=False,
                 )
 
         if section_result is not None:
-            mesh_extent = max(
-                float(mesh.get_axis_aligned_bounding_box().get_max_extent()),
-                1.0,
-            )
+            mesh_extent = self._view_extent
             for tube in build_polyline_tubes(
                 section_result.polylines,
                 color=[1.0, 0.88, 0.05],
@@ -123,16 +161,26 @@ class EmbeddedOpen3DViewport:
                 )
 
         if reset_camera:
-            self.reset_camera()
+            self.reset_view()
 
         self.visualizer.update_renderer()
 
-    def reset_camera(self) -> None:
+    def frame_model(self) -> None:
         if not self._is_started:
             return
 
-        self.visualizer.reset_view_point(True)
+        self._apply_cad_view(zoom=0.72)
         self.visualizer.update_renderer()
+
+    def reset_view(self) -> None:
+        if not self._is_started:
+            return
+
+        self._apply_cad_view(zoom=0.68)
+        self.visualizer.update_renderer()
+
+    def reset_camera(self) -> None:
+        self.reset_view()
 
     def _pump_events(self) -> None:
         if self._is_closed:
@@ -148,7 +196,30 @@ class EmbeddedOpen3DViewport:
         render_options = self.visualizer.get_render_option()
         render_options.mesh_show_back_face = True
         render_options.background_color = [0.08, 0.09, 0.1]
-        render_options.line_width = 4.0
+        render_options.line_width = 2.0
+
+    def _update_view_metrics(self, mesh: o3d.geometry.TriangleMesh | None) -> None:
+        if mesh is None:
+            self._mesh_min_bound = None
+            self._mesh_max_bound = None
+            self._view_center = np.asarray([0.0, 0.0, 0.0], dtype=float)
+            self._view_extent = 2.0
+            return
+
+        bounding_box = mesh.get_axis_aligned_bounding_box()
+        self._mesh_min_bound = np.asarray(bounding_box.get_min_bound(), dtype=float)
+        self._mesh_max_bound = np.asarray(bounding_box.get_max_bound(), dtype=float)
+        self._view_center = np.asarray(bounding_box.get_center(), dtype=float)
+        self._view_extent = max(float(bounding_box.get_max_extent()), 1.0)
+
+    def _apply_cad_view(self, *, zoom: float) -> None:
+        view_control = self.visualizer.get_view_control()
+        front = np.asarray([0.65, -0.65, 0.38], dtype=float)
+        front /= np.linalg.norm(front)
+        view_control.set_front(front.tolist())
+        view_control.set_up([0.0, 0.0, 1.0])
+        view_control.set_lookat(self._view_center.tolist())
+        view_control.set_zoom(float(zoom))
 
     def _embed_window(self) -> None:
         handle = _find_window_by_title(self.window_title, timeout_seconds=5.0)
