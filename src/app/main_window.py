@@ -1,253 +1,221 @@
-"""Integrated Open3D main window for openRetop."""
+"""Integrated Tk main window for openRetop."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Sequence
-
-import open3d as o3d
-import open3d.visualization.gui as gui
-import open3d.visualization.rendering as rendering
+from tkinter import BooleanVar, Menu, StringVar, Tk, filedialog, messagebox
+from tkinter import ttk
 
 from geometry.curves import CurveFitResult, fit_section_polylines
 from geometry.sections import SECTION_AXES, SectionResult, extract_section
-from mesh.import_mesh import (
-    build_normal_lines,
-    build_polyline_lines,
-    build_polyline_tubes,
-)
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
+from viewer.embedded_viewport import EmbeddedOpen3DViewport
+
+
+MESH_FILE_TYPES = (
+    ("Mesh files", "*.stl *.obj *.ply"),
+    ("STL files", "*.stl"),
+    ("OBJ files", "*.obj"),
+    ("PLY files", "*.ply"),
+    ("All files", "*.*"),
+)
 
 
 class OpenRetopWindow:
-    """One-window mesh viewer with embedded controls and viewport."""
+    """One-window app with sidebar controls and an embedded Open3D viewport."""
 
-    MENU_OPEN = 1
-    MENU_EXIT = 2
-    MENU_RESET_CAMERA = 3
-    MENU_SHOW_NORMALS = 4
+    def __init__(self) -> None:
+        self.root = Tk()
+        self.root.title("openRetop")
+        self.root.geometry("1280x800")
+        self.root.minsize(900, 560)
 
-    MESH_GEOMETRY_NAME = "loaded_mesh"
-    NORMALS_GEOMETRY_NAME = "mesh_normals"
-    FITTED_CURVE_GEOMETRY_NAME = "fitted_curve"
-    SECTION_GEOMETRY_PREFIX = "section_curve_"
-
-    def __init__(self, width: int = 1280, height: int = 800) -> None:
-        self.window = gui.Application.instance.create_window("openRetop", width, height)
         self.mesh_state = MeshState()
         self.section_result: SectionResult | None = None
         self.curve_results: list[CurveFitResult] = []
-        self.show_normals = False
+        self.show_normals = BooleanVar(value=False)
+        self.section_axis = StringVar(value="Z")
+        self.section_offset = StringVar(value="0")
+        self.status_text = StringVar(value="No model loaded")
+        self.file_name_text = StringVar(value="(none)")
+        self.vertex_count_text = StringVar(value="0")
+        self.triangle_count_text = StringVar(value="0")
+        self.bbox_size_text = StringVar(value="-")
+        self.section_plane_text = StringVar(value="Section: Z = 0")
 
-        self._scene = gui.SceneWidget()
-        self._scene.scene = rendering.Open3DScene(self.window.renderer)
-        self._scene.scene.set_background([0.08, 0.09, 0.1, 1.0])
-        self._scene.scene.show_axes(True)
-
-        self._sidebar = self._build_sidebar()
-        self._status = gui.Label("No model loaded")
-        self._last_error: str | None = None
-
-        self.window.add_child(self._scene)
-        self.window.add_child(self._sidebar)
-        self.window.add_child(self._status)
-        self.window.set_on_layout(self._on_layout)
-
-        self._setup_menu()
+        self._build_menu()
+        self._build_layout()
         self._set_section_controls_enabled(False)
-        self._reset_stats()
-        self._reset_camera()
 
-    def _build_sidebar(self) -> gui.Vert:
-        em = self.window.theme.font_size
-        sidebar = gui.Vert(0.45 * em, gui.Margins(em, em, em, em))
+        self.viewport = EmbeddedOpen3DViewport(self.viewport_frame)
+        self.root.after(100, self._start_viewport)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
 
-        self._open_button = gui.Button("Open Model")
-        self._open_button.set_on_clicked(lambda: self._post_ui(self._on_open_model))
-        sidebar.add_child(self._open_button)
-        sidebar.add_fixed(0.25 * em)
+    def run(self) -> None:
+        self.root.mainloop()
 
-        sidebar.add_child(gui.Label("Loaded file"))
-        self._file_name_label = gui.Label("(none)")
-        sidebar.add_child(self._file_name_label)
-
-        sidebar.add_fixed(0.25 * em)
-        self._vertex_count_label = self._add_stat_row(sidebar, "Vertices", "0")
-        self._triangle_count_label = self._add_stat_row(sidebar, "Triangles", "0")
-        self._bbox_size_label = self._add_stat_row(sidebar, "Bounding box", "-")
-
-        sidebar.add_fixed(0.75 * em)
-        sidebar.add_child(gui.Label("Section controls"))
-
-        axis_row = gui.Horiz(0.5 * em)
-        axis_row.add_child(gui.Label("Axis"))
-        self._axis_dropdown = gui.Combobox()
-        for axis in SECTION_AXES:
-            self._axis_dropdown.add_item(axis)
-        self._axis_dropdown.selected_index = SECTION_AXES.index("Z")
-        axis_row.add_child(self._axis_dropdown)
-        sidebar.add_child(axis_row)
-
-        offset_row = gui.Horiz(0.5 * em)
-        offset_row.add_child(gui.Label("Offset"))
-        self._offset_input = gui.NumberEdit(gui.NumberEdit.DOUBLE)
-        self._offset_input.double_value = 0.0
-        self._offset_input.decimal_precision = 4
-        self._offset_input.set_preferred_width(7 * em)
-        offset_row.add_child(self._offset_input)
-        sidebar.add_child(offset_row)
-
-        self._section_plane_label = gui.Label("Section: Z = 0")
-        sidebar.add_child(self._section_plane_label)
-
-        self._compute_section_button = gui.Button("Compute Section")
-        self._compute_section_button.set_on_clicked(
-            lambda: self._post_ui(self._on_compute_section)
-        )
-        sidebar.add_child(self._compute_section_button)
-
-        self._axis_dropdown.set_on_selection_changed(
-            lambda text, index: self._post_ui(
-                self._on_section_axis_changed,
-                text,
-                index,
-            )
-        )
-        self._offset_input.set_on_value_changed(
-            lambda value: self._post_ui(self._on_section_offset_changed, value)
-        )
-
-        sidebar.add_fixed(0.75 * em)
-        self._show_normals_checkbox = gui.Checkbox("Show Normals")
-        self._show_normals_checkbox.checked = False
-        self._show_normals_checkbox.set_on_checked(
-            lambda checked: self._post_ui(
-                self._on_show_normals_checkbox,
-                checked,
-            )
-        )
-        sidebar.add_child(self._show_normals_checkbox)
-        sidebar.add_stretch()
-
-        return sidebar
-
-    def _add_stat_row(self, sidebar: gui.Vert, label: str, initial: str) -> gui.Label:
-        row = gui.Horiz(0.5 * self.window.theme.font_size)
-        row.add_child(gui.Label(label))
-        value_label = gui.Label(initial)
-        row.add_stretch()
-        row.add_child(value_label)
-        sidebar.add_child(row)
-        return value_label
-
-    def _setup_menu(self) -> None:
-        menu = gui.Menu()
-
-        file_menu = gui.Menu()
-        file_menu.add_item("Open Model", self.MENU_OPEN)
-        file_menu.add_separator()
-        file_menu.add_item("Exit", self.MENU_EXIT)
-
-        view_menu = gui.Menu()
-        view_menu.add_item("Reset Camera", self.MENU_RESET_CAMERA)
-        view_menu.add_item("Show Normals", self.MENU_SHOW_NORMALS)
-        view_menu.set_checked(self.MENU_SHOW_NORMALS, False)
-
-        menu.add_menu("File", file_menu)
-        menu.add_menu("View", view_menu)
-        gui.Application.instance.menubar = menu
-
-        self.window.set_on_menu_item_activated(
-            self.MENU_OPEN,
-            lambda: self._post_ui(self._on_open_model),
-        )
-        self.window.set_on_menu_item_activated(
-            self.MENU_EXIT,
-            lambda: self._post_ui(self._on_exit),
-        )
-        self.window.set_on_menu_item_activated(
-            self.MENU_RESET_CAMERA,
-            lambda: self._post_ui(self._reset_camera),
-        )
-        self.window.set_on_menu_item_activated(
-            self.MENU_SHOW_NORMALS,
-            lambda: self._post_ui(self._toggle_show_normals),
-        )
-
-    def _post_ui(self, callback: Callable[..., None], *args: object) -> None:
-        gui.Application.instance.post_to_main_thread(
-            self.window,
-            lambda: self._run_ui_callback(callback, *args),
-        )
-
-    def _run_ui_callback(
-        self,
-        callback: Callable[..., None],
-        *args: object,
-    ) -> None:
+    def _start_viewport(self) -> None:
         try:
-            callback(*args)
-        except Exception as exc:
-            self._last_error = str(exc)
-            self._set_status(f"UI error: {exc}")
-            self.window.show_message_box("openRetop UI error", str(exc))
+            self.viewport.start()
+        except RuntimeError as exc:
+            self.status_text.set("Viewport failed to start")
+            messagebox.showerror("Viewport failed to start", str(exc))
 
-    def _on_layout(self, layout_context: gui.LayoutContext) -> None:
-        content = self.window.content_rect
-        em = layout_context.theme.font_size
-        sidebar_width = int(19 * em)
-        status_height = int(1.7 * em)
-        viewport_height = max(0, content.height - status_height)
+    def _build_menu(self) -> None:
+        menu_bar = Menu(self.root)
 
-        self._sidebar.frame = gui.Rect(
-            content.x,
-            content.y,
-            sidebar_width,
-            viewport_height,
+        file_menu = Menu(menu_bar, tearoff=False)
+        file_menu.add_command(label="Open Model", command=self.open_model)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_exit)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
+        self.view_menu = Menu(menu_bar, tearoff=False)
+        self.view_menu.add_command(label="Reset Camera", command=self.reset_camera)
+        self.view_menu.add_checkbutton(
+            label="Show Normals",
+            variable=self.show_normals,
+            command=self._on_show_normals_changed,
         )
-        self._scene.frame = gui.Rect(
-            content.x + sidebar_width,
-            content.y,
-            max(0, content.width - sidebar_width),
-            viewport_height,
-        )
-        self._status.frame = gui.Rect(
-            content.x + int(0.5 * em),
-            content.y + viewport_height,
-            content.width - int(em),
-            status_height,
+        menu_bar.add_cascade(label="View", menu=self.view_menu)
+
+        self.root.config(menu=menu_bar)
+
+    def _build_layout(self) -> None:
+        main = ttk.Frame(self.root)
+        main.pack(fill="both", expand=True)
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(0, weight=1)
+
+        sidebar = ttk.Frame(main, padding=12)
+        sidebar.grid(row=0, column=0, sticky="ns")
+        sidebar.columnconfigure(1, weight=1)
+
+        ttk.Button(sidebar, text="Open Model", command=self.open_model).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, 12),
         )
 
-    def _on_open_model(self) -> None:
-        dialog = gui.FileDialog(
-            gui.FileDialog.OPEN,
-            "Open Model",
-            self.window.theme,
+        self._add_info_row(sidebar, 1, "Loaded file", self.file_name_text)
+        self._add_info_row(sidebar, 2, "Vertices", self.vertex_count_text)
+        self._add_info_row(sidebar, 3, "Triangles", self.triangle_count_text)
+        self._add_info_row(sidebar, 4, "Bounding box", self.bbox_size_text)
+
+        ttk.Separator(sidebar).grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=12,
         )
-        dialog.add_filter(".stl .obj .ply", "Mesh files (.stl, .obj, .ply)")
-        dialog.add_filter(".stl", "STL files (.stl)")
-        dialog.add_filter(".obj", "OBJ files (.obj)")
-        dialog.add_filter(".ply", "PLY files (.ply)")
-        dialog.add_filter("", "All files")
-        dialog.set_on_cancel(self._on_file_dialog_cancel)
-        dialog.set_on_done(self._on_file_dialog_done)
-        self.window.show_dialog(dialog)
+        ttk.Label(sidebar, text="Section controls").grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, 6),
+        )
 
-    def _on_file_dialog_cancel(self) -> None:
-        self.window.close_dialog()
+        ttk.Label(sidebar, text="Axis").grid(row=7, column=0, sticky="w")
+        self.axis_dropdown = ttk.Combobox(
+            sidebar,
+            textvariable=self.section_axis,
+            values=SECTION_AXES,
+            width=8,
+            state="readonly",
+        )
+        self.axis_dropdown.grid(row=7, column=1, sticky="ew", pady=2)
+        self.axis_dropdown.bind("<<ComboboxSelected>>", self._on_section_plane_changed)
 
-    def _on_file_dialog_done(self, file_path: str) -> None:
-        self.window.close_dialog()
-        self._post_ui(self.load_model, Path(file_path))
+        ttk.Label(sidebar, text="Offset").grid(row=8, column=0, sticky="w")
+        self.offset_input = ttk.Entry(
+            sidebar,
+            textvariable=self.section_offset,
+            width=10,
+        )
+        self.offset_input.grid(row=8, column=1, sticky="ew", pady=2)
+        self.offset_input.bind("<KeyRelease>", self._on_section_plane_changed)
+        self.offset_input.bind("<FocusOut>", self._on_section_plane_changed)
+
+        ttk.Label(sidebar, textvariable=self.section_plane_text).grid(
+            row=9,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(6, 6),
+        )
+
+        self.compute_section_button = ttk.Button(
+            sidebar,
+            text="Compute Section",
+            command=self.compute_section,
+        )
+        self.compute_section_button.grid(
+            row=10,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+        )
+
+        ttk.Checkbutton(
+            sidebar,
+            text="Show Normals",
+            variable=self.show_normals,
+            command=self._on_show_normals_changed,
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+        sidebar.grid_rowconfigure(12, weight=1)
+
+        self.viewport_frame = ttk.Frame(main)
+        self.viewport_frame.grid(row=0, column=1, sticky="nsew")
+
+        status_bar = ttk.Label(
+            self.root,
+            textvariable=self.status_text,
+            anchor="w",
+            padding=(8, 4),
+        )
+        status_bar.pack(fill="x", side="bottom")
+
+    def _add_info_row(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        label: str,
+        value: StringVar,
+    ) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(parent, textvariable=value, wraplength=150).grid(
+            row=row,
+            column=1,
+            sticky="w",
+            pady=2,
+            padx=(8, 0),
+        )
+
+    def open_model(self) -> None:
+        selected_path = filedialog.askopenfilename(
+            title="Open Model",
+            filetypes=MESH_FILE_TYPES,
+        )
+        if not selected_path:
+            return
+
+        self.load_model(Path(selected_path))
 
     def load_model(self, file_path: Path) -> None:
-        self._set_status(f"Loading model: {file_path.name}")
+        self.status_text.set(f"Loading model: {file_path.name}")
+        self.root.update_idletasks()
+
         try:
             loaded = load_mesh(file_path)
         except (FileNotFoundError, ValueError, SystemExit) as exc:
-            self._set_status("No model loaded")
-            self.window.show_message_box("Could not open model", str(exc))
+            self.status_text.set("No model loaded")
+            messagebox.showerror("Could not open model", str(exc))
             return
 
         self.mesh_state = MeshState.from_loaded_mesh(loaded)
@@ -255,211 +223,81 @@ class OpenRetopWindow:
         self.curve_results = []
         self._set_section_controls_enabled(True)
         self._update_stats()
-        self._refresh_scene(reset_camera=True)
-        self._set_status(f"Loaded model: {self.mesh_state.file_name}")
+        self._refresh_viewport(reset_camera=True)
+        self.status_text.set(f"Loaded model: {self.mesh_state.file_name}")
 
-    def _on_compute_section(self) -> None:
+    def compute_section(self) -> None:
         if not self.mesh_state.is_loaded or self.mesh_state.mesh is None:
-            self._set_status("No model loaded")
+            self.status_text.set("No model loaded")
             return
 
-        axis = self._axis_dropdown.selected_text
-        offset = float(self._offset_input.double_value)
         try:
-            self.section_result = extract_section(
-                self.mesh_state.mesh,
-                axis=axis,
-                offset=offset,
-            )
-            self.curve_results = fit_section_polylines(self.section_result.polylines)
+            offset = float(self.section_offset.get())
         except ValueError as exc:
-            self.window.show_message_box("Section failed", str(exc))
+            messagebox.showerror("Section failed", str(exc))
             return
 
-        self._update_section_plane_label()
-        self._refresh_scene(reset_camera=False)
-        self._set_status(f"Section computed: {self.section_result.point_count} points")
-
-    def _on_section_axis_changed(self, _text: str, _index: int) -> None:
-        self._update_section_plane_label()
-
-    def _on_section_offset_changed(self, _value: float) -> None:
-        self._update_section_plane_label()
-
-    def _toggle_show_normals(self) -> None:
-        menubar = gui.Application.instance.menubar
-        checked = not menubar.is_checked(self.MENU_SHOW_NORMALS)
-        self._set_show_normals(checked, update_checkbox=True)
-
-    def _on_show_normals_checkbox(self, checked: bool) -> None:
-        self._set_show_normals(checked, update_checkbox=False)
-
-    def _set_show_normals(
-        self,
-        checked: bool,
-        *,
-        update_checkbox: bool = True,
-    ) -> None:
-        new_value = bool(checked)
-        if self.show_normals == new_value:
-            gui.Application.instance.menubar.set_checked(
-                self.MENU_SHOW_NORMALS,
-                new_value,
-            )
-            return
-
-        self.show_normals = new_value
-        if update_checkbox:
-            self._show_normals_checkbox.checked = self.show_normals
-        gui.Application.instance.menubar.set_checked(
-            self.MENU_SHOW_NORMALS,
-            self.show_normals,
+        self.section_result = extract_section(
+            self.mesh_state.mesh,
+            axis=self.section_axis.get(),
+            offset=offset,
         )
+        self.curve_results = fit_section_polylines(self.section_result.polylines)
+        self._update_section_plane_label()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Section computed: {self.section_result.point_count} points")
+
+    def reset_camera(self) -> None:
+        self.viewport.reset_camera()
+
+    def _refresh_viewport(self, *, reset_camera: bool) -> None:
+        self.viewport.set_scene(
+            self.mesh_state.mesh,
+            show_normals=self.show_normals.get(),
+            section_result=self.section_result,
+            curve_results=self.curve_results,
+            reset_camera=reset_camera,
+        )
+
+    def _on_show_normals_changed(self) -> None:
         if self.mesh_state.is_loaded:
-            self._refresh_scene(reset_camera=False)
+            self._refresh_viewport(reset_camera=False)
 
-    def _on_exit(self) -> None:
-        gui.Application.instance.quit()
-
-    def _set_section_controls_enabled(self, enabled: bool) -> None:
-        self._axis_dropdown.enabled = enabled
-        self._offset_input.enabled = enabled
-        self._compute_section_button.enabled = enabled
-
-    def _reset_stats(self) -> None:
-        self._file_name_label.text = "(none)"
-        self._vertex_count_label.text = "0"
-        self._triangle_count_label.text = "0"
-        self._bbox_size_label.text = "-"
-
-    def _update_stats(self) -> None:
-        self._file_name_label.text = self.mesh_state.file_name or "(unnamed)"
-        self._vertex_count_label.text = str(self.mesh_state.vertex_count)
-        self._triangle_count_label.text = str(self.mesh_state.triangle_count)
-        self._bbox_size_label.text = _format_vector(self.mesh_state.bounding_box_extent)
+    def _on_section_plane_changed(self, _event: object | None = None) -> None:
+        self._update_section_plane_label()
 
     def _update_section_plane_label(self) -> None:
-        axis = self._axis_dropdown.selected_text or "Z"
-        offset = float(self._offset_input.double_value)
-        self._section_plane_label.text = f"Section: {axis} = {offset:.6g}"
-
-    def _refresh_scene(self, *, reset_camera: bool) -> None:
-        self._scene.scene.clear_geometry()
-
-        if self.mesh_state.mesh is None:
-            if reset_camera:
-                self._reset_camera()
-            self.window.post_redraw()
-            return
-
-        mesh = self.mesh_state.mesh
-        if not mesh.has_vertex_colors():
-            mesh.paint_uniform_color([0.72, 0.74, 0.78])
-
-        self._scene.scene.add_geometry(
-            self.MESH_GEOMETRY_NAME,
-            mesh,
-            _mesh_material(),
-        )
-
-        if self.show_normals:
-            normal_lines = build_normal_lines(mesh, normal_scale=0.02)
-            if normal_lines is not None:
-                self._scene.scene.add_geometry(
-                    self.NORMALS_GEOMETRY_NAME,
-                    normal_lines,
-                    _line_material([0.1, 0.45, 1.0, 1.0], line_width=1.0),
-                )
-
-        self._add_section_geometry()
-
-        if reset_camera:
-            self._reset_camera()
-
-        self.window.post_redraw()
-
-    def _add_section_geometry(self) -> None:
-        if self.mesh_state.mesh is None or self.section_result is None:
-            return
-
-        mesh_extent = max(
-            float(self.mesh_state.mesh.get_axis_aligned_bounding_box().get_max_extent()),
-            1.0,
-        )
-        section_tubes = build_polyline_tubes(
-            self.section_result.polylines,
-            color=[1.0, 0.88, 0.05],
-            radius=mesh_extent * 0.003,
-        )
-        for index, tube in enumerate(section_tubes):
-            self._scene.scene.add_geometry(
-                f"{self.SECTION_GEOMETRY_PREFIX}{index}",
-                tube,
-                _section_material(),
-            )
-
-        fitted_lines = build_polyline_lines(
-            [result.fitted_points for result in self.curve_results],
-            color=[0.1, 0.78, 0.28],
-        )
-        if fitted_lines is not None:
-            self._scene.scene.add_geometry(
-                self.FITTED_CURVE_GEOMETRY_NAME,
-                fitted_lines,
-                _line_material([0.1, 0.78, 0.28, 1.0], line_width=4.0),
-            )
-
-    def _reset_camera(self) -> None:
-        if self.mesh_state.mesh is None:
-            bounds = o3d.geometry.AxisAlignedBoundingBox(
-                [-1.0, -1.0, -1.0],
-                [1.0, 1.0, 1.0],
-            )
+        try:
+            offset = float(self.section_offset.get())
+        except ValueError:
+            offset_text = str(self.section_offset.get())
         else:
-            bounds = self.mesh_state.mesh.get_axis_aligned_bounding_box()
+            offset_text = f"{offset:.6g}"
 
-        self._scene.setup_camera(60.0, bounds, bounds.get_center())
-        self.window.post_redraw()
+        self.section_plane_text.set(f"Section: {self.section_axis.get()} = {offset_text}")
 
-    def _set_status(self, message: str) -> None:
-        self._status.text = message
+    def _update_stats(self) -> None:
+        self.file_name_text.set(self.mesh_state.file_name or "(unnamed)")
+        self.vertex_count_text.set(str(self.mesh_state.vertex_count))
+        self.triangle_count_text.set(str(self.mesh_state.triangle_count))
+        self.bbox_size_text.set(_format_vector(self.mesh_state.bounding_box_extent))
+
+    def _set_section_controls_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        combo_state = "readonly" if enabled else "disabled"
+        self.axis_dropdown.configure(state=combo_state)
+        self.offset_input.configure(state=state)
+        self.compute_section_button.configure(state=state)
+
+    def _on_exit(self) -> None:
+        self.viewport.close()
+        self.root.destroy()
 
 
 def run_app() -> int:
-    app = gui.Application.instance
-    app.initialize()
-    OpenRetopWindow()
-    app.run()
+    OpenRetopWindow().run()
     return 0
 
 
-def _mesh_material() -> rendering.MaterialRecord:
-    material = rendering.MaterialRecord()
-    material.shader = "defaultLit"
-    material.base_color = [0.72, 0.74, 0.78, 1.0]
-    material.base_roughness = 0.55
-    return material
-
-
-def _section_material() -> rendering.MaterialRecord:
-    material = rendering.MaterialRecord()
-    material.shader = "defaultLit"
-    material.base_color = [1.0, 0.88, 0.05, 1.0]
-    material.base_roughness = 0.35
-    return material
-
-
-def _line_material(
-    color: Sequence[float],
-    *,
-    line_width: float,
-) -> rendering.MaterialRecord:
-    material = rendering.MaterialRecord()
-    material.shader = "unlitLine"
-    material.base_color = list(color)
-    material.line_width = line_width
-    return material
-
-
-def _format_vector(values: Sequence[float]) -> str:
-    return ", ".join(f"{value:.6g}" for value in values)
+def _format_vector(values: object) -> str:
+    return ", ".join(f"{float(value):.6g}" for value in values)
