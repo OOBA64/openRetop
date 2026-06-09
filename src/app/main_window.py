@@ -89,15 +89,15 @@ class OpenRetopWindow:
         self.selected_bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
+        self.selection_buttons: list[ttk.Button] = []
 
         self._build_menu_bar()
         self._build_layout()
+        self._set_selection_buttons_enabled(False)
         self._show_context(None)
         self._bind_keyboard_shortcuts()
 
         self.viewport = EmbeddedOpen3DViewport(self.viewport_frame)
-        self.viewport.set_selection_callback(self._on_viewport_selection)
-        self.viewport.set_key_callback(self._handle_shortcut)
         self.root.after(100, self._start_viewport)
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
 
@@ -282,6 +282,34 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.select_model_button = ttk.Button(
+            parent,
+            text="Select Model",
+            command=self.select_model,
+        )
+        self.select_model_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        self.selection_buttons.append(self.select_model_button)
+        row += 1
+        self.select_section_plane_button = ttk.Button(
+            parent,
+            text="Select Section Plane",
+            command=self.select_section_plane,
+        )
+        self.select_section_plane_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.select_section_plane_button)
+        row += 1
 
         row = self._add_separator(parent, row)
         row = self._add_heading(parent, row, "Mesh Info")
@@ -344,6 +372,28 @@ class OpenRetopWindow:
             command=self.frame_selected,
         )
         self.frame_selected_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.model_select_section_plane_button = ttk.Button(
+            parent,
+            text="Select Section Plane",
+            command=self.select_section_plane,
+        )
+        self.model_select_section_plane_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        self.selection_buttons.append(self.model_select_section_plane_button)
+        row += 1
+        self.model_deselect_button = ttk.Button(
+            parent,
+            text="Deselect",
+            command=self.clear_selection,
+        )
+        self.model_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.model_deselect_button)
 
     def _build_section_context(self, parent: ttk.Frame) -> None:
         row = self._add_separator(parent, 0)
@@ -412,6 +462,28 @@ class OpenRetopWindow:
             command=self.clear_section,
         )
         self.clear_section_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.section_select_model_button = ttk.Button(
+            parent,
+            text="Select Model",
+            command=self.select_model,
+        )
+        self.section_select_model_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        self.selection_buttons.append(self.section_select_model_button)
+        row += 1
+        self.section_deselect_button = ttk.Button(
+            parent,
+            text="Deselect",
+            command=self.clear_selection,
+        )
+        self.section_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.section_deselect_button)
 
     def _add_heading(self, parent: ttk.Frame, row: int, text: str) -> int:
         ttk.Label(parent, text=text, style="SidebarHeading.TLabel").grid(
@@ -549,6 +621,7 @@ class OpenRetopWindow:
         self._apply_object_transform(reset_camera=False)
         self._configure_offset_range(reset=True)
         self._update_section_plane_label(set_status=False)
+        self._set_selection_buttons_enabled(True)
         self._set_selected_item(None, status="No selection")
         self._refresh_viewport(reset_camera=True)
 
@@ -996,7 +1069,13 @@ class OpenRetopWindow:
         self.curve_results = []
         self.section_result_text.set("Section result: none")
         self._update_stats()
+        self._set_selection_buttons_enabled(False)
         self._set_selected_item(None, status="Selected model removed")
+
+    def _set_selection_buttons_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for button in self.selection_buttons:
+            button.configure(state=state)
 
     def _on_exit(self) -> None:
         self.sidebar_canvas.unbind_all("<MouseWheel>")

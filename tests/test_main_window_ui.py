@@ -83,20 +83,12 @@ class FakeViewport:
         self.frame_count = 0
         self.reset_count = 0
         self.closed = False
-        self.selection_callback = None
-        self.key_callback = None
 
     def start(self) -> None:
         return None
 
     def set_scene(self, mesh: object, **kwargs: object) -> None:
         self.scene_calls.append({"mesh": mesh, **kwargs})
-
-    def set_selection_callback(self, callback: object) -> None:
-        self.selection_callback = callback
-
-    def set_key_callback(self, callback: object) -> None:
-        self.key_callback = callback
 
     def frame_model(self) -> None:
         self.frame_count += 1
@@ -150,6 +142,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
             self.assertFalse(hasattr(window, "apply_transform_button"))
+            self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
+            self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
             self.assertEqual(window.compute_section_button.cget("text"), "Compute Section")
             self.assertEqual(window.clear_section_button.cget("text"), "Clear Section")
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
@@ -191,6 +185,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertEqual(str(window.select_model_button.cget("state")), "normal")
+            self.assertEqual(str(window.select_section_plane_button.cget("state")), "normal")
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
             self.assertTrue(window.show_section_plane.get())

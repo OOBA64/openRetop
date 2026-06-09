@@ -6,7 +6,7 @@ import ctypes
 import time
 from tkinter import Frame
 from ctypes import wintypes
-from typing import Callable, Sequence
+from typing import Sequence
 
 import numpy as np
 import open3d as o3d
@@ -43,7 +43,7 @@ class EmbeddedOpen3DViewport:
 
     def __init__(self, parent: Frame) -> None:
         self.parent = parent
-        self.visualizer = o3d.visualization.VisualizerWithKeyCallback()
+        self.visualizer = o3d.visualization.Visualizer()
         self.window_title = f"openRetop Viewport {id(self)}"
         self._window_handle: int | None = None
         self._is_started = False
@@ -53,13 +53,6 @@ class EmbeddedOpen3DViewport:
         self._view_extent = 2.0
         self._mesh_min_bound: np.ndarray | None = None
         self._mesh_max_bound: np.ndarray | None = None
-        self._current_mesh: o3d.geometry.TriangleMesh | None = None
-        self._current_show_section_plane = False
-        self._current_section_axis = "Z"
-        self._current_section_offset = 0.0
-        self._last_mouse_position = (0.0, 0.0)
-        self._selection_callback: Callable[[str | None], None] | None = None
-        self._key_callback: Callable[[str], None] | None = None
 
         self.parent.bind("<Configure>", self._on_resize)
 
@@ -80,7 +73,6 @@ class EmbeddedOpen3DViewport:
         )
         self._is_started = True
         self._embed_window()
-        self._register_input_callbacks()
         self._configure_render_options()
         self._pump_events()
 
@@ -111,10 +103,6 @@ class EmbeddedOpen3DViewport:
         self.visualizer.clear_geometries()
         self._geometry_names.clear()
         self._update_view_metrics(mesh)
-        self._current_mesh = mesh
-        self._current_show_section_plane = bool(show_section_plane)
-        self._current_section_axis = section_axis
-        self._current_section_offset = float(section_offset)
         reset_next_geometry = bool(reset_camera)
 
         def add_geometry(
@@ -220,15 +208,6 @@ class EmbeddedOpen3DViewport:
     def reset_camera(self) -> None:
         self.reset_view()
 
-    def set_selection_callback(
-        self,
-        callback: Callable[[str | None], None] | None,
-    ) -> None:
-        self._selection_callback = callback
-
-    def set_key_callback(self, callback: Callable[[str], None] | None) -> None:
-        self._key_callback = callback
-
     def _pump_events(self) -> None:
         if self._is_closed:
             return
@@ -244,52 +223,6 @@ class EmbeddedOpen3DViewport:
         render_options.mesh_show_back_face = True
         render_options.background_color = [0.08, 0.09, 0.1]
         render_options.line_width = 2.0
-
-    def _register_input_callbacks(self) -> None:
-        self.visualizer.register_mouse_move_callback(self._on_mouse_move)
-        self.visualizer.register_mouse_button_callback(self._on_mouse_button)
-        for key in ("G", "R", "X", "Y", "Z", "F"):
-            self.visualizer.register_key_action_callback(
-                ord(key),
-                lambda _vis, action, _mods, key=key: self._on_key_action(key, action),
-            )
-
-        for key_code, key_name in ((256, "Escape"), (257, "Enter"), (261, "Delete")):
-            self.visualizer.register_key_action_callback(
-                key_code,
-                lambda _vis, action, _mods, key=key_name: self._on_key_action(
-                    key,
-                    action,
-                ),
-            )
-
-    def _on_mouse_move(
-        self,
-        _visualizer: o3d.visualization.Visualizer,
-        x_position: float,
-        y_position: float,
-    ) -> bool:
-        self._last_mouse_position = (float(x_position), float(y_position))
-        return False
-
-    def _on_mouse_button(
-        self,
-        _visualizer: o3d.visualization.Visualizer,
-        button: int,
-        action: int,
-        _mods: int,
-    ) -> bool:
-        if button == 0 and action == 1 and self._selection_callback is not None:
-            target = self._pick_target(*self._last_mouse_position)
-            self.parent.after(0, lambda: self._selection_callback(target))
-
-        return False
-
-    def _on_key_action(self, key: str, action: int) -> bool:
-        if action == 1 and self._key_callback is not None:
-            self.parent.after(0, lambda: self._key_callback(key))
-
-        return False
 
     def _update_view_metrics(self, mesh: o3d.geometry.TriangleMesh | None) -> None:
         if mesh is None:
@@ -313,89 +246,6 @@ class EmbeddedOpen3DViewport:
         view_control.set_up([0.0, 0.0, 1.0])
         view_control.set_lookat(self._view_center.tolist())
         view_control.set_zoom(float(zoom))
-
-    def _pick_target(self, x_position: float, y_position: float) -> str | None:
-        if self._current_mesh is None:
-            return None
-
-        click = np.asarray([float(x_position), float(y_position)], dtype=float)
-        if (
-            self._current_show_section_plane
-            and self._mesh_min_bound is not None
-            and self._mesh_max_bound is not None
-        ):
-            plane = build_section_plane_preview(
-                self._current_section_axis,
-                self._current_section_offset,
-                self._mesh_min_bound,
-                self._mesh_max_bound,
-            )
-            plane_points = self._project_points(np.asarray(plane.points, dtype=float))
-            if plane_points is not None:
-                distance = _minimum_line_distance(
-                    click,
-                    plane_points,
-                    np.asarray(plane.lines, dtype=int),
-                )
-                if distance <= 14.0:
-                    return "section_plane"
-
-        if self._mesh_min_bound is None or self._mesh_max_bound is None:
-            return None
-
-        corners = _bbox_corners(self._mesh_min_bound, self._mesh_max_bound)
-        projected_corners = self._project_points(corners)
-        if projected_corners is None:
-            return "model"
-
-        minimum = np.min(projected_corners, axis=0) - 8.0
-        maximum = np.max(projected_corners, axis=0) + 8.0
-        if bool(np.all(click >= minimum) and np.all(click <= maximum)):
-            return "model"
-
-        return None
-
-    def _project_points(self, points: np.ndarray) -> np.ndarray | None:
-        try:
-            params = self.visualizer.get_view_control().convert_to_pinhole_camera_parameters()
-        except RuntimeError:
-            return None
-
-        if points.size == 0:
-            return None
-
-        intrinsic = np.asarray(params.intrinsic.intrinsic_matrix, dtype=float)
-        extrinsic = np.asarray(params.extrinsic, dtype=float)
-        homogeneous = np.column_stack((points, np.ones(len(points))))
-        camera_points = (extrinsic @ homogeneous.T).T[:, :3]
-        width = float(params.intrinsic.width)
-        height = float(params.intrinsic.height)
-        best_projection: np.ndarray | None = None
-        best_score = -1
-
-        for z_sign in (1.0, -1.0):
-            z_values = camera_points[:, 2] * z_sign
-            valid = np.abs(z_values) > 1e-9
-            if not np.any(valid):
-                continue
-
-            projected = np.empty((len(points), 2), dtype=float)
-            projected[:, 0] = intrinsic[0, 0] * camera_points[:, 0] / z_values + intrinsic[0, 2]
-            projected[:, 1] = intrinsic[1, 1] * camera_points[:, 1] / z_values + intrinsic[1, 2]
-            score = int(
-                np.count_nonzero(
-                    valid
-                    & (projected[:, 0] >= -width)
-                    & (projected[:, 0] <= width * 2.0)
-                    & (projected[:, 1] >= -height)
-                    & (projected[:, 1] <= height * 2.0)
-                )
-            )
-            if score > best_score:
-                best_score = score
-                best_projection = projected
-
-        return best_projection
 
     def _embed_window(self) -> None:
         handle = _find_window_by_title(self.window_title, timeout_seconds=5.0)
@@ -450,48 +300,6 @@ def _find_window_by_title(
         time.sleep(0.05)
 
     return None
-
-
-def _bbox_corners(min_bound: np.ndarray, max_bound: np.ndarray) -> np.ndarray:
-    return np.asarray(
-        [
-            [min_bound[0], min_bound[1], min_bound[2]],
-            [max_bound[0], min_bound[1], min_bound[2]],
-            [min_bound[0], max_bound[1], min_bound[2]],
-            [max_bound[0], max_bound[1], min_bound[2]],
-            [min_bound[0], min_bound[1], max_bound[2]],
-            [max_bound[0], min_bound[1], max_bound[2]],
-            [min_bound[0], max_bound[1], max_bound[2]],
-            [max_bound[0], max_bound[1], max_bound[2]],
-        ],
-        dtype=float,
-    )
-
-
-def _minimum_line_distance(
-    point: np.ndarray,
-    projected_points: np.ndarray,
-    lines: np.ndarray,
-) -> float:
-    if len(projected_points) == 0 or len(lines) == 0:
-        return float("inf")
-
-    best_distance = float("inf")
-    for start_index, end_index in lines:
-        start = projected_points[int(start_index)]
-        end = projected_points[int(end_index)]
-        segment = end - start
-        length_squared = float(np.dot(segment, segment))
-        if length_squared <= 1e-12:
-            distance = float(np.linalg.norm(point - start))
-        else:
-            amount = float(np.clip(np.dot(point - start, segment) / length_squared, 0.0, 1.0))
-            closest = start + segment * amount
-            distance = float(np.linalg.norm(point - closest))
-
-        best_distance = min(best_distance, distance)
-
-    return best_distance
 
 
 def _user32() -> ctypes.WinDLL:
