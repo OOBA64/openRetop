@@ -10,4 +10,30 @@ Initial MVP:
 5. Fit simple NURBS surfaces. 
 6. Export usable CAD geometry.
 
+## Mesh Import Prototype
+
+Install the prototype dependency:
+
+```powershell
+python -m pip install -r thirdparty/requirements.txt
+```
+
+Load a mesh and open the basic 3D viewer:
+
+```powershell
+python src/mesh/import_mesh.py path\to\model.obj
+```
+
+Print mesh statistics without opening the viewer:
+
+```powershell
+python src/mesh/import_mesh.py path\to\model.stl --no-viewer
+```
+
+Hide the vertex-normal overlay:
+
+```powershell
+python src/mesh/import_mesh.py path\to\model.ply --hide-normals
+```
+
 Do not commit secrets, API keys, credentials, or large scan files. Dont be stupid.
