@@ -44,7 +44,7 @@ class OpenRetopWindow:
         self.bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0")
 
-        self._build_top_menu()
+        self._build_menu_bar()
         self._build_layout()
         self._set_section_controls_enabled(False)
 
@@ -62,41 +62,24 @@ class OpenRetopWindow:
             self.status_text.set("Viewport failed to start")
             messagebox.showerror("Viewport failed to start", str(exc))
 
-    def _build_top_menu(self) -> None:
-        style = ttk.Style(self.root)
-        style.configure("TopMenu.TMenubutton", padding=(14, 5))
+    def _build_menu_bar(self) -> None:
+        self.menu_bar = Menu(self.root, tearoff=False)
 
-        top_bar = ttk.Frame(self.root, padding=(8, 4, 8, 2))
-        top_bar.pack(fill="x", side="top")
+        self.file_menu = Menu(self.menu_bar, tearoff=False)
+        self.file_menu.add_command(label="Open Model", command=self.open_model)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Exit", command=self._on_exit)
+        self.menu_bar.add_cascade(label="File", menu=self.file_menu)
 
-        file_button = ttk.Menubutton(
-            top_bar,
-            text="File",
-            style="TopMenu.TMenubutton",
-            direction="below",
-        )
-        file_button.pack(side="left")
-        file_menu = Menu(file_button, tearoff=False)
-        file_menu.add_command(label="Open Model", command=self.open_model)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self._on_exit)
-        file_button.configure(menu=file_menu)
-
-        view_button = ttk.Menubutton(
-            top_bar,
-            text="View",
-            style="TopMenu.TMenubutton",
-            direction="below",
-        )
-        view_button.pack(side="left", padx=(4, 0))
-        self.view_menu = Menu(view_button, tearoff=False)
+        self.view_menu = Menu(self.menu_bar, tearoff=False)
         self.view_menu.add_command(label="Reset Camera", command=self.reset_camera)
         self.view_menu.add_checkbutton(
             label="Show Normals",
             variable=self.show_normals,
             command=self._on_show_normals_changed,
         )
-        view_button.configure(menu=self.view_menu)
+        self.menu_bar.add_cascade(label="View", menu=self.view_menu)
+        self.root.configure(menu=self.menu_bar)
 
     def _build_layout(self) -> None:
         main = ttk.Frame(self.root)
@@ -128,7 +111,8 @@ class OpenRetopWindow:
             sticky="ew",
             pady=12,
         )
-        ttk.Label(sidebar, text="Section controls").grid(
+        self.section_header_label = ttk.Label(sidebar, text="Section controls")
+        self.section_header_label.grid(
             row=6,
             column=0,
             columnspan=2,
@@ -136,7 +120,8 @@ class OpenRetopWindow:
             pady=(0, 6),
         )
 
-        ttk.Label(sidebar, text="Axis").grid(row=7, column=0, sticky="w")
+        self.axis_label = ttk.Label(sidebar, text="Axis")
+        self.axis_label.grid(row=7, column=0, sticky="w")
         self.axis_dropdown = ttk.Combobox(
             sidebar,
             textvariable=self.section_axis,
@@ -147,7 +132,8 @@ class OpenRetopWindow:
         self.axis_dropdown.grid(row=7, column=1, sticky="ew", pady=2)
         self.axis_dropdown.bind("<<ComboboxSelected>>", self._on_section_plane_changed)
 
-        ttk.Label(sidebar, text="Offset").grid(row=8, column=0, sticky="w")
+        self.offset_label = ttk.Label(sidebar, text="Offset")
+        self.offset_label.grid(row=8, column=0, sticky="w")
         self.offset_input = ttk.Entry(
             sidebar,
             textvariable=self.section_offset,
@@ -157,7 +143,11 @@ class OpenRetopWindow:
         self.offset_input.bind("<KeyRelease>", self._on_section_plane_changed)
         self.offset_input.bind("<FocusOut>", self._on_section_plane_changed)
 
-        ttk.Label(sidebar, textvariable=self.section_plane_text).grid(
+        self.section_plane_label = ttk.Label(
+            sidebar,
+            textvariable=self.section_plane_text,
+        )
+        self.section_plane_label.grid(
             row=9,
             column=0,
             columnspan=2,
@@ -176,15 +166,17 @@ class OpenRetopWindow:
             columnspan=2,
             sticky="ew",
         )
+        self.section_controls = (
+            self.section_header_label,
+            self.axis_label,
+            self.axis_dropdown,
+            self.offset_label,
+            self.offset_input,
+            self.section_plane_label,
+            self.compute_section_button,
+        )
 
-        ttk.Checkbutton(
-            sidebar,
-            text="Show Normals",
-            variable=self.show_normals,
-            command=self._on_show_normals_changed,
-        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(12, 0))
-
-        sidebar.grid_rowconfigure(12, weight=1)
+        sidebar.grid_rowconfigure(11, weight=1)
 
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
@@ -301,6 +293,13 @@ class OpenRetopWindow:
     def _set_section_controls_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
         combo_state = "readonly" if enabled else "disabled"
+        for widget in (
+            self.section_header_label,
+            self.axis_label,
+            self.offset_label,
+            self.section_plane_label,
+        ):
+            widget.configure(state=state)
         self.axis_dropdown.configure(state=combo_state)
         self.offset_input.configure(state=state)
         self.compute_section_button.configure(state=state)
