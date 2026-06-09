@@ -25,6 +25,7 @@ class EmbeddedOpen3DViewport:
     _GWL_STYLE = -16
     _SWP_NOZORDER = 0x0004
     _SWP_NOACTIVATE = 0x0010
+    _SW_SHOW = 5
     _WS_CHILD = 0x40000000
     _WS_VISIBLE = 0x10000000
     _WS_BORDER = 0x00800000
@@ -55,7 +56,7 @@ class EmbeddedOpen3DViewport:
             height=height,
             left=80,
             top=80,
-            visible=True,
+            visible=False,
         )
         self._is_started = True
         self._embed_window()
@@ -164,6 +165,7 @@ class EmbeddedOpen3DViewport:
         style &= ~(self._WS_CAPTION | self._WS_THICKFRAME | self._WS_BORDER)
         user32.SetWindowLongW(handle, self._GWL_STYLE, style)
         self._resize_child_window()
+        user32.ShowWindow(handle, self._SW_SHOW)
 
     def _on_resize(self, _event: object) -> None:
         self._resize_child_window()
@@ -223,4 +225,6 @@ def _user32() -> ctypes.WinDLL:
         ctypes.c_uint,
     ]
     user32.SetWindowPos.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
     return user32
