@@ -9,7 +9,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mesh.triangle_mesh import TriangleMeshData
-from viewer.embedded_viewport import EmbeddedVTKViewport, _line_polydata, _mesh_actor, _mesh_polydata
+from viewer.embedded_viewport import (
+    EmbeddedVTKViewport,
+    _bounds_corners,
+    _line_polydata,
+    _mesh_actor,
+    _mesh_polydata,
+    _point_to_segment_distance,
+)
 from viewer.overlays import build_bounding_box_outline
 
 
@@ -80,6 +87,19 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(polydata.GetNumberOfPoints(), 8)
         self.assertEqual(polydata.GetNumberOfLines(), 12)
         self.assertIsNotNone(polydata.GetCellData().GetScalars())
+
+    def test_screen_selection_helpers_are_constant_size(self) -> None:
+        corners = _bounds_corners((-1.0, -2.0, -3.0), (4.0, 5.0, 6.0))
+
+        self.assertEqual(corners.shape, (8, 3))
+        self.assertAlmostEqual(
+            _point_to_segment_distance((5.0, 5.0), (0.0, 0.0), (10.0, 0.0)),
+            5.0,
+        )
+        self.assertAlmostEqual(
+            _point_to_segment_distance((11.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
+            1.0,
+        )
 
 
 if __name__ == "__main__":
