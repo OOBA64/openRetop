@@ -59,7 +59,7 @@ def build_xy_grid(
 
 
 def build_world_axes(reference_extent: float) -> LineGeometry:
-    size = max(float(reference_extent) * 0.35, 0.5)
+    size = max(float(reference_extent) * 0.24, 0.35)
     points = [
         [0.0, 0.0, 0.0],
         [size, 0.0, 0.0],
@@ -81,7 +81,7 @@ def build_active_axis_indicator(
     axis_key = axis.upper()
     axis_index = AXIS_TO_INDEX.get(axis_key, AXIS_TO_INDEX["Z"])
     center = np.asarray(origin, dtype=float)
-    size = max(float(reference_extent) * 0.7, 0.75)
+    size = max(float(reference_extent) * 0.34, 0.35)
     start = center.copy()
     end = center.copy()
     start[axis_index] -= size
@@ -99,7 +99,7 @@ def build_rotation_ring(
 ) -> LineGeometry:
     axis_key = axis.upper()
     center = np.asarray(origin, dtype=float)
-    radius = max(float(reference_extent) * 0.32, 0.35)
+    radius = max(float(reference_extent) * 0.22, 0.25)
     color = list(AXIS_COLORS.get(axis_key, AXIS_COLORS["Z"]))
 
     points: list[list[float]] = []
@@ -164,7 +164,7 @@ def build_bounding_box_outline(
 
 def build_origin_marker(origin: Sequence[float], reference_extent: float) -> LineGeometry:
     center = np.asarray(origin, dtype=float)
-    size = max(float(reference_extent) * 0.08, 0.08)
+    size = max(float(reference_extent) * 0.035, 0.04)
     points = [
         (center + [-size, 0.0, 0.0]).tolist(),
         (center + [size, 0.0, 0.0]).tolist(),

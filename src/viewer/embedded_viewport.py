@@ -26,7 +26,8 @@ try:
     from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
     from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR
     from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
-    from vtkmodules.vtkFiltersCore import vtkTubeFilter
+    from vtkmodules.vtkCommonMath import vtkMatrix4x4
+    from vtkmodules.vtkFiltersCore import vtkPolyDataNormals, vtkTubeFilter
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
@@ -61,6 +62,10 @@ class EmbeddedVTKViewport:
         self._mesh_min_bound: np.ndarray | None = None
         self._mesh_max_bound: np.ndarray | None = None
         self._mesh_actor: vtkActor | None = None
+        self._mesh_actor_mesh_id: int | None = None
+        self._mesh_bounds_mesh_id: int | None = None
+        self._mesh_local_min_bound: np.ndarray | None = None
+        self._mesh_local_max_bound: np.ndarray | None = None
         self._section_plane_actors: list[vtkActor] = []
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
@@ -121,6 +126,7 @@ class EmbeddedVTKViewport:
         self,
         mesh: TriangleMeshData | None,
         *,
+        transform_matrix: Sequence[Sequence[float]] | np.ndarray | None = None,
         show_grid: bool,
         show_axes: bool,
         show_normals: bool,
@@ -129,6 +135,8 @@ class EmbeddedVTKViewport:
         section_offset: float,
         selected_item: str | None = None,
         object_origin: Sequence[float] | None = None,
+        scene_bounds_min: Sequence[float] | None = None,
+        scene_bounds_max: Sequence[float] | None = None,
         active_transform_mode: str | None = None,
         active_transform_axis: str | None = None,
         section_result: SectionResult | None = None,
@@ -139,12 +147,17 @@ class EmbeddedVTKViewport:
             self.start()
 
         self.renderer.RemoveAllViewProps()
-        self._mesh_actor = None
         self._section_plane_actors = []
-        self._update_view_metrics(mesh)
+        matrix = (
+            np.identity(4, dtype=float)
+            if transform_matrix is None
+            else np.asarray(transform_matrix, dtype=float).reshape((4, 4))
+        )
+        self._update_view_metrics(mesh, matrix, scene_bounds_min, scene_bounds_max)
 
         if mesh is not None:
-            self._mesh_actor = _mesh_actor(mesh)
+            self._mesh_actor = self._ensure_mesh_actor(mesh)
+            self._mesh_actor.SetUserMatrix(_vtk_matrix(matrix))
             self.renderer.AddActor(self._mesh_actor)
             if (
                 selected_item == "model"
@@ -153,12 +166,12 @@ class EmbeddedVTKViewport:
             ):
                 self._add_line_actor(
                     build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound),
-                    line_width=3.0,
+                    line_width=1.6,
                 )
                 if object_origin is not None:
                     self._add_line_actor(
                         build_origin_marker(object_origin, self._view_extent),
-                        line_width=4.0,
+                        line_width=2.2,
                     )
                     active_axis = _active_axis_for_gizmo(
                         active_transform_mode,
@@ -171,7 +184,7 @@ class EmbeddedVTKViewport:
                                 active_axis,
                                 self._view_extent,
                             ),
-                            line_width=5.0,
+                            line_width=2.8,
                         )
                     if active_transform_mode == "rotate":
                         self._add_line_actor(
@@ -180,7 +193,7 @@ class EmbeddedVTKViewport:
                                 active_axis or "Z",
                                 self._view_extent,
                             ),
-                            line_width=4.0,
+                            line_width=2.4,
                         )
 
         if show_grid:
@@ -196,7 +209,11 @@ class EmbeddedVTKViewport:
             )
 
         if mesh is not None and show_normals and mesh.has_vertex_normals():
-            self._add_line_actor(_normal_lines(mesh, normal_scale=0.012), line_width=1.0)
+            normal_actor = self._add_line_actor(
+                _normal_lines(mesh, normal_scale=0.012),
+                line_width=1.0,
+            )
+            normal_actor.SetUserMatrix(_vtk_matrix(matrix))
 
         if (
             mesh is not None
@@ -278,19 +295,64 @@ class EmbeddedVTKViewport:
         self.renderer.AddActor(actor)
         return actor
 
-    def _update_view_metrics(self, mesh: TriangleMeshData | None) -> None:
+    def _ensure_mesh_actor(self, mesh: TriangleMeshData) -> vtkActor:
+        mesh_id = id(mesh)
+        if self._mesh_actor is None or self._mesh_actor_mesh_id != mesh_id:
+            self._mesh_actor = _mesh_actor(mesh)
+            self._mesh_actor_mesh_id = mesh_id
+        return self._mesh_actor
+
+    def _update_view_metrics(
+        self,
+        mesh: TriangleMeshData | None,
+        transform_matrix: np.ndarray,
+        scene_bounds_min: Sequence[float] | None = None,
+        scene_bounds_max: Sequence[float] | None = None,
+    ) -> None:
         if mesh is None:
             self._mesh_min_bound = None
             self._mesh_max_bound = None
+            self._mesh_local_min_bound = None
+            self._mesh_local_max_bound = None
+            self._mesh_bounds_mesh_id = None
             self._view_center = np.asarray([0.0, 0.0, 0.0], dtype=float)
             self._view_extent = 2.0
             return
 
-        bounds = mesh.get_axis_aligned_bounding_box()
-        self._mesh_min_bound = np.asarray(bounds.get_min_bound(), dtype=float)
-        self._mesh_max_bound = np.asarray(bounds.get_max_bound(), dtype=float)
-        self._view_center = np.asarray(bounds.get_center(), dtype=float)
-        self._view_extent = max(float(bounds.get_max_extent()), 1.0)
+        if scene_bounds_min is not None and scene_bounds_max is not None:
+            local_min_bound = np.asarray(scene_bounds_min, dtype=float)
+            local_max_bound = np.asarray(scene_bounds_max, dtype=float)
+            self._mesh_bounds_mesh_id = None
+            self._mesh_local_min_bound = local_min_bound
+            self._mesh_local_max_bound = local_max_bound
+            self._mesh_min_bound, self._mesh_max_bound = _transformed_bounds(
+                local_min_bound,
+                local_max_bound,
+                transform_matrix,
+            )
+            self._view_center = (self._mesh_min_bound + self._mesh_max_bound) * 0.5
+            self._view_extent = max(
+                float(np.max(self._mesh_max_bound - self._mesh_min_bound)),
+                1.0,
+            )
+            return
+
+        mesh_id = id(mesh)
+        if self._mesh_bounds_mesh_id != mesh_id:
+            bounds = mesh.get_axis_aligned_bounding_box()
+            self._mesh_local_min_bound = np.asarray(bounds.get_min_bound(), dtype=float)
+            self._mesh_local_max_bound = np.asarray(bounds.get_max_bound(), dtype=float)
+            self._mesh_bounds_mesh_id = mesh_id
+
+        assert self._mesh_local_min_bound is not None
+        assert self._mesh_local_max_bound is not None
+        self._mesh_min_bound, self._mesh_max_bound = _transformed_bounds(
+            self._mesh_local_min_bound,
+            self._mesh_local_max_bound,
+            transform_matrix,
+        )
+        self._view_center = (self._mesh_min_bound + self._mesh_max_bound) * 0.5
+        self._view_extent = max(float(np.max(self._mesh_max_bound - self._mesh_min_bound)), 1.0)
 
     def _attach_render_window_to_widget(self) -> None:
         if self.widget is None or self.render_window is None:
@@ -479,11 +541,28 @@ class EmbeddedVTKViewport:
 
 
 def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
+    normals = vtkPolyDataNormals()
+    normals.SetInputData(_mesh_polydata(mesh))
+    normals.ComputePointNormalsOn()
+    normals.ComputeCellNormalsOn()
+    normals.ConsistencyOn()
+    normals.SplittingOff()
+    normals.Update()
+
     mapper = vtkPolyDataMapper()
-    mapper.SetInputData(_mesh_polydata(mesh))
+    mapper.SetInputData(normals.GetOutput())
+    mapper.ScalarVisibilityOff()
+
     actor = vtkActor()
     actor.SetMapper(mapper)
     actor.GetProperty().SetColor(0.72, 0.74, 0.78)
+    actor.GetProperty().SetRepresentationToSurface()
+    actor.GetProperty().EdgeVisibilityOff()
+    actor.GetProperty().SetPointSize(1.0)
+    actor.GetProperty().SetAmbient(0.18)
+    actor.GetProperty().SetDiffuse(0.82)
+    actor.GetProperty().SetSpecular(0.12)
+    actor.GetProperty().SetSpecularPower(18.0)
     actor.GetProperty().SetInterpolationToPhong()
     return actor
 
@@ -494,6 +573,39 @@ def _active_axis_for_gizmo(mode: str | None, axis: str | None) -> str | None:
     if mode == "move":
         return axis
     return None
+
+
+def _vtk_matrix(matrix: np.ndarray) -> vtkMatrix4x4:
+    vtk_matrix = vtkMatrix4x4()
+    for row in range(4):
+        for column in range(4):
+            vtk_matrix.SetElement(row, column, float(matrix[row, column]))
+    return vtk_matrix
+
+
+def _transformed_bounds(
+    minimum: np.ndarray,
+    maximum: np.ndarray,
+    matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    minimum = np.asarray(minimum, dtype=float)
+    maximum = np.asarray(maximum, dtype=float)
+    corners = np.asarray(
+        [
+            [minimum[0], minimum[1], minimum[2]],
+            [maximum[0], minimum[1], minimum[2]],
+            [maximum[0], maximum[1], minimum[2]],
+            [minimum[0], maximum[1], minimum[2]],
+            [minimum[0], minimum[1], maximum[2]],
+            [maximum[0], minimum[1], maximum[2]],
+            [maximum[0], maximum[1], maximum[2]],
+            [minimum[0], maximum[1], maximum[2]],
+        ],
+        dtype=float,
+    )
+    homogeneous = np.column_stack((corners, np.ones(len(corners))))
+    transformed = (np.asarray(matrix, dtype=float) @ homogeneous.T).T[:, :3]
+    return (np.min(transformed, axis=0), np.max(transformed, axis=0))
 
 
 def _mesh_polydata(mesh: TriangleMeshData) -> vtkPolyData:
@@ -516,6 +628,14 @@ def _mesh_polydata(mesh: TriangleMeshData) -> vtkPolyData:
         numpy_to_vtkIdTypeArray(face_connectivity, deep=True),
     )
     polydata.SetPolys(cells)
+    if mesh.has_vertex_normals():
+        vertex_normals = numpy_to_vtk(np.asarray(mesh.vertex_normals, dtype=float), deep=True)
+        vertex_normals.SetName("Normals")
+        polydata.GetPointData().SetNormals(vertex_normals)
+    if mesh.has_triangle_normals():
+        triangle_normals = numpy_to_vtk(np.asarray(mesh.triangle_normals, dtype=float), deep=True)
+        triangle_normals.SetName("Normals")
+        polydata.GetCellData().SetNormals(triangle_normals)
     return polydata
 
 
