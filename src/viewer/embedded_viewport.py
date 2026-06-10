@@ -31,7 +31,6 @@ try:
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
-        vtkCellPicker,
         vtkPolyDataMapper,
         vtkRenderer,
         vtkRenderWindow,
@@ -66,7 +65,9 @@ class EmbeddedVTKViewport:
         self._mesh_bounds_mesh_id: int | None = None
         self._mesh_local_min_bound: np.ndarray | None = None
         self._mesh_local_max_bound: np.ndarray | None = None
+        self._interactive_transform_key: tuple[int, str, str | None, str | None] | None = None
         self._section_plane_actors: list[vtkActor] = []
+        self._section_plane_pick_geometry: LineGeometry | None = None
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
@@ -146,13 +147,34 @@ class EmbeddedVTKViewport:
         if not self._is_started:
             self.start()
 
-        self.renderer.RemoveAllViewProps()
-        self._section_plane_actors = []
         matrix = (
             np.identity(4, dtype=float)
             if transform_matrix is None
             else np.asarray(transform_matrix, dtype=float).reshape((4, 4))
         )
+        transform_key = self._active_mesh_transform_key(
+            mesh,
+            active_transform_mode,
+            active_transform_axis,
+            selected_item,
+        )
+        if self._try_update_interactive_mesh_transform(
+            mesh,
+            matrix,
+            transform_key=transform_key,
+            reset_camera=reset_camera,
+            show_normals=show_normals,
+            section_result=section_result,
+            curve_results=curve_results,
+        ):
+            return
+
+        self.renderer.RemoveAllViewProps()
+        self._section_plane_actors = []
+        self._section_plane_pick_geometry = None
+        if mesh is None:
+            self._mesh_actor = None
+            self._mesh_actor_mesh_id = None
         self._update_view_metrics(mesh, matrix, scene_bounds_min, scene_bounds_max)
 
         if mesh is not None:
@@ -221,14 +243,16 @@ class EmbeddedVTKViewport:
             and self._mesh_min_bound is not None
             and self._mesh_max_bound is not None
         ):
+            section_geometry = build_section_plane_preview(
+                section_axis,
+                section_offset,
+                self._mesh_min_bound,
+                self._mesh_max_bound,
+                selected=(selected_item == "section_plane"),
+            )
+            self._section_plane_pick_geometry = section_geometry
             section_actor = self._add_line_actor(
-                build_section_plane_preview(
-                    section_axis,
-                    section_offset,
-                    self._mesh_min_bound,
-                    self._mesh_max_bound,
-                    selected=(selected_item == "section_plane"),
-                ),
+                section_geometry,
                 line_width=3.0 if selected_item == "section_plane" else 2.0,
             )
             self._section_plane_actors.append(section_actor)
@@ -251,6 +275,51 @@ class EmbeddedVTKViewport:
             self.reset_view()
 
         self._render()
+        self._interactive_transform_key = transform_key
+
+    def _active_mesh_transform_key(
+        self,
+        mesh: TriangleMeshData | None,
+        active_transform_mode: str | None,
+        active_transform_axis: str | None,
+        selected_item: str | None,
+    ) -> tuple[int, str, str | None, str | None] | None:
+        if (
+            mesh is None
+            or selected_item != "model"
+            or active_transform_mode not in {"move", "rotate"}
+        ):
+            return None
+
+        return (id(mesh), active_transform_mode, active_transform_axis, selected_item)
+
+    def _try_update_interactive_mesh_transform(
+        self,
+        mesh: TriangleMeshData | None,
+        matrix: np.ndarray,
+        *,
+        transform_key: tuple[int, str, str | None, str | None] | None,
+        reset_camera: bool,
+        show_normals: bool,
+        section_result: SectionResult | None,
+        curve_results: Sequence[CurveFitResult] | None,
+    ) -> bool:
+        if (
+            transform_key is None
+            or transform_key != self._interactive_transform_key
+            or reset_camera
+            or show_normals
+            or section_result is not None
+            or curve_results
+            or mesh is None
+            or self._mesh_actor is None
+            or self._mesh_actor_mesh_id != id(mesh)
+        ):
+            return False
+
+        self._mesh_actor.SetUserMatrix(_vtk_matrix(matrix))
+        self._render()
+        return True
 
     def frame_model(self) -> None:
         self.reset_view()
@@ -519,18 +588,42 @@ class EmbeddedVTKViewport:
         if self.widget is None:
             return None
 
-        picker = vtkCellPicker()
-        picker.SetTolerance(0.01)
         height = max(int(self.widget.winfo_height()), 1)
-        picker.Pick(float(x_position), float(height - y_position), 0.0, self.renderer)
-        actor = picker.GetActor()
-        if actor is None:
-            return None
-        if actor in self._section_plane_actors:
+        display_point = np.asarray([float(x_position), float(height - y_position)], dtype=float)
+        if _screen_point_near_geometry(
+            self.renderer,
+            self._section_plane_pick_geometry,
+            display_point,
+            tolerance=12.0,
+        ):
             return "section_plane"
-        if actor == self._mesh_actor:
+        if self._screen_point_inside_mesh_bounds(display_point, padding=10.0):
             return "model"
         return None
+
+    def _screen_point_inside_mesh_bounds(
+        self,
+        display_point: np.ndarray,
+        *,
+        padding: float,
+    ) -> bool:
+        if (
+            self._mesh_actor is None
+            or self._mesh_min_bound is None
+            or self._mesh_max_bound is None
+        ):
+            return False
+
+        projected = _project_points(
+            self.renderer,
+            _bounds_corners(self._mesh_min_bound, self._mesh_max_bound),
+        )
+        if len(projected) == 0:
+            return False
+
+        minimum = np.min(projected, axis=0) - float(padding)
+        maximum = np.max(projected, axis=0) + float(padding)
+        return bool(np.all(display_point >= minimum) and np.all(display_point <= maximum))
 
     def _render(self) -> None:
         if self.render_window is not None and not self._is_closed:
@@ -538,6 +631,82 @@ class EmbeddedVTKViewport:
                 self.render_window.Render()
             except TclError:
                 return
+
+
+def _screen_point_near_geometry(
+    renderer: vtkRenderer,
+    geometry: LineGeometry | None,
+    display_point: np.ndarray,
+    *,
+    tolerance: float,
+) -> bool:
+    if geometry is None or len(geometry.lines) == 0 or len(geometry.points) == 0:
+        return False
+
+    projected = _project_points(renderer, geometry.points)
+    if len(projected) == 0:
+        return False
+
+    for start_index, end_index in geometry.lines:
+        distance = _point_to_segment_distance(
+            display_point,
+            projected[int(start_index)],
+            projected[int(end_index)],
+        )
+        if distance <= float(tolerance):
+            return True
+    return False
+
+
+def _project_points(renderer: vtkRenderer, points: Sequence[Sequence[float]]) -> np.ndarray:
+    projected: list[tuple[float, float]] = []
+    for point in np.asarray(points, dtype=float).reshape((-1, 3)):
+        renderer.SetWorldPoint(float(point[0]), float(point[1]), float(point[2]), 1.0)
+        renderer.WorldToDisplay()
+        display = renderer.GetDisplayPoint()
+        if np.isfinite(display[0]) and np.isfinite(display[1]):
+            projected.append((float(display[0]), float(display[1])))
+    return np.asarray(projected, dtype=float).reshape((-1, 2))
+
+
+def _bounds_corners(
+    minimum: Sequence[float],
+    maximum: Sequence[float],
+) -> np.ndarray:
+    minimum = np.asarray(minimum, dtype=float)
+    maximum = np.asarray(maximum, dtype=float)
+    return np.asarray(
+        [
+            [minimum[0], minimum[1], minimum[2]],
+            [maximum[0], minimum[1], minimum[2]],
+            [maximum[0], maximum[1], minimum[2]],
+            [minimum[0], maximum[1], minimum[2]],
+            [minimum[0], minimum[1], maximum[2]],
+            [maximum[0], minimum[1], maximum[2]],
+            [maximum[0], maximum[1], maximum[2]],
+            [minimum[0], maximum[1], maximum[2]],
+        ],
+        dtype=float,
+    )
+
+
+def _point_to_segment_distance(
+    point: Sequence[float],
+    start: Sequence[float],
+    end: Sequence[float],
+) -> float:
+    point_array = np.asarray(point, dtype=float)
+    start_array = np.asarray(start, dtype=float)
+    end_array = np.asarray(end, dtype=float)
+    segment = end_array - start_array
+    length_squared = float(np.dot(segment, segment))
+    if length_squared <= 1e-12:
+        return float(np.linalg.norm(point_array - start_array))
+
+    projection = float(np.dot(point_array - start_array, segment) / length_squared)
+    projection = min(max(projection, 0.0), 1.0)
+    closest = start_array + projection * segment
+    return float(np.linalg.norm(point_array - closest))
 
 
 def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:

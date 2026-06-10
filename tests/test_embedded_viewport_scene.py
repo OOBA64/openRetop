@@ -9,7 +9,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mesh.triangle_mesh import TriangleMeshData
-from viewer.embedded_viewport import EmbeddedVTKViewport, _line_polydata, _mesh_actor, _mesh_polydata
+from viewer.embedded_viewport import (
+    EmbeddedVTKViewport,
+    _bounds_corners,
+    _line_polydata,
+    _mesh_actor,
+    _mesh_polydata,
+    _point_to_segment_distance,
+)
 from viewer.overlays import build_bounding_box_outline
 
 
@@ -72,6 +79,32 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertTrue(np.allclose(viewport._mesh_min_bound, [1.0, -3.0, -4.0]))
         self.assertTrue(np.allclose(viewport._mesh_max_bound, [5.0, 3.0, 4.0]))
 
+    def test_interactive_transform_updates_existing_actor_matrix(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        mesh = self._triangle_mesh()
+        actor = viewport._ensure_mesh_actor(mesh)
+        transform_key = viewport._active_mesh_transform_key(mesh, "move", "X", "model")
+        viewport._interactive_transform_key = transform_key
+        render_calls: list[bool] = []
+        viewport._render = lambda: render_calls.append(True)  # type: ignore[method-assign]
+        matrix = np.identity(4)
+        matrix[0, 3] = 4.0
+
+        handled = viewport._try_update_interactive_mesh_transform(
+            mesh,
+            matrix,
+            transform_key=transform_key,
+            reset_camera=False,
+            show_normals=False,
+            section_result=None,
+            curve_results=[],
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(render_calls, [True])
+        self.assertIs(actor, viewport._mesh_actor)
+        self.assertAlmostEqual(actor.GetUserMatrix().GetElement(0, 3), 4.0)
+
     def test_line_geometry_converts_to_vtk_polydata_with_cell_colors(self) -> None:
         lines = build_bounding_box_outline((0.0, 0.0, 0.0), (1.0, 2.0, 3.0))
 
@@ -80,6 +113,19 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(polydata.GetNumberOfPoints(), 8)
         self.assertEqual(polydata.GetNumberOfLines(), 12)
         self.assertIsNotNone(polydata.GetCellData().GetScalars())
+
+    def test_screen_selection_helpers_are_constant_size(self) -> None:
+        corners = _bounds_corners((-1.0, -2.0, -3.0), (4.0, 5.0, 6.0))
+
+        self.assertEqual(corners.shape, (8, 3))
+        self.assertAlmostEqual(
+            _point_to_segment_distance((5.0, 5.0), (0.0, 0.0), (10.0, 0.0)),
+            5.0,
+        )
+        self.assertAlmostEqual(
+            _point_to_segment_distance((11.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
+            1.0,
+        )
 
 
 if __name__ == "__main__":
