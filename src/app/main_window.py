@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from math import cos, radians, sin
 from pathlib import Path
+from time import monotonic
 from tkinter import BooleanVar, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
 
@@ -40,6 +41,7 @@ SELECT_SECTION_PLANE = "section_plane"
 MOVE_SENSITIVITY = 0.001
 ROTATION_SENSITIVITY = 0.5
 FINE_TRANSFORM_MULTIPLIER = 0.1
+TRANSFORM_RENDER_MIN_INTERVAL_SECONDS = 1.0 / 24.0
 WORKSPACE_VIEW = "View"
 WORKSPACE_ALIGN = "Align"
 WORKSPACE_SECTION = "Section"
@@ -133,6 +135,7 @@ class OpenRetopWindow:
         self.transform_state: ActiveTransformState | None = None
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
+        self._last_transform_render_time = 0.0
         self._status_message = "Ready"
         self._updating_scene_tree = False
         self._updating_selection = False
@@ -1617,12 +1620,7 @@ class OpenRetopWindow:
             self._refresh_viewport(reset_camera=reset_camera)
             return
 
-        self.mesh_object.transform_matrix = _build_object_transform_matrix(
-            self.mesh_object.location,
-            self.mesh_object.rotation,
-            self.mesh_object.scale,
-            self.mesh_object.origin,
-        )
+        self._update_object_transform_matrix()
         self.mesh_state = MeshState.from_mesh(
             self.mesh_object.display_mesh,
             file_path=self.mesh_object.file_path,
@@ -1631,6 +1629,45 @@ class OpenRetopWindow:
         self._configure_offset_range(reset=False)
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=reset_camera)
+
+    def _update_object_transform_matrix(self) -> None:
+        if self.mesh_object is None:
+            return
+
+        self.mesh_object.transform_matrix = _build_object_transform_matrix(
+            self.mesh_object.location,
+            self.mesh_object.rotation,
+            self.mesh_object.scale,
+            self.mesh_object.origin,
+        )
+
+    def _apply_interactive_object_transform(self, *, force_render: bool = False) -> None:
+        if self.mesh_object is None:
+            return
+
+        self._update_object_transform_matrix()
+        had_section_output = self.section_result is not None or bool(self.curve_results)
+        self._clear_section_for_plane_change()
+        if had_section_output:
+            self._update_scene_tree()
+
+        self._refresh_interactive_viewport(force_render=force_render)
+
+    def _refresh_interactive_viewport(self, *, force_render: bool = False) -> None:
+        if self._should_render_interactive_transform(force=force_render):
+            self._refresh_viewport(reset_camera=False)
+
+    def _should_render_interactive_transform(self, *, force: bool) -> bool:
+        if force:
+            self._last_transform_render_time = monotonic()
+            return True
+
+        now = monotonic()
+        if now - self._last_transform_render_time < TRANSFORM_RENDER_MIN_INTERVAL_SECONDS:
+            return False
+
+        self._last_transform_render_time = now
+        return True
 
     def _apply_display_mesh_result(self, display_result: DisplayMeshResult) -> None:
         if self.mesh_object is None:
@@ -1856,6 +1893,7 @@ class OpenRetopWindow:
         self.active_transform_axis = self._display_transform_axis(self.transform_state)
         self._last_transform_readout = None
         self._refresh_viewport(reset_camera=False)
+        self._last_transform_render_time = 0.0
         self.active_tool.set(TOOL_MOVE if mode == "move" else TOOL_ROTATE)
         self._set_status(self._active_transform_status())
 
@@ -1929,7 +1967,7 @@ class OpenRetopWindow:
 
         self.mesh_object.location = state.location + movement
         self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
+        self._apply_interactive_object_transform()
         self._set_status(self._active_transform_status())
 
     def _update_mesh_rotate_transform(
@@ -1951,7 +1989,7 @@ class OpenRetopWindow:
         self._last_transform_readout = f"{angle_delta:.1f} deg"
         self.mesh_object.rotation = rotation
         self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
+        self._apply_interactive_object_transform()
         self._set_status(self._active_transform_status())
 
     def _update_section_plane_move_transform(
@@ -1968,8 +2006,9 @@ class OpenRetopWindow:
         self._set_section_offset(
             state.section_offset + offset_delta,
             clamp=True,
-            refresh=True,
+            refresh=False,
         )
+        self._refresh_interactive_viewport()
         self._last_transform_readout = (
             f"Offset {self.section_axis.get()}: {self.section_offset.get():.3f}"
         )
@@ -1980,6 +2019,7 @@ class OpenRetopWindow:
         if state is None:
             return
 
+        selected_item = state.selected_item
         if not commit:
             self._restore_transform_start_state(state)
 
@@ -1987,7 +2027,10 @@ class OpenRetopWindow:
         self.active_transform_mode = None
         self.active_transform_axis = None
         self._last_transform_readout = None
-        self._refresh_viewport(reset_camera=False)
+        if selected_item == SELECT_MODEL and self.mesh_object is not None:
+            self._apply_object_transform(reset_camera=False)
+        else:
+            self._refresh_viewport(reset_camera=False)
         self._set_status(status)
 
     def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
@@ -1995,7 +2038,6 @@ class OpenRetopWindow:
             self.mesh_object.location = state.location.copy()
             self.mesh_object.rotation = state.rotation.copy()
             self._set_transform_inputs_from_object()
-            self._apply_object_transform(reset_camera=False)
             return
 
         if state.selected_item == SELECT_SECTION_PLANE:

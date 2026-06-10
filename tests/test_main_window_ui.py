@@ -428,7 +428,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIsNone(window.viewport.scene_calls[-1]["active_transform_axis"])
             window._handle_shortcut("X")
 
-            handled = window._on_viewport_pointer_event("motion", 80, 10)
+            with patch("app.main_window.MeshState.from_mesh") as from_mesh:
+                handled = window._on_viewport_pointer_event("motion", 80, 10)
+                from_mesh.assert_not_called()
             self.assertTrue(handled)
             moved_location = window.mesh_object.location.copy()
             self.assertGreater(moved_location[0], start_location[0])
