@@ -13,8 +13,10 @@ import numpy as np
 
 from geometry.curves import CurveFitResult, fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, SectionResult, extract_section
+from mesh.display_proxy import DisplayMeshResult, build_display_mesh
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
+from mesh.triangle_mesh import TriangleMeshData
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -36,13 +38,20 @@ FINE_TRANSFORM_MULTIPLIER = 0.1
 class MeshObjectState:
     """Selection-oriented state for the loaded mesh object."""
 
-    raw_mesh: object
+    source_mesh: TriangleMeshData
+    display_mesh: TriangleMeshData
     file_path: Path | None
     name: str
     origin: np.ndarray
     location: np.ndarray
     rotation: np.ndarray
     scale: float = 1.0
+    transform_matrix: np.ndarray | None = None
+    source_triangle_count: int = 0
+    display_triangle_count: int = 0
+    display_proxy_enabled: bool = False
+    source_bounds_min: np.ndarray | None = None
+    source_bounds_max: np.ndarray | None = None
 
 
 @dataclass
@@ -102,10 +111,15 @@ class OpenRetopWindow:
         self.file_name_text = StringVar(value="(none)")
         self.vertex_count_text = StringVar(value="0")
         self.triangle_count_text = StringVar(value="0")
+        self.display_triangle_count_text = StringVar(value="0")
+        self.display_proxy_text = StringVar(value="Display proxy disabled")
+        self.source_retained_text = StringVar(value="Full-resolution source retained")
         self.bbox_size_text = StringVar(value="-")
         self.selected_object_text = StringVar(value="(none)")
         self.selected_vertex_count_text = StringVar(value="0")
         self.selected_triangle_count_text = StringVar(value="0")
+        self.selected_display_triangle_count_text = StringVar(value="0")
+        self.selected_display_proxy_text = StringVar(value="Display proxy disabled")
         self.selected_bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
@@ -336,7 +350,10 @@ class OpenRetopWindow:
         row = self._add_separator(parent, row)
         row = self._add_heading(parent, row, "Mesh Info")
         row = self._add_info_row(parent, row, "Vertices", self.vertex_count_text)
-        row = self._add_info_row(parent, row, "Triangles", self.triangle_count_text)
+        row = self._add_info_row(parent, row, "Source triangles", self.triangle_count_text)
+        row = self._add_info_row(parent, row, "Display triangles", self.display_triangle_count_text)
+        row = self._add_info_row(parent, row, "Display proxy", self.display_proxy_text)
+        row = self._add_info_row(parent, row, "Source", self.source_retained_text)
         self._add_info_row(parent, row, "Bounding box", self.bbox_size_text)
 
     def _build_model_context(self, parent: ttk.Frame) -> None:
@@ -344,7 +361,14 @@ class OpenRetopWindow:
         row = self._add_heading(parent, row, "Selected Object")
         row = self._add_info_row(parent, row, "Object", self.selected_object_text)
         row = self._add_info_row(parent, row, "Vertices", self.selected_vertex_count_text)
-        row = self._add_info_row(parent, row, "Triangles", self.selected_triangle_count_text)
+        row = self._add_info_row(parent, row, "Source triangles", self.selected_triangle_count_text)
+        row = self._add_info_row(
+            parent,
+            row,
+            "Display triangles",
+            self.selected_display_triangle_count_text,
+        )
+        row = self._add_info_row(parent, row, "Display proxy", self.selected_display_proxy_text)
         row = self._add_info_row(parent, row, "Bounding box", self.selected_bbox_size_text)
 
         row = self._add_separator(parent, row)
@@ -624,17 +648,24 @@ class OpenRetopWindow:
             messagebox.showerror("Could not open model", str(exc))
             return
 
-        raw_mesh = copy.deepcopy(loaded.mesh)
-        bounds = raw_mesh.get_axis_aligned_bounding_box()
+        display_result = build_display_mesh(loaded.mesh)
+        bounds = display_result.source_mesh.get_axis_aligned_bounding_box()
         origin = np.asarray(bounds.get_center(), dtype=float)
         self.mesh_object = MeshObjectState(
-            raw_mesh=raw_mesh,
+            source_mesh=display_result.source_mesh,
+            display_mesh=display_result.display_mesh,
             file_path=loaded.metadata.file_path,
             name=loaded.metadata.file_name,
             origin=origin,
             location=origin.copy(),
             rotation=np.asarray([0.0, 0.0, 0.0], dtype=float),
             scale=1.0,
+            transform_matrix=np.identity(4),
+            source_triangle_count=display_result.source_triangle_count,
+            display_triangle_count=display_result.display_triangle_count,
+            display_proxy_enabled=display_result.proxy_enabled,
+            source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
+            source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
         )
         self.section_result = None
         self.curve_results = []
@@ -646,6 +677,7 @@ class OpenRetopWindow:
         self._set_selection_buttons_enabled(True)
         self._set_selected_item(None, status="No selection")
         self._refresh_viewport(reset_camera=True)
+        self.status_text.set(self._display_mesh_status(display_result))
 
     def select_model(self) -> None:
         if self.mesh_object is None:
@@ -715,7 +747,7 @@ class OpenRetopWindow:
         return True
 
     def compute_section(self) -> None:
-        if not self.mesh_state.is_loaded or self.mesh_state.mesh is None:
+        if self.mesh_object is None:
             self.status_text.set("No selection")
             return
 
@@ -723,8 +755,9 @@ class OpenRetopWindow:
         if offset is None:
             return
 
+        section_mesh = self._transformed_source_mesh()
         self.section_result = extract_section(
-            self.mesh_state.mesh,
+            section_mesh,
             axis=self.section_axis.get(),
             offset=offset,
         )
@@ -768,11 +801,23 @@ class OpenRetopWindow:
 
     def _refresh_viewport(self, *, reset_camera: bool) -> None:
         origin = self.mesh_object.location if self.mesh_object is not None else None
+        display_mesh = self.mesh_object.display_mesh if self.mesh_object is not None else None
+        transform_matrix = (
+            self.mesh_object.transform_matrix
+            if self.mesh_object is not None and self.mesh_object.transform_matrix is not None
+            else None
+        )
+        hide_expensive_overlays = self.transform_state is not None
         self.viewport.set_scene(
-            self.mesh_state.mesh,
+            display_mesh,
+            transform_matrix=transform_matrix,
             show_grid=self.show_grid.get(),
             show_axes=self.show_axes.get(),
-            show_normals=self.show_normals.get(),
+            show_normals=self.show_normals.get()
+            and not hide_expensive_overlays
+            and not (
+                self.mesh_object is not None and self.mesh_object.display_proxy_enabled
+            ),
             show_section_plane=(
                 self.show_section_plane.get() and self.mesh_state.is_loaded
             ),
@@ -782,8 +827,8 @@ class OpenRetopWindow:
             object_origin=origin,
             active_transform_mode=self.active_transform_mode,
             active_transform_axis=self.active_transform_axis,
-            section_result=self.section_result,
-            curve_results=self.curve_results,
+            section_result=None if hide_expensive_overlays else self.section_result,
+            curve_results=[] if hide_expensive_overlays else self.curve_results,
             reset_camera=reset_camera,
         )
 
@@ -845,16 +890,16 @@ class OpenRetopWindow:
             self._refresh_viewport(reset_camera=False)
 
     def _configure_offset_range(self, *, reset: bool) -> None:
-        if not self.mesh_state.is_loaded or self.mesh_state.mesh is None:
+        if self.mesh_object is None:
             self._section_offset_bounds = (-1.0, 1.0)
             self.offset_slider.configure(from_=-1.0, to=1.0)
             self._set_section_offset(0.0, clamp=True, refresh=False)
             return
 
         axis_index = AXIS_TO_INDEX[self.section_axis.get()]
-        bounds = self.mesh_state.mesh.get_axis_aligned_bounding_box()
-        minimum = float(bounds.get_min_bound()[axis_index])
-        maximum = float(bounds.get_max_bound()[axis_index])
+        minimum_bound, maximum_bound = self._transformed_source_bounds()
+        minimum = float(minimum_bound[axis_index])
+        maximum = float(maximum_bound[axis_index])
         if abs(maximum - minimum) <= 1e-9:
             minimum -= 1.0
             maximum += 1.0
@@ -939,34 +984,28 @@ class OpenRetopWindow:
             self._refresh_viewport(reset_camera=reset_camera)
             return
 
-        mesh = copy.deepcopy(self.mesh_object.raw_mesh)
-        matrix = _build_object_transform_matrix(
+        self.mesh_object.transform_matrix = _build_object_transform_matrix(
             self.mesh_object.location,
             self.mesh_object.rotation,
             self.mesh_object.scale,
             self.mesh_object.origin,
         )
-        mesh.transform(matrix)
-        if hasattr(mesh, "compute_vertex_normals"):
-            mesh.compute_vertex_normals()
-        if hasattr(mesh, "compute_triangle_normals"):
-            mesh.compute_triangle_normals()
-
-        self.mesh_state = MeshState.from_mesh(mesh, file_path=self.mesh_object.file_path)
+        self.mesh_state = MeshState.from_mesh(
+            self.mesh_object.display_mesh,
+            file_path=self.mesh_object.file_path,
+        )
         self._update_stats()
         self._configure_offset_range(reset=False)
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=reset_camera)
 
     def set_origin_to_geometry(self) -> None:
-        if self.mesh_object is None or self.mesh_state.mesh is None:
+        if self.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        current_center = np.asarray(
-            self.mesh_state.mesh.get_axis_aligned_bounding_box().get_center(),
-            dtype=float,
-        )
+        minimum_bound, maximum_bound = self._transformed_source_bounds()
+        current_center = (minimum_bound + maximum_bound) * 0.5
         new_origin = _transform_point(
             np.linalg.inv(self._current_object_matrix()),
             current_center,
@@ -994,10 +1033,19 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        bounds = self.mesh_object.raw_mesh.get_axis_aligned_bounding_box()
+        bounds = self.mesh_object.source_mesh.get_axis_aligned_bounding_box()
         raw_center = np.asarray(bounds.get_center(), dtype=float)
         delta = self.mesh_object.origin - raw_center
-        self.mesh_object.raw_mesh.translate(delta.tolist())
+        self.mesh_object.source_mesh.translate(delta.tolist())
+        self.mesh_object.display_mesh.translate(delta.tolist())
+        self.mesh_object.source_bounds_min = np.asarray(
+            bounds.get_min_bound(),
+            dtype=float,
+        ) + delta
+        self.mesh_object.source_bounds_max = np.asarray(
+            bounds.get_max_bound(),
+            dtype=float,
+        ) + delta
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Geometry centered on origin")
 
@@ -1057,14 +1105,79 @@ class OpenRetopWindow:
         self.scale_value.set(f"{scale:.3f}")
 
     def _update_stats(self) -> None:
-        self.file_name_text.set(self.mesh_state.file_name or "(none)")
-        self.vertex_count_text.set(str(self.mesh_state.vertex_count))
-        self.triangle_count_text.set(str(self.mesh_state.triangle_count))
-        self.bbox_size_text.set(_format_vector(self.mesh_state.bounding_box_extent))
-        self.selected_object_text.set(self.mesh_state.file_name or "(none)")
-        self.selected_vertex_count_text.set(str(self.mesh_state.vertex_count))
-        self.selected_triangle_count_text.set(str(self.mesh_state.triangle_count))
-        self.selected_bbox_size_text.set(_format_vector(self.mesh_state.bounding_box_extent))
+        if self.mesh_object is None:
+            file_name = "(none)"
+            vertex_count = "0"
+            source_triangles = "0"
+            display_triangles = "0"
+            display_proxy = "Display proxy disabled"
+            source_retained = "(none)"
+            bbox_extent = "-"
+        else:
+            minimum_bound, maximum_bound = self._transformed_source_bounds()
+            file_name = self.mesh_object.name
+            vertex_count = str(len(self.mesh_object.source_mesh.vertices))
+            source_triangles = str(self.mesh_object.source_triangle_count)
+            display_triangles = str(self.mesh_object.display_triangle_count)
+            display_proxy = (
+                "Display proxy enabled"
+                if self.mesh_object.display_proxy_enabled
+                else "Display proxy disabled"
+            )
+            source_retained = "Full-resolution source retained"
+            bbox_extent = _format_vector(maximum_bound - minimum_bound)
+
+        self.file_name_text.set(file_name)
+        self.vertex_count_text.set(vertex_count)
+        self.triangle_count_text.set(source_triangles)
+        self.display_triangle_count_text.set(display_triangles)
+        self.display_proxy_text.set(display_proxy)
+        self.source_retained_text.set(source_retained)
+        self.bbox_size_text.set(bbox_extent)
+        self.selected_object_text.set(file_name)
+        self.selected_vertex_count_text.set(vertex_count)
+        self.selected_triangle_count_text.set(source_triangles)
+        self.selected_display_triangle_count_text.set(display_triangles)
+        self.selected_display_proxy_text.set(display_proxy)
+        self.selected_bbox_size_text.set(bbox_extent)
+
+    def _display_mesh_status(self, display_result: DisplayMeshResult) -> str:
+        proxy_status = (
+            "Display proxy enabled"
+            if display_result.proxy_enabled
+            else "Display proxy disabled"
+        )
+        return (
+            f"Source triangles: {display_result.source_triangle_count} | "
+            f"Display triangles: {display_result.display_triangle_count} | "
+            f"{proxy_status} | Full-resolution source retained"
+        )
+
+    def _transformed_source_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        if (
+            self.mesh_object is None
+            or self.mesh_object.source_bounds_min is None
+            or self.mesh_object.source_bounds_max is None
+        ):
+            zero = np.asarray([0.0, 0.0, 0.0], dtype=float)
+            return (zero, zero)
+
+        return _transform_bounds(
+            self.mesh_object.source_bounds_min,
+            self.mesh_object.source_bounds_max,
+            self._current_object_matrix(),
+        )
+
+    def _transformed_source_mesh(self) -> TriangleMeshData:
+        if self.mesh_object is None:
+            return TriangleMeshData(
+                vertices=np.zeros((0, 3), dtype=float),
+                triangles=np.zeros((0, 3), dtype=int),
+            )
+
+        mesh = self.mesh_object.source_mesh.copy()
+        mesh.transform(self._current_object_matrix())
+        return mesh
 
     def _start_active_transform(self, mode: str) -> None:
         if self.selected_item is None or self.mesh_object is None:
@@ -1272,7 +1385,12 @@ class OpenRetopWindow:
         return state.axis_constraint
 
     def _movement_scale(self, *, fine: bool) -> float:
-        return max(float(self.mesh_state.approximate_size), 1.0) * MOVE_SENSITIVITY * self._fine_multiplier(fine)
+        if self.mesh_object is None:
+            model_diagonal = 1.0
+        else:
+            minimum_bound, maximum_bound = self._transformed_source_bounds()
+            model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
+        return max(model_diagonal, 1.0) * MOVE_SENSITIVITY * self._fine_multiplier(fine)
 
     def _fine_multiplier(self, fine: bool) -> float:
         return FINE_TRANSFORM_MULTIPLIER if fine else 1.0
@@ -1422,3 +1540,28 @@ def _rotation_z(angle_degrees: float) -> np.ndarray:
 def _transform_point(matrix: np.ndarray, point: np.ndarray) -> np.ndarray:
     homogeneous = np.append(np.asarray(point, dtype=float), 1.0)
     return (np.asarray(matrix, dtype=float) @ homogeneous)[:3]
+
+
+def _transform_bounds(
+    minimum: np.ndarray,
+    maximum: np.ndarray,
+    matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    minimum = np.asarray(minimum, dtype=float)
+    maximum = np.asarray(maximum, dtype=float)
+    corners = np.asarray(
+        [
+            [minimum[0], minimum[1], minimum[2]],
+            [maximum[0], minimum[1], minimum[2]],
+            [maximum[0], maximum[1], minimum[2]],
+            [minimum[0], maximum[1], minimum[2]],
+            [minimum[0], minimum[1], maximum[2]],
+            [maximum[0], minimum[1], maximum[2]],
+            [maximum[0], maximum[1], maximum[2]],
+            [minimum[0], maximum[1], maximum[2]],
+        ],
+        dtype=float,
+    )
+    homogeneous = np.column_stack((corners, np.ones(len(corners))))
+    transformed = (np.asarray(matrix, dtype=float) @ homogeneous.T).T[:, :3]
+    return (np.min(transformed, axis=0), np.max(transformed, axis=0))

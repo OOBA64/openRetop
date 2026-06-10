@@ -44,6 +44,12 @@ class FakeMesh:
         self.vertices = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 2.0, 3.0)]
         self.triangles = [(0, 1, 2)]
 
+    def copy(self) -> FakeMesh:
+        copied = FakeMesh()
+        copied.vertices = list(self.vertices)
+        copied.triangles = list(self.triangles)
+        return copied
+
     def get_axis_aligned_bounding_box(self) -> FakeBounds:
         points = np.asarray(self.vertices, dtype=float)
         return FakeBounds(tuple(points.min(axis=0)), tuple(points.max(axis=0)))
@@ -188,7 +194,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.vertex_count_text.get(), "3")
             self.assertEqual(window.triangle_count_text.get(), "1")
             self.assertEqual(window.bbox_size_text.get(), "1, 2, 3")
-            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertEqual(
+                window.status_text.get(),
+                "Source triangles: 1 | Display triangles: 1 | "
+                "Display proxy disabled | Full-resolution source retained",
+            )
             self.assertIsNone(window.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
@@ -199,6 +209,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.show_axes.get())
             self.assertTrue(window.show_section_plane.get())
             self.assertFalse(window.show_normals.get())
+            self.assertEqual(window.triangle_count_text.get(), "1")
+            self.assertEqual(window.display_triangle_count_text.get(), "1")
+            self.assertEqual(window.display_proxy_text.get(), "Display proxy disabled")
+            self.assertEqual(window.source_retained_text.get(), "Full-resolution source retained")
             scene = window.viewport.scene_calls[-1]
             self.assertEqual(scene["show_grid"], True)
             self.assertEqual(scene["show_axes"], True)
@@ -247,8 +261,10 @@ class MainWindowUiTests(unittest.TestCase):
             window.location_x.set("1.500")
             window._on_object_transform_changed()
             self.assertEqual(window.status_text.get(), "Transforms update live")
-            center = window.mesh_state.mesh.get_axis_aligned_bounding_box().get_center()
-            self.assertAlmostEqual(center[0], 1.5)
+            self.assertAlmostEqual(window.mesh_object.location[0], 1.5)
+            self.assertIsNotNone(window.mesh_object.transform_matrix)
+            self.assertEqual(window.viewport.scene_calls[-1]["mesh"], window.mesh_object.display_mesh)
+            self.assertIsNotNone(window.viewport.scene_calls[-1]["transform_matrix"])
 
             window.rotation_z.set("90.000")
             window._on_object_transform_changed()
