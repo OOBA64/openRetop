@@ -13,7 +13,13 @@ import numpy as np
 
 from geometry.curves import CurveFitResult, fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, SectionResult, extract_section
-from mesh.display_proxy import DisplayMeshResult, build_display_mesh
+from mesh.display_proxy import (
+    DEFAULT_PROXY_QUALITY,
+    PROXY_QUALITY_LABELS,
+    DisplayMeshResult,
+    build_display_mesh,
+    normalize_proxy_quality,
+)
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
 from mesh.triangle_mesh import TriangleMeshData
@@ -50,6 +56,8 @@ class MeshObjectState:
     source_triangle_count: int = 0
     display_triangle_count: int = 0
     display_proxy_enabled: bool = False
+    display_reduction_percent: float = 0.0
+    proxy_quality: str = DEFAULT_PROXY_QUALITY
     source_bounds_min: np.ndarray | None = None
     source_bounds_max: np.ndarray | None = None
 
@@ -92,6 +100,7 @@ class OpenRetopWindow:
         self.show_axes = BooleanVar(value=True)
         self.show_normals = BooleanVar(value=False)
         self.show_section_plane = BooleanVar(value=True)
+        self.proxy_quality = StringVar(value=DEFAULT_PROXY_QUALITY)
 
         self.section_axis = StringVar(value="Z")
         self.section_offset = DoubleVar(value=0.0)
@@ -112,14 +121,16 @@ class OpenRetopWindow:
         self.vertex_count_text = StringVar(value="0")
         self.triangle_count_text = StringVar(value="0")
         self.display_triangle_count_text = StringVar(value="0")
-        self.display_proxy_text = StringVar(value="Display proxy disabled")
-        self.source_retained_text = StringVar(value="Full-resolution source retained")
+        self.display_reduction_text = StringVar(value="0.0%")
+        self.display_proxy_text = StringVar(value=f"Disabled ({DEFAULT_PROXY_QUALITY})")
+        self.source_retained_text = StringVar(value="Full-resolution source preserved")
         self.bbox_size_text = StringVar(value="-")
         self.selected_object_text = StringVar(value="(none)")
         self.selected_vertex_count_text = StringVar(value="0")
         self.selected_triangle_count_text = StringVar(value="0")
         self.selected_display_triangle_count_text = StringVar(value="0")
-        self.selected_display_proxy_text = StringVar(value="Display proxy disabled")
+        self.selected_display_reduction_text = StringVar(value="0.0%")
+        self.selected_display_proxy_text = StringVar(value=f"Disabled ({DEFAULT_PROXY_QUALITY})")
         self.selected_bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
@@ -273,7 +284,17 @@ class OpenRetopWindow:
         )
         self.open_model_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         row += 1
-        self._add_info_row(parent, row, "Loaded file", self.file_name_text)
+        row = self._add_info_row(parent, row, "Loaded file", self.file_name_text)
+        ttk.Label(parent, text="Proxy quality").grid(row=row, column=0, sticky="w", pady=2)
+        self.proxy_quality_dropdown = ttk.Combobox(
+            parent,
+            textvariable=self.proxy_quality,
+            values=PROXY_QUALITY_LABELS,
+            width=10,
+            state="readonly",
+        )
+        self.proxy_quality_dropdown.grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
+        self.proxy_quality_dropdown.bind("<<ComboboxSelected>>", self._on_proxy_quality_changed)
 
     def _build_no_selection_context(self, parent: ttk.Frame) -> None:
         row = self._add_separator(parent, 0)
@@ -352,6 +373,7 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Vertices", self.vertex_count_text)
         row = self._add_info_row(parent, row, "Source triangles", self.triangle_count_text)
         row = self._add_info_row(parent, row, "Display triangles", self.display_triangle_count_text)
+        row = self._add_info_row(parent, row, "Reduction", self.display_reduction_text)
         row = self._add_info_row(parent, row, "Display proxy", self.display_proxy_text)
         row = self._add_info_row(parent, row, "Source", self.source_retained_text)
         self._add_info_row(parent, row, "Bounding box", self.bbox_size_text)
@@ -368,6 +390,7 @@ class OpenRetopWindow:
             "Display triangles",
             self.selected_display_triangle_count_text,
         )
+        row = self._add_info_row(parent, row, "Reduction", self.selected_display_reduction_text)
         row = self._add_info_row(parent, row, "Display proxy", self.selected_display_proxy_text)
         row = self._add_info_row(parent, row, "Bounding box", self.selected_bbox_size_text)
 
@@ -648,7 +671,7 @@ class OpenRetopWindow:
             messagebox.showerror("Could not open model", str(exc))
             return
 
-        display_result = build_display_mesh(loaded.mesh)
+        display_result = build_display_mesh(loaded.mesh, quality=self.proxy_quality.get())
         bounds = display_result.source_mesh.get_axis_aligned_bounding_box()
         origin = np.asarray(bounds.get_center(), dtype=float)
         self.mesh_object = MeshObjectState(
@@ -664,6 +687,8 @@ class OpenRetopWindow:
             source_triangle_count=display_result.source_triangle_count,
             display_triangle_count=display_result.display_triangle_count,
             display_proxy_enabled=display_result.proxy_enabled,
+            display_reduction_percent=display_result.reduction_percent,
+            proxy_quality=display_result.quality,
             source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
             source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
         )
@@ -825,6 +850,12 @@ class OpenRetopWindow:
             section_offset=self.section_offset.get(),
             selected_item=self.selected_item,
             object_origin=origin,
+            scene_bounds_min=(
+                self.mesh_object.source_bounds_min if self.mesh_object is not None else None
+            ),
+            scene_bounds_max=(
+                self.mesh_object.source_bounds_max if self.mesh_object is not None else None
+            ),
             active_transform_mode=self.active_transform_mode,
             active_transform_axis=self.active_transform_axis,
             section_result=None if hide_expensive_overlays else self.section_result,
@@ -834,6 +865,24 @@ class OpenRetopWindow:
 
     def _on_view_option_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
+
+    def _on_proxy_quality_changed(self, _event: object | None = None) -> None:
+        quality = normalize_proxy_quality(self.proxy_quality.get())
+        if quality != self.proxy_quality.get():
+            self.proxy_quality.set(quality)
+
+        if self.mesh_object is None:
+            self._update_stats()
+            self.status_text.set(f"Proxy quality: {quality}")
+            return
+
+        self.status_text.set(f"Rebuilding {quality} display proxy")
+        self.root.update_idletasks()
+        display_result = build_display_mesh(self.mesh_object.source_mesh, quality=quality)
+        self._apply_display_mesh_result(display_result)
+        self._update_stats()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(self._display_mesh_status(display_result))
 
     def _on_section_plane_visibility_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
@@ -999,6 +1048,21 @@ class OpenRetopWindow:
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=reset_camera)
 
+    def _apply_display_mesh_result(self, display_result: DisplayMeshResult) -> None:
+        if self.mesh_object is None:
+            return
+
+        self.mesh_object.display_mesh = display_result.display_mesh
+        self.mesh_object.source_triangle_count = display_result.source_triangle_count
+        self.mesh_object.display_triangle_count = display_result.display_triangle_count
+        self.mesh_object.display_proxy_enabled = display_result.proxy_enabled
+        self.mesh_object.display_reduction_percent = display_result.reduction_percent
+        self.mesh_object.proxy_quality = display_result.quality
+        self.mesh_state = MeshState.from_mesh(
+            self.mesh_object.display_mesh,
+            file_path=self.mesh_object.file_path,
+        )
+
     def set_origin_to_geometry(self) -> None:
         if self.mesh_object is None:
             self.status_text.set("No selection")
@@ -1110,27 +1174,30 @@ class OpenRetopWindow:
             vertex_count = "0"
             source_triangles = "0"
             display_triangles = "0"
-            display_proxy = "Display proxy disabled"
+            reduction = "0.0%"
+            display_proxy = f"Disabled ({self.proxy_quality.get()})"
             source_retained = "(none)"
             bbox_extent = "-"
         else:
             minimum_bound, maximum_bound = self._transformed_source_bounds()
             file_name = self.mesh_object.name
-            vertex_count = str(len(self.mesh_object.source_mesh.vertices))
-            source_triangles = str(self.mesh_object.source_triangle_count)
-            display_triangles = str(self.mesh_object.display_triangle_count)
+            vertex_count = _format_count(len(self.mesh_object.source_mesh.vertices))
+            source_triangles = _format_count(self.mesh_object.source_triangle_count)
+            display_triangles = _format_count(self.mesh_object.display_triangle_count)
+            reduction = _format_percent(self.mesh_object.display_reduction_percent)
             display_proxy = (
-                "Display proxy enabled"
+                f"Enabled ({self.mesh_object.proxy_quality})"
                 if self.mesh_object.display_proxy_enabled
-                else "Display proxy disabled"
+                else f"Disabled ({self.mesh_object.proxy_quality})"
             )
-            source_retained = "Full-resolution source retained"
+            source_retained = "Full-resolution source preserved"
             bbox_extent = _format_vector(maximum_bound - minimum_bound)
 
         self.file_name_text.set(file_name)
         self.vertex_count_text.set(vertex_count)
         self.triangle_count_text.set(source_triangles)
         self.display_triangle_count_text.set(display_triangles)
+        self.display_reduction_text.set(reduction)
         self.display_proxy_text.set(display_proxy)
         self.source_retained_text.set(source_retained)
         self.bbox_size_text.set(bbox_extent)
@@ -1138,19 +1205,21 @@ class OpenRetopWindow:
         self.selected_vertex_count_text.set(vertex_count)
         self.selected_triangle_count_text.set(source_triangles)
         self.selected_display_triangle_count_text.set(display_triangles)
+        self.selected_display_reduction_text.set(reduction)
         self.selected_display_proxy_text.set(display_proxy)
         self.selected_bbox_size_text.set(bbox_extent)
 
     def _display_mesh_status(self, display_result: DisplayMeshResult) -> str:
         proxy_status = (
-            "Display proxy enabled"
+            f"Proxy {display_result.quality}"
             if display_result.proxy_enabled
-            else "Display proxy disabled"
+            else f"No proxy ({display_result.quality})"
         )
         return (
-            f"Source triangles: {display_result.source_triangle_count} | "
-            f"Display triangles: {display_result.display_triangle_count} | "
-            f"{proxy_status} | Full-resolution source retained"
+            f"Source: {_format_count(display_result.source_triangle_count)} tris | "
+            f"Display: {_format_count(display_result.display_triangle_count)} tris | "
+            f"Reduction: {_format_percent(display_result.reduction_percent)} | "
+            f"{proxy_status} | Full-resolution source preserved"
         )
 
     def _transformed_source_bounds(self) -> tuple[np.ndarray, np.ndarray]:
@@ -1476,6 +1545,14 @@ def run_app() -> int:
 
 def _format_vector(values: object) -> str:
     return ", ".join(f"{float(value):.6g}" for value in values)
+
+
+def _format_count(value: int) -> str:
+    return f"{int(value):,}"
+
+
+def _format_percent(value: float) -> str:
+    return f"{float(value):.1f}%"
 
 
 def _build_object_transform_matrix(

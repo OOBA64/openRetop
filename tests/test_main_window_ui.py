@@ -150,6 +150,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.show_axes.get())
             self.assertFalse(window.show_normals.get())
             self.assertTrue(window.show_section_plane.get())
+            self.assertEqual(window.proxy_quality.get(), "Medium")
+            self.assertEqual(tuple(window.proxy_quality_dropdown.cget("values")), ("Low", "Medium", "High"))
             self.assertEqual(window.status_text.get(), "No selection")
             self.assertIsNone(window.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
@@ -196,8 +198,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.bbox_size_text.get(), "1, 2, 3")
             self.assertEqual(
                 window.status_text.get(),
-                "Source triangles: 1 | Display triangles: 1 | "
-                "Display proxy disabled | Full-resolution source retained",
+                "Source: 1 tris | Display: 1 tris | Reduction: 0.0% | "
+                "No proxy (Medium) | Full-resolution source preserved",
             )
             self.assertIsNone(window.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
@@ -211,8 +213,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window.show_normals.get())
             self.assertEqual(window.triangle_count_text.get(), "1")
             self.assertEqual(window.display_triangle_count_text.get(), "1")
-            self.assertEqual(window.display_proxy_text.get(), "Display proxy disabled")
-            self.assertEqual(window.source_retained_text.get(), "Full-resolution source retained")
+            self.assertEqual(window.display_reduction_text.get(), "0.0%")
+            self.assertEqual(window.display_proxy_text.get(), "Disabled (Medium)")
+            self.assertEqual(window.source_retained_text.get(), "Full-resolution source preserved")
             scene = window.viewport.scene_calls[-1]
             self.assertEqual(scene["show_grid"], True)
             self.assertEqual(scene["show_axes"], True)
@@ -221,6 +224,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(scene["section_axis"], "Z")
             self.assertEqual(scene["section_offset"], 0.0)
             self.assertIsNone(scene["selected_item"])
+            self.assertTrue(np.allclose(scene["scene_bounds_min"], [0.0, 0.0, 0.0]))
+            self.assertTrue(np.allclose(scene["scene_bounds_max"], [1.0, 2.0, 3.0]))
         finally:
             window.root.destroy()
 

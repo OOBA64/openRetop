@@ -9,7 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mesh.triangle_mesh import TriangleMeshData
-from viewer.embedded_viewport import EmbeddedVTKViewport, _line_polydata, _mesh_polydata
+from viewer.embedded_viewport import EmbeddedVTKViewport, _line_polydata, _mesh_actor, _mesh_polydata
 from viewer.overlays import build_bounding_box_outline
 
 
@@ -29,11 +29,21 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
     def test_triangle_mesh_converts_to_vtk_polydata(self) -> None:
         mesh = self._triangle_mesh()
+        mesh.compute_vertex_normals()
 
         polydata = _mesh_polydata(mesh)
 
         self.assertEqual(polydata.GetNumberOfPoints(), 3)
         self.assertEqual(polydata.GetNumberOfPolys(), 1)
+        self.assertIsNotNone(polydata.GetPointData().GetNormals())
+
+    def test_mesh_actor_renders_as_smooth_surface(self) -> None:
+        actor = _mesh_actor(self._triangle_mesh())
+        prop = actor.GetProperty()
+
+        self.assertEqual(prop.GetRepresentation(), 2)
+        self.assertEqual(prop.GetEdgeVisibility(), 0)
+        self.assertEqual(prop.GetInterpolation(), 2)
 
     def test_mesh_actor_is_reused_for_same_display_mesh(self) -> None:
         viewport = EmbeddedVTKViewport(parent=object())
@@ -45,6 +55,22 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertIs(first_actor, second_actor)
         self.assertIsNot(first_actor, replacement_actor)
+
+    def test_view_metrics_can_use_source_bounds_instead_of_display_bounds(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        mesh = self._triangle_mesh()
+        matrix = np.identity(4)
+        matrix[0, 3] = 3.0
+
+        viewport._update_view_metrics(
+            mesh,
+            matrix,
+            scene_bounds_min=(-2.0, -3.0, -4.0),
+            scene_bounds_max=(2.0, 3.0, 4.0),
+        )
+
+        self.assertTrue(np.allclose(viewport._mesh_min_bound, [1.0, -3.0, -4.0]))
+        self.assertTrue(np.allclose(viewport._mesh_max_bound, [5.0, 3.0, 4.0]))
 
     def test_line_geometry_converts_to_vtk_polydata_with_cell_colors(self) -> None:
         lines = build_bounding_box_outline((0.0, 0.0, 0.0), (1.0, 2.0, 3.0))
