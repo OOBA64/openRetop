@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import queue
+import threading
 from dataclasses import dataclass
 from math import cos, radians, sin
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, filedialog
+from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
 
 import numpy as np
@@ -20,7 +22,7 @@ from mesh.display_proxy import (
     build_display_mesh,
     normalize_proxy_quality,
 )
-from mesh.loader import load_mesh
+from mesh.loader import LoadedMesh, load_mesh
 from mesh.mesh_state import MeshState
 from mesh.triangle_mesh import TriangleMeshData
 from viewer.embedded_viewport import EmbeddedVTKViewport
@@ -38,6 +40,34 @@ SELECT_SECTION_PLANE = "section_plane"
 MOVE_SENSITIVITY = 0.001
 ROTATION_SENSITIVITY = 0.5
 FINE_TRANSFORM_MULTIPLIER = 0.1
+WORKSPACE_VIEW = "View"
+WORKSPACE_ALIGN = "Align"
+WORKSPACE_SECTION = "Section"
+WORKSPACE_CURVE = "Curve"
+WORKSPACE_SURFACE = "Surface"
+WORKSPACE_EXPORT = "Export"
+WORKSPACE_LABELS = (
+    WORKSPACE_VIEW,
+    WORKSPACE_ALIGN,
+    WORKSPACE_SECTION,
+    WORKSPACE_CURVE,
+    WORKSPACE_SURFACE,
+    WORKSPACE_EXPORT,
+)
+DISABLED_WORKSPACES = {WORKSPACE_CURVE, WORKSPACE_SURFACE, WORKSPACE_EXPORT}
+TOOL_SELECT = "Select"
+TOOL_MOVE = "Move"
+TOOL_ROTATE = "Rotate"
+TOOL_FRAME = "Frame"
+TOOL_SECTION_PLANE = "Section Plane"
+TOOL_COMPUTE_SECTION = "Compute Section"
+LOAD_STAGE_START = "Loading mesh file..."
+LOAD_STAGE_READ = "Reading vertices/faces..."
+LOAD_STAGE_BOUNDS = "Calculating bounds..."
+LOAD_STAGE_PROXY = "Creating display proxy..."
+LOAD_STAGE_NORMALS = "Recomputing normals..."
+LOAD_STAGE_VIEWPORT = "Adding mesh to viewport..."
+LOAD_STAGE_DONE = "Done"
 
 
 @dataclass
@@ -76,6 +106,16 @@ class ActiveTransformState:
     section_offset: float
 
 
+@dataclass
+class PendingLoadResult:
+    """Mesh loading result produced off the UI thread."""
+
+    loaded: LoadedMesh
+    display_result: DisplayMeshResult
+    bounds_min: np.ndarray
+    bounds_max: np.ndarray
+
+
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
 
@@ -93,9 +133,18 @@ class OpenRetopWindow:
         self.transform_state: ActiveTransformState | None = None
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
+        self._status_message = "Ready"
+        self._updating_scene_tree = False
+        self.is_loading = False
+        self._load_queue: queue.Queue[tuple[str, object]] | None = None
+        self._load_thread: threading.Thread | None = None
+        self.loading_window: Toplevel | None = None
+        self.loading_progress: ttk.Progressbar | None = None
         self.section_result: SectionResult | None = None
         self.curve_results: list[CurveFitResult] = []
 
+        self.active_workspace = StringVar(value=WORKSPACE_VIEW)
+        self.active_tool = StringVar(value=TOOL_SELECT)
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
         self.show_normals = BooleanVar(value=False)
@@ -117,6 +166,8 @@ class OpenRetopWindow:
         self.scale_value = StringVar(value="1.000")
 
         self.status_text = StringVar(value="No selection")
+        self.loading_file_text = StringVar(value="")
+        self.loading_stage_text = StringVar(value="")
         self.file_name_text = StringVar(value="(none)")
         self.vertex_count_text = StringVar(value="0")
         self.triangle_count_text = StringVar(value="0")
@@ -135,10 +186,14 @@ class OpenRetopWindow:
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
         self.selection_buttons: list[ttk.Button] = []
+        self.loading_disabled_widgets: list[ttk.Widget] = []
+        self.mesh_dependent_widgets: list[ttk.Widget] = []
 
         self._build_menu_bar()
         self._build_layout()
         self._set_selection_buttons_enabled(False)
+        self._update_scene_tree()
+        self._update_status_bar()
         self._show_context(None)
         self._bind_keyboard_shortcuts()
 
@@ -156,19 +211,47 @@ class OpenRetopWindow:
             self.viewport.start()
             self._refresh_viewport(reset_camera=True)
         except RuntimeError as exc:
-            self.status_text.set("Viewport failed to start")
+            self._set_status("Viewport failed to start")
             messagebox.showerror("Viewport failed to start", str(exc))
 
     def _build_menu_bar(self) -> None:
         self.menu_bar = Menu(self.root, tearoff=False)
 
         self.file_menu = Menu(self.menu_bar, tearoff=False)
+        self.file_menu.add_command(label="New Project", command=self.new_project)
         self.file_menu.add_command(label="Open Model", command=self.open_model)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(
+            label="Open Project",
+            command=lambda: self._placeholder_action("Open Project"),
+        )
+        self.file_menu.add_command(
+            label="Save Project",
+            command=lambda: self._placeholder_action("Save Project"),
+        )
+        self.file_menu.add_command(
+            label="Save Project As",
+            command=lambda: self._placeholder_action("Save Project As"),
+        )
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self._on_exit)
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
 
+        self.edit_menu = Menu(self.menu_bar, tearoff=False)
+        self.edit_menu.add_command(label="Undo", command=lambda: self._placeholder_action("Undo"))
+        self.edit_menu.add_command(label="Redo", command=lambda: self._placeholder_action("Redo"))
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(
+            label="Preferences",
+            command=lambda: self._placeholder_action("Preferences"),
+        )
+        self.menu_bar.add_cascade(label="Edit", menu=self.edit_menu)
+
         self.view_menu = Menu(self.menu_bar, tearoff=False)
+        self.view_menu.add_command(label="Frame All", command=self.frame_all)
+        self.view_menu.add_command(label="Frame Selected", command=self.frame_selected)
+        self.view_menu.add_command(label="Reset View", command=self.reset_view)
+        self.view_menu.add_separator()
         self.view_menu.add_checkbutton(
             label="Show Grid",
             variable=self.show_grid,
@@ -179,27 +262,25 @@ class OpenRetopWindow:
             variable=self.show_axes,
             command=self._on_view_option_changed,
         )
-        self.view_menu.add_checkbutton(
-            label="Show Normals",
-            variable=self.show_normals,
-            command=self._on_view_option_changed,
-        )
-        self.view_menu.add_separator()
-        self.view_menu.add_command(label="Frame All", command=self.frame_all)
-        self.view_menu.add_command(label="Reset View", command=self.reset_view)
         self.menu_bar.add_cascade(label="View", menu=self.view_menu)
+
+        self.help_menu = Menu(self.menu_bar, tearoff=False)
+        self.help_menu.add_command(label="About", command=lambda: self._placeholder_action("About"))
+        self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.root.configure(menu=self.menu_bar)
 
     def _build_layout(self) -> None:
         style = ttk.Style(self.root)
         style.configure("SidebarHeading.TLabel", font=("", 10, "bold"))
+        style.configure("Toolbar.TFrame", padding=(6, 4))
+        self._build_toolbar()
 
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
         main.columnconfigure(1, weight=1)
         main.rowconfigure(0, weight=1)
 
-        sidebar_shell = ttk.Frame(main, width=320)
+        sidebar_shell = ttk.Frame(main, width=360)
         sidebar_shell.grid(row=0, column=0, sticky="ns")
         sidebar_shell.grid_propagate(False)
         sidebar_shell.rowconfigure(0, weight=1)
@@ -209,7 +290,7 @@ class OpenRetopWindow:
             sidebar_shell,
             borderwidth=0,
             highlightthickness=0,
-            width=318,
+            width=358,
         )
         sidebar_scrollbar = ttk.Scrollbar(
             sidebar_shell,
@@ -243,26 +324,34 @@ class OpenRetopWindow:
         self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_mousewheel)
 
         row = 0
-        self.file_frame = ttk.Frame(self.sidebar)
-        self.file_frame.grid(row=row, column=0, sticky="ew")
-        self.file_frame.columnconfigure(1, weight=1)
-        self._build_file_section(self.file_frame)
+        self.scene_tree_frame = ttk.Frame(self.sidebar)
+        self.scene_tree_frame.grid(row=row, column=0, sticky="ew")
+        self.scene_tree_frame.columnconfigure(0, weight=1)
+        self._build_scene_tree(self.scene_tree_frame)
         row += 1
 
-        self.no_selection_frame = ttk.Frame(self.sidebar)
-        self.no_selection_frame.grid(row=row, column=0, sticky="ew")
-        self.no_selection_frame.columnconfigure(0, weight=1)
-        self._build_no_selection_context(self.no_selection_frame)
+        self.workspace_notebook = ttk.Notebook(self.sidebar)
+        self.workspace_notebook.grid(row=row, column=0, sticky="ew", pady=(10, 0))
+        self.workspace_frames: dict[str, ttk.Frame] = {}
+        for workspace in WORKSPACE_LABELS:
+            frame = ttk.Frame(self.workspace_notebook, padding=(6, 10, 6, 6))
+            frame.columnconfigure(0, weight=1)
+            frame.columnconfigure(1, weight=1)
+            self.workspace_notebook.add(frame, text=workspace)
+            if workspace in DISABLED_WORKSPACES:
+                self.workspace_notebook.tab(frame, state="disabled")
+            self.workspace_frames[workspace] = frame
+        self.workspace_notebook.bind("<<NotebookTabChanged>>", self._on_workspace_tab_changed)
 
-        self.model_context_frame = ttk.Frame(self.sidebar)
-        self.model_context_frame.grid(row=row, column=0, sticky="ew")
-        self.model_context_frame.columnconfigure(0, weight=1)
-        self._build_model_context(self.model_context_frame)
-
-        self.section_context_frame = ttk.Frame(self.sidebar)
-        self.section_context_frame.grid(row=row, column=0, sticky="ew")
-        self.section_context_frame.columnconfigure(0, weight=1)
-        self._build_section_context(self.section_context_frame)
+        self.view_workspace_frame = self.workspace_frames[WORKSPACE_VIEW]
+        self.align_workspace_frame = self.workspace_frames[WORKSPACE_ALIGN]
+        self.section_workspace_frame = self.workspace_frames[WORKSPACE_SECTION]
+        self.no_selection_frame = self.view_workspace_frame
+        self.model_context_frame = self.align_workspace_frame
+        self.section_context_frame = self.section_workspace_frame
+        self._build_view_workspace(self.view_workspace_frame)
+        self._build_align_workspace(self.align_workspace_frame)
+        self._build_section_workspace(self.section_workspace_frame)
 
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
@@ -275,16 +364,83 @@ class OpenRetopWindow:
         )
         status_bar.pack(fill="x", side="bottom")
 
-    def _build_file_section(self, parent: ttk.Frame) -> None:
-        row = self._add_heading(parent, 0, "File")
+    def _build_toolbar(self) -> None:
+        self.toolbar = ttk.Frame(self.root, style="Toolbar.TFrame")
+        self.toolbar.pack(fill="x", side="top")
+        self.toolbar_select_button = ttk.Button(
+            self.toolbar,
+            text=TOOL_SELECT,
+            command=self.activate_select_tool,
+        )
+        self.toolbar_select_button.pack(side="left", padx=(0, 4))
+        self.toolbar_move_button = ttk.Button(
+            self.toolbar,
+            text=TOOL_MOVE,
+            command=self.activate_move_tool,
+        )
+        self.toolbar_move_button.pack(side="left", padx=(0, 4))
+        self.toolbar_rotate_button = ttk.Button(
+            self.toolbar,
+            text=TOOL_ROTATE,
+            command=self.activate_rotate_tool,
+        )
+        self.toolbar_rotate_button.pack(side="left", padx=(0, 4))
+        self.toolbar_frame_button = ttk.Button(
+            self.toolbar,
+            text=TOOL_FRAME,
+            command=self.activate_frame_tool,
+        )
+        self.toolbar_frame_button.pack(side="left", padx=(0, 4))
+        self.toolbar_section_button = ttk.Button(
+            self.toolbar,
+            text=TOOL_SECTION_PLANE,
+            command=self.activate_section_plane_tool,
+        )
+        self.toolbar_section_button.pack(side="left", padx=(0, 4))
+        self.toolbar_compute_section_button = ttk.Button(
+            self.toolbar,
+            text=TOOL_COMPUTE_SECTION,
+            command=self.activate_compute_section_tool,
+        )
+        self.toolbar_compute_section_button.pack(side="left", padx=(0, 4))
+        self.mesh_dependent_widgets.extend(
+            [
+                self.toolbar_move_button,
+                self.toolbar_rotate_button,
+                self.toolbar_section_button,
+                self.toolbar_compute_section_button,
+            ]
+        )
+
+    def _build_scene_tree(self, parent: ttk.Frame) -> None:
+        row = self._add_heading(parent, 0, "Scene")
+        self.scene_tree = ttk.Treeview(parent, height=7, show="tree", selectmode="browse")
+        self.scene_tree.grid(row=row, column=0, sticky="ew")
+        self.scene_tree.bind("<<TreeviewSelect>>", self._on_scene_tree_select)
+
+    def _build_view_workspace(self, parent: ttk.Frame) -> None:
+        row = self._add_heading(parent, 0, "View")
         self.open_model_button = ttk.Button(
             parent,
             text="Open Model",
             command=self.open_model,
         )
         self.open_model_button.grid(row=row, column=0, columnspan=2, sticky="ew")
+        self.loading_disabled_widgets.append(self.open_model_button)
         row += 1
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Mesh Info")
         row = self._add_info_row(parent, row, "Loaded file", self.file_name_text)
+        row = self._add_info_row(parent, row, "Vertices", self.vertex_count_text)
+        row = self._add_info_row(parent, row, "Source triangles", self.triangle_count_text)
+        row = self._add_info_row(parent, row, "Display triangles", self.display_triangle_count_text)
+        row = self._add_info_row(parent, row, "Reduction", self.display_reduction_text)
+        row = self._add_info_row(parent, row, "Display proxy", self.display_proxy_text)
+        row = self._add_info_row(parent, row, "Source", self.source_retained_text)
+        row = self._add_info_row(parent, row, "Bounding box", self.bbox_size_text)
+
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Proxy")
         ttk.Label(parent, text="Proxy quality").grid(row=row, column=0, sticky="w", pady=2)
         self.proxy_quality_dropdown = ttk.Combobox(
             parent,
@@ -295,10 +451,10 @@ class OpenRetopWindow:
         )
         self.proxy_quality_dropdown.grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
         self.proxy_quality_dropdown.bind("<<ComboboxSelected>>", self._on_proxy_quality_changed)
+        row += 1
 
-    def _build_no_selection_context(self, parent: ttk.Frame) -> None:
-        row = self._add_separator(parent, 0)
-        row = self._add_heading(parent, row, "Scene/View")
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Viewport")
         self.show_grid_check = ttk.Checkbutton(
             parent,
             text="Show Grid",
@@ -338,49 +494,9 @@ class OpenRetopWindow:
             sticky="ew",
             pady=(4, 0),
         )
-        row += 1
-        self.select_model_button = ttk.Button(
-            parent,
-            text="Select Model",
-            command=self.select_model,
-        )
-        self.select_model_button.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(8, 0),
-        )
-        self.selection_buttons.append(self.select_model_button)
-        row += 1
-        self.select_section_plane_button = ttk.Button(
-            parent,
-            text="Select Section Plane",
-            command=self.select_section_plane,
-        )
-        self.select_section_plane_button.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(4, 0),
-        )
-        self.selection_buttons.append(self.select_section_plane_button)
-        row += 1
 
-        row = self._add_separator(parent, row)
-        row = self._add_heading(parent, row, "Mesh Info")
-        row = self._add_info_row(parent, row, "Vertices", self.vertex_count_text)
-        row = self._add_info_row(parent, row, "Source triangles", self.triangle_count_text)
-        row = self._add_info_row(parent, row, "Display triangles", self.display_triangle_count_text)
-        row = self._add_info_row(parent, row, "Reduction", self.display_reduction_text)
-        row = self._add_info_row(parent, row, "Display proxy", self.display_proxy_text)
-        row = self._add_info_row(parent, row, "Source", self.source_retained_text)
-        self._add_info_row(parent, row, "Bounding box", self.bbox_size_text)
-
-    def _build_model_context(self, parent: ttk.Frame) -> None:
-        row = self._add_separator(parent, 0)
-        row = self._add_heading(parent, row, "Selected Object")
+    def _build_align_workspace(self, parent: ttk.Frame) -> None:
+        row = self._add_heading(parent, 0, "Selected Object")
         row = self._add_info_row(parent, row, "Object", self.selected_object_text)
         row = self._add_info_row(parent, row, "Vertices", self.selected_vertex_count_text)
         row = self._add_info_row(parent, row, "Source triangles", self.selected_triangle_count_text)
@@ -441,32 +557,26 @@ class OpenRetopWindow:
             command=self.frame_selected,
         )
         self.frame_selected_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        row += 1
-        self.model_select_section_plane_button = ttk.Button(
+        self.mesh_dependent_widgets.extend(
+            [
+                self.set_origin_geometry_button,
+                self.origin_world_button,
+                self.center_geometry_button,
+                self.reset_object_button,
+                self.frame_selected_button,
+            ]
+        )
+
+    def _build_section_workspace(self, parent: ttk.Frame) -> None:
+        row = self._add_heading(parent, 0, "Section Plane")
+        self.select_section_plane_button = ttk.Button(
             parent,
             text="Select Section Plane",
             command=self.select_section_plane,
         )
-        self.model_select_section_plane_button.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(8, 0),
-        )
-        self.selection_buttons.append(self.model_select_section_plane_button)
+        self.select_section_plane_button.grid(row=row, column=0, columnspan=2, sticky="ew")
+        self.selection_buttons.append(self.select_section_plane_button)
         row += 1
-        self.model_deselect_button = ttk.Button(
-            parent,
-            text="Deselect",
-            command=self.clear_selection,
-        )
-        self.model_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        self.selection_buttons.append(self.model_deselect_button)
-
-    def _build_section_context(self, parent: ttk.Frame) -> None:
-        row = self._add_separator(parent, 0)
-        row = self._add_heading(parent, row, "Section Plane")
         self.show_section_plane_check = ttk.Checkbutton(
             parent,
             text="Show Section Plane",
@@ -531,28 +641,17 @@ class OpenRetopWindow:
             command=self.clear_section,
         )
         self.clear_section_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        row += 1
-        self.section_select_model_button = ttk.Button(
-            parent,
-            text="Select Model",
-            command=self.select_model,
+        self.mesh_dependent_widgets.extend(
+            [
+                self.select_section_plane_button,
+                self.show_section_plane_check,
+                self.axis_dropdown,
+                self.offset_slider,
+                self.offset_input,
+                self.compute_section_button,
+                self.clear_section_button,
+            ]
         )
-        self.section_select_model_button.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(8, 0),
-        )
-        self.selection_buttons.append(self.section_select_model_button)
-        row += 1
-        self.section_deselect_button = ttk.Button(
-            parent,
-            text="Deselect",
-            command=self.clear_selection,
-        )
-        self.section_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        self.selection_buttons.append(self.section_deselect_button)
 
     def _add_heading(self, parent: ttk.Frame, row: int, text: str) -> int:
         ttk.Label(parent, text=text, style="SidebarHeading.TLabel").grid(
@@ -605,22 +704,155 @@ class OpenRetopWindow:
         entry.bind("<KeyRelease>", self._on_object_transform_changed)
         entry.bind("<FocusOut>", self._on_object_transform_changed)
         self.object_transform_widgets.extend([label, entry])
+        self.mesh_dependent_widgets.extend([label, entry])
         return row + 1
 
     def _show_context(self, selected_item: str | None) -> None:
-        for frame in (
-            self.no_selection_frame,
-            self.model_context_frame,
-            self.section_context_frame,
-        ):
-            frame.grid_remove()
-
         if selected_item == SELECT_MODEL and self.mesh_object is not None:
-            self.model_context_frame.grid()
+            self._set_workspace(WORKSPACE_ALIGN)
         elif selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
-            self.section_context_frame.grid()
-        else:
-            self.no_selection_frame.grid()
+            self._set_workspace(WORKSPACE_SECTION)
+        elif self.active_workspace.get() not in WORKSPACE_LABELS:
+            self._set_workspace(WORKSPACE_VIEW)
+
+    def _set_workspace(self, workspace: str) -> None:
+        if workspace in DISABLED_WORKSPACES:
+            self._set_status(f"{workspace} workspace is not available yet")
+            return
+
+        frame = self.workspace_frames.get(workspace)
+        if frame is None:
+            return
+
+        current = self.active_workspace.get()
+        if current != workspace:
+            self.active_workspace.set(workspace)
+        try:
+            self.workspace_notebook.select(frame)
+        except Exception:
+            return
+        self._update_status_bar()
+
+    def _on_workspace_tab_changed(self, _event: object | None = None) -> None:
+        selected_tab = self.workspace_notebook.select()
+        if not selected_tab:
+            return
+        workspace = str(self.workspace_notebook.tab(selected_tab, "text"))
+        if workspace in WORKSPACE_LABELS:
+            self.active_workspace.set(workspace)
+            self._update_status_bar()
+
+    def _update_scene_tree(self) -> None:
+        if not hasattr(self, "scene_tree"):
+            return
+
+        selected_iid = self._selected_scene_tree_iid()
+        self._updating_scene_tree = True
+        try:
+            self.scene_tree.delete(*self.scene_tree.get_children(""))
+            self.scene_tree.insert("", "end", iid="tree_meshes", text="Meshes", open=True)
+            self.scene_tree.insert(
+                "",
+                "end",
+                iid="tree_section_planes",
+                text="Section Planes",
+                open=True,
+            )
+            self.scene_tree.insert("", "end", iid="tree_sections", text="Sections", open=True)
+            if self.mesh_object is not None:
+                self.scene_tree.insert(
+                    "tree_meshes",
+                    "end",
+                    iid="tree_loaded_mesh",
+                    text=self.mesh_object.name,
+                )
+                self.scene_tree.insert(
+                    "tree_section_planes",
+                    "end",
+                    iid="tree_section_plane",
+                    text=self.section_plane_text.get(),
+                )
+            if self.section_result is not None:
+                self.scene_tree.insert(
+                    "tree_sections",
+                    "end",
+                    iid="tree_section_result",
+                    text=f"Computed section ({self.section_result.segment_count} segments)",
+                )
+            if selected_iid is not None and self.scene_tree.exists(selected_iid):
+                self.scene_tree.selection_set(selected_iid)
+                self.scene_tree.see(selected_iid)
+        finally:
+            self._updating_scene_tree = False
+
+    def _selected_scene_tree_iid(self) -> str | None:
+        if self.selected_item == SELECT_MODEL and self.mesh_object is not None:
+            return "tree_loaded_mesh"
+        if self.selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
+            return "tree_section_plane"
+        return None
+
+    def _on_scene_tree_select(self, _event: object | None = None) -> None:
+        if self._updating_scene_tree:
+            return
+
+        selection = self.scene_tree.selection()
+        if not selection:
+            return
+
+        selected = selection[0]
+        if selected == "tree_loaded_mesh":
+            self.select_model()
+        elif selected == "tree_section_plane":
+            self.select_section_plane()
+        elif selected == "tree_section_result":
+            self._set_workspace(WORKSPACE_SECTION)
+            self._set_status("Selected: computed section")
+
+    def _set_status(self, message: str) -> None:
+        self._status_message = str(message)
+        self._update_status_bar()
+
+    def _update_status_bar(self) -> None:
+        selected_label = self._selected_status_label()
+        workspace_label = self.active_workspace.get()
+        tool_label = self.active_tool.get()
+        proxy_label = self._proxy_status_label()
+        parts = [
+            selected_label,
+            f"Workspace: {workspace_label}",
+            f"Tool: {tool_label}",
+            proxy_label,
+        ]
+        transform_label = self._transform_status_label()
+        if transform_label:
+            parts.append(transform_label)
+        if self._status_message:
+            parts.append(self._status_message)
+        self.status_text.set(" | ".join(parts))
+
+    def _selected_status_label(self) -> str:
+        if self.selected_item == SELECT_MODEL and self.mesh_object is not None:
+            return f"Selected: {self.mesh_object.name}"
+        if self.selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
+            return "Selected: Section Plane"
+        return "Selected: None"
+
+    def _proxy_status_label(self) -> str:
+        if self.mesh_object is None:
+            return "Proxy: none"
+        return (
+            f"Proxy: {_format_count(self.mesh_object.display_triangle_count)} / "
+            f"{_format_count(self.mesh_object.source_triangle_count)} tris"
+        )
+
+    def _transform_status_label(self) -> str:
+        if self.transform_state is None:
+            return ""
+
+        mode = "Move" if self.transform_state.mode == "move" else "Rotate"
+        axis = self._display_transform_axis(self.transform_state) or "free"
+        return f"Transform: {mode} {axis}"
 
     def _on_sidebar_mousewheel(self, event: object) -> None:
         delta = getattr(event, "delta", 0)
@@ -650,7 +882,70 @@ class OpenRetopWindow:
         if key in key_map:
             self._handle_shortcut(key_map[key])
 
+    def new_project(self) -> None:
+        if self.transform_state is not None:
+            self._end_active_transform(commit=False, status="Transform cancelled")
+        self.mesh_object = None
+        self.mesh_state = MeshState()
+        self.selected_item = None
+        self.active_transform_mode = None
+        self.active_transform_axis = None
+        self.section_result = None
+        self.curve_results = []
+        self.section_result_text.set("Section result: none")
+        self._update_scene_tree()
+        self._set_transform_inputs_from_object()
+        self._update_stats()
+        self._configure_offset_range(reset=True)
+        self._set_selection_buttons_enabled(False)
+        self._update_scene_tree()
+        self._set_workspace(WORKSPACE_VIEW)
+        self._refresh_viewport(reset_camera=True)
+        self._set_status("New project")
+
+    def _placeholder_action(self, label: str) -> None:
+        if label == "About":
+            messagebox.showinfo("About", "openRetop UI workspace preview")
+        self._set_status(f"{label} is a placeholder")
+
+    def activate_select_tool(self) -> None:
+        self.active_tool.set(TOOL_SELECT)
+        if self.transform_state is not None:
+            self._end_active_transform(commit=False, status="Transform cancelled")
+        self._set_status("Select tool active")
+
+    def activate_move_tool(self) -> None:
+        self.active_tool.set(TOOL_MOVE)
+        if self.mesh_object is not None and self.selected_item is None:
+            self.select_model()
+        self._start_active_transform("move")
+
+    def activate_rotate_tool(self) -> None:
+        self.active_tool.set(TOOL_ROTATE)
+        if self.mesh_object is not None and self.selected_item is None:
+            self.select_model()
+        self._start_active_transform("rotate")
+
+    def activate_frame_tool(self) -> None:
+        self.active_tool.set(TOOL_FRAME)
+        if self.selected_item is None:
+            self.frame_all()
+        else:
+            self.frame_selected()
+
+    def activate_section_plane_tool(self) -> None:
+        self.active_tool.set(TOOL_SECTION_PLANE)
+        self.select_section_plane()
+
+    def activate_compute_section_tool(self) -> None:
+        self.active_tool.set(TOOL_COMPUTE_SECTION)
+        self.compute_section()
+
     def open_model(self) -> None:
+        if self.is_loading:
+            self._set_status("Mesh is already loading")
+            return
+
         selected_path = filedialog.askopenfilename(
             title="Open Model",
             filetypes=MESH_FILE_TYPES,
@@ -660,20 +955,99 @@ class OpenRetopWindow:
 
         self.load_model(Path(selected_path))
 
-    def load_model(self, file_path: Path) -> None:
-        self.status_text.set(f"Loading: {file_path.name}")
-        self.root.update_idletasks()
-
-        try:
-            loaded = load_mesh(file_path)
-        except (FileNotFoundError, ValueError, SystemExit) as exc:
-            self.status_text.set("No selection")
-            messagebox.showerror("Could not open model", str(exc))
+    def load_model(self, file_path: Path, *, background: bool = True) -> None:
+        if self.is_loading:
+            self._set_status("Mesh is already loading")
             return
 
-        display_result = build_display_mesh(loaded.mesh, quality=self.proxy_quality.get())
-        bounds = display_result.source_mesh.get_axis_aligned_bounding_box()
-        origin = np.asarray(bounds.get_center(), dtype=float)
+        self.is_loading = True
+        self._load_queue = queue.Queue()
+        self._set_open_model_enabled(False)
+        self._show_loading_progress(file_path)
+        self._update_loading_stage(LOAD_STAGE_START)
+        quality = self.proxy_quality.get()
+
+        if background:
+            self._load_thread = threading.Thread(
+                target=self._load_model_worker,
+                args=(Path(file_path), quality, self._load_queue),
+                daemon=True,
+            )
+            self._load_thread.start()
+            self.root.after(50, self._poll_load_queue)
+        else:
+            self._load_model_worker(Path(file_path), quality, self._load_queue)
+            self._poll_load_queue()
+
+    def _load_model_worker(
+        self,
+        file_path: Path,
+        quality: str,
+        load_queue: queue.Queue[tuple[str, object]],
+    ) -> None:
+        try:
+            load_queue.put(("stage", LOAD_STAGE_READ))
+            loaded = load_mesh(file_path)
+            load_queue.put(("stage", LOAD_STAGE_BOUNDS))
+            bounds = loaded.mesh.get_axis_aligned_bounding_box()
+            bounds_min = np.asarray(bounds.get_min_bound(), dtype=float)
+            bounds_max = np.asarray(bounds.get_max_bound(), dtype=float)
+            load_queue.put(("stage", LOAD_STAGE_PROXY))
+            display_result = build_display_mesh(loaded.mesh, quality=quality)
+            load_queue.put(("stage", LOAD_STAGE_NORMALS))
+            load_queue.put(
+                (
+                    "done",
+                    PendingLoadResult(
+                        loaded=loaded,
+                        display_result=display_result,
+                        bounds_min=bounds_min,
+                        bounds_max=bounds_max,
+                    ),
+                )
+            )
+        except (FileNotFoundError, ValueError, SystemExit) as exc:
+            load_queue.put(("error", str(exc)))
+        except Exception as exc:
+            load_queue.put(("error", f"Unexpected load failure: {exc}"))
+
+    def _poll_load_queue(self) -> None:
+        load_queue = self._load_queue
+        if load_queue is None:
+            return
+
+        should_continue = self.is_loading
+        while True:
+            try:
+                event, payload = load_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if event == "stage":
+                self._update_loading_stage(str(payload))
+            elif event == "done":
+                should_continue = False
+                self._finish_model_load(payload)
+                break
+            elif event == "error":
+                should_continue = False
+                self._finish_model_load_error(str(payload))
+                break
+
+        if should_continue and self.is_loading and self._load_queue is load_queue:
+            self.root.after(50, self._poll_load_queue)
+
+    def _finish_model_load(self, pending_result: object) -> None:
+        if not isinstance(pending_result, PendingLoadResult):
+            self._finish_model_load_error("Internal load result was invalid.")
+            return
+
+        self._update_loading_stage(LOAD_STAGE_VIEWPORT)
+        loaded = pending_result.loaded
+        display_result = pending_result.display_result
+        bounds_min = pending_result.bounds_min
+        bounds_max = pending_result.bounds_max
+        origin = (bounds_min + bounds_max) * 0.5
         self.mesh_object = MeshObjectState(
             source_mesh=display_result.source_mesh,
             display_mesh=display_result.display_mesh,
@@ -689,8 +1063,8 @@ class OpenRetopWindow:
             display_proxy_enabled=display_result.proxy_enabled,
             display_reduction_percent=display_result.reduction_percent,
             proxy_quality=display_result.quality,
-            source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
-            source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
+            source_bounds_min=bounds_min,
+            source_bounds_max=bounds_max,
         )
         self.section_result = None
         self.curve_results = []
@@ -701,8 +1075,75 @@ class OpenRetopWindow:
         self._update_section_plane_label(set_status=False)
         self._set_selection_buttons_enabled(True)
         self._set_selected_item(None, status="No selection")
+        self._set_workspace(WORKSPACE_VIEW)
         self._refresh_viewport(reset_camera=True)
-        self.status_text.set(self._display_mesh_status(display_result))
+        self._update_scene_tree()
+        self._update_loading_stage(LOAD_STAGE_DONE)
+        self._close_loading_progress()
+        self._set_open_model_enabled(True)
+        self.is_loading = False
+        self._load_queue = None
+        self._load_thread = None
+        self._set_status(self._display_mesh_status(display_result))
+
+    def _finish_model_load_error(self, message: str) -> None:
+        self._close_loading_progress()
+        self._set_open_model_enabled(True)
+        self.is_loading = False
+        self._load_queue = None
+        self._load_thread = None
+        self._set_status("Mesh load failed")
+        messagebox.showerror("Could not open model", message)
+
+    def _show_loading_progress(self, file_path: Path) -> None:
+        self.loading_file_text.set(Path(file_path).name)
+        self.loading_stage_text.set(LOAD_STAGE_START)
+        self.loading_window = Toplevel(self.root)
+        self.loading_window.title("Loading model")
+        self.loading_window.transient(self.root)
+        self.loading_window.resizable(False, False)
+        frame = ttk.Frame(self.loading_window, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text="Loading model").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, textvariable=self.loading_file_text).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Label(frame, textvariable=self.loading_stage_text).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=(4, 8),
+        )
+        self.loading_progress = ttk.Progressbar(frame, mode="indeterminate", length=280)
+        self.loading_progress.grid(row=3, column=0, sticky="ew")
+        self.loading_progress.start(12)
+        self.loading_window.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.loading_window.update_idletasks()
+
+    def _update_loading_stage(self, stage: str) -> None:
+        self.loading_stage_text.set(stage)
+        self._set_status(stage)
+        self.root.update_idletasks()
+
+    def _close_loading_progress(self) -> None:
+        if self.loading_progress is not None:
+            self.loading_progress.stop()
+            self.loading_progress = None
+        if self.loading_window is not None:
+            self.loading_window.destroy()
+            self.loading_window = None
+
+    def _set_open_model_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for widget in self.loading_disabled_widgets:
+            widget.configure(state=state)
+        try:
+            self.file_menu.entryconfigure("Open Model", state=state)
+        except Exception:
+            return
 
     def select_model(self) -> None:
         if self.mesh_object is None:
@@ -730,9 +1171,10 @@ class OpenRetopWindow:
         self.active_transform_axis = None
         self.transform_state = None
         self._show_context(selected_item)
+        self._update_scene_tree()
         self._refresh_viewport(reset_camera=False)
         if status is not None:
-            self.status_text.set(status)
+            self._set_status(status)
 
     def _on_viewport_selection(self, selected_item: str | None) -> None:
         if selected_item == SELECT_MODEL:
@@ -773,7 +1215,7 @@ class OpenRetopWindow:
 
     def compute_section(self) -> None:
         if self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         offset = self._parse_offset()
@@ -790,9 +1232,10 @@ class OpenRetopWindow:
         self.section_result_text.set(
             f"Section result: {self.section_result.segment_count} segments"
         )
+        self._update_scene_tree()
         self._update_section_plane_label(set_status=False)
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(
+        self._set_status(
             f"Section computed: {self.section_result.segment_count} segments"
         )
 
@@ -800,26 +1243,27 @@ class OpenRetopWindow:
         self.section_result = None
         self.curve_results = []
         self.section_result_text.set("Section result: none")
+        self._update_scene_tree()
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Section cleared")
+        self._set_status("Section cleared")
 
     def frame_all(self) -> None:
         self.viewport.frame_model()
-        self.status_text.set("View framed")
+        self._set_status("View framed")
 
     def frame_selected(self) -> None:
         if self.selected_item == SELECT_MODEL:
             self.viewport.frame_model()
-            self.status_text.set(f"Selected: {self.mesh_object.name}")
+            self._set_status(f"Selected: {self.mesh_object.name}")
         elif self.selected_item == SELECT_SECTION_PLANE:
             self.viewport.frame_model()
-            self.status_text.set("Selected: Section Plane")
+            self._set_status("Selected: Section Plane")
         else:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
 
     def reset_view(self) -> None:
         self.viewport.reset_view()
-        self.status_text.set("View reset")
+        self._set_status("View reset")
 
     def reset_camera(self) -> None:
         self.reset_view()
@@ -873,16 +1317,16 @@ class OpenRetopWindow:
 
         if self.mesh_object is None:
             self._update_stats()
-            self.status_text.set(f"Proxy quality: {quality}")
+            self._set_status(f"Proxy quality: {quality}")
             return
 
-        self.status_text.set(f"Rebuilding {quality} display proxy")
+        self._set_status(f"Rebuilding {quality} display proxy")
         self.root.update_idletasks()
         display_result = build_display_mesh(self.mesh_object.source_mesh, quality=quality)
         self._apply_display_mesh_result(display_result)
         self._update_stats()
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._display_mesh_status(display_result))
+        self._set_status(self._display_mesh_status(display_result))
 
     def _on_section_plane_visibility_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
@@ -965,8 +1409,9 @@ class OpenRetopWindow:
         axis = self.section_axis.get()
         offset = self.section_offset.get()
         self.section_plane_text.set(f"Section: {axis} = {offset:.3f}")
+        self._update_scene_tree()
         if set_status and self.selected_item == SELECT_SECTION_PLANE:
-            self.status_text.set(f"Section plane: {axis} = {offset:.3f}")
+            self._set_status(f"Section plane: {axis} = {offset:.3f}")
 
     def _clear_section_for_plane_change(self) -> None:
         if self.section_result is None and not self.curve_results:
@@ -989,7 +1434,7 @@ class OpenRetopWindow:
         self.mesh_object.rotation = rotation
         self.mesh_object.scale = scale
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set("Transforms update live")
+        self._set_status("Transforms update live")
 
     def _parse_object_transform(
         self,
@@ -1065,7 +1510,7 @@ class OpenRetopWindow:
 
     def set_origin_to_geometry(self) -> None:
         if self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         minimum_bound, maximum_bound = self._transformed_source_bounds()
@@ -1075,11 +1520,11 @@ class OpenRetopWindow:
             current_center,
         )
         self._change_origin_keep_geometry(new_origin)
-        self.status_text.set("Origin set to geometry")
+        self._set_status("Origin set to geometry")
 
     def move_origin_to_world_origin(self) -> None:
         if self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         rotation_scale = _rotation_matrix(self.mesh_object.rotation) * self.mesh_object.scale
@@ -1090,11 +1535,11 @@ class OpenRetopWindow:
         self.mesh_object.location = np.asarray([0.0, 0.0, 0.0], dtype=float)
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set("Origin moved to world origin")
+        self._set_status("Origin moved to world origin")
 
     def center_geometry_on_origin(self) -> None:
         if self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         bounds = self.mesh_object.source_mesh.get_axis_aligned_bounding_box()
@@ -1111,11 +1556,11 @@ class OpenRetopWindow:
             dtype=float,
         ) + delta
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set("Geometry centered on origin")
+        self._set_status("Geometry centered on origin")
 
     def reset_object_transform(self) -> None:
         if self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         self.mesh_object.location = self.mesh_object.origin.copy()
@@ -1123,7 +1568,7 @@ class OpenRetopWindow:
         self.mesh_object.scale = 1.0
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=True)
-        self.status_text.set("Selected: " + self.mesh_object.name)
+        self._set_status("Selected: " + self.mesh_object.name)
 
     def _change_origin_keep_geometry(self, new_origin: np.ndarray) -> None:
         if self.mesh_object is None:
@@ -1208,6 +1653,7 @@ class OpenRetopWindow:
         self.selected_display_reduction_text.set(reduction)
         self.selected_display_proxy_text.set(display_proxy)
         self.selected_bbox_size_text.set(bbox_extent)
+        self._update_status_bar()
 
     def _display_mesh_status(self, display_result: DisplayMeshResult) -> str:
         proxy_status = (
@@ -1250,7 +1696,7 @@ class OpenRetopWindow:
 
     def _start_active_transform(self, mode: str) -> None:
         if self.selected_item is None or self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         if self.selected_item == SELECT_SECTION_PLANE and mode == "rotate":
@@ -1271,12 +1717,13 @@ class OpenRetopWindow:
         self.active_transform_axis = self._display_transform_axis(self.transform_state)
         self._last_transform_readout = None
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
+        self.active_tool.set(TOOL_MOVE if mode == "move" else TOOL_ROTATE)
+        self._set_status(self._active_transform_status())
 
     def _set_transform_axis_constraint(self, axis: str) -> None:
         if self.transform_state is None:
             self.active_transform_axis = axis
-            self.status_text.set(f"Axis constraint: {axis}")
+            self._set_status(f"Axis constraint: {axis}")
             return
 
         next_axis = None if self.transform_state.axis_constraint == axis else axis
@@ -1292,7 +1739,7 @@ class OpenRetopWindow:
             self._update_section_plane_label(set_status=False)
 
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
+        self._set_status(self._active_transform_status())
 
     def _update_active_transform(
         self,
@@ -1344,7 +1791,7 @@ class OpenRetopWindow:
         self.mesh_object.location = state.location + movement
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
+        self._set_status(self._active_transform_status())
 
     def _update_mesh_rotate_transform(
         self,
@@ -1366,7 +1813,7 @@ class OpenRetopWindow:
         self.mesh_object.rotation = rotation
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
+        self._set_status(self._active_transform_status())
 
     def _update_section_plane_move_transform(
         self,
@@ -1387,7 +1834,7 @@ class OpenRetopWindow:
         self._last_transform_readout = (
             f"Offset {self.section_axis.get()}: {self.section_offset.get():.3f}"
         )
-        self.status_text.set(self._active_transform_status())
+        self._set_status(self._active_transform_status())
 
     def _end_active_transform(self, *, commit: bool, status: str) -> None:
         state = self.transform_state
@@ -1402,7 +1849,7 @@ class OpenRetopWindow:
         self.active_transform_axis = None
         self._last_transform_readout = None
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(status)
+        self._set_status(status)
 
     def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
         if state.selected_item == SELECT_MODEL and self.mesh_object is not None:
@@ -1425,7 +1872,7 @@ class OpenRetopWindow:
         self._update_section_plane_label(set_status=False)
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(f"Section plane axis cycled to {next_axis}")
+        self._set_status(f"Section plane axis cycled to {next_axis}")
 
     def _active_transform_status(self) -> str:
         if self.transform_state is None:
@@ -1487,7 +1934,7 @@ class OpenRetopWindow:
             if self.transform_state is None:
                 self.active_transform_mode = None
                 self.active_transform_axis = None
-                self.status_text.set("Transform cancelled")
+                self._set_status("Transform cancelled")
             else:
                 self._end_active_transform(commit=False, status="Transform cancelled")
             return
@@ -1496,7 +1943,7 @@ class OpenRetopWindow:
             if self.transform_state is None:
                 self.active_transform_mode = None
                 self.active_transform_axis = None
-                self.status_text.set("Transform confirmed")
+                self._set_status("Transform confirmed")
             else:
                 self._end_active_transform(commit=True, status="Transform confirmed")
             return
@@ -1514,7 +1961,7 @@ class OpenRetopWindow:
 
     def _delete_selected_if_safe(self) -> None:
         if self.selected_item != SELECT_MODEL or self.mesh_object is None:
-            self.status_text.set("No selection")
+            self._set_status("No selection")
             return
 
         self.mesh_object = None
@@ -1524,14 +1971,23 @@ class OpenRetopWindow:
         self.section_result_text.set("Section result: none")
         self._update_stats()
         self._set_selection_buttons_enabled(False)
+        self._update_scene_tree()
         self._set_selected_item(None, status="Selected model removed")
 
     def _set_selection_buttons_enabled(self, enabled: bool) -> None:
-        state = "normal" if enabled else "disabled"
-        for button in self.selection_buttons:
-            button.configure(state=state)
+        for widget in self.selection_buttons + self.mesh_dependent_widgets:
+            self._configure_widget_enabled(widget, enabled)
+
+    def _configure_widget_enabled(self, widget: ttk.Widget, enabled: bool) -> None:
+        if isinstance(widget, ttk.Combobox):
+            widget.configure(state="readonly" if enabled else "disabled")
+        else:
+            widget.configure(state="normal" if enabled else "disabled")
 
     def _on_exit(self) -> None:
+        self.is_loading = False
+        self._load_queue = None
+        self._close_loading_progress()
         self.sidebar_canvas.unbind_all("<MouseWheel>")
         self.root.unbind_all("<KeyPress>")
         self.viewport.close()

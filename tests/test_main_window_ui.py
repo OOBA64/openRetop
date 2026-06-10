@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from tkinter import TclError
@@ -127,6 +129,10 @@ def _create_window() -> OpenRetopWindow:
     return window
 
 
+def _active_workspace(window: OpenRetopWindow) -> str:
+    return str(window.workspace_notebook.tab(window.workspace_notebook.select(), "text"))
+
+
 class MainWindowUiTests(unittest.TestCase):
     def test_menu_bar_and_initial_no_selection_context_match_instructions(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
@@ -134,17 +140,32 @@ class MainWindowUiTests(unittest.TestCase):
 
         try:
             self.assertEqual(window.menu_bar.entrycget(0, "label"), "File")
-            self.assertEqual(window.menu_bar.entrycget(1, "label"), "View")
-            self.assertEqual(window.file_menu.entrycget(0, "label"), "Open Model")
-            self.assertEqual(window.file_menu.entrycget(2, "label"), "Exit")
-            self.assertEqual(window.view_menu.entrycget(0, "label"), "Show Grid")
-            self.assertEqual(window.view_menu.entrycget(1, "label"), "Show Axes")
-            self.assertEqual(window.view_menu.entrycget(2, "label"), "Show Normals")
-            self.assertEqual(window.view_menu.entrycget(4, "label"), "Frame All")
-            self.assertEqual(window.view_menu.entrycget(5, "label"), "Reset View")
-            self.assertEqual(window.view_menu.type(0), "checkbutton")
-            self.assertEqual(window.view_menu.type(1), "checkbutton")
-            self.assertEqual(window.view_menu.type(2), "checkbutton")
+            self.assertEqual(window.menu_bar.entrycget(1, "label"), "Edit")
+            self.assertEqual(window.menu_bar.entrycget(2, "label"), "View")
+            self.assertEqual(window.menu_bar.entrycget(3, "label"), "Help")
+            self.assertEqual(window.file_menu.entrycget(0, "label"), "New Project")
+            self.assertEqual(window.file_menu.entrycget(1, "label"), "Open Model")
+            self.assertEqual(window.file_menu.entrycget(3, "label"), "Open Project")
+            self.assertEqual(window.file_menu.entrycget(4, "label"), "Save Project")
+            self.assertEqual(window.file_menu.entrycget(5, "label"), "Save Project As")
+            self.assertEqual(window.file_menu.entrycget(7, "label"), "Exit")
+            self.assertEqual(window.edit_menu.entrycget(0, "label"), "Undo")
+            self.assertEqual(window.edit_menu.entrycget(1, "label"), "Redo")
+            self.assertEqual(window.edit_menu.entrycget(3, "label"), "Preferences")
+            self.assertEqual(window.view_menu.entrycget(0, "label"), "Frame All")
+            self.assertEqual(window.view_menu.entrycget(1, "label"), "Frame Selected")
+            self.assertEqual(window.view_menu.entrycget(2, "label"), "Reset View")
+            self.assertEqual(window.view_menu.entrycget(4, "label"), "Show Grid")
+            self.assertEqual(window.view_menu.entrycget(5, "label"), "Show Axes")
+            self.assertEqual(window.view_menu.type(4), "checkbutton")
+            self.assertEqual(window.view_menu.type(5), "checkbutton")
+            self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
+            self.assertEqual(window.toolbar_select_button.cget("text"), "Select")
+            self.assertEqual(window.toolbar_move_button.cget("text"), "Move")
+            self.assertEqual(window.toolbar_rotate_button.cget("text"), "Rotate")
+            self.assertEqual(window.toolbar_frame_button.cget("text"), "Frame")
+            self.assertEqual(window.toolbar_section_button.cget("text"), "Section Plane")
+            self.assertEqual(window.toolbar_compute_section_button.cget("text"), "Compute Section")
 
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
@@ -152,14 +173,20 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.show_section_plane.get())
             self.assertEqual(window.proxy_quality.get(), "Medium")
             self.assertEqual(tuple(window.proxy_quality_dropdown.cget("values")), ("Low", "Medium", "High"))
-            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertEqual(_active_workspace(window), "View")
+            self.assertEqual(window.active_workspace.get(), "View")
+            self.assertIn("Selected: None", window.status_text.get())
+            self.assertIn("Workspace: View", window.status_text.get())
+            self.assertIn("Tool: Select", window.status_text.get())
             self.assertIsNone(window.selected_item)
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
-            self.assertEqual(window.model_context_frame.winfo_manager(), "")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertEqual(window.workspace_notebook.tab(3, "state"), "disabled")
+            self.assertEqual(window.workspace_notebook.tab(4, "state"), "disabled")
+            self.assertEqual(window.workspace_notebook.tab(5, "state"), "disabled")
             self.assertFalse(hasattr(window, "apply_transform_button"))
-            self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
+            self.assertEqual(str(window.toolbar_move_button.cget("state")), "disabled")
+            self.assertEqual(str(window.toolbar_rotate_button.cget("state")), "disabled")
+            self.assertEqual(str(window.toolbar_compute_section_button.cget("state")), "disabled")
             self.assertEqual(window.compute_section_button.cget("text"), "Compute Section")
             self.assertEqual(window.clear_section_button.cget("text"), "Clear Section")
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
@@ -190,23 +217,24 @@ class MainWindowUiTests(unittest.TestCase):
                 "app.main_window.load_mesh",
                 return_value=LoadedMesh(mesh=mesh, metadata=metadata),
             ):
-                window.load_model(Path("sample.stl"))
+                window.load_model(Path("sample.stl"), background=False)
 
             self.assertEqual(window.file_name_text.get(), "sample.stl")
             self.assertEqual(window.vertex_count_text.get(), "3")
             self.assertEqual(window.triangle_count_text.get(), "1")
             self.assertEqual(window.bbox_size_text.get(), "1, 2, 3")
-            self.assertEqual(
-                window.status_text.get(),
-                "Source: 1 tris | Display: 1 tris | Reduction: 0.0% | "
-                "No proxy (Medium) | Full-resolution source preserved",
-            )
+            self.assertIn("Selected: None", window.status_text.get())
+            self.assertIn("Workspace: View", window.status_text.get())
+            self.assertIn("Proxy: 1 / 1 tris", window.status_text.get())
+            self.assertIn("Source: 1 tris", window.status_text.get())
             self.assertIsNone(window.selected_item)
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
-            self.assertEqual(window.model_context_frame.winfo_manager(), "")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "")
-            self.assertEqual(str(window.select_model_button.cget("state")), "normal")
+            self.assertEqual(_active_workspace(window), "View")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "normal")
+            self.assertEqual(str(window.toolbar_move_button.cget("state")), "normal")
+            self.assertEqual(str(window.toolbar_rotate_button.cget("state")), "normal")
+            self.assertEqual(str(window.toolbar_compute_section_button.cget("state")), "normal")
+            self.assertIsNone(window.loading_window)
+            self.assertEqual(str(window.open_model_button.cget("state")), "normal")
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
             self.assertTrue(window.show_section_plane.get())
@@ -226,7 +254,58 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIsNone(scene["selected_item"])
             self.assertTrue(np.allclose(scene["scene_bounds_min"], [0.0, 0.0, 0.0]))
             self.assertTrue(np.allclose(scene["scene_bounds_max"], [1.0, 2.0, 3.0]))
+            self.assertTrue(window.scene_tree.exists("tree_loaded_mesh"))
+            self.assertEqual(window.scene_tree.item("tree_loaded_mesh", "text"), "sample.stl")
+            self.assertTrue(window.scene_tree.exists("tree_section_plane"))
         finally:
+            window.root.destroy()
+
+    def test_background_loading_shows_progress_and_disables_open_model(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+        release_load = threading.Event()
+
+        def slow_load(_path: Path) -> LoadedMesh:
+            release_load.wait(timeout=2.0)
+            return LoadedMesh(mesh=mesh, metadata=metadata)
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch("app.main_window.load_mesh", side_effect=slow_load):
+                window.load_model(Path("sample.stl"))
+                window.root.update()
+
+                self.assertTrue(window.is_loading)
+                self.assertIsNotNone(window.loading_window)
+                self.assertEqual(window.loading_file_text.get(), "sample.stl")
+                self.assertIn("Loading mesh file", window.status_text.get())
+                self.assertEqual(str(window.open_model_button.cget("state")), "disabled")
+
+                release_load.set()
+                for _index in range(100):
+                    window.root.update()
+                    if not window.is_loading:
+                        break
+                    time.sleep(0.01)
+
+            self.assertFalse(window.is_loading)
+            self.assertIsNone(window.loading_window)
+            self.assertEqual(str(window.open_model_button.cget("state")), "normal")
+            self.assertEqual(window.file_name_text.get(), "sample.stl")
+        finally:
+            release_load.set()
             window.root.destroy()
 
     def test_selecting_model_shows_object_context_and_live_transform(self) -> None:
@@ -251,21 +330,20 @@ class MainWindowUiTests(unittest.TestCase):
                 "app.main_window.load_mesh",
                 return_value=LoadedMesh(mesh=mesh, metadata=metadata),
             ):
-                window.load_model(Path("sample.stl"))
+                window.load_model(Path("sample.stl"), background=False)
 
             window.select_model()
             self.assertEqual(window.selected_item, "model")
-            self.assertEqual(window.status_text.get(), "Selected: sample.stl")
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
-            self.assertEqual(window.model_context_frame.winfo_manager(), "grid")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertIn("Selected: sample.stl", window.status_text.get())
+            self.assertEqual(_active_workspace(window), "Align")
             self.assertEqual(window.selected_object_text.get(), "sample.stl")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "model")
             self.assertIsNotNone(window.viewport.scene_calls[-1]["object_origin"])
+            self.assertEqual(window.scene_tree.selection(), ("tree_loaded_mesh",))
 
             window.location_x.set("1.500")
             window._on_object_transform_changed()
-            self.assertEqual(window.status_text.get(), "Transforms update live")
+            self.assertIn("Transforms update live", window.status_text.get())
             self.assertAlmostEqual(window.mesh_object.location[0], 1.5)
             self.assertIsNotNone(window.mesh_object.transform_matrix)
             self.assertEqual(window.viewport.scene_calls[-1]["mesh"], window.mesh_object.display_mesh)
@@ -281,7 +359,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.frame_selected()
             self.assertEqual(window.viewport.frame_count, 1)
-            self.assertEqual(window.status_text.get(), "Selected: sample.stl")
+            self.assertIn("Selected: sample.stl", window.status_text.get())
         finally:
             window.root.destroy()
 
@@ -309,20 +387,21 @@ class MainWindowUiTests(unittest.TestCase):
                 "app.main_window.load_mesh",
                 return_value=LoadedMesh(mesh=mesh, metadata=metadata),
             ):
-                window.load_model(Path("sample.stl"))
+                window.load_model(Path("sample.stl"), background=False)
 
             window.select_model()
             start_location = window.mesh_object.location.copy()
             window._on_viewport_pointer_event("motion", 10, 10)
             window._handle_shortcut("G")
-            self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
+            self.assertIn("Move mode - press X/Y/Z", window.status_text.get())
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_mode"], "move")
+            self.assertIn("Transform: Move free", window.status_text.get())
 
             window._handle_shortcut("X")
-            self.assertEqual(window.status_text.get(), "Move mode - X axis")
+            self.assertIn("Move mode - X axis", window.status_text.get())
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_axis"], "X")
             window._handle_shortcut("X")
-            self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
+            self.assertIn("Move mode - press X/Y/Z", window.status_text.get())
             self.assertIsNone(window.viewport.scene_calls[-1]["active_transform_axis"])
             window._handle_shortcut("X")
 
@@ -336,7 +415,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.location_x.get(), f"{moved_location[0]:.3f}")
 
             window._handle_shortcut("Escape")
-            self.assertEqual(window.status_text.get(), "Transform cancelled")
+            self.assertIn("Transform cancelled", window.status_text.get())
             self.assertTrue(np.allclose(window.mesh_object.location, start_location))
             self.assertEqual(window.location_x.get(), f"{start_location[0]:.3f}")
             self.assertIsNone(window.viewport.scene_calls[-1]["active_transform_mode"])
@@ -362,7 +441,7 @@ class MainWindowUiTests(unittest.TestCase):
             window._on_viewport_pointer_event("motion", 150, 10)
             confirmed_location = window.mesh_object.location.copy()
             window._handle_shortcut("Enter")
-            self.assertEqual(window.status_text.get(), "Transform confirmed")
+            self.assertIn("Transform confirmed", window.status_text.get())
             self.assertTrue(np.allclose(window.mesh_object.location, confirmed_location))
             self.assertGreater(confirmed_location[0], start_location[0])
         finally:
@@ -390,19 +469,16 @@ class MainWindowUiTests(unittest.TestCase):
                 "app.main_window.load_mesh",
                 return_value=LoadedMesh(mesh=mesh, metadata=metadata),
             ):
-                window.load_model(Path("sample.stl"))
+                window.load_model(Path("sample.stl"), background=False)
 
             window.select_model()
             window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("R")
-            self.assertEqual(
-                window.status_text.get(),
-                "Rotate mode - Z axis - move mouse horizontally",
-            )
+            self.assertIn("Rotate mode - Z axis - move mouse horizontally", window.status_text.get())
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_mode"], "rotate")
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_axis"], "Z")
             window._handle_shortcut("X")
-            self.assertEqual(window.status_text.get(), "Rotate mode - X axis - move mouse horizontally")
+            self.assertIn("Rotate mode - X axis - move mouse horizontally", window.status_text.get())
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_axis"], "X")
 
             window._on_viewport_pointer_event("motion", 40, 0)
@@ -442,32 +518,33 @@ class MainWindowUiTests(unittest.TestCase):
                 "app.main_window.load_mesh",
                 return_value=LoadedMesh(mesh=mesh, metadata=metadata),
             ):
-                window.load_model(Path("sample.stl"))
+                window.load_model(Path("sample.stl"), background=False)
 
             window.select_section_plane()
             self.assertEqual(window.selected_item, "section_plane")
-            self.assertEqual(window.status_text.get(), "Selected: Section Plane")
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
-            self.assertEqual(window.model_context_frame.winfo_manager(), "")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
+            self.assertIn("Selected: Section Plane", window.status_text.get())
+            self.assertEqual(_active_workspace(window), "Section")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
+            self.assertEqual(window.scene_tree.selection(), ("tree_section_plane",))
 
             window._set_section_offset(0.5, clamp=True, refresh=True)
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.500")
-            self.assertEqual(window.status_text.get(), "Section plane: Z = 0.500")
+            self.assertIn("Section plane: Z = 0.500", window.status_text.get())
             self.assertEqual(window.viewport.scene_calls[-1]["section_offset"], 0.5)
 
             window.reset_view()
             self.assertEqual(window.viewport.reset_count, 1)
-            self.assertEqual(window.status_text.get(), "View reset")
+            self.assertIn("View reset", window.status_text.get())
 
             window.compute_section()
-            self.assertEqual(window.status_text.get(), "Section computed: 1 segments")
+            self.assertIn("Section computed: 1 segments", window.status_text.get())
             self.assertEqual(window.section_result_text.get(), "Section result: 1 segments")
+            self.assertTrue(window.scene_tree.exists("tree_section_result"))
 
             window.clear_section()
-            self.assertEqual(window.status_text.get(), "Section cleared")
+            self.assertIn("Section cleared", window.status_text.get())
             self.assertEqual(window.section_result_text.get(), "Section result: none")
+            self.assertFalse(window.scene_tree.exists("tree_section_result"))
             self.assertIsNone(window.viewport.scene_calls[-1]["section_result"])
             self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], True)
         finally:
@@ -495,13 +572,13 @@ class MainWindowUiTests(unittest.TestCase):
                 "app.main_window.load_mesh",
                 return_value=LoadedMesh(mesh=mesh, metadata=metadata),
             ):
-                window.load_model(Path("sample.stl"))
+                window.load_model(Path("sample.stl"), background=False)
 
             window.select_section_plane()
             start_offset = window.section_offset.get()
             window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("G")
-            self.assertEqual(window.status_text.get(), "Move mode - Z axis")
+            self.assertIn("Move mode - Z axis", window.status_text.get())
             window._on_viewport_pointer_event("motion", 50, 0)
             moved_offset = window.section_offset.get()
             self.assertGreater(moved_offset, start_offset)
@@ -510,25 +587,25 @@ class MainWindowUiTests(unittest.TestCase):
 
             handled = window._on_viewport_pointer_event("right_release", 50, 0)
             self.assertTrue(handled)
-            self.assertEqual(window.status_text.get(), "Transform cancelled")
+            self.assertIn("Transform cancelled", window.status_text.get())
             self.assertAlmostEqual(window.section_offset.get(), start_offset)
 
             window._handle_shortcut("G")
             window._handle_shortcut("X")
             self.assertEqual(window.section_axis.get(), "X")
-            self.assertEqual(window.status_text.get(), "Move mode - X axis")
+            self.assertIn("Move mode - X axis", window.status_text.get())
             window._on_viewport_pointer_event("motion", 100, 0)
             confirmed_offset = window.section_offset.get()
             handled = window._on_viewport_pointer_event("left_release", 100, 0)
             self.assertTrue(handled)
-            self.assertEqual(window.status_text.get(), "Transform confirmed")
+            self.assertIn("Transform confirmed", window.status_text.get())
             self.assertAlmostEqual(window.section_offset.get(), confirmed_offset)
             self.assertGreater(confirmed_offset, start_offset)
 
             self.assertEqual(window.section_axis.get(), "X")
             window._handle_shortcut("R")
             self.assertEqual(window.section_axis.get(), "Y")
-            self.assertEqual(window.status_text.get(), "Section plane axis cycled to Y")
+            self.assertIn("Section plane axis cycled to Y", window.status_text.get())
         finally:
             window.root.destroy()
 
