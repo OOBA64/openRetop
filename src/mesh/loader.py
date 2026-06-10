@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import open3d as o3d
+import numpy as np
 
+from mesh.triangle_mesh import TriangleMeshData
+
+if TYPE_CHECKING:
+    import trimesh
 
 SUPPORTED_EXTENSIONS = {".obj", ".ply", ".stl"}
 
@@ -30,22 +33,22 @@ class MeshMetadata:
 
 @dataclass(frozen=True)
 class LoadedMesh:
-    """A loaded Open3D mesh and its metadata."""
+    """A loaded triangle mesh and its metadata."""
 
-    mesh: o3d.geometry.TriangleMesh
+    mesh: TriangleMeshData
     metadata: MeshMetadata
 
 
-def _load_open3d():
+def _load_trimesh():
     try:
-        import open3d as o3d
+        import trimesh
     except ImportError as exc:
         raise SystemExit(
-            "Open3D is required for mesh import. Install dependencies with: "
+            "trimesh is required for mesh import. Install dependencies with: "
             "python -m pip install -r requirements.txt"
         ) from exc
 
-    return o3d
+    return trimesh
 
 
 def _resolve_mesh_path(path: str | Path) -> Path:
@@ -76,10 +79,12 @@ def load_mesh(path: str | Path) -> LoadedMesh:
             f"Unsupported mesh format '{mesh_path.suffix}'. Expected one of: {supported}"
         )
 
-    o3d = _load_open3d()
-    mesh = o3d.io.read_triangle_mesh(str(mesh_path))
+    trimesh = _load_trimesh()
+    imported = trimesh.load_mesh(str(mesh_path), process=False)
+    raw_mesh = _coerce_trimesh(imported, trimesh)
+    mesh = _to_triangle_mesh_data(raw_mesh)
     if mesh.is_empty():
-        raise ValueError(f"Open3D could not read any mesh data from: {mesh_path}")
+        raise ValueError(f"Could not read any mesh data from: {mesh_path}")
 
     had_vertex_normals = mesh.has_vertex_normals()
     had_triangle_normals = mesh.has_triangle_normals()
@@ -105,3 +110,44 @@ def load_mesh(path: str | Path) -> LoadedMesh:
     )
 
     return LoadedMesh(mesh=mesh, metadata=metadata)
+
+
+def _coerce_trimesh(imported: object, trimesh_module: object) -> trimesh.Trimesh:
+    trimesh_type = trimesh_module.Trimesh
+    scene_type = trimesh_module.Scene
+
+    if isinstance(imported, trimesh_type):
+        return imported
+
+    if isinstance(imported, scene_type):
+        geometries = [
+            geometry
+            for geometry in imported.geometry.values()
+            if isinstance(geometry, trimesh_type) and len(geometry.faces) > 0
+        ]
+        if geometries:
+            return trimesh_module.util.concatenate(geometries)
+
+    raise ValueError("Loaded file did not contain a triangle mesh.")
+
+
+def _to_triangle_mesh_data(raw_mesh: trimesh.Trimesh) -> TriangleMeshData:
+    vertices = np.asarray(raw_mesh.vertices, dtype=float)
+    faces = np.asarray(raw_mesh.faces, dtype=int)
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError("Loaded mesh is not triangulated.")
+
+    triangle_normals = None
+    try:
+        face_normals = np.asarray(raw_mesh.face_normals, dtype=float)
+    except (AttributeError, ValueError):
+        face_normals = np.zeros((0, 3), dtype=float)
+    if face_normals.shape == faces.shape:
+        triangle_normals = face_normals.copy()
+
+    return TriangleMeshData(
+        vertices=vertices,
+        triangles=faces,
+        vertex_normals=None,
+        triangle_normals=triangle_normals,
+    )

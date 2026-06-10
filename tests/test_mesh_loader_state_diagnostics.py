@@ -48,7 +48,7 @@ class MeshLoaderStateDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             load_mesh("missing-model.stl")
 
-    def test_loader_rejects_unsupported_extensions_before_importing_open3d(self) -> None:
+    def test_loader_rejects_unsupported_extensions_before_importing_trimesh(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             mesh_path = Path(temp_dir) / "model.txt"
             mesh_path.write_text("not a mesh", encoding="utf-8")
