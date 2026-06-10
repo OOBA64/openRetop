@@ -153,6 +153,9 @@ class EmbeddedVTKViewport:
             if transform_matrix is None
             else np.asarray(transform_matrix, dtype=float).reshape((4, 4))
         )
+        if mesh is None:
+            self._mesh_actor = None
+            self._mesh_actor_mesh_id = None
         self._update_view_metrics(mesh, matrix, scene_bounds_min, scene_bounds_max)
 
         if mesh is not None:
@@ -166,12 +169,12 @@ class EmbeddedVTKViewport:
             ):
                 self._add_line_actor(
                     build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound),
-                    line_width=1.6,
+                    line_width=1.1,
                 )
                 if object_origin is not None:
                     self._add_line_actor(
                         build_origin_marker(object_origin, self._view_extent),
-                        line_width=2.2,
+                        line_width=1.6,
                     )
                     active_axis = _active_axis_for_gizmo(
                         active_transform_mode,
@@ -184,7 +187,7 @@ class EmbeddedVTKViewport:
                                 active_axis,
                                 self._view_extent,
                             ),
-                            line_width=2.8,
+                            line_width=2.0,
                         )
                     if active_transform_mode == "rotate":
                         self._add_line_actor(
@@ -193,7 +196,7 @@ class EmbeddedVTKViewport:
                                 active_axis or "Z",
                                 self._view_extent,
                             ),
-                            line_width=2.4,
+                            line_width=1.8,
                         )
 
         if show_grid:

@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 from math import cos, radians, sin
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
+from tkinter import BooleanVar, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
 
 import numpy as np
@@ -60,7 +60,6 @@ TOOL_MOVE = "Move"
 TOOL_ROTATE = "Rotate"
 TOOL_FRAME = "Frame"
 TOOL_SECTION_PLANE = "Section Plane"
-TOOL_COMPUTE_SECTION = "Compute Section"
 LOAD_STAGE_START = "Loading mesh file..."
 LOAD_STAGE_READ = "Reading vertices/faces..."
 LOAD_STAGE_BOUNDS = "Calculating bounds..."
@@ -108,12 +107,13 @@ class ActiveTransformState:
 
 @dataclass
 class PendingLoadResult:
-    """Mesh loading result produced off the UI thread."""
+    """Mesh file result produced off the UI thread.
+
+    VTK-backed display proxy creation stays on the Tk/VTK thread. Running VTK
+    filters in a Python worker can destabilize the embedded render window.
+    """
 
     loaded: LoadedMesh
-    display_result: DisplayMeshResult
-    bounds_min: np.ndarray
-    bounds_max: np.ndarray
 
 
 class OpenRetopWindow:
@@ -135,6 +135,7 @@ class OpenRetopWindow:
         self._last_transform_readout: str | None = None
         self._status_message = "Ready"
         self._updating_scene_tree = False
+        self._updating_selection = False
         self.is_loading = False
         self._load_queue: queue.Queue[tuple[str, object]] | None = None
         self._load_thread: threading.Thread | None = None
@@ -145,6 +146,7 @@ class OpenRetopWindow:
 
         self.active_workspace = StringVar(value=WORKSPACE_VIEW)
         self.active_tool = StringVar(value=TOOL_SELECT)
+        self.active_properties_context = StringVar(value="global")
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
         self.show_normals = BooleanVar(value=False)
@@ -206,6 +208,25 @@ class OpenRetopWindow:
     def run(self) -> None:
         self.root.mainloop()
 
+    def _safe_command(self, label: str, callback: object) -> object:
+        def wrapper(*args: object) -> object:
+            return self._safe_call(label, callback, *args)
+
+        return wrapper
+
+    def _safe_call(self, label: str, callback: object, *args: object) -> object:
+        try:
+            return callback(*args)
+        except Exception as exc:
+            self._handle_callback_error(label, exc)
+            return None
+
+    def _handle_callback_error(self, label: str, exc: Exception) -> None:
+        try:
+            self._set_status(f"{label} failed: {exc}")
+        except Exception:
+            self._status_message = f"{label} failed: {exc}"
+
     def _start_viewport(self) -> None:
         try:
             self.viewport.start()
@@ -218,54 +239,93 @@ class OpenRetopWindow:
         self.menu_bar = Menu(self.root, tearoff=False)
 
         self.file_menu = Menu(self.menu_bar, tearoff=False)
-        self.file_menu.add_command(label="New Project", command=self.new_project)
-        self.file_menu.add_command(label="Open Model", command=self.open_model)
+        self.file_menu.add_command(
+            label="New Project",
+            command=self._safe_command("New Project", self.new_project),
+        )
+        self.file_menu.add_command(
+            label="Open Model",
+            command=self._safe_command("Open Model", self.open_model),
+        )
         self.file_menu.add_separator()
         self.file_menu.add_command(
             label="Open Project",
-            command=lambda: self._placeholder_action("Open Project"),
+            command=self._safe_command(
+                "Open Project",
+                lambda: self._placeholder_action("Open Project"),
+            ),
         )
         self.file_menu.add_command(
             label="Save Project",
-            command=lambda: self._placeholder_action("Save Project"),
+            command=self._safe_command(
+                "Save Project",
+                lambda: self._placeholder_action("Save Project"),
+            ),
         )
         self.file_menu.add_command(
             label="Save Project As",
-            command=lambda: self._placeholder_action("Save Project As"),
+            command=self._safe_command(
+                "Save Project As",
+                lambda: self._placeholder_action("Save Project As"),
+            ),
         )
         self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self._on_exit)
+        self.file_menu.add_command(
+            label="Exit",
+            command=self._safe_command("Exit", self._on_exit),
+        )
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
 
         self.edit_menu = Menu(self.menu_bar, tearoff=False)
-        self.edit_menu.add_command(label="Undo", command=lambda: self._placeholder_action("Undo"))
-        self.edit_menu.add_command(label="Redo", command=lambda: self._placeholder_action("Redo"))
+        self.edit_menu.add_command(
+            label="Undo",
+            command=self._safe_command("Undo", lambda: self._placeholder_action("Undo")),
+        )
+        self.edit_menu.add_command(
+            label="Redo",
+            command=self._safe_command("Redo", lambda: self._placeholder_action("Redo")),
+        )
         self.edit_menu.add_separator()
         self.edit_menu.add_command(
             label="Preferences",
-            command=lambda: self._placeholder_action("Preferences"),
+            command=self._safe_command(
+                "Preferences",
+                lambda: self._placeholder_action("Preferences"),
+            ),
         )
         self.menu_bar.add_cascade(label="Edit", menu=self.edit_menu)
 
         self.view_menu = Menu(self.menu_bar, tearoff=False)
-        self.view_menu.add_command(label="Frame All", command=self.frame_all)
-        self.view_menu.add_command(label="Frame Selected", command=self.frame_selected)
-        self.view_menu.add_command(label="Reset View", command=self.reset_view)
+        self.view_menu.add_command(
+            label="Frame All",
+            command=self._safe_command("Frame All", self.frame_all),
+        )
+        self.view_menu.add_command(
+            label="Frame Selected",
+            command=self._safe_command("Frame Selected", self.frame_selected),
+        )
+        self.view_menu.add_command(
+            label="Reset View",
+            command=self._safe_command("Reset View", self.reset_view),
+        )
         self.view_menu.add_separator()
         self.view_menu.add_checkbutton(
             label="Show Grid",
             variable=self.show_grid,
-            command=self._on_view_option_changed,
+            command=self._safe_command("Show Grid", self._on_view_option_changed),
         )
         self.view_menu.add_checkbutton(
             label="Show Axes",
             variable=self.show_axes,
-            command=self._on_view_option_changed,
+            command=self._safe_command("Show Axes", self._on_view_option_changed),
         )
         self.menu_bar.add_cascade(label="View", menu=self.view_menu)
 
         self.help_menu = Menu(self.menu_bar, tearoff=False)
-        self.help_menu.add_command(label="About", command=lambda: self._placeholder_action("About"))
+        self.help_menu.add_command(
+            label="About",
+            command=self._safe_command("About", lambda: self._placeholder_action("About")),
+        )
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.root.configure(menu=self.menu_bar)
 
@@ -273,88 +333,25 @@ class OpenRetopWindow:
         style = ttk.Style(self.root)
         style.configure("SidebarHeading.TLabel", font=("", 10, "bold"))
         style.configure("Toolbar.TFrame", padding=(6, 4))
-        self._build_toolbar()
+        style.configure("WorkspaceBar.TFrame", padding=(6, 4))
+        style.configure("Inspector.TFrame", padding=(8, 8))
+        self._build_workspace_bar()
 
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=0, minsize=84)
         main.columnconfigure(1, weight=1)
+        main.columnconfigure(2, weight=0, minsize=360)
         main.rowconfigure(0, weight=1)
 
-        sidebar_shell = ttk.Frame(main, width=360)
-        sidebar_shell.grid(row=0, column=0, sticky="ns")
-        sidebar_shell.grid_propagate(False)
-        sidebar_shell.rowconfigure(0, weight=1)
-        sidebar_shell.columnconfigure(0, weight=1)
-
-        self.sidebar_canvas = Canvas(
-            sidebar_shell,
-            borderwidth=0,
-            highlightthickness=0,
-            width=358,
-        )
-        sidebar_scrollbar = ttk.Scrollbar(
-            sidebar_shell,
-            orient="vertical",
-            command=self.sidebar_canvas.yview,
-        )
-        self.sidebar_canvas.configure(yscrollcommand=sidebar_scrollbar.set)
-        self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
-        sidebar_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        self.sidebar = ttk.Frame(self.sidebar_canvas, padding=12)
-        self.sidebar.columnconfigure(0, weight=1)
-        sidebar_window = self.sidebar_canvas.create_window(
-            (0, 0),
-            window=self.sidebar,
-            anchor="nw",
-        )
-        self.sidebar.bind(
-            "<Configure>",
-            lambda _event: self.sidebar_canvas.configure(
-                scrollregion=self.sidebar_canvas.bbox("all")
-            ),
-        )
-        self.sidebar_canvas.bind(
-            "<Configure>",
-            lambda event: self.sidebar_canvas.itemconfigure(
-                sidebar_window,
-                width=event.width,
-            ),
-        )
-        self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_mousewheel)
-
-        row = 0
-        self.scene_tree_frame = ttk.Frame(self.sidebar)
-        self.scene_tree_frame.grid(row=row, column=0, sticky="ew")
-        self.scene_tree_frame.columnconfigure(0, weight=1)
-        self._build_scene_tree(self.scene_tree_frame)
-        row += 1
-
-        self.workspace_notebook = ttk.Notebook(self.sidebar)
-        self.workspace_notebook.grid(row=row, column=0, sticky="ew", pady=(10, 0))
-        self.workspace_frames: dict[str, ttk.Frame] = {}
-        for workspace in WORKSPACE_LABELS:
-            frame = ttk.Frame(self.workspace_notebook, padding=(6, 10, 6, 6))
-            frame.columnconfigure(0, weight=1)
-            frame.columnconfigure(1, weight=1)
-            self.workspace_notebook.add(frame, text=workspace)
-            if workspace in DISABLED_WORKSPACES:
-                self.workspace_notebook.tab(frame, state="disabled")
-            self.workspace_frames[workspace] = frame
-        self.workspace_notebook.bind("<<NotebookTabChanged>>", self._on_workspace_tab_changed)
-
-        self.view_workspace_frame = self.workspace_frames[WORKSPACE_VIEW]
-        self.align_workspace_frame = self.workspace_frames[WORKSPACE_ALIGN]
-        self.section_workspace_frame = self.workspace_frames[WORKSPACE_SECTION]
-        self.no_selection_frame = self.view_workspace_frame
-        self.model_context_frame = self.align_workspace_frame
-        self.section_context_frame = self.section_workspace_frame
-        self._build_view_workspace(self.view_workspace_frame)
-        self._build_align_workspace(self.align_workspace_frame)
-        self._build_section_workspace(self.section_workspace_frame)
+        self.tool_toolbar = ttk.Frame(main, width=84, style="Toolbar.TFrame")
+        self.tool_toolbar.grid(row=0, column=0, sticky="ns")
+        self.tool_toolbar.grid_propagate(False)
+        self._build_tool_toolbar(self.tool_toolbar)
 
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
+        self._build_right_inspector(main)
 
         status_bar = ttk.Label(
             self.root,
@@ -364,66 +361,123 @@ class OpenRetopWindow:
         )
         status_bar.pack(fill="x", side="bottom")
 
-    def _build_toolbar(self) -> None:
-        self.toolbar = ttk.Frame(self.root, style="Toolbar.TFrame")
-        self.toolbar.pack(fill="x", side="top")
+    def _build_workspace_bar(self) -> None:
+        self.workspace_bar = ttk.Frame(self.root, style="WorkspaceBar.TFrame")
+        self.workspace_bar.pack(fill="x", side="top")
+        ttk.Label(self.workspace_bar, text="Workspace").pack(side="left", padx=(0, 8))
+        self.workspace_buttons: dict[str, ttk.Button] = {}
+        for workspace in WORKSPACE_LABELS:
+            button = ttk.Button(
+                self.workspace_bar,
+                text=workspace,
+                command=self._safe_command(
+                    f"{workspace} workspace",
+                    lambda workspace=workspace: self._set_workspace(workspace),
+                ),
+            )
+            button.pack(side="left", padx=(0, 4))
+            if workspace in DISABLED_WORKSPACES:
+                button.configure(state="disabled")
+            self.workspace_buttons[workspace] = button
+        self._sync_workspace_buttons()
+
+    def _build_tool_toolbar(self, parent: ttk.Frame) -> None:
+        self.toolbar = parent
         self.toolbar_select_button = ttk.Button(
             self.toolbar,
             text=TOOL_SELECT,
-            command=self.activate_select_tool,
+            command=self._safe_command(TOOL_SELECT, self.activate_select_tool),
         )
-        self.toolbar_select_button.pack(side="left", padx=(0, 4))
+        self.toolbar_select_button.pack(fill="x", pady=(0, 4))
         self.toolbar_move_button = ttk.Button(
             self.toolbar,
             text=TOOL_MOVE,
-            command=self.activate_move_tool,
+            command=self._safe_command(TOOL_MOVE, self.activate_move_tool),
         )
-        self.toolbar_move_button.pack(side="left", padx=(0, 4))
+        self.toolbar_move_button.pack(fill="x", pady=(0, 4))
         self.toolbar_rotate_button = ttk.Button(
             self.toolbar,
             text=TOOL_ROTATE,
-            command=self.activate_rotate_tool,
+            command=self._safe_command(TOOL_ROTATE, self.activate_rotate_tool),
         )
-        self.toolbar_rotate_button.pack(side="left", padx=(0, 4))
+        self.toolbar_rotate_button.pack(fill="x", pady=(0, 4))
         self.toolbar_frame_button = ttk.Button(
             self.toolbar,
             text=TOOL_FRAME,
-            command=self.activate_frame_tool,
+            command=self._safe_command(TOOL_FRAME, self.activate_frame_tool),
         )
-        self.toolbar_frame_button.pack(side="left", padx=(0, 4))
+        self.toolbar_frame_button.pack(fill="x", pady=(0, 4))
         self.toolbar_section_button = ttk.Button(
             self.toolbar,
             text=TOOL_SECTION_PLANE,
-            command=self.activate_section_plane_tool,
+            command=self._safe_command(TOOL_SECTION_PLANE, self.activate_section_plane_tool),
         )
-        self.toolbar_section_button.pack(side="left", padx=(0, 4))
-        self.toolbar_compute_section_button = ttk.Button(
-            self.toolbar,
-            text=TOOL_COMPUTE_SECTION,
-            command=self.activate_compute_section_tool,
-        )
-        self.toolbar_compute_section_button.pack(side="left", padx=(0, 4))
+        self.toolbar_section_button.pack(fill="x", pady=(0, 4))
         self.mesh_dependent_widgets.extend(
             [
                 self.toolbar_move_button,
                 self.toolbar_rotate_button,
                 self.toolbar_section_button,
-                self.toolbar_compute_section_button,
             ]
         )
+
+    def _build_right_inspector(self, parent: ttk.Frame) -> None:
+        self.inspector_shell = ttk.Frame(parent, width=360, style="Inspector.TFrame")
+        self.inspector_shell.grid(row=0, column=2, sticky="nsew")
+        self.inspector_shell.grid_propagate(False)
+        self.inspector_shell.rowconfigure(0, weight=1)
+        self.inspector_shell.columnconfigure(0, weight=1)
+
+        self.inspector_tabs = ttk.Notebook(self.inspector_shell)
+        self.inspector_tabs.grid(row=0, column=0, sticky="nsew")
+        self.scene_tab = ttk.Frame(self.inspector_tabs, padding=10)
+        self.properties_tab = ttk.Frame(self.inspector_tabs, padding=10)
+        self.scene_tab.columnconfigure(0, weight=1)
+        self.properties_tab.columnconfigure(0, weight=1)
+        self.properties_tab.rowconfigure(0, weight=1)
+        self.inspector_tabs.add(self.scene_tab, text="Scene")
+        self.inspector_tabs.add(self.properties_tab, text="Properties")
+
+        self.scene_tree_frame = self.scene_tab
+        self._build_scene_tree(self.scene_tree_frame)
+
+        self.properties_frames: dict[str, ttk.Frame] = {}
+        self.global_properties_frame = self._create_properties_frame("global")
+        self.mesh_properties_frame = self._create_properties_frame("mesh")
+        self.section_properties_frame = self._create_properties_frame("section")
+        self.view_workspace_frame = self.global_properties_frame
+        self.align_workspace_frame = self.mesh_properties_frame
+        self.section_workspace_frame = self.section_properties_frame
+        self.no_selection_frame = self.global_properties_frame
+        self.model_context_frame = self.mesh_properties_frame
+        self.section_context_frame = self.section_properties_frame
+        self._build_view_workspace(self.global_properties_frame)
+        self._build_align_workspace(self.mesh_properties_frame)
+        self._build_section_workspace(self.section_properties_frame)
+
+    def _create_properties_frame(self, context: str) -> ttk.Frame:
+        frame = ttk.Frame(self.properties_tab)
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        frame.grid(row=0, column=0, sticky="nsew")
+        self.properties_frames[context] = frame
+        return frame
 
     def _build_scene_tree(self, parent: ttk.Frame) -> None:
         row = self._add_heading(parent, 0, "Scene")
         self.scene_tree = ttk.Treeview(parent, height=7, show="tree", selectmode="browse")
         self.scene_tree.grid(row=row, column=0, sticky="ew")
-        self.scene_tree.bind("<<TreeviewSelect>>", self._on_scene_tree_select)
+        self.scene_tree.bind(
+            "<<TreeviewSelect>>",
+            self._safe_command("Scene Selection", self._on_scene_tree_select),
+        )
 
     def _build_view_workspace(self, parent: ttk.Frame) -> None:
         row = self._add_heading(parent, 0, "View")
         self.open_model_button = ttk.Button(
             parent,
             text="Open Model",
-            command=self.open_model,
+            command=self._safe_command("Open Model", self.open_model),
         )
         self.open_model_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         self.loading_disabled_widgets.append(self.open_model_button)
@@ -450,7 +504,10 @@ class OpenRetopWindow:
             state="readonly",
         )
         self.proxy_quality_dropdown.grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
-        self.proxy_quality_dropdown.bind("<<ComboboxSelected>>", self._on_proxy_quality_changed)
+        self.proxy_quality_dropdown.bind(
+            "<<ComboboxSelected>>",
+            self._safe_command("Proxy Quality", self._on_proxy_quality_changed),
+        )
         row += 1
 
         row = self._add_separator(parent, row)
@@ -459,7 +516,7 @@ class OpenRetopWindow:
             parent,
             text="Show Grid",
             variable=self.show_grid,
-            command=self._on_view_option_changed,
+            command=self._safe_command("Show Grid", self._on_view_option_changed),
         )
         self.show_grid_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
@@ -467,7 +524,7 @@ class OpenRetopWindow:
             parent,
             text="Show Axes",
             variable=self.show_axes,
-            command=self._on_view_option_changed,
+            command=self._safe_command("Show Axes", self._on_view_option_changed),
         )
         self.show_axes_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
@@ -475,11 +532,15 @@ class OpenRetopWindow:
             parent,
             text="Show Normals",
             variable=self.show_normals,
-            command=self._on_view_option_changed,
+            command=self._safe_command("Show Normals", self._on_view_option_changed),
         )
         self.show_normals_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
-        ttk.Button(parent, text="Frame All", command=self.frame_all).grid(
+        ttk.Button(
+            parent,
+            text="Frame All",
+            command=self._safe_command("Frame All", self.frame_all),
+        ).grid(
             row=row,
             column=0,
             columnspan=2,
@@ -487,7 +548,11 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
-        ttk.Button(parent, text="Reset View", command=self.reset_view).grid(
+        ttk.Button(
+            parent,
+            text="Reset View",
+            command=self._safe_command("Reset View", self.reset_view),
+        ).grid(
             row=row,
             column=0,
             columnspan=2,
@@ -526,35 +591,41 @@ class OpenRetopWindow:
         self.set_origin_geometry_button = ttk.Button(
             parent,
             text="Set Origin to Geometry",
-            command=self.set_origin_to_geometry,
+            command=self._safe_command("Set Origin to Geometry", self.set_origin_to_geometry),
         )
         self.set_origin_geometry_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         row += 1
         self.origin_world_button = ttk.Button(
             parent,
             text="Move Object Origin to World Origin",
-            command=self.move_origin_to_world_origin,
+            command=self._safe_command(
+                "Move Object Origin to World Origin",
+                self.move_origin_to_world_origin,
+            ),
         )
         self.origin_world_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         row += 1
         self.center_geometry_button = ttk.Button(
             parent,
             text="Center Geometry on Origin",
-            command=self.center_geometry_on_origin,
+            command=self._safe_command(
+                "Center Geometry on Origin",
+                self.center_geometry_on_origin,
+            ),
         )
         self.center_geometry_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         row += 1
         self.reset_object_button = ttk.Button(
             parent,
             text="Reset Object Transform",
-            command=self.reset_object_transform,
+            command=self._safe_command("Reset Object Transform", self.reset_object_transform),
         )
         self.reset_object_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         row += 1
         self.frame_selected_button = ttk.Button(
             parent,
             text="Frame Selected",
-            command=self.frame_selected,
+            command=self._safe_command("Frame Selected", self.frame_selected),
         )
         self.frame_selected_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.mesh_dependent_widgets.extend(
@@ -572,7 +643,7 @@ class OpenRetopWindow:
         self.select_section_plane_button = ttk.Button(
             parent,
             text="Select Section Plane",
-            command=self.select_section_plane,
+            command=self._safe_command("Select Section Plane", self.select_section_plane),
         )
         self.select_section_plane_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         self.selection_buttons.append(self.select_section_plane_button)
@@ -581,7 +652,10 @@ class OpenRetopWindow:
             parent,
             text="Show Section Plane",
             variable=self.show_section_plane,
-            command=self._on_section_plane_visibility_changed,
+            command=self._safe_command(
+                "Show Section Plane",
+                self._on_section_plane_visibility_changed,
+            ),
         )
         self.show_section_plane_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
@@ -595,7 +669,10 @@ class OpenRetopWindow:
             state="readonly",
         )
         self.axis_dropdown.grid(row=row, column=1, sticky="ew", pady=2)
-        self.axis_dropdown.bind("<<ComboboxSelected>>", self._on_section_axis_changed)
+        self.axis_dropdown.bind(
+            "<<ComboboxSelected>>",
+            self._safe_command("Section Axis", self._on_section_axis_changed),
+        )
         row += 1
 
         self.offset_slider_label = ttk.Label(parent, text="Offset slider")
@@ -605,7 +682,7 @@ class OpenRetopWindow:
             variable=self.section_offset,
             from_=-1.0,
             to=1.0,
-            command=self._on_offset_slider_changed,
+            command=self._safe_command("Section Offset", self._on_offset_slider_changed),
         )
         self.offset_slider.grid(row=row, column=1, sticky="ew", pady=2)
         row += 1
@@ -618,8 +695,14 @@ class OpenRetopWindow:
             width=10,
         )
         self.offset_input.grid(row=row, column=1, sticky="ew", pady=2)
-        self.offset_input.bind("<KeyRelease>", self._on_offset_input_changed)
-        self.offset_input.bind("<FocusOut>", self._on_offset_input_changed)
+        self.offset_input.bind(
+            "<KeyRelease>",
+            self._safe_command("Section Offset", self._on_offset_input_changed),
+        )
+        self.offset_input.bind(
+            "<FocusOut>",
+            self._safe_command("Section Offset", self._on_offset_input_changed),
+        )
         row += 1
 
         self.section_plane_label = ttk.Label(parent, textvariable=self.section_plane_text)
@@ -631,14 +714,14 @@ class OpenRetopWindow:
         self.compute_section_button = ttk.Button(
             parent,
             text="Compute Section",
-            command=self.compute_section,
+            command=self._safe_command("Compute Section", self.compute_section),
         )
         self.compute_section_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         row += 1
         self.clear_section_button = ttk.Button(
             parent,
             text="Clear Section",
-            command=self.clear_section,
+            command=self._safe_command("Clear Section", self.clear_section),
         )
         self.clear_section_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.mesh_dependent_widgets.extend(
@@ -701,46 +784,71 @@ class OpenRetopWindow:
         label.grid(row=row, column=0, sticky="w", pady=2)
         entry = ttk.Entry(parent, textvariable=value, width=10)
         entry.grid(row=row, column=1, sticky="ew", pady=2)
-        entry.bind("<KeyRelease>", self._on_object_transform_changed)
-        entry.bind("<FocusOut>", self._on_object_transform_changed)
+        entry.bind(
+            "<KeyRelease>",
+            self._safe_command("Object Transform", self._on_object_transform_changed),
+        )
+        entry.bind(
+            "<FocusOut>",
+            self._safe_command("Object Transform", self._on_object_transform_changed),
+        )
         self.object_transform_widgets.extend([label, entry])
         self.mesh_dependent_widgets.extend([label, entry])
         return row + 1
 
     def _show_context(self, selected_item: str | None) -> None:
-        if selected_item == SELECT_MODEL and self.mesh_object is not None:
-            self._set_workspace(WORKSPACE_ALIGN)
-        elif selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
-            self._set_workspace(WORKSPACE_SECTION)
-        elif self.active_workspace.get() not in WORKSPACE_LABELS:
-            self._set_workspace(WORKSPACE_VIEW)
+        self._show_properties_for_selection(selected_item)
 
     def _set_workspace(self, workspace: str) -> None:
         if workspace in DISABLED_WORKSPACES:
             self._set_status(f"{workspace} workspace is not available yet")
             return
 
-        frame = self.workspace_frames.get(workspace)
-        if frame is None:
+        if workspace not in WORKSPACE_LABELS:
             return
 
         current = self.active_workspace.get()
         if current != workspace:
             self.active_workspace.set(workspace)
-        try:
-            self.workspace_notebook.select(frame)
-        except Exception:
-            return
+        self._sync_workspace_buttons()
+        self._show_context(self.selected_item)
         self._update_status_bar()
 
-    def _on_workspace_tab_changed(self, _event: object | None = None) -> None:
-        selected_tab = self.workspace_notebook.select()
-        if not selected_tab:
+    def _sync_workspace_buttons(self) -> None:
+        if not hasattr(self, "workspace_buttons"):
             return
-        workspace = str(self.workspace_notebook.tab(selected_tab, "text"))
-        if workspace in WORKSPACE_LABELS:
-            self.active_workspace.set(workspace)
-            self._update_status_bar()
+
+        active_workspace = self.active_workspace.get()
+        for workspace, button in self.workspace_buttons.items():
+            button.state(["!pressed"])
+            if workspace == active_workspace:
+                button.state(["pressed"])
+
+    def _show_properties_for_selection(self, selected_item: str | None) -> None:
+        if not hasattr(self, "properties_frames"):
+            return
+
+        if selected_item == SELECT_MODEL and self.mesh_object is not None:
+            context = "mesh"
+        elif selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
+            context = "section"
+        elif self.mesh_object is not None and self.active_workspace.get() == WORKSPACE_ALIGN:
+            context = "mesh"
+        elif self.mesh_object is not None and self.active_workspace.get() == WORKSPACE_SECTION:
+            context = "section"
+        else:
+            context = "global"
+
+        self.active_properties_context.set(context)
+        for name, frame in self.properties_frames.items():
+            if name == context:
+                frame.grid()
+            else:
+                frame.grid_remove()
+        try:
+            self.inspector_tabs.select(self.properties_tab)
+        except Exception:
+            return
 
     def _update_scene_tree(self) -> None:
         if not hasattr(self, "scene_tree"):
@@ -806,7 +914,6 @@ class OpenRetopWindow:
         elif selected == "tree_section_plane":
             self.select_section_plane()
         elif selected == "tree_section_result":
-            self._set_workspace(WORKSPACE_SECTION)
             self._set_status("Selected: computed section")
 
     def _set_status(self, message: str) -> None:
@@ -854,13 +961,11 @@ class OpenRetopWindow:
         axis = self._display_transform_axis(self.transform_state) or "free"
         return f"Transform: {mode} {axis}"
 
-    def _on_sidebar_mousewheel(self, event: object) -> None:
-        delta = getattr(event, "delta", 0)
-        if delta:
-            self.sidebar_canvas.yview_scroll(int(-1 * (delta / 120)), "units")
-
     def _bind_keyboard_shortcuts(self) -> None:
-        self.root.bind_all("<KeyPress>", self._on_tk_keypress)
+        self.root.bind_all(
+            "<KeyPress>",
+            self._safe_command("Keyboard Shortcut", self._on_tk_keypress),
+        )
 
     def _on_tk_keypress(self, event: object) -> None:
         focused = self.root.focus_get()
@@ -937,10 +1042,6 @@ class OpenRetopWindow:
         self.active_tool.set(TOOL_SECTION_PLANE)
         self.select_section_plane()
 
-    def activate_compute_section_tool(self) -> None:
-        self.active_tool.set(TOOL_COMPUTE_SECTION)
-        self.compute_section()
-
     def open_model(self) -> None:
         if self.is_loading:
             self._set_status("Mesh is already loading")
@@ -965,47 +1066,28 @@ class OpenRetopWindow:
         self._set_open_model_enabled(False)
         self._show_loading_progress(file_path)
         self._update_loading_stage(LOAD_STAGE_START)
-        quality = self.proxy_quality.get()
 
         if background:
             self._load_thread = threading.Thread(
                 target=self._load_model_worker,
-                args=(Path(file_path), quality, self._load_queue),
+                args=(Path(file_path), self._load_queue),
                 daemon=True,
             )
             self._load_thread.start()
             self.root.after(50, self._poll_load_queue)
         else:
-            self._load_model_worker(Path(file_path), quality, self._load_queue)
+            self._load_model_worker(Path(file_path), self._load_queue)
             self._poll_load_queue()
 
     def _load_model_worker(
         self,
         file_path: Path,
-        quality: str,
         load_queue: queue.Queue[tuple[str, object]],
     ) -> None:
         try:
             load_queue.put(("stage", LOAD_STAGE_READ))
             loaded = load_mesh(file_path)
-            load_queue.put(("stage", LOAD_STAGE_BOUNDS))
-            bounds = loaded.mesh.get_axis_aligned_bounding_box()
-            bounds_min = np.asarray(bounds.get_min_bound(), dtype=float)
-            bounds_max = np.asarray(bounds.get_max_bound(), dtype=float)
-            load_queue.put(("stage", LOAD_STAGE_PROXY))
-            display_result = build_display_mesh(loaded.mesh, quality=quality)
-            load_queue.put(("stage", LOAD_STAGE_NORMALS))
-            load_queue.put(
-                (
-                    "done",
-                    PendingLoadResult(
-                        loaded=loaded,
-                        display_result=display_result,
-                        bounds_min=bounds_min,
-                        bounds_max=bounds_max,
-                    ),
-                )
-            )
+            load_queue.put(("done", PendingLoadResult(loaded=loaded)))
         except (FileNotFoundError, ValueError, SystemExit) as exc:
             load_queue.put(("error", str(exc)))
         except Exception as exc:
@@ -1027,7 +1109,10 @@ class OpenRetopWindow:
                 self._update_loading_stage(str(payload))
             elif event == "done":
                 should_continue = False
-                self._finish_model_load(payload)
+                try:
+                    self._finish_model_load(payload)
+                except Exception as exc:
+                    self._finish_model_load_error(f"Unexpected load failure: {exc}")
                 break
             elif event == "error":
                 should_continue = False
@@ -1042,11 +1127,15 @@ class OpenRetopWindow:
             self._finish_model_load_error("Internal load result was invalid.")
             return
 
-        self._update_loading_stage(LOAD_STAGE_VIEWPORT)
         loaded = pending_result.loaded
-        display_result = pending_result.display_result
-        bounds_min = pending_result.bounds_min
-        bounds_max = pending_result.bounds_max
+        self._update_loading_stage(LOAD_STAGE_BOUNDS)
+        bounds = loaded.mesh.get_axis_aligned_bounding_box()
+        bounds_min = np.asarray(bounds.get_min_bound(), dtype=float)
+        bounds_max = np.asarray(bounds.get_max_bound(), dtype=float)
+        self._update_loading_stage(LOAD_STAGE_PROXY)
+        display_result = build_display_mesh(loaded.mesh, quality=self.proxy_quality.get())
+        self._update_loading_stage(LOAD_STAGE_NORMALS)
+        self._update_loading_stage(LOAD_STAGE_VIEWPORT)
         origin = (bounds_min + bounds_max) * 0.5
         self.mesh_object = MeshObjectState(
             source_mesh=display_result.source_mesh,
@@ -1163,26 +1252,39 @@ class OpenRetopWindow:
         self._set_selected_item(None, status="No selection")
 
     def _set_selected_item(self, selected_item: str | None, *, status: str | None = None) -> None:
+        if self._updating_selection:
+            return
+
+        if self.mesh_object is None:
+            selected_item = None
+
         if self.transform_state is not None:
             self._end_active_transform(commit=False, status="Transform cancelled")
 
-        self.selected_item = selected_item
-        self.active_transform_mode = None
-        self.active_transform_axis = None
-        self.transform_state = None
-        self._show_context(selected_item)
-        self._update_scene_tree()
-        self._refresh_viewport(reset_camera=False)
-        if status is not None:
-            self._set_status(status)
+        self._updating_selection = True
+        try:
+            self.selected_item = selected_item
+            self.active_transform_mode = None
+            self.active_transform_axis = None
+            self.transform_state = None
+            self._show_context(selected_item)
+            self._update_scene_tree()
+            self._refresh_viewport(reset_camera=False)
+            if status is not None:
+                self._set_status(status)
+        finally:
+            self._updating_selection = False
 
     def _on_viewport_selection(self, selected_item: str | None) -> None:
-        if selected_item == SELECT_MODEL:
-            self.select_model()
-        elif selected_item == SELECT_SECTION_PLANE:
-            self.select_section_plane()
-        else:
-            self.clear_selection()
+        try:
+            if selected_item == SELECT_MODEL and self.mesh_object is not None:
+                self.select_model()
+            elif selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
+                self.select_section_plane()
+            else:
+                self.clear_selection()
+        except Exception as exc:
+            self._handle_callback_error("Viewport Selection", exc)
 
     def _on_viewport_pointer_event(
         self,
@@ -1192,26 +1294,34 @@ class OpenRetopWindow:
         shift_pressed: bool = False,
         _ctrl_pressed: bool = False,
     ) -> bool:
-        self._last_viewport_mouse = (int(x_position), int(y_position))
-        if self.transform_state is None:
+        try:
+            self._last_viewport_mouse = (int(x_position), int(y_position))
+            if self.transform_state is None:
+                return False
+
+            if self.mesh_object is None:
+                self._end_active_transform(commit=False, status="Transform cancelled")
+                return False
+
+            if event_type == "motion":
+                self._update_active_transform(
+                    (int(x_position), int(y_position)),
+                    fine=shift_pressed,
+                )
+                return True
+
+            if event_type == "left_release":
+                self._end_active_transform(commit=True, status="Transform confirmed")
+                return True
+
+            if event_type == "right_release":
+                self._end_active_transform(commit=False, status="Transform cancelled")
+                return True
+
+            return True
+        except Exception as exc:
+            self._handle_callback_error("Viewport Pointer", exc)
             return False
-
-        if event_type == "motion":
-            self._update_active_transform(
-                (int(x_position), int(y_position)),
-                fine=shift_pressed,
-            )
-            return True
-
-        if event_type == "left_release":
-            self._end_active_transform(commit=True, status="Transform confirmed")
-            return True
-
-        if event_type == "right_release":
-            self._end_active_transform(commit=False, status="Transform cancelled")
-            return True
-
-        return True
 
     def compute_section(self) -> None:
         if self.mesh_object is None:
@@ -1222,13 +1332,17 @@ class OpenRetopWindow:
         if offset is None:
             return
 
-        section_mesh = self._transformed_source_mesh()
-        self.section_result = extract_section(
-            section_mesh,
-            axis=self.section_axis.get(),
-            offset=offset,
-        )
-        self.curve_results = fit_section_polylines(self.section_result.polylines)
+        try:
+            section_mesh = self._transformed_source_mesh()
+            self.section_result = extract_section(
+                section_mesh,
+                axis=self.section_axis.get(),
+                offset=offset,
+            )
+            self.curve_results = fit_section_polylines(self.section_result.polylines)
+        except Exception as exc:
+            self._handle_callback_error("Compute Section", exc)
+            return
         self.section_result_text.set(
             f"Section result: {self.section_result.segment_count} segments"
         )
@@ -1248,20 +1362,32 @@ class OpenRetopWindow:
         self._set_status("Section cleared")
 
     def frame_all(self) -> None:
+        if not hasattr(self, "viewport") or self.viewport is None:
+            self._set_status("Viewport is not ready")
+            return
+
         self.viewport.frame_model()
         self._set_status("View framed")
 
     def frame_selected(self) -> None:
-        if self.selected_item == SELECT_MODEL:
+        if not hasattr(self, "viewport") or self.viewport is None:
+            self._set_status("Viewport is not ready")
+            return
+
+        if self.selected_item == SELECT_MODEL and self.mesh_object is not None:
             self.viewport.frame_model()
             self._set_status(f"Selected: {self.mesh_object.name}")
-        elif self.selected_item == SELECT_SECTION_PLANE:
+        elif self.selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
             self.viewport.frame_model()
             self._set_status("Selected: Section Plane")
         else:
             self._set_status("No selection")
 
     def reset_view(self) -> None:
+        if not hasattr(self, "viewport") or self.viewport is None:
+            self._set_status("Viewport is not ready")
+            return
+
         self.viewport.reset_view()
         self._set_status("View reset")
 
@@ -1269,6 +1395,12 @@ class OpenRetopWindow:
         self.reset_view()
 
     def _refresh_viewport(self, *, reset_camera: bool) -> None:
+        if not hasattr(self, "viewport") or self.viewport is None:
+            return
+
+        if self.mesh_object is None and self.selected_item is not None:
+            self.selected_item = None
+
         origin = self.mesh_object.location if self.mesh_object is not None else None
         display_mesh = self.mesh_object.display_mesh if self.mesh_object is not None else None
         transform_matrix = (
@@ -1277,35 +1409,38 @@ class OpenRetopWindow:
             else None
         )
         hide_expensive_overlays = self.transform_state is not None
-        self.viewport.set_scene(
-            display_mesh,
-            transform_matrix=transform_matrix,
-            show_grid=self.show_grid.get(),
-            show_axes=self.show_axes.get(),
-            show_normals=self.show_normals.get()
-            and not hide_expensive_overlays
-            and not (
-                self.mesh_object is not None and self.mesh_object.display_proxy_enabled
-            ),
-            show_section_plane=(
-                self.show_section_plane.get() and self.mesh_state.is_loaded
-            ),
-            section_axis=self.section_axis.get(),
-            section_offset=self.section_offset.get(),
-            selected_item=self.selected_item,
-            object_origin=origin,
-            scene_bounds_min=(
-                self.mesh_object.source_bounds_min if self.mesh_object is not None else None
-            ),
-            scene_bounds_max=(
-                self.mesh_object.source_bounds_max if self.mesh_object is not None else None
-            ),
-            active_transform_mode=self.active_transform_mode,
-            active_transform_axis=self.active_transform_axis,
-            section_result=None if hide_expensive_overlays else self.section_result,
-            curve_results=[] if hide_expensive_overlays else self.curve_results,
-            reset_camera=reset_camera,
-        )
+        try:
+            self.viewport.set_scene(
+                display_mesh,
+                transform_matrix=transform_matrix,
+                show_grid=self.show_grid.get(),
+                show_axes=self.show_axes.get(),
+                show_normals=self.show_normals.get()
+                and not hide_expensive_overlays
+                and not (
+                    self.mesh_object is not None and self.mesh_object.display_proxy_enabled
+                ),
+                show_section_plane=(
+                    self.show_section_plane.get() and self.mesh_state.is_loaded
+                ),
+                section_axis=self.section_axis.get(),
+                section_offset=self.section_offset.get(),
+                selected_item=self.selected_item,
+                object_origin=origin,
+                scene_bounds_min=(
+                    self.mesh_object.source_bounds_min if self.mesh_object is not None else None
+                ),
+                scene_bounds_max=(
+                    self.mesh_object.source_bounds_max if self.mesh_object is not None else None
+                ),
+                active_transform_mode=self.active_transform_mode,
+                active_transform_axis=self.active_transform_axis,
+                section_result=None if hide_expensive_overlays else self.section_result,
+                curve_results=[] if hide_expensive_overlays else self.curve_results,
+                reset_camera=reset_camera,
+            )
+        except Exception as exc:
+            self._handle_callback_error("Viewport Refresh", exc)
 
     def _on_view_option_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
@@ -1322,7 +1457,11 @@ class OpenRetopWindow:
 
         self._set_status(f"Rebuilding {quality} display proxy")
         self.root.update_idletasks()
-        display_result = build_display_mesh(self.mesh_object.source_mesh, quality=quality)
+        try:
+            display_result = build_display_mesh(self.mesh_object.source_mesh, quality=quality)
+        except Exception as exc:
+            self._handle_callback_error("Proxy Rebuild", exc)
+            return
         self._apply_display_mesh_result(display_result)
         self._update_stats()
         self._refresh_viewport(reset_camera=False)
@@ -1988,9 +2127,12 @@ class OpenRetopWindow:
         self.is_loading = False
         self._load_queue = None
         self._close_loading_progress()
-        self.sidebar_canvas.unbind_all("<MouseWheel>")
-        self.root.unbind_all("<KeyPress>")
-        self.viewport.close()
+        try:
+            self.root.unbind_all("<KeyPress>")
+        except Exception:
+            pass
+        if hasattr(self, "viewport") and self.viewport is not None:
+            self.viewport.close()
         self.root.destroy()
 
 

@@ -130,7 +130,7 @@ def _create_window() -> OpenRetopWindow:
 
 
 def _active_workspace(window: OpenRetopWindow) -> str:
-    return str(window.workspace_notebook.tab(window.workspace_notebook.select(), "text"))
+    return window.active_workspace.get()
 
 
 class MainWindowUiTests(unittest.TestCase):
@@ -165,7 +165,15 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.toolbar_rotate_button.cget("text"), "Rotate")
             self.assertEqual(window.toolbar_frame_button.cget("text"), "Frame")
             self.assertEqual(window.toolbar_section_button.cget("text"), "Section Plane")
-            self.assertEqual(window.toolbar_compute_section_button.cget("text"), "Compute Section")
+            self.assertFalse(hasattr(window, "toolbar_compute_section_button"))
+            self.assertEqual(
+                [window.inspector_tabs.tab(index, "text") for index in range(2)],
+                ["Scene", "Properties"],
+            )
+            self.assertEqual(
+                tuple(window.workspace_buttons),
+                ("View", "Align", "Section", "Curve", "Surface", "Export"),
+            )
 
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
@@ -179,14 +187,16 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIn("Workspace: View", window.status_text.get())
             self.assertIn("Tool: Select", window.status_text.get())
             self.assertIsNone(window.selected_item)
-            self.assertEqual(window.workspace_notebook.tab(3, "state"), "disabled")
-            self.assertEqual(window.workspace_notebook.tab(4, "state"), "disabled")
-            self.assertEqual(window.workspace_notebook.tab(5, "state"), "disabled")
+            self.assertEqual(str(window.workspace_buttons["Curve"].cget("state")), "disabled")
+            self.assertEqual(str(window.workspace_buttons["Surface"].cget("state")), "disabled")
+            self.assertEqual(str(window.workspace_buttons["Export"].cget("state")), "disabled")
+            self.assertEqual(window.active_properties_context.get(), "global")
             self.assertFalse(hasattr(window, "apply_transform_button"))
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
             self.assertEqual(str(window.toolbar_move_button.cget("state")), "disabled")
             self.assertEqual(str(window.toolbar_rotate_button.cget("state")), "disabled")
-            self.assertEqual(str(window.toolbar_compute_section_button.cget("state")), "disabled")
+            self.assertEqual(str(window.toolbar_section_button.cget("state")), "disabled")
+            self.assertEqual(str(window.compute_section_button.cget("state")), "disabled")
             self.assertEqual(window.compute_section_button.cget("text"), "Compute Section")
             self.assertEqual(window.clear_section_button.cget("text"), "Clear Section")
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
@@ -232,7 +242,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "normal")
             self.assertEqual(str(window.toolbar_move_button.cget("state")), "normal")
             self.assertEqual(str(window.toolbar_rotate_button.cget("state")), "normal")
-            self.assertEqual(str(window.toolbar_compute_section_button.cget("state")), "normal")
+            self.assertEqual(str(window.toolbar_section_button.cget("state")), "normal")
+            self.assertEqual(str(window.compute_section_button.cget("state")), "normal")
             self.assertIsNone(window.loading_window)
             self.assertEqual(str(window.open_model_button.cget("state")), "normal")
             self.assertTrue(window.show_grid.get())
@@ -252,6 +263,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(scene["section_axis"], "Z")
             self.assertEqual(scene["section_offset"], 0.0)
             self.assertIsNone(scene["selected_item"])
+            self.assertEqual(window.active_properties_context.get(), "global")
             self.assertTrue(np.allclose(scene["scene_bounds_min"], [0.0, 0.0, 0.0]))
             self.assertTrue(np.allclose(scene["scene_bounds_max"], [1.0, 2.0, 3.0]))
             self.assertTrue(window.scene_tree.exists("tree_loaded_mesh"))
@@ -335,11 +347,22 @@ class MainWindowUiTests(unittest.TestCase):
             window.select_model()
             self.assertEqual(window.selected_item, "model")
             self.assertIn("Selected: sample.stl", window.status_text.get())
-            self.assertEqual(_active_workspace(window), "Align")
+            self.assertEqual(_active_workspace(window), "View")
+            self.assertEqual(window.active_properties_context.get(), "mesh")
             self.assertEqual(window.selected_object_text.get(), "sample.stl")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "model")
             self.assertIsNotNone(window.viewport.scene_calls[-1]["object_origin"])
             self.assertEqual(window.scene_tree.selection(), ("tree_loaded_mesh",))
+
+            window._set_workspace("Section")
+            window.activate_move_tool()
+            self.assertEqual(_active_workspace(window), "Section")
+            self.assertEqual(window.active_tool.get(), "Move")
+            window._handle_shortcut("Escape")
+            window.activate_rotate_tool()
+            self.assertEqual(_active_workspace(window), "Section")
+            self.assertEqual(window.active_tool.get(), "Rotate")
+            window._handle_shortcut("Escape")
 
             window.location_x.set("1.500")
             window._on_object_transform_changed()
@@ -523,7 +546,8 @@ class MainWindowUiTests(unittest.TestCase):
             window.select_section_plane()
             self.assertEqual(window.selected_item, "section_plane")
             self.assertIn("Selected: Section Plane", window.status_text.get())
-            self.assertEqual(_active_workspace(window), "Section")
+            self.assertEqual(_active_workspace(window), "View")
+            self.assertEqual(window.active_properties_context.get(), "section")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
             self.assertEqual(window.scene_tree.selection(), ("tree_section_plane",))
 
