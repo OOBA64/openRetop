@@ -12,8 +12,10 @@ from geometry.sections import SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from viewer.overlays import (
     LineGeometry,
+    build_active_axis_indicator,
     build_bounding_box_outline,
     build_origin_marker,
+    build_rotation_ring,
     build_section_plane_preview,
     build_world_axes,
     build_xy_grid,
@@ -61,7 +63,7 @@ class EmbeddedVTKViewport:
         self._mesh_actor: vtkActor | None = None
         self._section_plane_actors: list[vtkActor] = []
         self._selection_callback: Callable[[str | None], None] | None = None
-        self._pointer_callback: Callable[[str, int, int], bool] | None = None
+        self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
         self._last_mouse_position = (0, 0)
 
@@ -111,7 +113,7 @@ class EmbeddedVTKViewport:
 
     def set_pointer_callback(
         self,
-        callback: Callable[[str, int, int], bool] | None,
+        callback: Callable[[str, int, int, bool, bool], bool] | None,
     ) -> None:
         self._pointer_callback = callback
 
@@ -127,6 +129,8 @@ class EmbeddedVTKViewport:
         section_offset: float,
         selected_item: str | None = None,
         object_origin: Sequence[float] | None = None,
+        active_transform_mode: str | None = None,
+        active_transform_axis: str | None = None,
         section_result: SectionResult | None = None,
         curve_results: Sequence[CurveFitResult] | None = None,
         reset_camera: bool = False,
@@ -156,6 +160,28 @@ class EmbeddedVTKViewport:
                         build_origin_marker(object_origin, self._view_extent),
                         line_width=4.0,
                     )
+                    active_axis = _active_axis_for_gizmo(
+                        active_transform_mode,
+                        active_transform_axis,
+                    )
+                    if active_axis is not None:
+                        self._add_line_actor(
+                            build_active_axis_indicator(
+                                object_origin,
+                                active_axis,
+                                self._view_extent,
+                            ),
+                            line_width=5.0,
+                        )
+                    if active_transform_mode == "rotate":
+                        self._add_line_actor(
+                            build_rotation_ring(
+                                object_origin,
+                                active_axis or "Z",
+                                self._view_extent,
+                            ),
+                            line_width=4.0,
+                        )
 
         if show_grid:
             self._add_line_actor(
@@ -391,7 +417,10 @@ class EmbeddedVTKViewport:
         x_position = int(getattr(event, "x", self._last_mouse_position[0]))
         y_position = int(getattr(event, "y", self._last_mouse_position[1]))
         self._last_mouse_position = (x_position, y_position)
-        return bool(self._pointer_callback(event_type, x_position, y_position))
+        state = int(getattr(event, "state", 0))
+        shift = bool(state & 0x0001)
+        ctrl = bool(state & 0x0004)
+        return bool(self._pointer_callback(event_type, x_position, y_position, shift, ctrl))
 
     def _set_interactor_event(self, event: Event[Canvas]) -> None:
         if self.interactor is None:
@@ -457,6 +486,14 @@ def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
     actor.GetProperty().SetColor(0.72, 0.74, 0.78)
     actor.GetProperty().SetInterpolationToPhong()
     return actor
+
+
+def _active_axis_for_gizmo(mode: str | None, axis: str | None) -> str | None:
+    if mode == "rotate":
+        return axis or "Z"
+    if mode == "move":
+        return axis
+    return None
 
 
 def _mesh_polydata(mesh: TriangleMeshData) -> vtkPolyData:

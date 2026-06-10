@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, floor, log10
+from math import ceil, cos, floor, log10, pi, sin
 from typing import Sequence
 
 import numpy as np
 
 
 AXIS_TO_INDEX = {"X": 0, "Y": 1, "Z": 2}
+AXIS_COLORS = {
+    "X": (0.95, 0.18, 0.18),
+    "Y": (0.2, 0.85, 0.25),
+    "Z": (0.22, 0.48, 1.0),
+}
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,59 @@ def build_world_axes(reference_extent: float) -> LineGeometry:
     ]
     lines = [(0, 1), (2, 3), (4, 5)]
     colors = [[0.95, 0.18, 0.18], [0.2, 0.85, 0.25], [0.22, 0.48, 1.0]]
+    return _line_geometry(points, lines, colors)
+
+
+def build_active_axis_indicator(
+    origin: Sequence[float],
+    axis: str,
+    reference_extent: float,
+) -> LineGeometry:
+    axis_key = axis.upper()
+    axis_index = AXIS_TO_INDEX.get(axis_key, AXIS_TO_INDEX["Z"])
+    center = np.asarray(origin, dtype=float)
+    size = max(float(reference_extent) * 0.7, 0.75)
+    start = center.copy()
+    end = center.copy()
+    start[axis_index] -= size
+    end[axis_index] += size
+    color = list(AXIS_COLORS.get(axis_key, AXIS_COLORS["Z"]))
+    return _line_geometry([start.tolist(), end.tolist()], [(0, 1)], [color])
+
+
+def build_rotation_ring(
+    origin: Sequence[float],
+    axis: str,
+    reference_extent: float,
+    *,
+    segments: int = 96,
+) -> LineGeometry:
+    axis_key = axis.upper()
+    center = np.asarray(origin, dtype=float)
+    radius = max(float(reference_extent) * 0.32, 0.35)
+    color = list(AXIS_COLORS.get(axis_key, AXIS_COLORS["Z"]))
+
+    points: list[list[float]] = []
+    lines: list[tuple[int, int]] = []
+    colors: list[list[float]] = []
+    for index in range(max(int(segments), 12)):
+        angle = (2.0 * pi * index) / max(int(segments), 12)
+        point = center.copy()
+        if axis_key == "X":
+            point[1] += cos(angle) * radius
+            point[2] += sin(angle) * radius
+        elif axis_key == "Y":
+            point[0] += cos(angle) * radius
+            point[2] += sin(angle) * radius
+        else:
+            point[0] += cos(angle) * radius
+            point[1] += sin(angle) * radius
+        points.append(point.tolist())
+
+    for index in range(len(points)):
+        lines.append((index, (index + 1) % len(points)))
+        colors.append(color)
+
     return _line_geometry(points, lines, colors)
 
 

@@ -27,6 +27,9 @@ MESH_FILE_TYPES = (
 )
 SELECT_MODEL = "model"
 SELECT_SECTION_PLANE = "section_plane"
+MOVE_SENSITIVITY = 0.001
+ROTATION_SENSITIVITY = 0.5
+FINE_TRANSFORM_MULTIPLIER = 0.1
 
 
 @dataclass
@@ -72,6 +75,7 @@ class OpenRetopWindow:
         self.active_transform_axis: str | None = None
         self.transform_state: ActiveTransformState | None = None
         self._last_viewport_mouse = (0, 0)
+        self._last_transform_readout: str | None = None
         self.section_result: SectionResult | None = None
         self.curve_results: list[CurveFitResult] = []
 
@@ -662,7 +666,7 @@ class OpenRetopWindow:
 
     def _set_selected_item(self, selected_item: str | None, *, status: str | None = None) -> None:
         if self.transform_state is not None:
-            self._end_active_transform(commit=False, status="Transform canceled")
+            self._end_active_transform(commit=False, status="Transform cancelled")
 
         self.selected_item = selected_item
         self.active_transform_mode = None
@@ -681,13 +685,23 @@ class OpenRetopWindow:
         else:
             self.clear_selection()
 
-    def _on_viewport_pointer_event(self, event_type: str, x_position: int, y_position: int) -> bool:
+    def _on_viewport_pointer_event(
+        self,
+        event_type: str,
+        x_position: int,
+        y_position: int,
+        shift_pressed: bool = False,
+        _ctrl_pressed: bool = False,
+    ) -> bool:
         self._last_viewport_mouse = (int(x_position), int(y_position))
         if self.transform_state is None:
             return False
 
         if event_type == "motion":
-            self._update_active_transform((int(x_position), int(y_position)))
+            self._update_active_transform(
+                (int(x_position), int(y_position)),
+                fine=shift_pressed,
+            )
             return True
 
         if event_type == "left_release":
@@ -695,7 +709,7 @@ class OpenRetopWindow:
             return True
 
         if event_type == "right_release":
-            self._end_active_transform(commit=False, status="Transform canceled")
+            self._end_active_transform(commit=False, status="Transform cancelled")
             return True
 
         return True
@@ -766,6 +780,8 @@ class OpenRetopWindow:
             section_offset=self.section_offset.get(),
             selected_item=self.selected_item,
             object_origin=origin,
+            active_transform_mode=self.active_transform_mode,
+            active_transform_axis=self.active_transform_axis,
             section_result=self.section_result,
             curve_results=self.curve_results,
             reset_camera=reset_camera,
@@ -1070,7 +1086,9 @@ class OpenRetopWindow:
             section_offset=self.section_offset.get(),
         )
         self.active_transform_mode = mode
-        self.active_transform_axis = None
+        self.active_transform_axis = self._display_transform_axis(self.transform_state)
+        self._last_transform_readout = None
+        self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._active_transform_status())
 
     def _set_transform_axis_constraint(self, axis: str) -> None:
@@ -1079,52 +1097,67 @@ class OpenRetopWindow:
             self.status_text.set(f"Axis constraint: {axis}")
             return
 
-        self.transform_state.axis_constraint = axis
-        self.active_transform_axis = axis
-        if self.transform_state.selected_item == SELECT_SECTION_PLANE:
+        next_axis = None if self.transform_state.axis_constraint == axis else axis
+        self.transform_state.axis_constraint = next_axis
+        self.active_transform_axis = self._display_transform_axis(self.transform_state)
+        self._last_transform_readout = None
+        if self.transform_state.selected_item == SELECT_SECTION_PLANE and next_axis is not None:
             self.section_axis.set(axis)
             self._configure_offset_range(reset=False)
             self.transform_state.section_axis = axis
             self.transform_state.section_offset = self.section_offset.get()
             self.transform_state.mouse_start = self._last_viewport_mouse
             self._update_section_plane_label(set_status=False)
-            self._refresh_viewport(reset_camera=False)
 
+        self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._active_transform_status())
 
-    def _update_active_transform(self, mouse_position: tuple[int, int]) -> None:
+    def _update_active_transform(
+        self,
+        mouse_position: tuple[int, int],
+        *,
+        fine: bool,
+    ) -> None:
         state = self.transform_state
         if state is None:
             return
 
         if state.selected_item == SELECT_MODEL:
             if state.mode == "move":
-                self._update_mesh_move_transform(state, mouse_position)
+                self._update_mesh_move_transform(state, mouse_position, fine=fine)
             elif state.mode == "rotate":
-                self._update_mesh_rotate_transform(state, mouse_position)
+                self._update_mesh_rotate_transform(state, mouse_position, fine=fine)
         elif state.selected_item == SELECT_SECTION_PLANE and state.mode == "move":
-            self._update_section_plane_move_transform(state, mouse_position)
+            self._update_section_plane_move_transform(state, mouse_position, fine=fine)
 
     def _update_mesh_move_transform(
         self,
         state: ActiveTransformState,
         mouse_position: tuple[int, int],
+        *,
+        fine: bool,
     ) -> None:
         if self.mesh_object is None:
             return
 
         delta = self._mouse_delta(state, mouse_position)
-        scale = max(float(self.mesh_state.approximate_size), 1.0) * 0.004
+        scale = self._movement_scale(fine=fine)
         drag_amount = (delta[0] - delta[1]) * scale
         axis = state.axis_constraint
         if axis == "X":
             movement = np.asarray([drag_amount, 0.0, 0.0], dtype=float)
+            self._last_transform_readout = f"Delta X: {movement[0]:.2f}"
         elif axis == "Y":
             movement = np.asarray([0.0, drag_amount, 0.0], dtype=float)
+            self._last_transform_readout = f"Delta Y: {movement[1]:.2f}"
         elif axis == "Z":
             movement = np.asarray([0.0, 0.0, drag_amount], dtype=float)
+            self._last_transform_readout = f"Delta Z: {movement[2]:.2f}"
         else:
             movement = np.asarray([delta[0] * scale, -delta[1] * scale, 0.0], dtype=float)
+            self._last_transform_readout = (
+                f"Delta X: {movement[0]:.2f}, Delta Y: {movement[1]:.2f}"
+            )
 
         self.mesh_object.location = state.location + movement
         self._set_transform_inputs_from_object()
@@ -1135,15 +1168,19 @@ class OpenRetopWindow:
         self,
         state: ActiveTransformState,
         mouse_position: tuple[int, int],
+        *,
+        fine: bool,
     ) -> None:
         if self.mesh_object is None:
             return
 
         delta = self._mouse_delta(state, mouse_position)
-        angle_delta = (delta[0] - delta[1]) * 0.5
-        axis = state.axis_constraint or "Z"
+        angle_delta = delta[0] * ROTATION_SENSITIVITY * self._fine_multiplier(fine)
+        axis = self._display_transform_axis(state) or "Z"
         rotation = state.rotation.copy()
         rotation[AXIS_TO_INDEX[axis]] += angle_delta
+        self.active_transform_axis = axis
+        self._last_transform_readout = f"{angle_delta:.1f} deg"
         self.mesh_object.rotation = rotation
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
@@ -1153,15 +1190,20 @@ class OpenRetopWindow:
         self,
         state: ActiveTransformState,
         mouse_position: tuple[int, int],
+        *,
+        fine: bool,
     ) -> None:
         delta = self._mouse_delta(state, mouse_position)
         minimum, maximum = self._section_offset_bounds
-        offset_scale = max(abs(maximum - minimum), 1.0) / 300.0
+        offset_scale = (max(abs(maximum - minimum), 1.0) / 300.0) * self._fine_multiplier(fine)
         offset_delta = (delta[0] - delta[1]) * offset_scale
         self._set_section_offset(
             state.section_offset + offset_delta,
             clamp=True,
             refresh=True,
+        )
+        self._last_transform_readout = (
+            f"Offset {self.section_axis.get()}: {self.section_offset.get():.3f}"
         )
         self.status_text.set(self._active_transform_status())
 
@@ -1176,6 +1218,8 @@ class OpenRetopWindow:
         self.transform_state = None
         self.active_transform_mode = None
         self.active_transform_axis = None
+        self._last_transform_readout = None
+        self._refresh_viewport(reset_camera=False)
         self.status_text.set(status)
 
     def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
@@ -1206,8 +1250,32 @@ class OpenRetopWindow:
             return "No selection" if self.selected_item is None else "Transform"
 
         mode_label = "Move mode" if self.transform_state.mode == "move" else "Rotate mode"
-        axis = self.transform_state.axis_constraint
-        return mode_label if axis is None else f"{mode_label}: {axis} axis"
+        axis = self._display_transform_axis(self.transform_state)
+        parts = [mode_label]
+        if axis is not None:
+            parts.append(f"{axis} axis")
+        if self._last_transform_readout is not None:
+            parts.append(self._last_transform_readout)
+        elif self.transform_state.mode == "move" and axis is None:
+            parts.append(
+                "press X/Y/Z to constrain, Enter/Click to confirm, Esc/Right-click to cancel"
+            )
+        elif self.transform_state.mode == "rotate":
+            parts.append("move mouse horizontally")
+        return " - ".join(parts)
+
+    def _display_transform_axis(self, state: ActiveTransformState) -> str | None:
+        if state.mode == "rotate":
+            return state.axis_constraint or "Z"
+        if state.selected_item == SELECT_SECTION_PLANE:
+            return state.axis_constraint or self.section_axis.get()
+        return state.axis_constraint
+
+    def _movement_scale(self, *, fine: bool) -> float:
+        return max(float(self.mesh_state.approximate_size), 1.0) * MOVE_SENSITIVITY * self._fine_multiplier(fine)
+
+    def _fine_multiplier(self, fine: bool) -> float:
+        return FINE_TRANSFORM_MULTIPLIER if fine else 1.0
 
     def _mouse_delta(
         self,
@@ -1232,9 +1300,9 @@ class OpenRetopWindow:
             if self.transform_state is None:
                 self.active_transform_mode = None
                 self.active_transform_axis = None
-                self.status_text.set("Transform canceled")
+                self.status_text.set("Transform cancelled")
             else:
-                self._end_active_transform(commit=False, status="Transform canceled")
+                self._end_active_transform(commit=False, status="Transform cancelled")
             return
 
         if key == "Enter":
