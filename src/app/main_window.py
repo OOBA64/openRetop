@@ -399,37 +399,90 @@ class OpenRetopWindow:
 
     def _restore_project_section_collection(self, project: ProjectData) -> None:
         collection = SectionCollection()
+        restored_names: set[str] = set()
         if project.section_planes:
-            for project_plane in project.section_planes:
+            for index, project_plane in enumerate(project.section_planes, start=1):
                 add_plane(
                     collection,
                     SectionPlaneState(
                         id=project_plane.id,
-                        name=project_plane.name,
+                        name=self._unique_restored_section_plane_name(
+                            project_plane.name,
+                            index,
+                            restored_names,
+                        ),
                         axis=project_plane.axis,
                         offset=project_plane.offset,
                         visible=project_plane.visible,
                     ),
                 )
 
-            if project.active_section_plane_id is not None:
-                try:
-                    set_active_plane(collection, project.active_section_plane_id)
-                except ValueError:
-                    set_active_plane(collection, collection.planes[0].id)
-            else:
-                set_active_plane(collection, collection.planes[0].id)
+            self._set_restored_active_section_plane(
+                collection,
+                project.active_section_plane_id,
+            )
         else:
             plane = create_default_section_plane(
                 axis=project.section.axis,
                 offset=project.section.offset,
             )
+            plane.name = self._unique_restored_section_plane_name(
+                plane.name,
+                1,
+                restored_names,
+            )
             plane.visible = bool(project.section.show_plane)
             add_plane(collection, plane)
+
+        if not collection.planes:
+            add_plane(collection, create_default_section_plane())
 
         self.app_state.section_collection = collection
         self._set_display_section_result(None)
         self._sync_section_controls_from_active_plane(clamp_offset=False)
+
+    def _set_restored_active_section_plane(
+        self,
+        collection: SectionCollection,
+        active_plane_id: str | None,
+    ) -> None:
+        if not collection.planes:
+            return
+
+        if active_plane_id is not None:
+            try:
+                set_active_plane(collection, active_plane_id)
+                return
+            except ValueError:
+                pass
+
+        set_active_plane(collection, collection.planes[0].id)
+
+    @staticmethod
+    def _unique_restored_section_plane_name(
+        name: str,
+        index: int,
+        existing_names: set[str],
+    ) -> str:
+        candidate = name.strip() or f"Section Plane {index}"
+        if candidate not in existing_names:
+            existing_names.add(candidate)
+            return candidate
+
+        if candidate.startswith("Section Plane "):
+            suffix = 1
+            while f"Section Plane {suffix}" in existing_names:
+                suffix += 1
+            candidate = f"Section Plane {suffix}"
+        else:
+            base_name = candidate
+            suffix = 2
+            while f"{base_name} {suffix}" in existing_names:
+                suffix += 1
+            candidate = f"{base_name} {suffix}"
+
+        existing_names.add(candidate)
+        return candidate
 
     def save_project(self) -> bool:
         if self.current_project_path is None:

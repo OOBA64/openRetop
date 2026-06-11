@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -760,6 +761,273 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(scene["section_offset"], 0.5)
                 self.assertEqual(scene["mesh"], window.app_state.mesh_object.display_mesh)
                 self.assertIsNotNone(scene["transform_matrix"])
+        finally:
+            window.root.destroy()
+
+    def test_open_legacy_project_without_section_planes_restores_single_plane(self) -> None:
+        mesh = FakeMesh()
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, _file_name: str) -> None:
+                self.closed = False
+
+            def update_stage(self, _stage: str) -> None:
+                return None
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                mesh_path = Path(tmpdir) / "sample.stl"
+                project_path = Path(tmpdir) / "legacy.openretop"
+                project_path.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "name": "Legacy Section",
+                            "mesh_path": str(mesh_path),
+                            "section": {
+                                "axis": "Y",
+                                "offset": 1.25,
+                                "show_plane": True,
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                metadata = MeshMetadata(
+                    file_path=mesh_path,
+                    file_name="sample.stl",
+                    extension=".stl",
+                    vertex_count=3,
+                    triangle_count=1,
+                    had_vertex_normals=True,
+                    had_triangle_normals=True,
+                    computed_vertex_normals=False,
+                    computed_triangle_normals=False,
+                )
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_not_called()
+                planes = window.app_state.section_collection.planes
+                self.assertEqual(len(planes), 1)
+                legacy_plane = planes[0]
+                self.assertEqual(legacy_plane.name, "Section Plane 1")
+                self.assertEqual(legacy_plane.axis, "Y")
+                self.assertEqual(legacy_plane.offset, 1.25)
+                self.assertTrue(legacy_plane.visible)
+                self.assertTrue(legacy_plane.selected)
+                self.assertEqual(window.app_state.section_collection.active_plane_id, legacy_plane.id)
+                self.assertEqual(window.section_axis.get(), "Y")
+                self.assertEqual(window.section_offset.get(), 1.25)
+                self.assertTrue(window.show_section_plane.get())
+
+                tree = window.scene_browser.tree
+                legacy_node = section_plane_node_id(legacy_plane.id)
+                self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (legacy_node,))
+                self.assertEqual(tree.item(legacy_node, "text"), "Section Plane 1")
+                self.assertEqual(window.viewport.scene_calls[-1]["section_planes"], planes)
+                self.assertEqual(
+                    window.viewport.scene_calls[-1]["active_section_plane_id"],
+                    legacy_plane.id,
+                )
+        finally:
+            window.root.destroy()
+
+    def test_open_project_with_empty_section_planes_uses_legacy_section_fallback(self) -> None:
+        mesh = FakeMesh()
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, _file_name: str) -> None:
+                return None
+
+            def update_stage(self, _stage: str) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                mesh_path = Path(tmpdir) / "sample.stl"
+                project_path = Path(tmpdir) / "empty-planes.openretop"
+                project = default_project_data()
+                project.name = "Empty Planes"
+                project.mesh_path = str(mesh_path)
+                project.section.axis = "X"
+                project.section.offset = 0.75
+                project.section.show_plane = True
+                project.section_planes = []
+                project.active_section_plane_id = "missing-plane"
+                save_project(project, project_path)
+                metadata = MeshMetadata(
+                    file_path=mesh_path,
+                    file_name="sample.stl",
+                    extension=".stl",
+                    vertex_count=3,
+                    triangle_count=1,
+                    had_vertex_normals=True,
+                    had_triangle_normals=True,
+                    computed_vertex_normals=False,
+                    computed_triangle_normals=False,
+                )
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_not_called()
+                planes = window.app_state.section_collection.planes
+                self.assertEqual(len(planes), 1)
+                fallback_plane = planes[0]
+                self.assertEqual(fallback_plane.name, "Section Plane 1")
+                self.assertEqual(fallback_plane.axis, "X")
+                self.assertEqual(fallback_plane.offset, 0.75)
+                self.assertTrue(fallback_plane.visible)
+                self.assertTrue(fallback_plane.selected)
+                self.assertEqual(window.app_state.section_collection.active_plane_id, fallback_plane.id)
+                self.assertEqual(window.section_axis.get(), "X")
+                self.assertEqual(window.section_offset.get(), 0.75)
+                self.assertTrue(window.show_section_plane.get())
+        finally:
+            window.root.destroy()
+
+    def test_open_project_with_invalid_active_section_plane_selects_first_plane(self) -> None:
+        mesh = FakeMesh()
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, _file_name: str) -> None:
+                return None
+
+            def update_stage(self, _stage: str) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                mesh_path = Path(tmpdir) / "sample.stl"
+                project_path = Path(tmpdir) / "invalid-active.openretop"
+                project = default_project_data()
+                project.name = "Invalid Active"
+                project.mesh_path = str(mesh_path)
+                project.section_planes = [
+                    ProjectSectionPlane(
+                        id="plane-a",
+                        name="",
+                        axis="Z",
+                        offset=0.25,
+                        visible=True,
+                    ),
+                    ProjectSectionPlane(
+                        id="plane-b",
+                        name="Section Plane 1",
+                        axis="X",
+                        offset=0.5,
+                        visible=False,
+                    ),
+                    ProjectSectionPlane(
+                        id="plane-c",
+                        name="Custom",
+                        axis="Y",
+                        offset=0.75,
+                        visible=True,
+                    ),
+                    ProjectSectionPlane(
+                        id="plane-d",
+                        name="Custom",
+                        axis="Y",
+                        offset=1.0,
+                        visible=True,
+                    ),
+                ]
+                project.active_section_plane_id = "missing-plane"
+                save_project(project, project_path)
+                metadata = MeshMetadata(
+                    file_path=mesh_path,
+                    file_name="sample.stl",
+                    extension=".stl",
+                    vertex_count=3,
+                    triangle_count=1,
+                    had_vertex_normals=True,
+                    had_triangle_normals=True,
+                    computed_vertex_normals=False,
+                    computed_triangle_normals=False,
+                )
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_not_called()
+                planes = window.app_state.section_collection.planes
+                self.assertEqual([plane.id for plane in planes], ["plane-a", "plane-b", "plane-c", "plane-d"])
+                self.assertEqual(
+                    [plane.name for plane in planes],
+                    ["Section Plane 1", "Section Plane 2", "Custom", "Custom 2"],
+                )
+                self.assertEqual(window.app_state.section_collection.active_plane_id, "plane-a")
+                self.assertTrue(planes[0].selected)
+                self.assertFalse(planes[1].selected)
+                self.assertEqual(window.section_axis.get(), "Z")
+                self.assertEqual(window.section_offset.get(), 0.25)
+                self.assertTrue(window.show_section_plane.get())
+
+                tree = window.scene_browser.tree
+                nodes = tuple(section_plane_node_id(plane.id) for plane in planes)
+                self.assertEqual(tree.get_children(NODE_SECTION_PLANES), nodes)
+                self.assertEqual(tree.item(nodes[0], "text"), "Section Plane 1")
+                self.assertEqual(tree.item(nodes[1], "text"), "Section Plane 2")
+                self.assertEqual(tree.item(nodes[2], "text"), "Custom")
+                self.assertEqual(tree.item(nodes[3], "text"), "Custom 2")
+                self.assertEqual(window.viewport.scene_calls[-1]["active_section_plane_id"], "plane-a")
+
+                window.select_section_plane()
+                self.assertEqual(tree.selection(), (nodes[0],))
         finally:
             window.root.destroy()
 
