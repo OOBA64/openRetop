@@ -62,6 +62,7 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             "scene_bounds_max": None,
             "active_transform_mode": None,
             "active_transform_axis": None,
+            "active_transform_angle_delta": None,
             "section_result": None,
             "curve_results": [],
             "reset_camera": False,
@@ -71,6 +72,19 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
     def _actor_count(self, viewport: EmbeddedVTKViewport) -> int:
         return int(viewport.renderer.GetActors().GetNumberOfItems())
+
+    def _actor_points(self, actor: object) -> np.ndarray:
+        polydata = actor.GetMapper().GetInput()
+        return np.asarray(
+            [polydata.GetPoint(index) for index in range(polydata.GetNumberOfPoints())],
+            dtype=float,
+        )
+
+    def _ring_radius(self, actor: object, origin: tuple[float, float, float]) -> float:
+        points = self._actor_points(actor)
+        origin_array = np.asarray(origin, dtype=float)
+        distances = np.linalg.norm(points - origin_array, axis=1)
+        return float(np.mean(distances))
 
     def test_app_shortcut_keys_are_not_forwarded_to_vtk_interactor(self) -> None:
         class FakeInteractor:
@@ -193,6 +207,7 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             object_origin=(4.0, 0.0, 0.0),
             active_transform_mode="move",
             active_transform_axis="X",
+            active_transform_angle_delta=None,
             section_result=None,
             curve_results=[],
         )
@@ -286,6 +301,129 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertNotEqual(viewport._group_keys["selection_overlays"], first_selection_key)
         self.assertTrue(np.allclose(viewport._mesh_min_bound, [-1.0, 0.0, 0.0]))
         self.assertTrue(np.allclose(viewport._mesh_max_bound, [0.0, 2.0, 0.0]))
+
+    def test_rotation_ring_radius_uses_axis_specific_object_extents(self) -> None:
+        viewport = self._viewport()
+        mesh = TriangleMeshData(
+            vertices=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [0.0, 4.0, 0.0],
+                    [0.0, 0.0, 6.0],
+                ],
+                dtype=float,
+            ),
+            triangles=np.asarray([[0, 1, 2], [0, 1, 3]], dtype=int),
+        )
+
+        expected_by_axis = {"X": 3.6, "Y": 3.6, "Z": 2.4}
+        for axis, expected_radius in expected_by_axis.items():
+            viewport._reset_rotation_overlay_bounds()
+            self._set_basic_scene(
+                viewport,
+                mesh,
+                selected_item="model",
+                object_origin=(0.0, 0.0, 0.0),
+                active_transform_mode="rotate",
+                active_transform_axis=axis,
+                active_transform_angle_delta=0.0,
+            )
+
+            ring_actor = viewport._actor_groups["active_transform_gizmo"][1]
+            ring_points = self._actor_points(ring_actor)
+            self.assertAlmostEqual(self._ring_radius(ring_actor, (0.0, 0.0, 0.0)), expected_radius)
+            if axis == "X":
+                self.assertTrue(np.allclose(ring_points[:, 0], 0.0))
+            elif axis == "Y":
+                self.assertTrue(np.allclose(ring_points[:, 1], 0.0))
+            else:
+                self.assertTrue(np.allclose(ring_points[:, 2], 0.0))
+
+    def test_rotation_ring_radius_stays_stable_during_active_rotation(self) -> None:
+        viewport = self._viewport()
+        mesh = TriangleMeshData(
+            vertices=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [0.0, 4.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=float,
+            ),
+            triangles=np.asarray([[0, 1, 2], [0, 1, 3]], dtype=int),
+        )
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="rotate",
+            active_transform_axis="Z",
+            active_transform_angle_delta=0.0,
+        )
+        initial_radius = self._ring_radius(
+            viewport._actor_groups["active_transform_gizmo"][1],
+            (0.0, 0.0, 0.0),
+        )
+        rotation = np.asarray(
+            [
+                [0.0, -1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            transform_matrix=rotation,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="rotate",
+            active_transform_axis="Z",
+            active_transform_angle_delta=25.0,
+        )
+
+        updated_radius = self._ring_radius(
+            viewport._actor_groups["active_transform_gizmo"][1],
+            (0.0, 0.0, 0.0),
+        )
+        self.assertAlmostEqual(updated_radius, initial_radius)
+
+    def test_rotation_angle_indicator_updates_live_with_angle_delta(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="rotate",
+            active_transform_axis="Z",
+            active_transform_angle_delta=0.0,
+        )
+        self.assertEqual(len(viewport._actor_groups["active_transform_gizmo"]), 2)
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="rotate",
+            active_transform_axis="Z",
+            active_transform_angle_delta=30.0,
+        )
+
+        gizmo_actors = viewport._actor_groups["active_transform_gizmo"]
+        self.assertEqual(len(gizmo_actors), 3)
+        angle_points = self._actor_points(gizmo_actors[2])
+        self.assertGreater(len(angle_points), 3)
+        self.assertTrue(np.allclose(angle_points[:, 2], 0.0))
 
     def test_repeated_set_scene_calls_do_not_duplicate_actors(self) -> None:
         viewport = self._viewport()

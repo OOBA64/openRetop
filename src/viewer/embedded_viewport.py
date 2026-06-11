@@ -15,11 +15,13 @@ from viewer.overlays import (
     build_active_axis_indicator,
     build_bounding_box_outline,
     build_origin_marker,
+    build_rotation_angle_indicator,
     build_rotation_ring,
     build_section_plane_preview,
     build_world_axes,
     build_xy_grid,
     reference_extent,
+    rotation_ring_radius_for_axis,
 )
 
 try:
@@ -83,6 +85,9 @@ class EmbeddedVTKViewport:
         self._mesh_local_min_bound: np.ndarray | None = None
         self._mesh_local_max_bound: np.ndarray | None = None
         self._interactive_transform_key: tuple[int, str, str | None, str | None] | None = None
+        self._rotation_overlay_mesh_id: int | None = None
+        self._rotation_overlay_min_bound: np.ndarray | None = None
+        self._rotation_overlay_max_bound: np.ndarray | None = None
         self._section_plane_actors: list[vtkActor] = []
         self._section_plane_pick_geometry: LineGeometry | None = None
         self._selection_callback: Callable[[str | None], None] | None = None
@@ -157,6 +162,7 @@ class EmbeddedVTKViewport:
         scene_bounds_max: Sequence[float] | None = None,
         active_transform_mode: str | None = None,
         active_transform_axis: str | None = None,
+        active_transform_angle_delta: float | None = None,
         section_result: SectionResult | None = None,
         curve_results: Sequence[CurveFitResult] | None = None,
         reset_camera: bool = False,
@@ -191,6 +197,7 @@ class EmbeddedVTKViewport:
             object_origin=object_origin,
             active_transform_mode=active_transform_mode,
             active_transform_axis=active_transform_axis,
+            active_transform_angle_delta=active_transform_angle_delta,
             section_result=section_result,
             curve_results=curve_results,
         ):
@@ -203,6 +210,7 @@ class EmbeddedVTKViewport:
             object_origin=object_origin,
             active_transform_mode=active_transform_mode,
             active_transform_axis=active_transform_axis,
+            active_transform_angle_delta=active_transform_angle_delta,
         )
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
@@ -256,6 +264,7 @@ class EmbeddedVTKViewport:
         object_origin: Sequence[float] | None,
         active_transform_mode: str | None,
         active_transform_axis: str | None,
+        active_transform_angle_delta: float | None,
         section_result: SectionResult | None,
         curve_results: Sequence[CurveFitResult] | None,
     ) -> bool:
@@ -279,6 +288,7 @@ class EmbeddedVTKViewport:
             object_origin=object_origin,
             active_transform_mode=active_transform_mode,
             active_transform_axis=active_transform_axis,
+            active_transform_angle_delta=active_transform_angle_delta,
         )
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
@@ -315,6 +325,7 @@ class EmbeddedVTKViewport:
         object_origin: Sequence[float] | None,
         active_transform_mode: str | None,
         active_transform_axis: str | None,
+        active_transform_angle_delta: float | None,
     ) -> None:
         if (
             mesh is None
@@ -322,6 +333,7 @@ class EmbeddedVTKViewport:
             or self._mesh_min_bound is None
             or self._mesh_max_bound is None
         ):
+            self._reset_rotation_overlay_bounds()
             self._clear_overlay_group("selection_overlays")
             self._clear_overlay_group("active_transform_gizmo")
             return
@@ -350,14 +362,20 @@ class EmbeddedVTKViewport:
             )
 
         active_axis = _active_axis_for_gizmo(active_transform_mode, active_transform_axis)
+        if active_transform_mode != "rotate":
+            self._reset_rotation_overlay_bounds()
         gizmo_key = (
             "gizmo",
             origin_key,
             active_transform_mode,
             active_axis,
+            None if active_transform_angle_delta is None else round(float(active_transform_angle_delta), 6),
+            self._rotation_overlay_key(mesh, active_transform_mode, active_axis),
             round(float(self._view_extent), 9),
         )
         if object_origin is None or active_transform_mode not in {"move", "rotate"}:
+            if active_transform_mode != "rotate" or object_origin is None:
+                self._reset_rotation_overlay_bounds()
             self._clear_overlay_group("active_transform_gizmo")
             return
 
@@ -377,16 +395,39 @@ class EmbeddedVTKViewport:
                 )
             )
         if active_transform_mode == "rotate":
+            rotation_bounds = self._rotation_overlay_bounds(mesh)
+            assert rotation_bounds is not None
+            ring_min_bound, ring_max_bound = rotation_bounds
+            ring_radius = rotation_ring_radius_for_axis(
+                ring_min_bound,
+                ring_max_bound,
+                active_axis or "Z",
+            )
             gizmo_actors.append(
                 _line_actor(
                     build_rotation_ring(
                         object_origin,
                         active_axis or "Z",
                         self._view_extent,
+                        radius=ring_radius,
                     ),
                     line_width=2.4,
                 )
             )
+            if active_transform_angle_delta is not None:
+                angle_indicator = build_rotation_angle_indicator(
+                    object_origin,
+                    active_axis or "Z",
+                    ring_radius,
+                    active_transform_angle_delta,
+                )
+                if len(angle_indicator.lines) > 0:
+                    gizmo_actors.append(
+                        _line_actor(
+                            angle_indicator,
+                            line_width=2.0,
+                        )
+                    )
         self._replace_overlay_group(
             "active_transform_gizmo",
             gizmo_actors,
@@ -596,6 +637,55 @@ class EmbeddedVTKViewport:
 
     def _bounds_key(self) -> tuple[tuple[float, ...] | None, tuple[float, ...] | None]:
         return (_array_key(self._mesh_min_bound), _array_key(self._mesh_max_bound))
+
+    def _rotation_overlay_key(
+        self,
+        mesh: TriangleMeshData | None,
+        active_transform_mode: str | None,
+        active_axis: str | None,
+    ) -> tuple[int, str, tuple[float, ...], tuple[float, ...]] | None:
+        if mesh is None or active_transform_mode != "rotate" or active_axis is None:
+            return None
+
+        bounds = self._rotation_overlay_bounds(mesh)
+        if bounds is None:
+            return None
+
+        minimum_bound, maximum_bound = bounds
+        return (
+            id(mesh),
+            active_axis,
+            _array_key(minimum_bound) or tuple(),
+            _array_key(maximum_bound) or tuple(),
+        )
+
+    def _rotation_overlay_bounds(
+        self,
+        mesh: TriangleMeshData | None,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        if mesh is None or self._mesh_min_bound is None or self._mesh_max_bound is None:
+            self._reset_rotation_overlay_bounds()
+            return None
+
+        mesh_id = id(mesh)
+        if (
+            self._rotation_overlay_mesh_id != mesh_id
+            or self._rotation_overlay_min_bound is None
+            or self._rotation_overlay_max_bound is None
+        ):
+            self._rotation_overlay_mesh_id = mesh_id
+            self._rotation_overlay_min_bound = self._mesh_min_bound.copy()
+            self._rotation_overlay_max_bound = self._mesh_max_bound.copy()
+
+        return (
+            self._rotation_overlay_min_bound,
+            self._rotation_overlay_max_bound,
+        )
+
+    def _reset_rotation_overlay_bounds(self) -> None:
+        self._rotation_overlay_mesh_id = None
+        self._rotation_overlay_min_bound = None
+        self._rotation_overlay_max_bound = None
 
     def frame_model(self) -> None:
         self.reset_view()

@@ -60,6 +60,7 @@ class OpenRetopWindow:
         self.app_state = AppState()
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
+        self._active_transform_angle_delta: float | None = None
 
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
@@ -694,6 +695,7 @@ class OpenRetopWindow:
         self.app_state.active_transform_mode = None
         self.app_state.active_transform_axis = None
         self.app_state.transform_state = None
+        self._active_transform_angle_delta = None
         self._show_context(selected_item)
         self._refresh_viewport(reset_camera=False)
         if status is not None:
@@ -823,6 +825,7 @@ class OpenRetopWindow:
             ),
             active_transform_mode=self.app_state.active_transform_mode,
             active_transform_axis=self.app_state.active_transform_axis,
+            active_transform_angle_delta=self._active_transform_angle_delta,
             section_result=None if hide_expensive_overlays else self.app_state.section_result,
             curve_results=[] if hide_expensive_overlays else self.app_state.curve_results,
             reset_camera=reset_camera,
@@ -1239,6 +1242,7 @@ class OpenRetopWindow:
         self.app_state.active_transform_mode = mode
         self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
         self._last_transform_readout = None
+        self._active_transform_angle_delta = 0.0 if mode == "rotate" else None
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._active_transform_status())
 
@@ -1252,6 +1256,9 @@ class OpenRetopWindow:
         self.app_state.transform_state.axis_constraint = next_axis
         self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
         self._last_transform_readout = None
+        self._active_transform_angle_delta = (
+            0.0 if self.app_state.transform_state.mode == "rotate" else None
+        )
         if self.app_state.transform_state.selected_item == SELECT_SECTION_PLANE and next_axis is not None:
             self.section_axis.set(axis)
             self._configure_offset_range(reset=False)
@@ -1302,6 +1309,7 @@ class OpenRetopWindow:
         )
 
         self._last_transform_readout = readout
+        self._active_transform_angle_delta = None
         self.app_state.mesh_object.location = state.location + movement
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
@@ -1327,6 +1335,7 @@ class OpenRetopWindow:
         )
         self.app_state.active_transform_axis = axis
         self._last_transform_readout = f"{angle_delta:.1f} deg"
+        self._active_transform_angle_delta = angle_delta
         self.app_state.mesh_object.rotation = rotation
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
@@ -1367,6 +1376,7 @@ class OpenRetopWindow:
         self.app_state.active_transform_mode = None
         self.app_state.active_transform_axis = None
         self._last_transform_readout = None
+        self._active_transform_angle_delta = None
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(status)
 
@@ -1432,6 +1442,7 @@ class OpenRetopWindow:
             if self.app_state.transform_state is None:
                 self.app_state.active_transform_mode = None
                 self.app_state.active_transform_axis = None
+                self._active_transform_angle_delta = None
                 self.status_text.set("Transform cancelled")
             else:
                 self._end_active_transform(commit=False, status="Transform cancelled")
@@ -1441,6 +1452,7 @@ class OpenRetopWindow:
             if self.app_state.transform_state is None:
                 self.app_state.active_transform_mode = None
                 self.app_state.active_transform_axis = None
+                self._active_transform_angle_delta = None
                 self.status_text.set("Transform confirmed")
             else:
                 self._end_active_transform(commit=True, status="Transform confirmed")

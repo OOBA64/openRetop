@@ -95,11 +95,12 @@ def build_rotation_ring(
     axis: str,
     reference_extent: float,
     *,
+    radius: float | None = None,
     segments: int = 96,
 ) -> LineGeometry:
     axis_key = axis.upper()
     center = np.asarray(origin, dtype=float)
-    radius = max(float(reference_extent) * 0.22, 0.25)
+    ring_radius = max(float(reference_extent) * 0.22, 0.25) if radius is None else max(float(radius), 1e-6)
     color = list(AXIS_COLORS.get(axis_key, AXIS_COLORS["Z"]))
 
     points: list[list[float]] = []
@@ -107,23 +108,81 @@ def build_rotation_ring(
     colors: list[list[float]] = []
     for index in range(max(int(segments), 12)):
         angle = (2.0 * pi * index) / max(int(segments), 12)
-        point = center.copy()
-        if axis_key == "X":
-            point[1] += cos(angle) * radius
-            point[2] += sin(angle) * radius
-        elif axis_key == "Y":
-            point[0] += cos(angle) * radius
-            point[2] += sin(angle) * radius
-        else:
-            point[0] += cos(angle) * radius
-            point[1] += sin(angle) * radius
-        points.append(point.tolist())
+        points.append(_rotation_plane_point(center, axis_key, angle, ring_radius).tolist())
 
     for index in range(len(points)):
         lines.append((index, (index + 1) % len(points)))
         colors.append(color)
 
     return _line_geometry(points, lines, colors)
+
+
+def build_rotation_angle_indicator(
+    origin: Sequence[float],
+    axis: str,
+    radius: float,
+    angle_degrees: float,
+    *,
+    segments: int = 64,
+) -> LineGeometry:
+    """Build a line-based sector preview for the active rotation delta."""
+
+    if abs(float(angle_degrees)) <= 1e-6:
+        return _line_geometry([], [], [])
+
+    axis_key = axis.upper()
+    center = np.asarray(origin, dtype=float)
+    indicator_radius = max(float(radius), 1e-6)
+    angle_radians = (float(angle_degrees) * pi) / 180.0
+    step_count = max(2, min(max(int(segments), 2), int(abs(float(angle_degrees)) / 7.5) + 2))
+    color = list(AXIS_COLORS.get(axis_key, AXIS_COLORS["Z"]))
+    start_color = [min(component + 0.25, 1.0) for component in color]
+    fan_color = [component * 0.62 for component in color]
+
+    points: list[list[float]] = [center.tolist()]
+    lines: list[tuple[int, int]] = []
+    colors: list[list[float]] = []
+    arc_indices: list[int] = []
+    for index in range(step_count + 1):
+        ratio = index / step_count
+        point = _rotation_plane_point(center, axis_key, angle_radians * ratio, indicator_radius)
+        arc_indices.append(len(points))
+        points.append(point.tolist())
+
+    lines.append((0, arc_indices[0]))
+    colors.append(start_color)
+    lines.append((0, arc_indices[-1]))
+    colors.append(color)
+
+    for index in range(1, len(arc_indices)):
+        lines.append((arc_indices[index - 1], arc_indices[index]))
+        colors.append(color)
+
+    for index in range(1, len(arc_indices) - 1):
+        lines.append((0, arc_indices[index]))
+        colors.append(fan_color)
+
+    return _line_geometry(points, lines, colors)
+
+
+def rotation_ring_radius_for_axis(
+    min_bound: Sequence[float],
+    max_bound: Sequence[float],
+    axis: str,
+) -> float:
+    minimum = np.asarray(min_bound, dtype=float)
+    maximum = np.asarray(max_bound, dtype=float)
+    extents = np.maximum(maximum - minimum, 0.0)
+    diagonal = float(np.linalg.norm(extents))
+    minimum_radius = max(diagonal * 0.08, 0.25)
+    axis_key = axis.upper()
+    if axis_key == "X":
+        axis_radius = 0.60 * max(float(extents[1]), float(extents[2]))
+    elif axis_key == "Y":
+        axis_radius = 0.60 * max(float(extents[0]), float(extents[2]))
+    else:
+        axis_radius = 0.60 * max(float(extents[0]), float(extents[1]))
+    return max(axis_radius, minimum_radius)
 
 
 def build_bounding_box_outline(
@@ -309,6 +368,25 @@ def _plane_point(
     point[axis_index] = offset
     point[other_indices[0]] = first_value
     point[other_indices[1]] = second_value
+    return point
+
+
+def _rotation_plane_point(
+    center: np.ndarray,
+    axis_key: str,
+    angle: float,
+    radius: float,
+) -> np.ndarray:
+    point = center.copy()
+    if axis_key == "X":
+        point[1] += cos(angle) * radius
+        point[2] += sin(angle) * radius
+    elif axis_key == "Y":
+        point[0] += cos(angle) * radius
+        point[2] += sin(angle) * radius
+    else:
+        point[0] += cos(angle) * radius
+        point[1] += sin(angle) * radius
     return point
 
 
