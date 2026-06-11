@@ -28,6 +28,8 @@ from app.scene_browser import (
 from mesh.loader import LoadedMesh, MeshMetadata
 from project.project_data import default_project_data
 from project.project_io import load_project, save_project
+from settings.settings_data import default_app_settings
+from settings.settings_io import load_settings, save_settings
 
 
 class FakeBounds:
@@ -144,11 +146,29 @@ class FakeViewport:
         self.closed = True
 
 
-def _create_window() -> OpenRetopWindow:
+def _create_window(*, settings_path: Path | None = None) -> OpenRetopWindow:
+    settings_tmpdir: TemporaryDirectory[str] | None = None
+    if settings_path is None:
+        settings_tmpdir = TemporaryDirectory()
+        settings_path = Path(settings_tmpdir.name) / "settings.json"
+
     try:
-        window = OpenRetopWindow()
+        window = OpenRetopWindow(settings_path=settings_path)
     except TclError as exc:
+        if settings_tmpdir is not None:
+            settings_tmpdir.cleanup()
         raise unittest.SkipTest(f"Tk is unavailable: {exc}") from exc
+
+    if settings_tmpdir is not None:
+        original_destroy = window.root.destroy
+
+        def destroy_with_settings_cleanup() -> None:
+            try:
+                original_destroy()
+            finally:
+                settings_tmpdir.cleanup()
+
+        window.root.destroy = destroy_with_settings_cleanup  # type: ignore[method-assign]
 
     window.root.update_idletasks()
     if window._start_viewport_after_id is not None:
@@ -245,6 +265,85 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(window.status_text.get(), f"{label}: Not implemented yet")
         finally:
             window.root.destroy()
+
+    def test_startup_loads_preferences_from_settings_file(self) -> None:
+        settings = default_app_settings()
+        settings.display.show_grid = False
+        settings.display.show_axes = False
+        settings.display.show_normals = True
+        settings.import_settings.default_proxy_quality = "High"
+        settings.ui.window_width = 1120
+        settings.ui.window_height = 720
+
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            save_settings(settings, settings_path)
+
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            try:
+                self.assertFalse(window.show_grid.get())
+                self.assertFalse(window.show_axes.get())
+                self.assertTrue(window.show_normals.get())
+                self.assertEqual(window.proxy_quality.get(), "High")
+                self.assertTrue(window.root.geometry().startswith("1120x720"))
+                self.assertEqual(window.display_proxy_text.get(), "Disabled (High)")
+            finally:
+                window.root.destroy()
+
+    def test_invalid_startup_preferences_recover_to_defaults(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            settings_path.write_text("{broken json", encoding="utf-8")
+
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            try:
+                self.assertTrue(window.show_grid.get())
+                self.assertTrue(window.show_axes.get())
+                self.assertFalse(window.show_normals.get())
+                self.assertEqual(window.proxy_quality.get(), "Medium")
+                self.assertTrue(window.root.geometry().startswith("1280x800"))
+            finally:
+                window.root.destroy()
+
+    def test_exit_saves_preferences_and_next_launch_uses_them(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            window.show_grid.set(False)
+            window.show_axes.set(False)
+            window.show_normals.set(True)
+            window.proxy_quality.set("Low")
+            window.root.geometry("1180x740")
+            window.root.update_idletasks()
+            window._on_exit()
+
+            self.assertTrue(settings_path.exists())
+            saved_settings = load_settings(settings_path)
+            self.assertFalse(saved_settings.display.show_grid)
+            self.assertFalse(saved_settings.display.show_axes)
+            self.assertTrue(saved_settings.display.show_normals)
+            self.assertEqual(saved_settings.import_settings.default_proxy_quality, "Low")
+            self.assertEqual(saved_settings.ui.window_width, 1180)
+            self.assertEqual(saved_settings.ui.window_height, 740)
+
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                restored_window = _create_window(settings_path=settings_path)
+
+            try:
+                self.assertFalse(restored_window.show_grid.get())
+                self.assertFalse(restored_window.show_axes.get())
+                self.assertTrue(restored_window.show_normals.get())
+                self.assertEqual(restored_window.proxy_quality.get(), "Low")
+                self.assertTrue(restored_window.root.geometry().startswith("1180x740"))
+            finally:
+                restored_window.root.destroy()
 
     def test_new_project_resets_project_path_without_touching_loaded_mesh(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):

@@ -30,7 +30,6 @@ from app.transforms import (
 from geometry.curves import fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section
 from mesh.display_proxy import (
-    DEFAULT_PROXY_QUALITY,
     PROXY_QUALITY_LABELS,
     DisplayMeshResult,
     build_display_mesh,
@@ -42,6 +41,14 @@ from mesh.triangle_mesh import TriangleMeshData
 from project.project_data import ProjectData
 from project.project_io import load_project, save_project
 from project.project_state import project_from_app_state
+from settings.settings_data import (
+    SETTINGS_VERSION,
+    AppDisplaySettings,
+    AppImportSettings,
+    AppSettings,
+    AppUiSettings,
+)
+from settings.settings_io import load_settings, save_settings
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -118,10 +125,14 @@ class LoadProgressDialog:
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, settings_path: Path | None = None) -> None:
         self.root = Tk()
+        self.settings_path = settings_path
+        self.settings = load_settings(settings_path)
         self.root.title("openRetop")
-        self.root.geometry("1280x800")
+        self.root.geometry(
+            f"{self.settings.ui.window_width}x{self.settings.ui.window_height}"
+        )
         self.root.minsize(980, 620)
 
         self.mesh_state = MeshState()
@@ -135,11 +146,15 @@ class OpenRetopWindow:
         self.project_dirty = False
         self._update_window_title()
 
-        self.show_grid = BooleanVar(value=True)
-        self.show_axes = BooleanVar(value=True)
-        self.show_normals = BooleanVar(value=False)
+        self.show_grid = BooleanVar(value=self.settings.display.show_grid)
+        self.show_axes = BooleanVar(value=self.settings.display.show_axes)
+        self.show_normals = BooleanVar(value=self.settings.display.show_normals)
         self.show_section_plane = BooleanVar(value=False)
-        self.proxy_quality = StringVar(value=DEFAULT_PROXY_QUALITY)
+        self.proxy_quality = StringVar(
+            value=normalize_proxy_quality(
+                self.settings.import_settings.default_proxy_quality
+            )
+        )
 
         self.section_axis = StringVar(value="Z")
         self.section_offset = DoubleVar(value=0.0)
@@ -161,7 +176,9 @@ class OpenRetopWindow:
         self.triangle_count_text = StringVar(value="0")
         self.display_triangle_count_text = StringVar(value="0")
         self.display_reduction_text = StringVar(value="0.0%")
-        self.display_proxy_text = StringVar(value=f"Disabled ({DEFAULT_PROXY_QUALITY})")
+        self.display_proxy_text = StringVar(
+            value=f"Disabled ({self.proxy_quality.get()})"
+        )
         self.source_retained_text = StringVar(value="Full-resolution source preserved")
         self.bbox_size_text = StringVar(value="-")
         self.selected_object_text = StringVar(value="(none)")
@@ -169,7 +186,9 @@ class OpenRetopWindow:
         self.selected_triangle_count_text = StringVar(value="0")
         self.selected_display_triangle_count_text = StringVar(value="0")
         self.selected_display_reduction_text = StringVar(value="0.0%")
-        self.selected_display_proxy_text = StringVar(value=f"Disabled ({DEFAULT_PROXY_QUALITY})")
+        self.selected_display_proxy_text = StringVar(
+            value=f"Disabled ({self.proxy_quality.get()})"
+        )
         self.selected_bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
@@ -1844,10 +1863,54 @@ class OpenRetopWindow:
         for button in self.selection_buttons:
             button.configure(state=state)
 
+    def _settings_from_ui(self) -> AppSettings:
+        width, height = self._current_window_size()
+        return AppSettings(
+            version=SETTINGS_VERSION,
+            display=AppDisplaySettings(
+                show_grid=self.show_grid.get(),
+                show_axes=self.show_axes.get(),
+                show_normals=self.show_normals.get(),
+            ),
+            import_settings=AppImportSettings(
+                default_proxy_quality=normalize_proxy_quality(self.proxy_quality.get()),
+            ),
+            ui=AppUiSettings(
+                window_width=width,
+                window_height=height,
+            ),
+            future=dict(self.settings.future),
+        )
+
+    def _current_window_size(self) -> tuple[int, int]:
+        width = int(self.root.winfo_width())
+        height = int(self.root.winfo_height())
+        if width > 1 and height > 1:
+            return (width, height)
+
+        geometry = self.root.geometry().split("+", maxsplit=1)[0]
+        try:
+            width_text, height_text = geometry.split("x", maxsplit=1)
+            width = int(width_text)
+            height = int(height_text)
+        except ValueError:
+            width = self.settings.ui.window_width
+            height = self.settings.ui.window_height
+
+        return (max(width, 1), max(height, 1))
+
+    def _save_app_settings(self) -> None:
+        self.settings = self._settings_from_ui()
+        try:
+            save_settings(self.settings, self.settings_path)
+        except (OSError, ValueError, RuntimeError):
+            self.status_text.set("Settings save failed")
+
     def _on_exit(self) -> None:
         if not self._confirm_unsaved_project_changes("closing openRetop"):
             return
 
+        self._save_app_settings()
         if self._start_viewport_after_id is not None:
             self.root.after_cancel(self._start_viewport_after_id)
             self._start_viewport_after_id = None
