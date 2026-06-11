@@ -28,7 +28,7 @@ from app.transforms import (
     world_axis_vector,
 )
 from geometry.curves import fit_section_polylines
-from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section
+from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section, normalize_axis
 from mesh.display_proxy import (
     PROXY_QUALITY_LABELS,
     DisplayMeshResult,
@@ -49,6 +49,7 @@ from settings.settings_data import (
     AppUiSettings,
 )
 from settings.settings_io import load_settings, save_settings
+from sections.section_state import get_active_plane
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -195,6 +196,7 @@ class OpenRetopWindow:
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
         self.selection_buttons: list[ttk.Button] = []
+        self._sync_active_section_plane_from_controls()
 
         self._build_menu_bar()
         self._build_layout()
@@ -1305,6 +1307,15 @@ class OpenRetopWindow:
             and self.app_state.transform_state.selected_item == SELECT_SECTION_PLANE
         )
 
+    def _sync_active_section_plane_from_controls(self) -> None:
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            return
+
+        active_plane.axis = normalize_axis(self.section_axis.get())
+        active_plane.offset = float(self.section_offset.get())
+        active_plane.visible = bool(self.show_section_plane.get())
+
     def _on_view_option_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
@@ -1330,10 +1341,12 @@ class OpenRetopWindow:
         self._set_project_dirty(True)
 
     def _on_section_plane_visibility_changed(self) -> None:
+        self._sync_active_section_plane_from_controls()
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
 
     def _on_section_axis_changed(self, _event: object | None = None) -> None:
+        self._sync_active_section_plane_from_controls()
         self._configure_offset_range(reset=False)
         self._update_section_plane_label(set_status=True)
         self._clear_section_for_plane_change()
@@ -1381,6 +1394,7 @@ class OpenRetopWindow:
         finally:
             self._updating_offset = False
 
+        self._sync_active_section_plane_from_controls()
         self._update_section_plane_label(set_status=True)
         self._clear_section_for_plane_change()
         if refresh:

@@ -1671,6 +1671,11 @@ class MainWindowUiTests(unittest.TestCase):
             ):
                 window.load_model(Path("sample.stl"))
 
+            active_plane = window.app_state.section_collection.planes[0]
+            self.assertEqual(active_plane.axis, "Z")
+            self.assertEqual(active_plane.offset, 0.0)
+            self.assertFalse(active_plane.visible)
+
             window.select_section_plane()
             self.assertEqual(window.app_state.selected_item, "section_plane")
             self.assertEqual(window.status_text.get(), "Selected: Section Plane")
@@ -1684,6 +1689,12 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.500")
             self.assertEqual(window.status_text.get(), "Section plane: Z = 0.500")
             self.assertEqual(window.viewport.scene_calls[-1]["section_offset"], 0.5)
+            self.assertEqual(active_plane.offset, 0.5)
+
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            self.assertEqual(active_plane.axis, "X")
+            self.assertEqual(active_plane.offset, window.section_offset.get())
 
             window.reset_view()
             self.assertEqual(window.viewport.reset_count, 1)
@@ -1706,6 +1717,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.show_section_plane.set(True)
             window._on_section_plane_visibility_changed()
             self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], True)
+            self.assertTrue(active_plane.visible)
         finally:
             window.root.destroy()
 
@@ -1740,18 +1752,22 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Move mode - Z axis")
             window._on_viewport_pointer_event("motion", 50, 0)
             moved_offset = window.section_offset.get()
+            active_plane = window.app_state.section_collection.planes[0]
             self.assertGreater(moved_offset, start_offset)
             self.assertEqual(window.section_offset_text.get(), f"{moved_offset:.3f}")
+            self.assertAlmostEqual(active_plane.offset, moved_offset)
             self.assertIn("Offset Z:", window.status_text.get())
 
             handled = window._on_viewport_pointer_event("right_release", 50, 0)
             self.assertTrue(handled)
             self.assertEqual(window.status_text.get(), "Transform cancelled")
             self.assertAlmostEqual(window.section_offset.get(), start_offset)
+            self.assertAlmostEqual(active_plane.offset, start_offset)
 
             window._handle_shortcut("G")
             window._handle_shortcut("X")
             self.assertEqual(window.section_axis.get(), "X")
+            self.assertEqual(active_plane.axis, "X")
             self.assertEqual(window.status_text.get(), "Move mode - X axis")
             window._on_viewport_pointer_event("motion", 100, 0)
             confirmed_offset = window.section_offset.get()
@@ -1759,11 +1775,13 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(handled)
             self.assertEqual(window.status_text.get(), "Transform confirmed")
             self.assertAlmostEqual(window.section_offset.get(), confirmed_offset)
+            self.assertAlmostEqual(active_plane.offset, confirmed_offset)
             self.assertGreater(confirmed_offset, start_offset)
 
             self.assertEqual(window.section_axis.get(), "X")
             window._handle_shortcut("R")
             self.assertEqual(window.section_axis.get(), "Y")
+            self.assertEqual(active_plane.axis, "Y")
             self.assertEqual(window.status_text.get(), "Section plane axis cycled to Y")
         finally:
             window.root.destroy()
