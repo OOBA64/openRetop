@@ -44,6 +44,19 @@ except ImportError as exc:  # pragma: no cover - exercised only when deps are ab
     ) from exc
 
 
+APP_SHORTCUT_KEYSYMS = {
+    "delete",
+    "escape",
+    "f",
+    "g",
+    "r",
+    "return",
+    "x",
+    "y",
+    "z",
+}
+
+
 class EmbeddedVTKViewport:
     """VTK viewport hosted inside a Tk frame."""
 
@@ -743,6 +756,9 @@ class EmbeddedVTKViewport:
         if self.interactor is None:
             return
 
+        if _is_app_shortcut_key_event(event):
+            return
+
         self._set_interactor_event(event)
         self.interactor.KeyPressEvent()
         self.interactor.CharEvent()
@@ -873,6 +889,11 @@ def _screen_point_near_geometry(
         if distance <= float(tolerance):
             return True
     return False
+
+
+def _is_app_shortcut_key_event(event: object) -> bool:
+    keysym = str(getattr(event, "keysym", "") or "").lower()
+    return keysym in APP_SHORTCUT_KEYSYMS
 
 
 def _project_points(renderer: vtkRenderer, points: Sequence[Sequence[float]]) -> np.ndarray:

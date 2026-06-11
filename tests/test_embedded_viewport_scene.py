@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -70,6 +71,56 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
     def _actor_count(self, viewport: EmbeddedVTKViewport) -> int:
         return int(viewport.renderer.GetActors().GetNumberOfItems())
+
+    def test_app_shortcut_keys_are_not_forwarded_to_vtk_interactor(self) -> None:
+        class FakeInteractor:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def SetEventInformationFlipY(self, *_args: object) -> None:
+                self.calls.append("event")
+
+            def KeyPressEvent(self) -> None:
+                self.calls.append("key")
+
+            def CharEvent(self) -> None:
+                self.calls.append("char")
+
+        viewport = EmbeddedVTKViewport(parent=object())
+        interactor = FakeInteractor()
+        viewport.interactor = interactor  # type: ignore[assignment]
+        render_calls: list[bool] = []
+        viewport._render = lambda: render_calls.append(True)  # type: ignore[method-assign]
+
+        viewport._on_key_press(SimpleNamespace(keysym="r", char="r", x=4, y=5, state=0))
+
+        self.assertEqual(interactor.calls, [])
+        self.assertEqual(render_calls, [])
+
+    def test_non_app_shortcut_keys_still_forward_to_vtk_interactor(self) -> None:
+        class FakeInteractor:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def SetEventInformationFlipY(self, *_args: object) -> None:
+                self.calls.append("event")
+
+            def KeyPressEvent(self) -> None:
+                self.calls.append("key")
+
+            def CharEvent(self) -> None:
+                self.calls.append("char")
+
+        viewport = EmbeddedVTKViewport(parent=object())
+        interactor = FakeInteractor()
+        viewport.interactor = interactor  # type: ignore[assignment]
+        render_calls: list[bool] = []
+        viewport._render = lambda: render_calls.append(True)  # type: ignore[method-assign]
+
+        viewport._on_key_press(SimpleNamespace(keysym="a", char="a", x=4, y=5, state=0))
+
+        self.assertEqual(interactor.calls, ["event", "key", "char"])
+        self.assertEqual(render_calls, [True])
 
     def test_triangle_mesh_converts_to_vtk_polydata(self) -> None:
         mesh = self._triangle_mesh()
