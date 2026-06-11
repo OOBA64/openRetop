@@ -238,7 +238,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Add Section Plane")
             self.assertEqual(window.tools_menu.entrycget(3, "label"), "Compute Section")
-            self.assertEqual(window.tools_menu.entrycget(4, "label"), "Clear Section")
+            self.assertEqual(window.tools_menu.entrycget(4, "label"), "Clear Active Section Result")
+            self.assertEqual(window.tools_menu.entrycget(5, "label"), "Clear All Section Results")
+            self.assertEqual(window.tools_menu.entrycget(6, "label"), "Delete Active Section Plane")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -259,7 +261,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
             self.assertEqual(window.compute_section_button.cget("text"), "Compute Section")
-            self.assertEqual(window.clear_section_button.cget("text"), "Clear Section")
+            self.assertEqual(window.clear_section_button.cget("text"), "Clear Active Section Result")
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertEqual(window.scale_value.get(), "1.000")
@@ -1076,6 +1078,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(4)
             self.assertEqual(window.status_text.get(), "Section cleared")
+            window.tools_menu.invoke(5)
+            self.assertEqual(window.status_text.get(), "All section results cleared")
+            window.tools_menu.invoke(6)
+            self.assertEqual(window.status_text.get(), "No selection")
         finally:
             window.root.destroy()
 
@@ -1434,6 +1440,138 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIs(window.app_state.section_result, second_result.result)
             self.assertEqual(window.section_result_text.get(), "Section result: Section 2 - 1 segments")
             self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (second_result_node,))
+        finally:
+            window.root.destroy()
+
+    def test_clear_all_section_results_removes_all_result_nodes(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            window.add_section_plane()
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+
+            self.assertEqual(len(window.app_state.section_collection.results), 2)
+            self.assertTrue(window.scene_browser.tree.exists(NODE_SECTION_RESULTS))
+
+            window.tools_menu.invoke(5)
+
+            self.assertEqual(window.app_state.section_collection.results, [])
+            self.assertIsNone(window.app_state.section_result)
+            self.assertEqual(window.app_state.curve_results, [])
+            self.assertEqual(window.section_result_text.get(), "Section result: none")
+            self.assertEqual(window.status_text.get(), "All section results cleared")
+            self.assertFalse(window.scene_browser.tree.exists(NODE_SECTION_RESULTS))
+            self.assertEqual(len(window.app_state.section_collection.planes), 2)
+            self.assertEqual(window.viewport.scene_calls[-1]["section_result"], None)
+        finally:
+            window.root.destroy()
+
+    def test_delete_active_section_plane_removes_results_and_restores_default(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            first_plane = window.app_state.section_collection.planes[0]
+            window.compute_section()
+            first_result = window.app_state.section_collection.results[0]
+            window.add_section_plane()
+            second_plane = window.app_state.section_collection.planes[1]
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_result = window.app_state.section_collection.results[1]
+
+            window.tools_menu.invoke(6)
+
+            self.assertEqual(window.app_state.section_collection.planes, [first_plane])
+            self.assertEqual(window.app_state.section_collection.active_plane_id, first_plane.id)
+            self.assertTrue(first_plane.selected)
+            self.assertEqual(window.app_state.section_collection.results, [first_result])
+            self.assertNotIn(second_result, window.app_state.section_collection.results)
+            self.assertIs(window.app_state.section_result, first_result.result)
+            self.assertEqual(window.section_result_text.get(), "Section result: Section 1 - 1 segments")
+            self.assertEqual(window.section_axis.get(), "Z")
+            self.assertEqual(window.section_offset.get(), 0.0)
+            self.assertEqual(window.app_state.selected_item, "section_plane")
+            self.assertEqual(window.status_text.get(), "Deleted: Section Plane 2")
+
+            tree = window.scene_browser.tree
+            first_plane_node = section_plane_node_id(first_plane.id)
+            first_result_node = section_result_node_id(first_result.id)
+            self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (first_plane_node,))
+            self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (first_result_node,))
+            self.assertEqual(tree.selection(), (first_plane_node,))
+
+            window.tools_menu.invoke(6)
+
+            restored_plane = window.app_state.section_collection.planes[0]
+            restored_node = section_plane_node_id(restored_plane.id)
+            self.assertEqual(len(window.app_state.section_collection.planes), 1)
+            self.assertIsNot(restored_plane, first_plane)
+            self.assertEqual(restored_plane.name, "Section Plane 1")
+            self.assertEqual(restored_plane.axis, "Z")
+            self.assertEqual(restored_plane.offset, 0.0)
+            self.assertTrue(restored_plane.selected)
+            self.assertEqual(window.app_state.section_collection.active_plane_id, restored_plane.id)
+            self.assertEqual(window.app_state.section_collection.results, [])
+            self.assertIsNone(window.app_state.section_result)
+            self.assertEqual(window.section_result_text.get(), "Section result: none")
+            self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
+            self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (restored_node,))
+            self.assertEqual(tree.selection(), (restored_node,))
+
+            window.clear_selection()
+            window.tools_menu.invoke(6)
+
+            next_restored_plane = window.app_state.section_collection.planes[0]
+            self.assertEqual(len(window.app_state.section_collection.planes), 1)
+            self.assertIsNot(next_restored_plane, restored_plane)
+            self.assertEqual(window.app_state.selected_item, "section_plane")
+            self.assertIn("Deleted: Section Plane 1", window.status_text.get())
         finally:
             window.root.destroy()
 

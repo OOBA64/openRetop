@@ -57,6 +57,7 @@ from sections.section_state import (
     clear_results_for_plane,
     create_default_section_plane,
     get_active_plane,
+    remove_plane,
     set_active_plane,
 )
 from viewer.embedded_viewport import EmbeddedVTKViewport
@@ -276,7 +277,18 @@ class OpenRetopWindow:
         self.tools_menu.add_command(label="Select Section Plane", command=self.select_section_plane)
         self.tools_menu.add_command(label="Add Section Plane", command=self.add_section_plane)
         self.tools_menu.add_command(label="Compute Section", command=self.compute_section)
-        self.tools_menu.add_command(label="Clear Section", command=self.clear_section)
+        self.tools_menu.add_command(
+            label="Clear Active Section Result",
+            command=self.clear_active_section_result,
+        )
+        self.tools_menu.add_command(
+            label="Clear All Section Results",
+            command=self.clear_all_section_results,
+        )
+        self.tools_menu.add_command(
+            label="Delete Active Section Plane",
+            command=self.delete_active_section_plane,
+        )
         self.menu_bar.add_cascade(label="Tools", menu=self.tools_menu)
 
         self.help_menu = Menu(self.menu_bar, tearoff=False)
@@ -912,8 +924,8 @@ class OpenRetopWindow:
         row += 1
         self.clear_section_button = ttk.Button(
             parent,
-            text="Clear Section",
-            command=self.clear_section,
+            text="Clear Active Section Result",
+            command=self.clear_active_section_result,
         )
         self.clear_section_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         row += 1
@@ -1276,9 +1288,52 @@ class OpenRetopWindow:
         self.status_text.set(self._section_result_status(stored_result))
 
     def clear_section(self) -> None:
+        self.clear_active_section_result()
+
+    def clear_active_section_result(self) -> None:
         self._clear_active_section_results()
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Section cleared")
+
+    def clear_all_section_results(self) -> None:
+        self.app_state.section_collection.results = []
+        self._set_display_section_result(None)
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("All section results cleared")
+
+    def delete_active_section_plane(self) -> None:
+        if self.app_state.mesh_object is None:
+            self.status_text.set("No selection")
+            return
+
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            self._ensure_default_section_plane()
+            self._sync_section_controls_from_active_plane()
+            self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
+            return
+
+        removed_name = active_plane.name or "Section Plane"
+        remove_plane(self.app_state.section_collection, active_plane.id)
+        self._ensure_default_section_plane()
+        self._set_display_section_result(self._latest_stored_section_result())
+        self._sync_section_controls_from_active_plane()
+        self._set_selected_item(SELECT_SECTION_PLANE, status=f"Deleted: {removed_name}")
+        self._set_project_dirty(True)
+
+    def _ensure_default_section_plane(self) -> None:
+        if self.app_state.section_collection.planes:
+            if self.app_state.section_collection.active_plane_id is None:
+                set_active_plane(
+                    self.app_state.section_collection,
+                    self.app_state.section_collection.planes[0].id,
+                )
+            return
+
+        add_plane(
+            self.app_state.section_collection,
+            create_default_section_plane(),
+        )
 
     def _next_section_result_name(self) -> str:
         existing_names = {
@@ -2136,6 +2191,10 @@ class OpenRetopWindow:
             self._start_active_transform("rotate")
 
     def _delete_selected_if_safe(self) -> None:
+        if self.app_state.selected_item == SELECT_SECTION_PLANE:
+            self.delete_active_section_plane()
+            return
+
         if self.app_state.selected_item != SELECT_MODEL or self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
