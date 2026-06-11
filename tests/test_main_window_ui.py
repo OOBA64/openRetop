@@ -25,6 +25,7 @@ from app.scene_browser import (
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
     section_plane_node_id,
+    section_result_node_id,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
 from project.project_data import default_project_data
@@ -1236,6 +1237,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.selection(), (section_plane_node,))
 
             window.compute_section()
+            stored_result = window.app_state.section_collection.results[0]
+            section_result_node = section_result_node_id(stored_result.id)
             self.assertEqual(
                 tree.get_children(NODE_SCENE),
                 (
@@ -1246,6 +1249,8 @@ class MainWindowUiTests(unittest.TestCase):
                 ),
             )
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
+            self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (section_result_node,))
+            self.assertEqual(tree.item(section_result_node, "text"), "Section 1")
 
             window.clear_section()
             self.assertEqual(
@@ -1352,6 +1357,83 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.section_axis.get(), "Y")
             self.assertEqual(window.section_offset.get(), 1.0)
             self.assertEqual(tree.selection(), (second_node,))
+        finally:
+            window.root.destroy()
+
+    def test_compute_section_stores_independent_results_for_active_planes(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            first_plane = window.app_state.section_collection.planes[0]
+            window.compute_section()
+            first_result = window.app_state.section_collection.results[0]
+            self.assertEqual(first_result.name, "Section 1")
+            self.assertEqual(first_result.plane_id, first_plane.id)
+            self.assertEqual(first_result.axis, "Z")
+            self.assertEqual(first_result.offset, 0.0)
+            self.assertIs(window.app_state.section_result, first_result.result)
+            self.assertEqual(window.section_result_text.get(), "Section result: Section 1 - 1 segments")
+
+            window.add_section_plane()
+            second_plane = window.app_state.section_collection.planes[1]
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+
+            results = window.app_state.section_collection.results
+            self.assertEqual(len(results), 2)
+            second_result = results[1]
+            self.assertEqual(second_result.name, "Section 2")
+            self.assertEqual(second_result.plane_id, second_plane.id)
+            self.assertEqual(second_result.axis, "X")
+            self.assertEqual(second_result.offset, 0.5)
+            self.assertIs(window.app_state.section_result, second_result.result)
+            self.assertEqual(window.section_result_text.get(), "Section result: Section 2 - 1 segments")
+            self.assertEqual(window.status_text.get(), "Section computed: Section 2 - 1 segments")
+
+            tree = window.scene_browser.tree
+            first_result_node = section_result_node_id(first_result.id)
+            second_result_node = section_result_node_id(second_result.id)
+            self.assertEqual(
+                tree.get_children(NODE_SECTION_RESULTS),
+                (first_result_node, second_result_node),
+            )
+            self.assertEqual(tree.item(first_result_node, "text"), "Section 1")
+            self.assertEqual(tree.item(second_result_node, "text"), "Section 2")
+
+            first_plane_node = section_plane_node_id(first_plane.id)
+            tree.selection_set(first_plane_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.section_collection.active_plane_id, first_plane.id)
+            self.assertEqual(window.app_state.section_collection.results, [first_result, second_result])
+
+            window.clear_section()
+            self.assertEqual(window.app_state.section_collection.results, [second_result])
+            self.assertIs(window.app_state.section_result, second_result.result)
+            self.assertEqual(window.section_result_text.get(), "Section result: Section 2 - 1 segments")
+            self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (second_result_node,))
         finally:
             window.root.destroy()
 
@@ -1817,8 +1899,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "View reset")
 
             window.compute_section()
-            self.assertEqual(window.status_text.get(), "Section computed: 1 segments")
-            self.assertEqual(window.section_result_text.get(), "Section result: 1 segments")
+            self.assertEqual(window.status_text.get(), "Section computed: Section 1 - 1 segments")
+            self.assertEqual(window.section_result_text.get(), "Section result: Section 1 - 1 segments")
 
             window.clear_section()
             self.assertEqual(window.status_text.get(), "Section cleared")

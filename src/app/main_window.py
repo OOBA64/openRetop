@@ -6,6 +6,7 @@ import copy
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
+from uuid import uuid4
 
 import numpy as np
 
@@ -50,7 +51,10 @@ from settings.settings_data import (
 )
 from settings.settings_io import load_settings, save_settings
 from sections.section_state import (
+    StoredSectionResult,
     add_plane,
+    add_result,
+    clear_results_for_plane,
     create_default_section_plane,
     get_active_plane,
     set_active_plane,
@@ -1244,29 +1248,96 @@ class OpenRetopWindow:
         offset = self._parse_offset()
         if offset is None:
             return
+        self._set_section_offset(offset, clamp=True, refresh=False, clear_section=False)
+
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            self.status_text.set("No section plane")
+            return
 
         section_mesh = self._transformed_source_mesh()
-        self.app_state.section_result = extract_section(
+        section_result = extract_section(
             section_mesh,
-            axis=self.section_axis.get(),
-            offset=offset,
+            axis=active_plane.axis,
+            offset=active_plane.offset,
         )
-        self.app_state.curve_results = fit_section_polylines(self.app_state.section_result.polylines)
-        self.section_result_text.set(
-            f"Section result: {self.app_state.section_result.segment_count} segments"
+        stored_result = StoredSectionResult(
+            id=f"section-result-{uuid4().hex}",
+            name=self._next_section_result_name(),
+            plane_id=active_plane.id,
+            axis=active_plane.axis,
+            offset=active_plane.offset,
+            result=section_result,
         )
+        add_result(self.app_state.section_collection, stored_result)
+        self._set_display_section_result(stored_result)
         self._update_section_plane_label(set_status=False)
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(
-            f"Section computed: {self.app_state.section_result.segment_count} segments"
-        )
+        self.status_text.set(self._section_result_status(stored_result))
 
     def clear_section(self) -> None:
-        self.app_state.section_result = None
-        self.app_state.curve_results = []
-        self.section_result_text.set("Section result: none")
+        self._clear_active_section_results()
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Section cleared")
+
+    def _next_section_result_name(self) -> str:
+        existing_names = {
+            result.name for result in self.app_state.section_collection.results
+        }
+        index = 1
+        prefix = "Section "
+        for name in existing_names:
+            if not name.startswith(prefix):
+                continue
+
+            suffix = name[len(prefix) :]
+            if suffix.isdigit():
+                index = max(index, int(suffix) + 1)
+
+        while f"Section {index}" in existing_names:
+            index += 1
+        return f"Section {index}"
+
+    def _latest_stored_section_result(self) -> StoredSectionResult | None:
+        if not self.app_state.section_collection.results:
+            return None
+
+        return self.app_state.section_collection.results[-1]
+
+    def _set_display_section_result(
+        self,
+        stored_result: StoredSectionResult | None,
+    ) -> None:
+        if stored_result is None:
+            self.app_state.section_result = None
+            self.app_state.curve_results = []
+            self.section_result_text.set("Section result: none")
+            return
+
+        self.app_state.section_result = stored_result.result
+        self.app_state.curve_results = fit_section_polylines(stored_result.result.polylines)
+        self.section_result_text.set(self._section_result_summary(stored_result))
+
+    @staticmethod
+    def _section_result_summary(stored_result: StoredSectionResult) -> str:
+        return (
+            f"Section result: {stored_result.name} - "
+            f"{stored_result.result.segment_count} segments"
+        )
+
+    @staticmethod
+    def _section_result_status(stored_result: StoredSectionResult) -> str:
+        return (
+            f"Section computed: {stored_result.name} - "
+            f"{stored_result.result.segment_count} segments"
+        )
+
+    def _clear_active_section_results(self) -> None:
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is not None:
+            clear_results_for_plane(self.app_state.section_collection, active_plane.id)
+
+        self._set_display_section_result(self._latest_stored_section_result())
 
     def frame_all(self) -> None:
         self.viewport.frame_model()
@@ -1335,7 +1406,9 @@ class OpenRetopWindow:
             has_mesh=self.app_state.mesh_object is not None,
             section_planes=self.app_state.section_collection.planes,
             active_section_plane_id=self.app_state.section_collection.active_plane_id,
-            has_section_result=self.app_state.section_result is not None,
+            section_results=self.app_state.section_collection.results,
+            has_section_result=bool(self.app_state.section_collection.results)
+            or self.app_state.section_result is not None,
             has_curves=bool(self.app_state.curve_results),
             selected_item=self.app_state.selected_item,
         )
@@ -1364,7 +1437,12 @@ class OpenRetopWindow:
         self.section_axis.set(normalize_axis(active_plane.axis))
         self.show_section_plane.set(bool(active_plane.visible))
         self._update_section_offset_range()
-        self._set_section_offset(desired_offset, clamp=True, refresh=False)
+        self._set_section_offset(
+            desired_offset,
+            clamp=True,
+            refresh=False,
+            clear_section=False,
+        )
         self._update_section_plane_label(set_status=False)
 
     def _on_view_option_changed(self) -> None:
@@ -1435,6 +1513,7 @@ class OpenRetopWindow:
         clamp: bool,
         refresh: bool,
         mark_dirty: bool = False,
+        clear_section: bool = True,
     ) -> None:
         minimum, maximum = self._section_offset_bounds
         next_offset = min(max(float(offset), minimum), maximum) if clamp else float(offset)
@@ -1447,7 +1526,8 @@ class OpenRetopWindow:
 
         self._sync_active_section_plane_from_controls()
         self._update_section_plane_label(set_status=True)
-        self._clear_section_for_plane_change()
+        if clear_section:
+            self._clear_section_for_plane_change()
         if refresh:
             self._refresh_viewport(reset_camera=False)
         if mark_dirty:
@@ -1488,12 +1568,24 @@ class OpenRetopWindow:
             self.status_text.set(f"Section plane: {axis} = {offset:.3f}")
 
     def _clear_section_for_plane_change(self) -> None:
-        if self.app_state.section_result is None and not self.app_state.curve_results:
+        active_plane = get_active_plane(self.app_state.section_collection)
+        had_active_results = (
+            active_plane is not None
+            and any(
+                result.plane_id == active_plane.id
+                for result in self.app_state.section_collection.results
+            )
+        )
+        if (
+            not had_active_results
+            and self.app_state.section_result is None
+            and not self.app_state.curve_results
+        ):
             return
 
-        self.app_state.section_result = None
-        self.app_state.curve_results = []
-        self.section_result_text.set("Section result: none")
+        if active_plane is not None:
+            clear_results_for_plane(self.app_state.section_collection, active_plane.id)
+        self._set_display_section_result(self._latest_stored_section_result())
 
     def _on_object_transform_changed(self, _event: object | None = None) -> None:
         if self.app_state.selected_item != SELECT_MODEL or self.app_state.mesh_object is None:
@@ -2052,6 +2144,7 @@ class OpenRetopWindow:
         self.mesh_state = MeshState()
         self.app_state.section_result = None
         self.app_state.curve_results = []
+        self.app_state.section_collection.results = []
         self.section_result_text.set("Section result: none")
         self._update_stats()
         self._set_selection_buttons_enabled(False)

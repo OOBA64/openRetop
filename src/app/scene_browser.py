@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from tkinter import ttk
 
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
-from sections.section_state import SectionPlaneState
+from sections.section_state import SectionPlaneState, StoredSectionResult
 
 
 NODE_SCENE = "scene"
@@ -14,6 +14,7 @@ NODE_MESH = "model"
 NODE_SECTION_PLANES = "section_planes"
 NODE_SECTION_PLANE = "section_plane"
 NODE_SECTION_RESULTS = "section_results"
+NODE_SECTION_RESULT = "section_result"
 NODE_CURVES = "curves"
 
 
@@ -35,6 +36,10 @@ def section_plane_id_from_node(node_id: str | None) -> str | None:
     return plane_id or None
 
 
+def section_result_node_id(result_id: str) -> str:
+    return f"{NODE_SECTION_RESULT}:{result_id}"
+
+
 class SceneBrowser:
     """Owns the right-side scene hierarchy and selection synchronization."""
 
@@ -48,6 +53,7 @@ class SceneBrowser:
         self._syncing_selection = False
         self._active_section_plane_node_id: str | None = None
         self._section_plane_node_ids: set[str] = set()
+        self._section_result_node_ids: set[str] = set()
 
         self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
         self.frame.grid_propagate(False)
@@ -77,6 +83,7 @@ class SceneBrowser:
         has_mesh: bool,
         section_planes: Sequence[SectionPlaneState],
         active_section_plane_id: str | None,
+        section_results: Sequence[StoredSectionResult],
         has_section_result: bool,
         has_curves: bool,
         selected_item: str | None,
@@ -100,9 +107,9 @@ class SceneBrowser:
                 self._remove_section_plane_nodes()
 
             if has_section_result:
-                self._ensure_node(NODE_SECTION_RESULTS, "Section Results")
+                self._sync_section_result_nodes(section_results)
             else:
-                self._remove_node(NODE_SECTION_RESULTS)
+                self._remove_section_result_nodes()
 
             if has_curves:
                 self._ensure_node(NODE_CURVES, "Curves")
@@ -169,6 +176,30 @@ class SceneBrowser:
         self._section_plane_node_ids = set()
         self._active_section_plane_node_id = None
         self._remove_node(NODE_SECTION_PLANES)
+
+    def _sync_section_result_nodes(
+        self,
+        section_results: Sequence[StoredSectionResult],
+    ) -> None:
+        self._ensure_node(NODE_SECTION_RESULTS, "Section Results", open_node=True)
+
+        current_node_ids: list[str] = []
+        for index, result in enumerate(section_results, start=1):
+            node_id = section_result_node_id(result.id)
+            current_node_ids.append(node_id)
+            label = result.name or f"Section {index}"
+            self._ensure_node(node_id, label, parent=NODE_SECTION_RESULTS)
+
+        current_node_id_set = set(current_node_ids)
+        for child_id in self.tree.get_children(NODE_SECTION_RESULTS):
+            if child_id not in current_node_id_set:
+                self.tree.delete(child_id)
+
+        self._section_result_node_ids = current_node_id_set
+
+    def _remove_section_result_nodes(self) -> None:
+        self._section_result_node_ids = set()
+        self._remove_node(NODE_SECTION_RESULTS)
 
     def _remove_node(self, node_id: str) -> None:
         if self.tree.exists(node_id):
