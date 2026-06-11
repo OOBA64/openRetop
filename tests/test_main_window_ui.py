@@ -22,8 +22,9 @@ from app.scene_browser import (
     NODE_CURVES,
     NODE_MESH,
     NODE_SCENE,
-    NODE_SECTION_PLANE,
+    NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
+    section_plane_node_id,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
 from project.project_data import default_project_data
@@ -1191,12 +1192,16 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             tree = window.scene_browser.tree
+            active_plane = window.app_state.section_collection.planes[0]
+            section_plane_node = section_plane_node_id(active_plane.id)
             self.assertEqual(
                 tree.get_children(NODE_SCENE),
-                (NODE_MESH, NODE_SECTION_PLANE),
+                (NODE_MESH, NODE_SECTION_PLANES),
             )
             self.assertEqual(tree.item(NODE_MESH, "text"), "Mesh")
-            self.assertEqual(tree.item(NODE_SECTION_PLANE, "text"), "Section Plane")
+            self.assertEqual(tree.item(NODE_SECTION_PLANES, "text"), "Section Planes")
+            self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
+            self.assertEqual(tree.item(section_plane_node, "text"), "Section Plane 1")
             self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
             self.assertFalse(tree.exists(NODE_CURVES))
 
@@ -1207,33 +1212,39 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Selected: sample.stl")
             self.assertEqual(tree.selection(), (NODE_MESH,))
 
-            tree.selection_set(NODE_SECTION_PLANE)
+            tree.selection_set(section_plane_node)
             tree.event_generate("<<TreeviewSelect>>")
             window.root.update()
             self.assertEqual(window.app_state.selected_item, "section_plane")
             self.assertEqual(window.status_text.get(), "Selected: Section Plane")
-            self.assertEqual(tree.selection(), (NODE_SECTION_PLANE,))
+            self.assertEqual(tree.selection(), (section_plane_node,))
 
             window._on_viewport_selection("model")
             self.assertEqual(window.app_state.selected_item, "model")
             self.assertEqual(tree.selection(), (NODE_MESH,))
+
+            window._on_viewport_selection("section_plane")
+            self.assertEqual(window.app_state.selected_item, "section_plane")
+            self.assertEqual(tree.selection(), (section_plane_node,))
 
             window.compute_section()
             self.assertEqual(
                 tree.get_children(NODE_SCENE),
                 (
                     NODE_MESH,
-                    NODE_SECTION_PLANE,
+                    NODE_SECTION_PLANES,
                     NODE_SECTION_RESULTS,
                     NODE_CURVES,
                 ),
             )
+            self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
 
             window.clear_section()
             self.assertEqual(
                 tree.get_children(NODE_SCENE),
-                (NODE_MESH, NODE_SECTION_PLANE),
+                (NODE_MESH, NODE_SECTION_PLANES),
             )
+            self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
             self.assertFalse(tree.exists(NODE_CURVES))
         finally:

@@ -1287,6 +1287,8 @@ class OpenRetopWindow:
     def _refresh_scene_browser(self) -> None:
         self.scene_browser.update_scene(
             has_mesh=self.app_state.mesh_object is not None,
+            section_planes=self.app_state.section_collection.planes,
+            active_section_plane_id=self.app_state.section_collection.active_plane_id,
             has_section_result=self.app_state.section_result is not None,
             has_curves=bool(self.app_state.curve_results),
             selected_item=self.app_state.selected_item,

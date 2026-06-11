@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from tkinter import ttk
 
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
+from sections.section_state import SectionPlaneState
 
 
 NODE_SCENE = "scene"
 NODE_MESH = "model"
+NODE_SECTION_PLANES = "section_planes"
 NODE_SECTION_PLANE = "section_plane"
 NODE_SECTION_RESULTS = "section_results"
 NODE_CURVES = "curves"
+
+
+def section_plane_node_id(plane_id: str) -> str:
+    """Return the tree node ID for a section plane."""
+
+    return f"{NODE_SECTION_PLANE}:{plane_id}"
 
 
 class SceneBrowser:
@@ -26,6 +34,8 @@ class SceneBrowser:
     ) -> None:
         self.selection_callback = selection_callback
         self._syncing_selection = False
+        self._active_section_plane_node_id: str | None = None
+        self._section_plane_node_ids: set[str] = set()
 
         self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
         self.frame.grid_propagate(False)
@@ -53,6 +63,8 @@ class SceneBrowser:
         self,
         *,
         has_mesh: bool,
+        section_planes: Sequence[SectionPlaneState],
+        active_section_plane_id: str | None,
         has_section_result: bool,
         has_curves: bool,
         selected_item: str | None,
@@ -67,10 +79,13 @@ class SceneBrowser:
         try:
             if has_mesh:
                 self._ensure_node(NODE_MESH, "Mesh")
-                self._ensure_node(NODE_SECTION_PLANE, "Section Plane")
+                self._sync_section_plane_nodes(
+                    section_planes,
+                    active_section_plane_id=active_section_plane_id,
+                )
             else:
                 self._remove_node(NODE_MESH)
-                self._remove_node(NODE_SECTION_PLANE)
+                self._remove_section_plane_nodes()
 
             if has_section_result:
                 self._ensure_node(NODE_SECTION_RESULTS, "Section Results")
@@ -87,12 +102,61 @@ class SceneBrowser:
         finally:
             self._syncing_selection = False
 
-    def _ensure_node(self, node_id: str, label: str) -> None:
+    def _ensure_node(
+        self,
+        node_id: str,
+        label: str,
+        *,
+        parent: str = NODE_SCENE,
+        open_node: bool = False,
+    ) -> None:
         if self.tree.exists(node_id):
             self.tree.item(node_id, text=label)
+            if self.tree.parent(node_id) != parent:
+                self.tree.move(node_id, parent, "end")
+            if open_node:
+                self.tree.item(node_id, open=True)
             return
 
-        self.tree.insert(NODE_SCENE, "end", iid=node_id, text=label)
+        self.tree.insert(parent, "end", iid=node_id, text=label, open=open_node)
+
+    def _sync_section_plane_nodes(
+        self,
+        section_planes: Sequence[SectionPlaneState],
+        *,
+        active_section_plane_id: str | None,
+    ) -> None:
+        self._ensure_node(NODE_SECTION_PLANES, "Section Planes", open_node=True)
+
+        current_node_ids: list[str] = []
+        for index, plane in enumerate(section_planes, start=1):
+            node_id = section_plane_node_id(plane.id)
+            current_node_ids.append(node_id)
+            label = plane.name or f"Section Plane {index}"
+            self._ensure_node(node_id, label, parent=NODE_SECTION_PLANES)
+
+        current_node_id_set = set(current_node_ids)
+        for child_id in self.tree.get_children(NODE_SECTION_PLANES):
+            if child_id not in current_node_id_set:
+                self.tree.delete(child_id)
+
+        self._section_plane_node_ids = current_node_id_set
+        active_node_id = (
+            section_plane_node_id(active_section_plane_id)
+            if active_section_plane_id is not None
+            else None
+        )
+        if active_node_id in current_node_id_set:
+            self._active_section_plane_node_id = active_node_id
+        else:
+            self._active_section_plane_node_id = (
+                current_node_ids[0] if current_node_ids else None
+            )
+
+    def _remove_section_plane_nodes(self) -> None:
+        self._section_plane_node_ids = set()
+        self._active_section_plane_node_id = None
+        self._remove_node(NODE_SECTION_PLANES)
 
     def _remove_node(self, node_id: str) -> None:
         if self.tree.exists(node_id):
@@ -101,7 +165,7 @@ class SceneBrowser:
     def _order_nodes(self) -> None:
         ordered_nodes = (
             NODE_MESH,
-            NODE_SECTION_PLANE,
+            NODE_SECTION_PLANES,
             NODE_SECTION_RESULTS,
             NODE_CURVES,
         )
@@ -129,18 +193,16 @@ class SceneBrowser:
         node_id = selection[0] if selection else None
         self.selection_callback(self._selection_for_node(node_id))
 
-    @staticmethod
-    def _node_for_selection(selected_item: str | None) -> str | None:
+    def _node_for_selection(self, selected_item: str | None) -> str | None:
         if selected_item == SELECT_MODEL:
             return NODE_MESH
         if selected_item == SELECT_SECTION_PLANE:
-            return NODE_SECTION_PLANE
+            return self._active_section_plane_node_id
         return None
 
-    @staticmethod
-    def _selection_for_node(node_id: str | None) -> str | None:
+    def _selection_for_node(self, node_id: str | None) -> str | None:
         if node_id == NODE_MESH:
             return SELECT_MODEL
-        if node_id == NODE_SECTION_PLANE:
+        if node_id in self._section_plane_node_ids:
             return SELECT_SECTION_PLANE
         return None
