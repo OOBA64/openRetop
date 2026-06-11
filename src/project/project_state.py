@@ -8,10 +8,12 @@ from typing import Any
 from project.project_data import (
     ProjectData,
     ProjectDisplaySettings,
+    ProjectSectionPlane,
     ProjectSectionSettings,
     ProjectTransform,
     default_project_data,
 )
+from sections.section_state import SectionCollection
 
 
 def project_from_app_state(
@@ -24,10 +26,21 @@ def project_from_app_state(
     section_axis: str,
     section_offset: float,
     show_section_plane: bool,
+    section_collection: SectionCollection | None = None,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
     transform = defaults.transform
+    section = ProjectSectionSettings(
+        axis=str(section_axis).upper(),
+        offset=_float_from_value(section_offset, "section_offset"),
+        show_plane=bool(show_section_plane),
+    )
+    section_planes = _section_planes_from_collection(section_collection)
+    active_section_plane_id = _active_plane_id_from_collection(
+        section_collection,
+        section_planes,
+    )
 
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
@@ -62,11 +75,9 @@ def project_from_app_state(
             show_axes=bool(show_axes),
             show_normals=bool(show_normals),
         ),
-        section=ProjectSectionSettings(
-            axis=str(section_axis).upper(),
-            offset=_float_from_value(section_offset, "section_offset"),
-            show_plane=bool(show_section_plane),
-        ),
+        section=section,
+        section_planes=section_planes,
+        active_section_plane_id=active_section_plane_id,
     )
 
 
@@ -101,3 +112,35 @@ def _float_from_value(value: object, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"{field_name} must be a number.")
     return float(value)
+
+
+def _section_planes_from_collection(
+    section_collection: SectionCollection | None,
+) -> list[ProjectSectionPlane]:
+    if section_collection is None:
+        return []
+
+    return [
+        ProjectSectionPlane(
+            id=str(plane.id),
+            name=str(plane.name),
+            axis=str(plane.axis).upper(),
+            offset=_float_from_value(plane.offset, "section_collection.plane.offset"),
+            visible=bool(plane.visible),
+        )
+        for plane in section_collection.planes
+    ]
+
+
+def _active_plane_id_from_collection(
+    section_collection: SectionCollection | None,
+    section_planes: list[ProjectSectionPlane],
+) -> str | None:
+    if section_collection is None or section_collection.active_plane_id is None:
+        return None
+
+    active_plane_id = str(section_collection.active_plane_id)
+    plane_ids = {plane.id for plane in section_planes}
+    if active_plane_id not in plane_ids:
+        return None
+    return active_plane_id

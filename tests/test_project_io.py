@@ -12,6 +12,7 @@ from project.project_data import (
     PROJECT_VERSION,
     ProjectData,
     ProjectDisplaySettings,
+    ProjectSectionPlane,
     ProjectSectionSettings,
     ProjectTransform,
     default_project_data,
@@ -46,6 +47,23 @@ def _sample_project() -> ProjectData:
             offset=0.75,
             show_plane=True,
         ),
+        section_planes=[
+            ProjectSectionPlane(
+                id="plane-a",
+                name="Base Section",
+                axis="Y",
+                offset=0.75,
+                visible=True,
+            ),
+            ProjectSectionPlane(
+                id="plane-b",
+                name="Side Section",
+                axis="X",
+                offset=-0.25,
+                visible=False,
+            ),
+        ],
+        active_section_plane_id="plane-b",
     )
 
 
@@ -67,6 +85,8 @@ class ProjectDataTests(unittest.TestCase):
         self.assertEqual(project.section.axis, "Z")
         self.assertEqual(project.section.offset, 0.0)
         self.assertFalse(project.section.show_plane)
+        self.assertEqual(project.section_planes, [])
+        self.assertIsNone(project.active_section_plane_id)
 
     def test_default_project_data_uses_fresh_mutable_values(self) -> None:
         project = default_project_data()
@@ -108,6 +128,23 @@ class ProjectIOTests(unittest.TestCase):
                     "offset": 0.75,
                     "show_plane": True,
                 },
+                "section_planes": [
+                    {
+                        "id": "plane-a",
+                        "name": "Base Section",
+                        "axis": "Y",
+                        "offset": 0.75,
+                        "visible": True,
+                    },
+                    {
+                        "id": "plane-b",
+                        "name": "Side Section",
+                        "axis": "X",
+                        "offset": -0.25,
+                        "visible": False,
+                    },
+                ],
+                "active_section_plane_id": "plane-b",
             },
         )
 
@@ -143,6 +180,74 @@ class ProjectIOTests(unittest.TestCase):
         self.assertEqual(project.section.axis, "X")
         self.assertEqual(project.section.offset, 0.0)
         self.assertFalse(project.section.show_plane)
+        self.assertEqual(project.section_planes, [])
+        self.assertIsNone(project.active_section_plane_id)
+
+    def test_project_from_dict_loads_legacy_single_section_without_new_fields(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "name": "Legacy",
+                "mesh_path": None,
+                "section": {
+                    "axis": "y",
+                    "offset": 1.5,
+                    "show_plane": True,
+                },
+            }
+        )
+
+        self.assertEqual(project.section.axis, "Y")
+        self.assertEqual(project.section.offset, 1.5)
+        self.assertTrue(project.section.show_plane)
+        self.assertEqual(project.section_planes, [])
+        self.assertIsNone(project.active_section_plane_id)
+
+    def test_project_from_dict_parses_section_planes_with_defaults(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "section": {
+                    "axis": "x",
+                    "offset": 0.25,
+                    "show_plane": True,
+                },
+                "section_planes": [
+                    {
+                        "id": "plane-a",
+                    },
+                    {
+                        "id": "plane-b",
+                        "name": "Custom Plane",
+                        "axis": "z",
+                        "offset": -0.5,
+                        "visible": False,
+                    },
+                ],
+                "active_section_plane_id": "plane-b",
+            }
+        )
+
+        self.assertEqual(
+            project.section_planes,
+            [
+                ProjectSectionPlane(
+                    id="plane-a",
+                    name="Section Plane 1",
+                    axis="X",
+                    offset=0.25,
+                    visible=True,
+                ),
+                ProjectSectionPlane(
+                    id="plane-b",
+                    name="Custom Plane",
+                    axis="Z",
+                    offset=-0.5,
+                    visible=False,
+                ),
+            ],
+        )
+        self.assertEqual(project.active_section_plane_id, "plane-b")
 
     def test_save_and_load_project_round_trips_json(self) -> None:
         project = _sample_project()
@@ -209,6 +314,15 @@ class ProjectIOTests(unittest.TestCase):
             {"section": {"axis": "A"}},
             {"section": {"offset": False}},
             {"section": {"show_plane": "yes"}},
+            {"section_planes": {}},
+            {"section_planes": [12]},
+            {"section_planes": [{"id": ""}]},
+            {"section_planes": [{"id": "plane-a", "name": 12}]},
+            {"section_planes": [{"id": "plane-a", "axis": "A"}]},
+            {"section_planes": [{"id": "plane-a", "offset": False}]},
+            {"section_planes": [{"id": "plane-a", "visible": "yes"}]},
+            {"section_planes": [{"id": "plane-a"}, {"id": "plane-a"}]},
+            {"active_section_plane_id": 12},
         ]
 
         for shape in invalid_shapes:

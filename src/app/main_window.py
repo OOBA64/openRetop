@@ -51,6 +51,8 @@ from settings.settings_data import (
 )
 from settings.settings_io import load_settings, save_settings
 from sections.section_state import (
+    SectionCollection,
+    SectionPlaneState,
     StoredSectionResult,
     add_plane,
     add_result,
@@ -337,8 +339,9 @@ class OpenRetopWindow:
             self.status_text.set("Project open failed")
             return
 
-        self._restore_project_controls(project)
         self._restore_project_transform(project)
+        self._restore_project_controls(project)
+        self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(False)
         self.status_text.set(f"Project loaded: {project.name} ({project_path})")
 
@@ -380,10 +383,8 @@ class OpenRetopWindow:
         self.show_grid.set(project.display.show_grid)
         self.show_axes.set(project.display.show_axes)
         self.show_normals.set(project.display.show_normals)
-        self.section_axis.set(project.section.axis)
-        self.show_section_plane.set(project.section.show_plane)
-        self._set_section_offset(project.section.offset, clamp=False, refresh=False)
-        self._update_section_plane_label(set_status=False)
+        self._restore_project_section_collection(project)
+        self._refresh_scene_browser()
 
     def _restore_project_transform(self, project: ProjectData) -> None:
         if self.app_state.mesh_object is None:
@@ -395,9 +396,40 @@ class OpenRetopWindow:
         self.app_state.mesh_object.origin = np.asarray(project.transform.origin, dtype=float)
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
-        self._set_section_offset(project.section.offset, clamp=False, refresh=False)
-        self._update_section_plane_label(set_status=False)
-        self._refresh_viewport(reset_camera=False)
+
+    def _restore_project_section_collection(self, project: ProjectData) -> None:
+        collection = SectionCollection()
+        if project.section_planes:
+            for project_plane in project.section_planes:
+                add_plane(
+                    collection,
+                    SectionPlaneState(
+                        id=project_plane.id,
+                        name=project_plane.name,
+                        axis=project_plane.axis,
+                        offset=project_plane.offset,
+                        visible=project_plane.visible,
+                    ),
+                )
+
+            if project.active_section_plane_id is not None:
+                try:
+                    set_active_plane(collection, project.active_section_plane_id)
+                except ValueError:
+                    set_active_plane(collection, collection.planes[0].id)
+            else:
+                set_active_plane(collection, collection.planes[0].id)
+        else:
+            plane = create_default_section_plane(
+                axis=project.section.axis,
+                offset=project.section.offset,
+            )
+            plane.visible = bool(project.section.show_plane)
+            add_plane(collection, plane)
+
+        self.app_state.section_collection = collection
+        self._set_display_section_result(None)
+        self._sync_section_controls_from_active_plane(clamp_offset=False)
 
     def save_project(self) -> bool:
         if self.current_project_path is None:
@@ -419,6 +451,7 @@ class OpenRetopWindow:
 
     def _write_project(self, project_path: Path) -> bool:
         try:
+            self._sync_active_section_plane_from_controls()
             project = project_from_app_state(
                 mesh_object=self.app_state.mesh_object,
                 proxy_quality=self.proxy_quality.get(),
@@ -428,6 +461,7 @@ class OpenRetopWindow:
                 section_axis=self.section_axis.get(),
                 section_offset=self.section_offset.get(),
                 show_section_plane=self.show_section_plane.get(),
+                section_collection=self.app_state.section_collection,
             )
             save_project(project, project_path)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1483,7 +1517,7 @@ class OpenRetopWindow:
         active_plane.offset = float(self.section_offset.get())
         active_plane.visible = bool(self.show_section_plane.get())
 
-    def _sync_section_controls_from_active_plane(self) -> None:
+    def _sync_section_controls_from_active_plane(self, *, clamp_offset: bool = True) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
         if active_plane is None:
             return
@@ -1494,7 +1528,7 @@ class OpenRetopWindow:
         self._update_section_offset_range()
         self._set_section_offset(
             desired_offset,
-            clamp=True,
+            clamp=clamp_offset,
             refresh=False,
             clear_section=False,
         )

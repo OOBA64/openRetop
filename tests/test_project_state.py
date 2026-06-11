@@ -11,6 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project.project_data import PROJECT_VERSION
 from project.project_state import project_from_app_state
+from sections.section_state import (
+    SectionCollection,
+    SectionPlaneState,
+    add_plane,
+    set_active_plane,
+)
 
 
 class ProjectStateTests(unittest.TestCase):
@@ -40,6 +46,8 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.section.axis, "Y")
         self.assertEqual(project.section.offset, 1.25)
         self.assertTrue(project.section.show_plane)
+        self.assertEqual(project.section_planes, [])
+        self.assertIsNone(project.active_section_plane_id)
 
     def test_project_from_app_state_uses_fake_mesh_transform_and_path(self) -> None:
         mesh_path = Path("models") / "scan.stl"
@@ -74,6 +82,53 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.section.axis, "Z")
         self.assertEqual(project.section.offset, -0.5)
         self.assertFalse(project.section.show_plane)
+        self.assertEqual(project.section_planes, [])
+        self.assertIsNone(project.active_section_plane_id)
+
+    def test_project_from_app_state_exports_section_collection_planes(self) -> None:
+        collection = SectionCollection()
+        first_plane = SectionPlaneState(
+            id="plane-a",
+            name="Base Section",
+            axis="z",
+            offset=0.25,
+            visible=True,
+        )
+        second_plane = SectionPlaneState(
+            id="plane-b",
+            name="Side Section",
+            axis="x",
+            offset=-0.5,
+            visible=False,
+        )
+        add_plane(collection, first_plane)
+        add_plane(collection, second_plane)
+        set_active_plane(collection, second_plane.id)
+
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="X",
+            section_offset=-0.5,
+            show_section_plane=False,
+            section_collection=collection,
+        )
+
+        self.assertEqual(len(project.section_planes), 2)
+        self.assertEqual(project.section_planes[0].id, "plane-a")
+        self.assertEqual(project.section_planes[0].name, "Base Section")
+        self.assertEqual(project.section_planes[0].axis, "Z")
+        self.assertEqual(project.section_planes[0].offset, 0.25)
+        self.assertTrue(project.section_planes[0].visible)
+        self.assertEqual(project.section_planes[1].id, "plane-b")
+        self.assertEqual(project.section_planes[1].name, "Side Section")
+        self.assertEqual(project.section_planes[1].axis, "X")
+        self.assertEqual(project.section_planes[1].offset, -0.5)
+        self.assertFalse(project.section_planes[1].visible)
+        self.assertEqual(project.active_section_plane_id, "plane-b")
 
     def test_project_from_app_state_handles_mesh_without_file_path(self) -> None:
         mesh_object = SimpleNamespace(

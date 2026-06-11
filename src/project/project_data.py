@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 PROJECT_VERSION = 1
@@ -32,6 +32,15 @@ class ProjectSectionSettings:
 
 
 @dataclass
+class ProjectSectionPlane:
+    id: str
+    name: str
+    axis: str
+    offset: float
+    visible: bool
+
+
+@dataclass
 class ProjectData:
     version: int
     name: str
@@ -39,6 +48,8 @@ class ProjectData:
     transform: ProjectTransform
     display: ProjectDisplaySettings
     section: ProjectSectionSettings
+    section_planes: list[ProjectSectionPlane] = field(default_factory=list)
+    active_section_plane_id: str | None = None
 
 
 def default_project_data() -> ProjectData:

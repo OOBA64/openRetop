@@ -11,6 +11,7 @@ from project.project_data import (
     PROJECT_VERSION,
     ProjectData,
     ProjectDisplaySettings,
+    ProjectSectionPlane,
     ProjectSectionSettings,
     ProjectTransform,
     default_project_data,
@@ -62,6 +63,17 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             "offset": float(project.section.offset),
             "show_plane": bool(project.section.show_plane),
         },
+        "section_planes": [
+            {
+                "id": plane.id,
+                "name": plane.name,
+                "axis": plane.axis,
+                "offset": float(plane.offset),
+                "visible": bool(plane.visible),
+            }
+            for plane in project.section_planes
+        ],
+        "active_section_plane_id": project.active_section_plane_id,
     }
 
 
@@ -130,6 +142,14 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
             "section.show_plane",
         ),
     )
+    section_planes = _section_planes_value(
+        data.get("section_planes", defaults.section_planes),
+        section,
+    )
+    active_section_plane_id = _optional_string_value(
+        data.get("active_section_plane_id", defaults.active_section_plane_id),
+        "active_section_plane_id",
+    )
     return ProjectData(
         version=version,
         name=name,
@@ -137,6 +157,8 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         transform=transform,
         display=display,
         section=section,
+        section_planes=section_planes,
+        active_section_plane_id=active_section_plane_id,
     )
 
 
@@ -150,6 +172,12 @@ def _project_version(value: object) -> int:
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, object] | None:
     if value is None:
         return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a dictionary.")
+    return value
+
+
+def _mapping_value(value: object, field_name: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a dictionary.")
     return value
@@ -211,6 +239,55 @@ def _optional_string_value(value: object, field_name: str) -> str | None:
     if value is None:
         return None
     return _string_value(value, field_name)
+
+
+def _section_planes_value(
+    value: object,
+    fallback_section: ProjectSectionSettings,
+) -> list[ProjectSectionPlane]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("section_planes must be a list.")
+
+    planes: list[ProjectSectionPlane] = []
+    seen_ids: set[str] = set()
+    for index, raw_plane in enumerate(value):
+        field_prefix = f"section_planes[{index}]"
+        plane_data = _mapping_value(raw_plane, field_prefix)
+        plane_id = _string_value(
+            _nested_value(plane_data, "id", ""),
+            f"{field_prefix}.id",
+        )
+        if not plane_id:
+            raise ValueError(f"{field_prefix}.id must not be empty.")
+        if plane_id in seen_ids:
+            raise ValueError(f"{field_prefix}.id must be unique.")
+        seen_ids.add(plane_id)
+
+        planes.append(
+            ProjectSectionPlane(
+                id=plane_id,
+                name=_string_value(
+                    _nested_value(plane_data, "name", f"Section Plane {index + 1}"),
+                    f"{field_prefix}.name",
+                ),
+                axis=_axis_value(
+                    _nested_value(plane_data, "axis", fallback_section.axis),
+                    f"{field_prefix}.axis",
+                ),
+                offset=_float_value(
+                    _nested_value(plane_data, "offset", fallback_section.offset),
+                    f"{field_prefix}.offset",
+                ),
+                visible=_bool_value(
+                    _nested_value(plane_data, "visible", fallback_section.show_plane),
+                    f"{field_prefix}.visible",
+                ),
+            )
+        )
+
+    return planes
 
 
 def _axis_value(value: object, field_name: str) -> str:

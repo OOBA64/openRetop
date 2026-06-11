@@ -28,10 +28,11 @@ from app.scene_browser import (
     section_result_node_id,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
-from project.project_data import default_project_data
+from project.project_data import ProjectSectionPlane, default_project_data
 from project.project_io import load_project, save_project
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
+from sections.section_state import SectionPlaneState, add_plane, set_active_plane
 
 
 class FakeBounds:
@@ -762,6 +763,116 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_open_project_restores_saved_section_planes(self) -> None:
+        mesh = FakeMesh()
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        progress_dialogs: list[object] = []
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, file_name: str) -> None:
+                self.file_name = file_name
+                self.stages: list[str] = []
+                self.closed = False
+                progress_dialogs.append(self)
+
+            def update_stage(self, stage: str) -> None:
+                self.stages.append(stage)
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                mesh_path = Path(tmpdir) / "sample.stl"
+                project_path = Path(tmpdir) / "planes.openretop"
+                metadata = MeshMetadata(
+                    file_path=mesh_path,
+                    file_name="sample.stl",
+                    extension=".stl",
+                    vertex_count=3,
+                    triangle_count=1,
+                    had_vertex_normals=True,
+                    had_triangle_normals=True,
+                    computed_vertex_normals=False,
+                    computed_triangle_normals=False,
+                )
+                project = default_project_data()
+                project.name = "Restored Section Planes"
+                project.mesh_path = str(mesh_path)
+                project.section.axis = "Y"
+                project.section.offset = 1.25
+                project.section.show_plane = True
+                project.section_planes = [
+                    ProjectSectionPlane(
+                        id="plane-a",
+                        name="Base Section",
+                        axis="Z",
+                        offset=0.25,
+                        visible=True,
+                    ),
+                    ProjectSectionPlane(
+                        id="plane-b",
+                        name="Side Section",
+                        axis="X",
+                        offset=0.5,
+                        visible=False,
+                    ),
+                ]
+                project.active_section_plane_id = "plane-b"
+                save_project(project, project_path)
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_not_called()
+                planes = window.app_state.section_collection.planes
+                self.assertEqual(len(planes), 2)
+                self.assertEqual([plane.id for plane in planes], ["plane-a", "plane-b"])
+                self.assertEqual([plane.name for plane in planes], ["Base Section", "Side Section"])
+                self.assertEqual([plane.axis for plane in planes], ["Z", "X"])
+                self.assertEqual([plane.offset for plane in planes], [0.25, 0.5])
+                self.assertEqual([plane.visible for plane in planes], [True, False])
+                self.assertFalse(planes[0].selected)
+                self.assertTrue(planes[1].selected)
+                self.assertEqual(window.app_state.section_collection.active_plane_id, "plane-b")
+                self.assertEqual(window.app_state.section_collection.results, [])
+                self.assertIsNone(window.app_state.section_result)
+                self.assertEqual(window.section_axis.get(), "X")
+                self.assertEqual(window.section_offset.get(), 0.5)
+                self.assertEqual(window.section_offset_text.get(), "0.500")
+                self.assertFalse(window.show_section_plane.get())
+                self.assertEqual(window.section_plane_text.get(), "Section: X = 0.500")
+
+                tree = window.scene_browser.tree
+                first_node = section_plane_node_id("plane-a")
+                second_node = section_plane_node_id("plane-b")
+                self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (first_node, second_node))
+                self.assertEqual(tree.item(first_node, "text"), "Base Section")
+                self.assertEqual(tree.item(second_node, "text"), "Side Section")
+
+                scene = window.viewport.scene_calls[-1]
+                self.assertEqual(scene["section_planes"], planes)
+                self.assertEqual(scene["active_section_plane_id"], "plane-b")
+                self.assertTrue(scene["show_section_plane"])
+                self.assertEqual(scene["section_axis"], "X")
+                self.assertEqual(scene["section_offset"], 0.5)
+        finally:
+            window.root.destroy()
+
     def test_open_project_missing_mesh_path_reports_error_and_keeps_app_usable(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -890,6 +1001,13 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(project.section.axis, "Z")
                 self.assertEqual(project.section.offset, 0.0)
                 self.assertFalse(project.section.show_plane)
+                self.assertEqual(len(project.section_planes), 1)
+                section_plane = project.section_planes[0]
+                self.assertEqual(section_plane.name, "Section Plane 1")
+                self.assertEqual(section_plane.axis, "Z")
+                self.assertEqual(section_plane.offset, 0.0)
+                self.assertFalse(section_plane.visible)
+                self.assertEqual(project.active_section_plane_id, section_plane.id)
         finally:
             window.root.destroy()
 
@@ -918,6 +1036,56 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(window.root.title(), "openRetop - current.openretop")
                 self.assertEqual(window.status_text.get(), f"Project saved: {project_path}")
                 self.assertFalse(load_project(project_path).display.show_grid)
+        finally:
+            window.root.destroy()
+
+    def test_save_project_writes_multiple_section_planes_from_collection(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            first_plane = window.app_state.section_collection.planes[0]
+            first_plane.name = "Base Section"
+            first_plane.axis = "Z"
+            first_plane.offset = 0.25
+            first_plane.visible = True
+            second_plane = SectionPlaneState(
+                id="plane-b",
+                name="Side Section",
+                axis="X",
+                offset=-0.5,
+                visible=False,
+            )
+            add_plane(window.app_state.section_collection, second_plane)
+            set_active_plane(window.app_state.section_collection, second_plane.id)
+            window._sync_section_controls_from_active_plane()
+
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "planes.openretop"
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(3)
+
+                show_error.assert_not_called()
+                project = load_project(project_path)
+                self.assertEqual(len(project.section_planes), 2)
+                self.assertEqual(project.section_planes[0].id, first_plane.id)
+                self.assertEqual(project.section_planes[0].name, "Base Section")
+                self.assertEqual(project.section_planes[0].axis, "Z")
+                self.assertEqual(project.section_planes[0].offset, 0.25)
+                self.assertTrue(project.section_planes[0].visible)
+                self.assertEqual(project.section_planes[1].id, "plane-b")
+                self.assertEqual(project.section_planes[1].name, "Side Section")
+                self.assertEqual(project.section_planes[1].axis, "X")
+                self.assertEqual(project.section_planes[1].offset, -0.5)
+                self.assertFalse(project.section_planes[1].visible)
+                self.assertEqual(project.active_section_plane_id, "plane-b")
         finally:
             window.root.destroy()
 
@@ -974,6 +1142,13 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(project.section.axis, "X")
                 self.assertEqual(project.section.offset, 0.5)
                 self.assertTrue(project.section.show_plane)
+                self.assertEqual(len(project.section_planes), 1)
+                section_plane = project.section_planes[0]
+                self.assertEqual(section_plane.name, "Section Plane 1")
+                self.assertEqual(section_plane.axis, "X")
+                self.assertEqual(section_plane.offset, 0.5)
+                self.assertTrue(section_plane.visible)
+                self.assertEqual(project.active_section_plane_id, section_plane.id)
         finally:
             window.root.destroy()
 
