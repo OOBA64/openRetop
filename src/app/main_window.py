@@ -38,7 +38,7 @@ from mesh.display_proxy import (
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
 from mesh.triangle_mesh import TriangleMeshData
-from project.project_io import save_project
+from project.project_io import load_project, save_project
 from project.project_state import project_from_app_state
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
@@ -201,7 +201,7 @@ class OpenRetopWindow:
         self.file_menu = Menu(self.menu_bar, tearoff=False)
         self.file_menu.add_command(label="New Project", command=self._new_project_placeholder)
         self.file_menu.add_command(label="Open Model", command=self.open_model)
-        self.file_menu.add_command(label="Open Project", command=self._open_project_placeholder)
+        self.file_menu.add_command(label="Open Project", command=self.open_project)
         self.file_menu.add_command(label="Save Project", command=self.save_project)
         self.file_menu.add_command(label="Save Project As", command=self.save_project_as)
         self.file_menu.add_command(label="Exit", command=self._on_exit)
@@ -252,8 +252,24 @@ class OpenRetopWindow:
     def _new_project_placeholder(self) -> None:
         self._not_implemented("New Project")
 
-    def _open_project_placeholder(self) -> None:
-        self._not_implemented("Open Project")
+    def open_project(self) -> None:
+        selected_path = filedialog.askopenfilename(
+            title="Open Project",
+            filetypes=PROJECT_FILE_TYPES,
+        )
+        if not selected_path:
+            return
+
+        project_path = Path(selected_path)
+        try:
+            project = load_project(project_path)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.status_text.set("Project open failed")
+            messagebox.showerror("Could not open project", str(exc))
+            return
+
+        self.current_project_path = project_path
+        self.status_text.set(f"Project opened: {project.name} ({project_path})")
 
     def save_project(self) -> None:
         if self.current_project_path is None:

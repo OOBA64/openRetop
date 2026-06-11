@@ -19,7 +19,8 @@ from app.main_window import (
     OpenRetopWindow,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
-from project.project_io import load_project
+from project.project_data import default_project_data
+from project.project_io import load_project, save_project
 
 
 class FakeBounds:
@@ -222,7 +223,6 @@ class MainWindowUiTests(unittest.TestCase):
         try:
             placeholder_invocations = (
                 (window.file_menu, 0, "New Project"),
-                (window.file_menu, 2, "Open Project"),
                 (window.edit_menu, 0, "Undo"),
                 (window.edit_menu, 1, "Redo"),
                 (window.edit_menu, 2, "Preferences"),
@@ -232,6 +232,80 @@ class MainWindowUiTests(unittest.TestCase):
             for menu, index, label in placeholder_invocations:
                 menu.invoke(index)
                 self.assertEqual(window.status_text.get(), f"{label}: Not implemented yet")
+        finally:
+            window.root.destroy()
+
+    def test_open_project_reads_metadata_without_reconstructing_scene(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "saved.openretop"
+                project = default_project_data()
+                project.name = "Saved Metadata"
+                project.mesh_path = "models/scan.stl"
+                project.display.show_grid = False
+                project.section.axis = "X"
+                project.section.offset = 2.0
+                save_project(project, project_path)
+
+                scene_call_count = len(window.viewport.scene_calls)
+                mesh_object = window.app_state.mesh_object
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ) as ask_open,
+                    patch("app.main_window.load_mesh") as load_mesh,
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                ask_open.assert_called_once()
+                load_mesh.assert_not_called()
+                show_error.assert_not_called()
+                self.assertEqual(window.current_project_path, project_path)
+                self.assertEqual(
+                    window.status_text.get(),
+                    f"Project opened: Saved Metadata ({project_path})",
+                )
+                self.assertIs(window.app_state.mesh_object, mesh_object)
+                self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
+                self.assertTrue(window.show_grid.get())
+                self.assertEqual(window.section_axis.get(), "Z")
+                self.assertEqual(window.section_offset.get(), 0.0)
+        finally:
+            window.root.destroy()
+
+    def test_open_project_invalid_file_reports_error_without_changing_project_path(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "broken.openretop"
+                previous_path = Path(tmpdir) / "previous.openretop"
+                project_path.write_text("{broken json", encoding="utf-8")
+                window.current_project_path = previous_path
+                scene_call_count = len(window.viewport.scene_calls)
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_called_once()
+                self.assertEqual(show_error.call_args.args[0], "Could not open project")
+                self.assertIn("Invalid project JSON", show_error.call_args.args[1])
+                self.assertEqual(window.current_project_path, previous_path)
+                self.assertEqual(window.status_text.get(), "Project open failed")
+                self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
         finally:
             window.root.destroy()
 
