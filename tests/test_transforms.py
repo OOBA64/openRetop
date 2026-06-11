@@ -9,16 +9,19 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from app.transforms import (
+    axis_constrained_camera_move_delta,
     build_object_transform_matrix,
     calculate_geometry_centering_delta,
     calculate_location_for_origin_change,
     calculate_origin_to_world_origin,
+    camera_relative_move_delta,
     mesh_move_delta,
     mesh_rotate_delta,
     rotation_matrix,
     section_offset_delta,
     transform_bounds,
     transform_point,
+    world_axis_vector,
 )
 
 
@@ -225,6 +228,59 @@ class TransformMathTests(unittest.TestCase):
         )
 
         self.assertTrue(np.allclose(movement, [0.1, 0.0, 0.0]))
+
+    def test_camera_relative_move_delta_uses_camera_right_and_up(self) -> None:
+        movement, readout = camera_relative_move_delta(
+            mouse_start=(0, 0),
+            mouse_position=(20, -10),
+            camera_right=np.asarray([1.0, 0.0, 0.0]),
+            camera_up=np.asarray([0.0, 0.0, 1.0]),
+            model_diagonal=10.0,
+            fine=False,
+        )
+
+        self.assertTrue(np.allclose(movement, [0.2, 0.0, 0.1]))
+        self.assertEqual(readout, "Delta X: 0.20, Delta Y: 0.00, Delta Z: 0.10")
+
+    def test_camera_relative_move_delta_normalizes_camera_vectors_and_uses_fine_multiplier(self) -> None:
+        movement, _readout = camera_relative_move_delta(
+            mouse_start=(0, 0),
+            mouse_position=(100, 0),
+            camera_right=np.asarray([2.0, 0.0, 0.0]),
+            camera_up=np.asarray([0.0, 3.0, 0.0]),
+            model_diagonal=10.0,
+            fine=True,
+        )
+
+        self.assertTrue(np.allclose(movement, [0.1, 0.0, 0.0]))
+
+    def test_axis_constrained_camera_move_delta_projects_axis_to_screen_direction(self) -> None:
+        movement, amount = axis_constrained_camera_move_delta(
+            mouse_start=(0, 0),
+            mouse_position=(100, 0),
+            axis_vector=world_axis_vector("X"),
+            camera_right=np.asarray([-1.0, 0.0, 0.0]),
+            camera_up=np.asarray([0.0, 0.0, 1.0]),
+            model_diagonal=10.0,
+            fine=False,
+        )
+
+        self.assertAlmostEqual(amount, -1.0)
+        self.assertTrue(np.allclose(movement, [-1.0, 0.0, 0.0]))
+
+    def test_axis_constrained_camera_move_delta_uses_screen_up_sign(self) -> None:
+        movement, amount = axis_constrained_camera_move_delta(
+            mouse_start=(0, 0),
+            mouse_position=(0, -100),
+            axis_vector=world_axis_vector("Z"),
+            camera_right=np.asarray([1.0, 0.0, 0.0]),
+            camera_up=np.asarray([0.0, 0.0, 1.0]),
+            model_diagonal=10.0,
+            fine=False,
+        )
+
+        self.assertAlmostEqual(amount, 1.0)
+        self.assertTrue(np.allclose(movement, [0.0, 0.0, 1.0]))
 
     def test_mesh_rotate_delta_changes_selected_axis_only(self) -> None:
         rotation, angle_delta = mesh_rotate_delta(

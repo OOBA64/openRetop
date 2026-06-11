@@ -137,6 +137,21 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(interactor.calls, ["event", "key", "char"])
         self.assertEqual(render_calls, [True])
 
+    def test_get_camera_vectors_returns_screen_basis_without_raw_camera(self) -> None:
+        viewport = self._viewport()
+        camera = viewport.renderer.GetActiveCamera()
+        camera.SetPosition(0.0, 0.0, 10.0)
+        camera.SetFocalPoint(0.0, 0.0, 0.0)
+        camera.SetViewUp(0.0, 1.0, 0.0)
+
+        vectors = viewport.get_camera_vectors()
+
+        self.assertTrue(np.allclose(vectors.forward, [0.0, 0.0, -1.0]))
+        self.assertTrue(np.allclose(vectors.right, [1.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(vectors.up, [0.0, 1.0, 0.0]))
+        self.assertTrue(np.allclose(vectors.position, [0.0, 0.0, 10.0]))
+        self.assertTrue(np.allclose(vectors.focal_point, [0.0, 0.0, 0.0]))
+
     def test_triangle_mesh_converts_to_vtk_polydata(self) -> None:
         mesh = self._triangle_mesh()
         mesh.compute_vertex_normals()

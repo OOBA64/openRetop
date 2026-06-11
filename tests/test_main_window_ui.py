@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from tkinter import TclError, Tk
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -96,6 +97,8 @@ class FakeViewport:
         self.closed = False
         self.selection_callback = None
         self.pointer_callback = None
+        self.camera_right = np.asarray([1.0, 0.0, 0.0], dtype=float)
+        self.camera_up = np.asarray([0.0, 1.0, 0.0], dtype=float)
 
     def start(self) -> None:
         return None
@@ -117,6 +120,15 @@ class FakeViewport:
 
     def reset_camera(self) -> None:
         self.reset_count += 1
+
+    def get_camera_vectors(self) -> object:
+        return SimpleNamespace(
+            right=self.camera_right,
+            up=self.camera_up,
+            forward=np.asarray([0.0, 0.0, -1.0], dtype=float),
+            position=np.asarray([0.0, 0.0, 1.0], dtype=float),
+            focal_point=np.asarray([0.0, 0.0, 0.0], dtype=float),
+        )
 
     def close(self) -> None:
         self.closed = True
@@ -572,6 +584,51 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Transform confirmed")
             self.assertTrue(np.allclose(window.app_state.mesh_object.location, confirmed_location))
             self.assertGreater(confirmed_location[0], start_location[0])
+        finally:
+            window.root.destroy()
+
+    def test_unconstrained_grab_uses_viewport_camera_vectors(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.viewport.camera_right = np.asarray([0.0, 1.0, 0.0], dtype=float)
+            window.viewport.camera_up = np.asarray([0.0, 0.0, 1.0], dtype=float)
+            window.select_model()
+            start_location = window.app_state.mesh_object.location.copy()
+            window._on_viewport_pointer_event("motion", 0, 0)
+            window._handle_shortcut("G")
+
+            handled = window._on_viewport_pointer_event("motion", 100, -50)
+            moved_location = window.app_state.mesh_object.location.copy()
+            delta = moved_location - start_location
+
+            self.assertTrue(handled)
+            self.assertAlmostEqual(delta[0], 0.0)
+            self.assertGreater(delta[1], 0.0)
+            self.assertGreater(delta[2], 0.0)
+            self.assertIn("Delta Z:", window.status_text.get())
+            window._handle_shortcut("Escape")
+            self.assertTrue(np.allclose(window.app_state.mesh_object.location, start_location))
         finally:
             window.root.destroy()
 

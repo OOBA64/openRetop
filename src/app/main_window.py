@@ -14,15 +14,17 @@ from app.object_state import MeshObjectState
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
 from app.transform_state import ActiveTransformState
 from app.transforms import (
+    axis_constrained_camera_move_delta,
     build_object_transform_matrix,
     calculate_geometry_centering_delta,
     calculate_location_for_origin_change,
     calculate_origin_to_world_origin,
-    mesh_move_delta,
+    camera_relative_move_delta,
     mesh_rotate_delta,
     section_offset_delta,
     transform_bounds,
     transform_point,
+    world_axis_vector,
 )
 from geometry.curves import fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section
@@ -1408,13 +1410,27 @@ class OpenRetopWindow:
 
         minimum_bound, maximum_bound = self._transformed_source_bounds()
         model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
-        movement, readout = mesh_move_delta(
-            state.mouse_start,
-            mouse_position,
-            state.axis_constraint,
-            model_diagonal,
-            fine=fine,
-        )
+        camera_vectors = self.viewport.get_camera_vectors()
+        if state.axis_constraint is None:
+            movement, readout = camera_relative_move_delta(
+                state.mouse_start,
+                mouse_position,
+                camera_vectors.right,
+                camera_vectors.up,
+                model_diagonal,
+                fine=fine,
+            )
+        else:
+            movement, amount = axis_constrained_camera_move_delta(
+                state.mouse_start,
+                mouse_position,
+                world_axis_vector(state.axis_constraint),
+                camera_vectors.right,
+                camera_vectors.up,
+                model_diagonal,
+                fine=fine,
+            )
+            readout = f"Delta {state.axis_constraint}: {amount:.2f}"
 
         self._last_transform_readout = readout
         self._active_transform_angle_delta = None
@@ -1433,6 +1449,7 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             return
 
+        # Rotation remains screen-horizontal for now; camera-relative rotation needs a dedicated pass.
         axis = self._display_transform_axis(state) or "Z"
         rotation, angle_delta = mesh_rotate_delta(
             state.mouse_start,

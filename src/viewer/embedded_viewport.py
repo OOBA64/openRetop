@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from tkinter import Canvas, Event, TclError
 from typing import Callable, Sequence
 
@@ -58,6 +59,15 @@ APP_SHORTCUT_KEYSYMS = {
     "z",
 }
 SELECTION_BOUNDING_BOX_LINE_WIDTH = 1.0
+
+
+@dataclass(frozen=True)
+class CameraVectors:
+    right: np.ndarray
+    up: np.ndarray
+    forward: np.ndarray
+    position: np.ndarray
+    focal_point: np.ndarray
 
 
 class EmbeddedVTKViewport:
@@ -145,6 +155,32 @@ class EmbeddedVTKViewport:
         callback: Callable[[str, int, int, bool, bool], bool] | None,
     ) -> None:
         self._pointer_callback = callback
+
+    def get_camera_vectors(self) -> CameraVectors:
+        camera = self.renderer.GetActiveCamera()
+        forward = _normalized_vector(
+            np.asarray(camera.GetDirectionOfProjection(), dtype=float),
+            fallback=np.asarray([0.0, 0.0, -1.0], dtype=float),
+        )
+        view_up = _normalized_vector(
+            np.asarray(camera.GetViewUp(), dtype=float),
+            fallback=np.asarray([0.0, 1.0, 0.0], dtype=float),
+        )
+        right = _normalized_vector(
+            np.cross(forward, view_up),
+            fallback=np.asarray([1.0, 0.0, 0.0], dtype=float),
+        )
+        up = _normalized_vector(
+            np.cross(right, forward),
+            fallback=view_up,
+        )
+        return CameraVectors(
+            right=right,
+            up=up,
+            forward=forward,
+            position=np.asarray(camera.GetPosition(), dtype=float),
+            focal_point=np.asarray(camera.GetFocalPoint(), dtype=float),
+        )
 
     def set_scene(
         self,
@@ -1122,6 +1158,14 @@ def _array_key(values: Sequence[float] | np.ndarray | None) -> tuple[float, ...]
         return None
 
     return tuple(round(float(value), 9) for value in np.asarray(values, dtype=float).ravel())
+
+
+def _normalized_vector(vector: np.ndarray, *, fallback: np.ndarray) -> np.ndarray:
+    values = np.asarray(vector, dtype=float)
+    length = float(np.linalg.norm(values))
+    if length <= 1e-12:
+        return np.asarray(fallback, dtype=float).copy()
+    return values / length
 
 
 def _active_axis_for_gizmo(mode: str | None, axis: str | None) -> str | None:

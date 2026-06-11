@@ -124,6 +124,66 @@ def mesh_move_delta(
     return (movement, readout)
 
 
+def camera_relative_move_delta(
+    mouse_start: tuple[int, int],
+    mouse_position: tuple[int, int],
+    camera_right: np.ndarray,
+    camera_up: np.ndarray,
+    model_diagonal: float,
+    *,
+    fine: bool,
+) -> tuple[np.ndarray, str]:
+    delta = mouse_delta(mouse_start, mouse_position)
+    scale = movement_scale(model_diagonal, fine=fine)
+    right = normalized_vector(camera_right, fallback=np.asarray([1.0, 0.0, 0.0], dtype=float))
+    up = normalized_vector(camera_up, fallback=np.asarray([0.0, 1.0, 0.0], dtype=float))
+    movement = (right * delta[0] + up * -delta[1]) * scale
+    return (movement, movement_readout(movement))
+
+
+def axis_constrained_camera_move_delta(
+    mouse_start: tuple[int, int],
+    mouse_position: tuple[int, int],
+    axis_vector: np.ndarray,
+    camera_right: np.ndarray,
+    camera_up: np.ndarray,
+    model_diagonal: float,
+    *,
+    fine: bool,
+) -> tuple[np.ndarray, float]:
+    delta = mouse_delta(mouse_start, mouse_position)
+    scale = movement_scale(model_diagonal, fine=fine)
+    axis = normalized_vector(axis_vector, fallback=np.asarray([1.0, 0.0, 0.0], dtype=float))
+    right = normalized_vector(camera_right, fallback=np.asarray([1.0, 0.0, 0.0], dtype=float))
+    up = normalized_vector(camera_up, fallback=np.asarray([0.0, 1.0, 0.0], dtype=float))
+    screen_axis = np.asarray(
+        [
+            float(np.dot(axis, right)),
+            -float(np.dot(axis, up)),
+        ],
+        dtype=float,
+    )
+    screen_length = float(np.linalg.norm(screen_axis))
+    if screen_length <= 1e-9:
+        pixel_amount = delta[0] - delta[1]
+    else:
+        pixel_amount = float(np.dot(np.asarray(delta, dtype=float), screen_axis / screen_length))
+
+    amount = pixel_amount * scale
+    return (axis * amount, amount)
+
+
+def world_axis_vector(axis: str) -> np.ndarray:
+    vector = np.zeros(3, dtype=float)
+    vector[_AXIS_TO_INDEX[axis]] = 1.0
+    return vector
+
+
+def movement_readout(movement: np.ndarray) -> str:
+    values = np.asarray(movement, dtype=float)
+    return f"Delta X: {values[0]:.2f}, Delta Y: {values[1]:.2f}, Delta Z: {values[2]:.2f}"
+
+
 def mesh_rotate_delta(
     mouse_start: tuple[int, int],
     mouse_position: tuple[int, int],
@@ -158,6 +218,14 @@ def movement_scale(model_diagonal: float, *, fine: bool) -> float:
 
 def fine_multiplier(fine: bool) -> float:
     return FINE_TRANSFORM_MULTIPLIER if fine else 1.0
+
+
+def normalized_vector(vector: np.ndarray, *, fallback: np.ndarray) -> np.ndarray:
+    values = np.asarray(vector, dtype=float)
+    length = float(np.linalg.norm(values))
+    if length <= 1e-12:
+        return np.asarray(fallback, dtype=float).copy()
+    return values / length
 
 
 def mouse_delta(
