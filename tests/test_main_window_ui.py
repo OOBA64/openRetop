@@ -3,14 +3,19 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from tkinter import TclError
+from tkinter import TclError, Tk
 from unittest.mock import patch
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.main_window import LOAD_PROGRESS_STAGES, OPEN_MODEL_MENU_INDEX, OpenRetopWindow
+from app.main_window import (
+    LOAD_PROGRESS_STAGES,
+    LoadProgressDialog,
+    OPEN_MODEL_MENU_INDEX,
+    OpenRetopWindow,
+)
 from mesh.loader import LoadedMesh, MeshMetadata
 
 
@@ -124,7 +129,18 @@ def _create_window() -> OpenRetopWindow:
         raise unittest.SkipTest(f"Tk is unavailable: {exc}") from exc
 
     window.root.update_idletasks()
+    if window._start_viewport_after_id is not None:
+        window.root.after_cancel(window._start_viewport_after_id)
+        window._start_viewport_after_id = None
     return window
+
+
+def _widget_descendants(widget: object) -> list[object]:
+    descendants: list[object] = []
+    for child in widget.winfo_children():
+        descendants.append(child)
+        descendants.extend(_widget_descendants(child))
+    return descendants
 
 
 class MainWindowUiTests(unittest.TestCase):
@@ -167,6 +183,35 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.scale_value.get(), "1.000")
         finally:
             window.root.destroy()
+
+    def test_loading_progress_dialog_contains_visible_indeterminate_progressbar(self) -> None:
+        try:
+            root = Tk()
+        except TclError as exc:
+            raise unittest.SkipTest(f"Tk is unavailable: {exc}") from exc
+
+        dialog: LoadProgressDialog | None = None
+        try:
+            dialog = LoadProgressDialog(root, "sample.stl")
+            progress_bars = [
+                widget
+                for widget in _widget_descendants(dialog.window)
+                if widget.winfo_class() == "TProgressbar"
+            ]
+
+            self.assertEqual(len(progress_bars), 1)
+            self.assertEqual(str(progress_bars[0].cget("mode")), "indeterminate")
+            self.assertGreater(int(progress_bars[0].winfo_width()), 1)
+            self.assertTrue(progress_bars[0].winfo_ismapped())
+
+            initial_value = float(progress_bars[0].cget("value"))
+            dialog.update_stage(LOAD_PROGRESS_STAGES[0])
+            self.assertEqual(dialog.stage_text.get(), LOAD_PROGRESS_STAGES[0])
+            self.assertNotEqual(float(progress_bars[0].cget("value")), initial_value)
+        finally:
+            if dialog is not None:
+                dialog.close()
+            root.destroy()
 
     def test_loading_mesh_starts_with_scene_context_and_keeps_normals_off(self) -> None:
         mesh = FakeMesh()
@@ -405,6 +450,45 @@ class MainWindowUiTests(unittest.TestCase):
             window.frame_selected()
             self.assertEqual(window.viewport.frame_count, 1)
             self.assertEqual(window.status_text.get(), "Selected: sample.stl")
+        finally:
+            window.root.destroy()
+
+    def test_deleting_selected_model_refreshes_without_resetting_camera(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            reset_count = window.viewport.reset_count
+            window._handle_shortcut("Delete")
+
+            self.assertIsNone(window.app_state.mesh_object)
+            self.assertEqual(window.status_text.get(), "Selected model removed")
+            self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
+            self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
+            self.assertEqual(window.viewport.reset_count, reset_count)
+            self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
+            self.assertEqual(window.viewport.scene_calls[-1]["reset_camera"], False)
+            self.assertIsNone(window.viewport.scene_calls[-1]["selected_item"])
         finally:
             window.root.destroy()
 

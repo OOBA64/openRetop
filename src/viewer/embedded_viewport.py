@@ -733,13 +733,9 @@ class EmbeddedVTKViewport:
         scene_bounds_max: Sequence[float] | None = None,
     ) -> None:
         if mesh is None:
-            self._mesh_min_bound = None
-            self._mesh_max_bound = None
             self._mesh_local_min_bound = None
             self._mesh_local_max_bound = None
             self._mesh_bounds_mesh_id = None
-            self._view_center = np.asarray([0.0, 0.0, 0.0], dtype=float)
-            self._view_extent = 2.0
             return
 
         if scene_bounds_min is not None and scene_bounds_max is not None:

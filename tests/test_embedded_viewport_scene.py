@@ -468,6 +468,33 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             {"mesh", "grid", "axes", "section_plane"},
         )
 
+    def test_clearing_mesh_preserves_view_metrics_and_reference_actors(self) -> None:
+        viewport = self._viewport()
+        mesh = TriangleMeshData(
+            vertices=np.asarray(
+                [
+                    [-2.0, -1.0, 0.0],
+                    [4.0, -1.0, 0.0],
+                    [-2.0, 3.0, 5.0],
+                ],
+                dtype=float,
+            ),
+            triangles=np.asarray([[0, 1, 2]], dtype=int),
+        )
+        self._set_basic_scene(viewport, mesh)
+        view_center = viewport._view_center.copy()
+        view_extent = viewport._view_extent
+        grid_actor = viewport._actors_by_role["grid"]
+        axes_actor = viewport._actors_by_role["axes"]
+
+        self._set_basic_scene(viewport, None, reset_camera=False)
+
+        self.assertTrue(np.allclose(viewport._view_center, view_center))
+        self.assertEqual(viewport._view_extent, view_extent)
+        self.assertNotIn("mesh", viewport._actors_by_role)
+        self.assertIs(viewport._actors_by_role["grid"], grid_actor)
+        self.assertIs(viewport._actors_by_role["axes"], axes_actor)
+
     def test_set_scene_reuses_mesh_actor_when_mesh_identity_is_unchanged(self) -> None:
         viewport = self._viewport()
         mesh = self._triangle_mesh()

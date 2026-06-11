@@ -65,10 +65,12 @@ class LoadProgressDialog:
         self.window.resizable(False, False)
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.window.columnconfigure(0, weight=1)
 
         self.stage_text = StringVar(master=self.window, value="Preparing")
         frame = ttk.Frame(self.window, padding=16)
         frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
         ttk.Label(frame, text=f"Opening {file_name}").grid(row=0, column=0, sticky="w")
         ttk.Label(frame, textvariable=self.stage_text).grid(
             row=1,
@@ -84,13 +86,18 @@ class LoadProgressDialog:
         self.progress_bar.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         self.progress_bar.start(12)
 
-        self.window.update_idletasks()
+        self.render_now()
         self.window.lift()
 
     def update_stage(self, stage: str) -> None:
         self.stage_text.set(stage)
-        self.window.update_idletasks()
+        self.progress_bar.step(8.0)
+        self.render_now()
         self.window.lift()
+
+    def render_now(self) -> None:
+        self.window.update_idletasks()
+        self.window.update()
 
     def close(self) -> None:
         self.progress_bar.stop()
@@ -112,6 +119,7 @@ class OpenRetopWindow:
         self._last_transform_readout: str | None = None
         self._active_transform_angle_delta: float | None = None
         self._is_loading_model = False
+        self._start_viewport_after_id: str | None = None
 
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
@@ -162,13 +170,14 @@ class OpenRetopWindow:
         self.viewport = EmbeddedVTKViewport(self.viewport_frame)
         self.viewport.set_selection_callback(self._on_viewport_selection)
         self.viewport.set_pointer_callback(self._on_viewport_pointer_event)
-        self.root.after(100, self._start_viewport)
+        self._start_viewport_after_id = self.root.after(100, self._start_viewport)
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
 
     def run(self) -> None:
         self.root.mainloop()
 
     def _start_viewport(self) -> None:
+        self._start_viewport_after_id = None
         try:
             self.viewport.start()
             self._refresh_viewport(reset_camera=True)
@@ -1588,6 +1597,9 @@ class OpenRetopWindow:
             button.configure(state=state)
 
     def _on_exit(self) -> None:
+        if self._start_viewport_after_id is not None:
+            self.root.after_cancel(self._start_viewport_after_id)
+            self._start_viewport_after_id = None
         self.sidebar_canvas.unbind_all("<MouseWheel>")
         self.root.unbind_all("<KeyPress>")
         self.viewport.close()
