@@ -18,6 +18,7 @@ from geometry.sections import SectionResult
 from mesh.display_proxy import DEFAULT_PROXY_QUALITY
 from mesh.triangle_mesh import TriangleMeshData
 from sections.section_state import SectionCollection, StoredSectionResult
+from surfaces.surface_state import SurfaceCollection
 
 
 def _mesh() -> TriangleMeshData:
@@ -92,6 +93,10 @@ class AppStateTests(unittest.TestCase):
         self.assertIsNot(state.curve_collection, other_state.curve_collection)
         self.assertEqual(state.curve_collection.curves, [])
         self.assertIsNone(state.curve_collection.active_curve_id)
+        self.assertIsInstance(state.surface_collection, SurfaceCollection)
+        self.assertIsNot(state.surface_collection, other_state.surface_collection)
+        self.assertEqual(state.surface_collection.surfaces, [])
+        self.assertIsNone(state.surface_collection.active_surface_id)
         self.assertIsInstance(state.section_collection, SectionCollection)
         self.assertIsNot(state.section_collection, other_state.section_collection)
         self.assertEqual(len(state.section_collection.planes), 1)

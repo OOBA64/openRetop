@@ -15,6 +15,7 @@ from sections.section_state import (
     add_plane,
     create_default_section_plane,
 )
+from surfaces.surface_state import SurfaceCollection
 
 
 def _default_section_collection() -> SectionCollection:
@@ -38,6 +39,7 @@ class AppState:
         default_factory=_default_section_collection
     )
     curve_collection: CurveCollection = field(default_factory=CurveCollection)
+    surface_collection: SurfaceCollection = field(default_factory=SurfaceCollection)
 
     def clear_selection(self) -> None:
         self.selected_item = None
