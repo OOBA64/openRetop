@@ -185,6 +185,24 @@ def _widget_descendants(widget: object) -> list[object]:
     return descendants
 
 
+def _button_by_text(widget: object, text: str) -> object:
+    for child in _widget_descendants(widget):
+        if child.winfo_class() == "TButton" and child.cget("text") == text:
+            return child
+    raise AssertionError(f"Button not found: {text}")
+
+
+def _widgets_with_text(widget: object, text: str) -> list[object]:
+    matches: list[object] = []
+    for child in _widget_descendants(widget):
+        try:
+            if child.cget("text") == text:
+                matches.append(child)
+        except TclError:
+            continue
+    return matches
+
+
 class MainWindowUiTests(unittest.TestCase):
     def test_menu_bar_and_initial_no_selection_context_match_instructions(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
@@ -256,7 +274,6 @@ class MainWindowUiTests(unittest.TestCase):
             placeholder_invocations = (
                 (window.edit_menu, 0, "Undo"),
                 (window.edit_menu, 1, "Redo"),
-                (window.edit_menu, 2, "Preferences"),
                 (window.help_menu, 0, "About"),
             )
 
@@ -265,6 +282,148 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(window.status_text.get(), f"{label}: Not implemented yet")
         finally:
             window.root.destroy()
+
+    def test_preferences_dialog_opens_with_current_values_and_controls(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.show_grid.set(False)
+            window.show_axes.set(True)
+            window.show_normals.set(True)
+            window.proxy_quality.set("High")
+
+            window.edit_menu.invoke(2)
+            window.root.update()
+            dialog = window.preferences_dialog
+            self.assertIsNotNone(dialog)
+            assert dialog is not None
+
+            self.assertEqual(dialog.title(), "Preferences")
+            self.assertFalse(window.preferences_vars["show_grid"].get())
+            self.assertTrue(window.preferences_vars["show_axes"].get())
+            self.assertTrue(window.preferences_vars["show_normals"].get())
+            self.assertEqual(window.preferences_vars["default_proxy_quality"].get(), "High")
+            self.assertTrue(_widgets_with_text(dialog, "Display"))
+            self.assertTrue(_widgets_with_text(dialog, "Import"))
+            self.assertTrue(_widgets_with_text(dialog, "Show Grid"))
+            self.assertTrue(_widgets_with_text(dialog, "Show Axes"))
+            self.assertTrue(_widgets_with_text(dialog, "Show Normals"))
+            self.assertTrue(_widgets_with_text(dialog, "Default Proxy Quality"))
+            for button_text in ("OK", "Cancel", "Apply"):
+                self.assertIsNotNone(_button_by_text(dialog, button_text))
+
+            comboboxes = [
+                widget
+                for widget in _widget_descendants(dialog)
+                if widget.winfo_class() == "TCombobox"
+            ]
+            self.assertEqual(len(comboboxes), 1)
+            self.assertEqual(tuple(comboboxes[0].cget("values")), ("Low", "Medium", "High"))
+
+            existing_dialog = window.preferences_dialog
+            window.edit_menu.invoke(2)
+            self.assertIs(window.preferences_dialog, existing_dialog)
+        finally:
+            if window.preferences_dialog is not None:
+                window._close_preferences_dialog()
+            window.root.destroy()
+
+    def test_preferences_apply_updates_settings_without_closing_dialog(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            try:
+                window.edit_menu.invoke(2)
+                dialog = window.preferences_dialog
+                self.assertIsNotNone(dialog)
+                assert dialog is not None
+
+                window.preferences_vars["show_grid"].set(False)
+                window.preferences_vars["show_axes"].set(False)
+                window.preferences_vars["show_normals"].set(True)
+                window.preferences_vars["default_proxy_quality"].set("Low")
+                _button_by_text(dialog, "Apply").invoke()
+
+                self.assertIsNotNone(window.preferences_dialog)
+                self.assertFalse(window.show_grid.get())
+                self.assertFalse(window.show_axes.get())
+                self.assertTrue(window.show_normals.get())
+                self.assertEqual(window.proxy_quality.get(), "Low")
+                self.assertEqual(window.status_text.get(), "Preferences applied")
+                self.assertEqual(window.viewport.scene_calls[-1]["show_grid"], False)
+                self.assertEqual(window.viewport.scene_calls[-1]["show_axes"], False)
+                self.assertEqual(window.viewport.scene_calls[-1]["show_normals"], True)
+
+                saved_settings = load_settings(settings_path)
+                self.assertFalse(saved_settings.display.show_grid)
+                self.assertFalse(saved_settings.display.show_axes)
+                self.assertTrue(saved_settings.display.show_normals)
+                self.assertEqual(
+                    saved_settings.import_settings.default_proxy_quality,
+                    "Low",
+                )
+            finally:
+                if window.preferences_dialog is not None:
+                    window._close_preferences_dialog()
+                window.root.destroy()
+
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                restored_window = _create_window(settings_path=settings_path)
+
+            try:
+                self.assertFalse(restored_window.show_grid.get())
+                self.assertFalse(restored_window.show_axes.get())
+                self.assertTrue(restored_window.show_normals.get())
+                self.assertEqual(restored_window.proxy_quality.get(), "Low")
+            finally:
+                restored_window.root.destroy()
+
+    def test_preferences_ok_applies_and_closes_dialog(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.edit_menu.invoke(2)
+            dialog = window.preferences_dialog
+            self.assertIsNotNone(dialog)
+            assert dialog is not None
+
+            window.preferences_vars["show_grid"].set(False)
+            _button_by_text(dialog, "OK").invoke()
+
+            self.assertIsNone(window.preferences_dialog)
+            self.assertEqual(window.preferences_vars, {})
+            self.assertFalse(window.show_grid.get())
+            self.assertEqual(window.status_text.get(), "Preferences applied")
+        finally:
+            window.root.destroy()
+
+    def test_preferences_cancel_closes_without_applying(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            try:
+                window.edit_menu.invoke(2)
+                dialog = window.preferences_dialog
+                self.assertIsNotNone(dialog)
+                assert dialog is not None
+
+                window.preferences_vars["show_grid"].set(False)
+                window.preferences_vars["default_proxy_quality"].set("High")
+                _button_by_text(dialog, "Cancel").invoke()
+
+                self.assertIsNone(window.preferences_dialog)
+                self.assertEqual(window.preferences_vars, {})
+                self.assertTrue(window.show_grid.get())
+                self.assertEqual(window.proxy_quality.get(), "Medium")
+                self.assertFalse(settings_path.exists())
+            finally:
+                window.root.destroy()
 
     def test_startup_loads_preferences_from_settings_file(self) -> None:
         settings = default_app_settings()

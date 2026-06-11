@@ -144,6 +144,8 @@ class OpenRetopWindow:
         self._start_viewport_after_id: str | None = None
         self.current_project_path: Path | None = None
         self.project_dirty = False
+        self.preferences_dialog: Toplevel | None = None
+        self.preferences_vars: dict[str, BooleanVar | StringVar] = {}
         self._update_window_title()
 
         self.show_grid = BooleanVar(value=self.settings.display.show_grid)
@@ -234,7 +236,7 @@ class OpenRetopWindow:
         self.edit_menu = Menu(self.menu_bar, tearoff=False)
         self.edit_menu.add_command(label="Undo", command=self._undo_placeholder)
         self.edit_menu.add_command(label="Redo", command=self._redo_placeholder)
-        self.edit_menu.add_command(label="Preferences", command=self._preferences_placeholder)
+        self.edit_menu.add_command(label="Preferences", command=self.open_preferences)
         self.menu_bar.add_cascade(label="Edit", menu=self.edit_menu)
 
         self.view_menu = Menu(self.menu_bar, tearoff=False)
@@ -420,8 +422,126 @@ class OpenRetopWindow:
     def _redo_placeholder(self) -> None:
         self._not_implemented("Redo")
 
-    def _preferences_placeholder(self) -> None:
-        self._not_implemented("Preferences")
+    def open_preferences(self) -> None:
+        if self.preferences_dialog is not None and self.preferences_dialog.winfo_exists():
+            self.preferences_dialog.lift()
+            self.preferences_dialog.focus_set()
+            return
+
+        dialog = Toplevel(self.root)
+        dialog.title("Preferences")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.protocol("WM_DELETE_WINDOW", self._close_preferences_dialog)
+        dialog.columnconfigure(0, weight=1)
+        self.preferences_dialog = dialog
+        self.preferences_vars = {
+            "show_grid": BooleanVar(master=dialog, value=self.show_grid.get()),
+            "show_axes": BooleanVar(master=dialog, value=self.show_axes.get()),
+            "show_normals": BooleanVar(master=dialog, value=self.show_normals.get()),
+            "default_proxy_quality": StringVar(
+                master=dialog,
+                value=normalize_proxy_quality(self.proxy_quality.get()),
+            ),
+        }
+
+        content = ttk.Frame(dialog, padding=12)
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+
+        display_frame = ttk.LabelFrame(content, text="Display", padding=8)
+        display_frame.grid(row=0, column=0, sticky="ew")
+        display_frame.columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            display_frame,
+            text="Show Grid",
+            variable=self.preferences_vars["show_grid"],
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            display_frame,
+            text="Show Axes",
+            variable=self.preferences_vars["show_axes"],
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(
+            display_frame,
+            text="Show Normals",
+            variable=self.preferences_vars["show_normals"],
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+        import_frame = ttk.LabelFrame(content, text="Import", padding=8)
+        import_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        import_frame.columnconfigure(1, weight=1)
+        ttk.Label(import_frame, text="Default Proxy Quality").grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        ttk.Combobox(
+            import_frame,
+            textvariable=self.preferences_vars["default_proxy_quality"],
+            values=PROXY_QUALITY_LABELS,
+            width=10,
+            state="readonly",
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        buttons = ttk.Frame(content)
+        buttons.grid(row=2, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="OK", command=self._confirm_preferences_dialog).grid(
+            row=0,
+            column=0,
+        )
+        ttk.Button(buttons, text="Cancel", command=self._close_preferences_dialog).grid(
+            row=0,
+            column=1,
+            padx=(6, 0),
+        )
+        ttk.Button(buttons, text="Apply", command=self._apply_preferences_dialog).grid(
+            row=0,
+            column=2,
+            padx=(6, 0),
+        )
+
+    def _confirm_preferences_dialog(self) -> None:
+        self._apply_preferences_dialog()
+        self._close_preferences_dialog()
+
+    def _apply_preferences_dialog(self) -> None:
+        if not self.preferences_vars:
+            return
+
+        show_grid = bool(self.preferences_vars["show_grid"].get())
+        show_axes = bool(self.preferences_vars["show_axes"].get())
+        show_normals = bool(self.preferences_vars["show_normals"].get())
+        proxy_quality = normalize_proxy_quality(
+            str(self.preferences_vars["default_proxy_quality"].get())
+        )
+
+        display_changed = (
+            show_grid != self.show_grid.get()
+            or show_axes != self.show_axes.get()
+            or show_normals != self.show_normals.get()
+        )
+        proxy_changed = proxy_quality != normalize_proxy_quality(self.proxy_quality.get())
+
+        self.show_grid.set(show_grid)
+        self.show_axes.set(show_axes)
+        self.show_normals.set(show_normals)
+        if display_changed:
+            self._on_view_option_changed()
+
+        if proxy_changed:
+            self.proxy_quality.set(proxy_quality)
+            self._on_proxy_quality_changed()
+
+        self._save_app_settings()
+        self.status_text.set("Preferences applied")
+
+    def _close_preferences_dialog(self) -> None:
+        dialog = self.preferences_dialog
+        self.preferences_dialog = None
+        self.preferences_vars = {}
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
 
     def _about_placeholder(self) -> None:
         self._not_implemented("About")
