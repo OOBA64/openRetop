@@ -65,7 +65,7 @@ class OpenRetopWindow:
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
         self.show_normals = BooleanVar(value=False)
-        self.show_section_plane = BooleanVar(value=True)
+        self.show_section_plane = BooleanVar(value=False)
         self.proxy_quality = StringVar(value=DEFAULT_PROXY_QUALITY)
 
         self.section_axis = StringVar(value="Z")
@@ -810,9 +810,7 @@ class OpenRetopWindow:
             and not (
                 self.app_state.mesh_object is not None and self.app_state.mesh_object.display_proxy_enabled
             ),
-            show_section_plane=(
-                self.show_section_plane.get() and self.mesh_state.is_loaded
-            ),
+            show_section_plane=self._should_show_section_plane(),
             section_axis=self.section_axis.get(),
             section_offset=self.section_offset.get(),
             selected_item=self.app_state.selected_item,
@@ -829,6 +827,21 @@ class OpenRetopWindow:
             section_result=None if hide_expensive_overlays else self.app_state.section_result,
             curve_results=[] if hide_expensive_overlays else self.app_state.curve_results,
             reset_camera=reset_camera,
+        )
+
+    def _should_show_section_plane(self) -> bool:
+        if not self.mesh_state.is_loaded:
+            return False
+
+        return self.show_section_plane.get() or self._is_section_plane_active()
+
+    def _is_section_plane_active(self) -> bool:
+        if self.app_state.selected_item == SELECT_SECTION_PLANE:
+            return True
+
+        return (
+            self.app_state.transform_state is not None
+            and self.app_state.transform_state.selected_item == SELECT_SECTION_PLANE
         )
 
     def _on_view_option_changed(self) -> None:
