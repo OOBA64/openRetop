@@ -57,6 +57,7 @@ APP_SHORTCUT_KEYSYMS = {
     "y",
     "z",
 }
+SELECTION_BOUNDING_BOX_LINE_WIDTH = 1.0
 
 
 class EmbeddedVTKViewport:
@@ -345,7 +346,7 @@ class EmbeddedVTKViewport:
             selection_actors = [
                 _line_actor(
                     build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound),
-                    line_width=1.6,
+                    line_width=SELECTION_BOUNDING_BOX_LINE_WIDTH,
                 )
             ]
             if object_origin is not None:

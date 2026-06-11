@@ -13,6 +13,7 @@ from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from viewer.embedded_viewport import (
     EmbeddedVTKViewport,
+    SELECTION_BOUNDING_BOX_LINE_WIDTH,
     _bounds_corners,
     _line_polydata,
     _mesh_actor,
@@ -251,6 +252,29 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertNotEqual(viewport._group_keys["active_transform_gizmo"], first_gizmo_key)
         self.assertIn((2.0, 0.0, 0.0), viewport._group_keys["selection_overlays"])
         self.assertIn((2.0, 0.0, 0.0), viewport._group_keys["active_transform_gizmo"])
+
+    def test_model_selection_bounding_box_is_thin_and_selection_only(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+        )
+
+        selection_actors = viewport._actor_groups["selection_overlays"]
+        self.assertGreaterEqual(len(selection_actors), 1)
+        self.assertAlmostEqual(
+            selection_actors[0].GetProperty().GetLineWidth(),
+            SELECTION_BOUNDING_BOX_LINE_WIDTH,
+        )
+
+        self._set_basic_scene(viewport, mesh, selected_item=None, object_origin=None)
+
+        self.assertNotIn("selection_overlays", viewport._actor_groups)
+        self.assertNotIn("selection_overlays", viewport._group_keys)
 
     def test_interactive_rotate_updates_selection_bounds_without_duplicate_actors(self) -> None:
         viewport = self._viewport()

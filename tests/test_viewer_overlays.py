@@ -9,7 +9,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from viewer.overlays import (
+    SELECTED_BOUNDING_BOX_COLOR,
     build_active_axis_indicator,
+    build_bounding_box_outline,
     build_rotation_angle_indicator,
     build_rotation_ring,
     build_section_plane_preview,
@@ -47,6 +49,13 @@ class ViewerOverlayTests(unittest.TestCase):
         self.assertTrue(np.allclose(axis.points[:, 1], 2.0))
         self.assertLess(axis.points[0, 2], 3.0)
         self.assertGreater(axis.points[1, 2], 3.0)
+
+    def test_bounding_box_outline_uses_subtle_selection_color(self) -> None:
+        outline = build_bounding_box_outline((0.0, 0.0, 0.0), (1.0, 2.0, 3.0))
+
+        self.assertEqual(len(outline.lines), 12)
+        self.assertTrue(np.allclose(outline.colors, SELECTED_BOUNDING_BOX_COLOR))
+        self.assertLessEqual(float(np.max(outline.colors)), 0.62)
 
     def test_rotation_ring_aligns_to_active_axis(self) -> None:
         ring = build_rotation_ring((1.0, 2.0, 3.0), "X", 4.0, segments=16)

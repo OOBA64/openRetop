@@ -15,6 +15,7 @@ AXIS_COLORS = {
     "Y": (0.2, 0.85, 0.25),
     "Z": (0.22, 0.48, 1.0),
 }
+SELECTED_BOUNDING_BOX_COLOR = (0.44, 0.56, 0.62)
 
 
 @dataclass(frozen=True)
@@ -189,7 +190,7 @@ def build_bounding_box_outline(
     min_bound: Sequence[float],
     max_bound: Sequence[float],
     *,
-    color: Sequence[float] = (1.0, 0.82, 0.1),
+    color: Sequence[float] = SELECTED_BOUNDING_BOX_COLOR,
 ) -> LineGeometry:
     minimum = np.asarray(min_bound, dtype=float)
     maximum = np.asarray(max_bound, dtype=float)
