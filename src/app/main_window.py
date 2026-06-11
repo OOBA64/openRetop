@@ -28,6 +28,13 @@ from app.transforms import (
     transform_point,
     world_axis_vector,
 )
+from curves.curve_state import (
+    StoredCurve,
+    add_curve,
+    clear_curves_for_plane,
+    clear_curves_for_section_result,
+    get_visible_curves,
+)
 from geometry.curves import fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section, normalize_axis
 from mesh.display_proxy import (
@@ -438,6 +445,8 @@ class OpenRetopWindow:
             add_plane(collection, create_default_section_plane())
 
         self.app_state.section_collection = collection
+        self.app_state.curve_collection.curves = []
+        self.app_state.curve_collection.active_curve_id = None
         self._set_display_section_result(None)
         self._sync_section_controls_from_active_plane(clamp_offset=False)
 
@@ -1193,6 +1202,8 @@ class OpenRetopWindow:
             )
             self.app_state.section_result = None
             self.app_state.curve_results = []
+            self.app_state.curve_collection.curves = []
+            self.app_state.curve_collection.active_curve_id = None
             self.section_result_text.set("Section result: none")
             self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[3])
             self._set_transform_inputs_from_object()
@@ -1369,6 +1380,7 @@ class OpenRetopWindow:
             result=section_result,
         )
         add_result(self.app_state.section_collection, stored_result)
+        self._store_curves_for_section_result(stored_result)
         self._set_display_section_result(stored_result)
         self._update_section_plane_label(set_status=False)
         self._refresh_viewport(reset_camera=False)
@@ -1384,6 +1396,8 @@ class OpenRetopWindow:
 
     def clear_all_section_results(self) -> None:
         self.app_state.section_collection.results = []
+        self.app_state.curve_collection.curves = []
+        self.app_state.curve_collection.active_curve_id = None
         self._set_display_section_result(None)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("All section results cleared")
@@ -1401,6 +1415,7 @@ class OpenRetopWindow:
             return
 
         removed_name = active_plane.name or "Section Plane"
+        clear_curves_for_plane(self.app_state.curve_collection, active_plane.id)
         remove_plane(self.app_state.section_collection, active_plane.id)
         self._ensure_default_section_plane()
         self._set_display_section_result(self._latest_stored_section_result())
@@ -1452,13 +1467,41 @@ class OpenRetopWindow:
     ) -> None:
         if stored_result is None:
             self.app_state.section_result = None
-            self.app_state.curve_results = []
             self.section_result_text.set("Section result: none")
+            self._sync_visible_curve_results()
             return
 
         self.app_state.section_result = stored_result.result
-        self.app_state.curve_results = fit_section_polylines(stored_result.result.polylines)
         self.section_result_text.set(self._section_result_summary(stored_result))
+        self._sync_visible_curve_results()
+
+    def _store_curves_for_section_result(
+        self,
+        stored_result: StoredSectionResult,
+    ) -> None:
+        for index, curve_fit in enumerate(
+            fit_section_polylines(stored_result.result.polylines),
+            start=1,
+        ):
+            add_curve(
+                self.app_state.curve_collection,
+                StoredCurve(
+                    id=f"curve-{uuid4().hex}",
+                    name=f"{stored_result.name} Curve {index}",
+                    section_result_id=stored_result.id,
+                    plane_id=stored_result.plane_id,
+                    original_points=curve_fit.original_points,
+                    fitted_points=curve_fit.fitted_points,
+                    mean_error=curve_fit.mean_error,
+                    max_error=curve_fit.max_error,
+                    is_closed=curve_fit.is_closed,
+                ),
+            )
+
+    def _sync_visible_curve_results(self) -> None:
+        self.app_state.curve_results = list(
+            get_visible_curves(self.app_state.curve_collection)
+        )
 
     @staticmethod
     def _section_result_summary(stored_result: StoredSectionResult) -> str:
@@ -1477,6 +1520,16 @@ class OpenRetopWindow:
     def _clear_active_section_results(self) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
         if active_plane is not None:
+            result_ids = [
+                result.id
+                for result in self.app_state.section_collection.results
+                if result.plane_id == active_plane.id
+            ]
+            for result_id in result_ids:
+                clear_curves_for_section_result(
+                    self.app_state.curve_collection,
+                    result_id,
+                )
             clear_results_for_plane(self.app_state.section_collection, active_plane.id)
 
         self._set_display_section_result(self._latest_stored_section_result())
@@ -1511,6 +1564,9 @@ class OpenRetopWindow:
             else None
         )
         hide_expensive_overlays = self.app_state.transform_state is not None
+        visible_curves = [] if hide_expensive_overlays else get_visible_curves(
+            self.app_state.curve_collection
+        )
         self.viewport.set_scene(
             display_mesh,
             transform_matrix=transform_matrix,
@@ -1538,7 +1594,7 @@ class OpenRetopWindow:
             active_transform_axis=self.app_state.active_transform_axis,
             active_transform_angle_delta=self._active_transform_angle_delta,
             section_result=None if hide_expensive_overlays else self.app_state.section_result,
-            curve_results=[] if hide_expensive_overlays else self.app_state.curve_results,
+            curve_results=visible_curves,
             reset_camera=reset_camera,
         )
         self._refresh_scene_browser()
@@ -1549,9 +1605,10 @@ class OpenRetopWindow:
             section_planes=self.app_state.section_collection.planes,
             active_section_plane_id=self.app_state.section_collection.active_plane_id,
             section_results=self.app_state.section_collection.results,
+            curves=self.app_state.curve_collection.curves,
             has_section_result=bool(self.app_state.section_collection.results)
             or self.app_state.section_result is not None,
-            has_curves=bool(self.app_state.curve_results),
+            has_curves=bool(self.app_state.curve_collection.curves),
             selected_item=self.app_state.selected_item,
         )
 
@@ -1726,6 +1783,7 @@ class OpenRetopWindow:
             return
 
         if active_plane is not None:
+            clear_curves_for_plane(self.app_state.curve_collection, active_plane.id)
             clear_results_for_plane(self.app_state.section_collection, active_plane.id)
         self._set_display_section_result(self._latest_stored_section_result())
 
@@ -2290,6 +2348,8 @@ class OpenRetopWindow:
         self.mesh_state = MeshState()
         self.app_state.section_result = None
         self.app_state.curve_results = []
+        self.app_state.curve_collection.curves = []
+        self.app_state.curve_collection.active_curve_id = None
         self.app_state.section_collection.results = []
         self.section_result_text.set("Section result: none")
         self._update_stats()

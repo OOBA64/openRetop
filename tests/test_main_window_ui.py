@@ -25,6 +25,7 @@ from app.scene_browser import (
     NODE_SCENE,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
+    curve_node_id,
     section_plane_node_id,
     section_result_node_id,
 )
@@ -1687,7 +1688,9 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.compute_section()
             stored_result = window.app_state.section_collection.results[0]
+            stored_curve = window.app_state.curve_collection.curves[0]
             section_result_node = section_result_node_id(stored_result.id)
+            curve_node = curve_node_id(stored_curve.id)
             self.assertEqual(
                 tree.get_children(NODE_SCENE),
                 (
@@ -1700,6 +1703,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (section_result_node,))
             self.assertEqual(tree.item(section_result_node, "text"), "Section 1")
+            self.assertEqual(tree.get_children(NODE_CURVES), (curve_node,))
+            self.assertEqual(tree.item(curve_node, "text"), "Section 1 Curve 1")
 
             window.clear_section()
             self.assertEqual(
@@ -1842,6 +1847,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(first_result.offset, 0.0)
             self.assertIs(window.app_state.section_result, first_result.result)
             self.assertEqual(window.section_result_text.get(), "Section result: Section 1 - 1 segments")
+            first_curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(first_curve.name, "Section 1 Curve 1")
+            self.assertEqual(first_curve.section_result_id, first_result.id)
+            self.assertEqual(first_curve.plane_id, first_plane.id)
+            self.assertEqual(window.app_state.curve_results, [first_curve])
 
             window.add_section_plane()
             second_plane = window.app_state.section_collection.planes[1]
@@ -1860,16 +1870,33 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIs(window.app_state.section_result, second_result.result)
             self.assertEqual(window.section_result_text.get(), "Section result: Section 2 - 1 segments")
             self.assertEqual(window.status_text.get(), "Section computed: Section 2 - 1 segments")
+            second_curve = window.app_state.curve_collection.curves[1]
+            self.assertEqual(second_curve.name, "Section 2 Curve 1")
+            self.assertEqual(second_curve.section_result_id, second_result.id)
+            self.assertEqual(second_curve.plane_id, second_plane.id)
+            self.assertEqual(window.app_state.curve_results, [first_curve, second_curve])
+            self.assertEqual(
+                window.viewport.scene_calls[-1]["curve_results"],
+                [first_curve, second_curve],
+            )
 
             tree = window.scene_browser.tree
             first_result_node = section_result_node_id(first_result.id)
             second_result_node = section_result_node_id(second_result.id)
+            first_curve_node = curve_node_id(first_curve.id)
+            second_curve_node = curve_node_id(second_curve.id)
             self.assertEqual(
                 tree.get_children(NODE_SECTION_RESULTS),
                 (first_result_node, second_result_node),
             )
             self.assertEqual(tree.item(first_result_node, "text"), "Section 1")
             self.assertEqual(tree.item(second_result_node, "text"), "Section 2")
+            self.assertEqual(
+                tree.get_children(NODE_CURVES),
+                (first_curve_node, second_curve_node),
+            )
+            self.assertEqual(tree.item(first_curve_node, "text"), "Section 1 Curve 1")
+            self.assertEqual(tree.item(second_curve_node, "text"), "Section 2 Curve 1")
 
             first_plane_node = section_plane_node_id(first_plane.id)
             tree.selection_set(first_plane_node)
@@ -1883,6 +1910,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIs(window.app_state.section_result, second_result.result)
             self.assertEqual(window.section_result_text.get(), "Section result: Section 2 - 1 segments")
             self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (second_result_node,))
+            self.assertEqual(window.app_state.curve_collection.curves, [second_curve])
+            self.assertEqual(window.app_state.curve_results, [second_curve])
+            self.assertEqual(tree.get_children(NODE_CURVES), (second_curve_node,))
         finally:
             window.root.destroy()
 
@@ -1918,18 +1948,24 @@ class MainWindowUiTests(unittest.TestCase):
             window.compute_section()
 
             self.assertEqual(len(window.app_state.section_collection.results), 2)
+            self.assertEqual(len(window.app_state.curve_collection.curves), 2)
             self.assertTrue(window.scene_browser.tree.exists(NODE_SECTION_RESULTS))
+            self.assertTrue(window.scene_browser.tree.exists(NODE_CURVES))
 
             window.tools_menu.invoke(5)
 
             self.assertEqual(window.app_state.section_collection.results, [])
             self.assertIsNone(window.app_state.section_result)
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertIsNone(window.app_state.curve_collection.active_curve_id)
             self.assertEqual(window.app_state.curve_results, [])
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertEqual(window.status_text.get(), "All section results cleared")
             self.assertFalse(window.scene_browser.tree.exists(NODE_SECTION_RESULTS))
+            self.assertFalse(window.scene_browser.tree.exists(NODE_CURVES))
             self.assertEqual(len(window.app_state.section_collection.planes), 2)
             self.assertEqual(window.viewport.scene_calls[-1]["section_result"], None)
+            self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [])
         finally:
             window.root.destroy()
 
@@ -1960,6 +1996,7 @@ class MainWindowUiTests(unittest.TestCase):
             first_plane = window.app_state.section_collection.planes[0]
             window.compute_section()
             first_result = window.app_state.section_collection.results[0]
+            first_curve = window.app_state.curve_collection.curves[0]
             window.add_section_plane()
             second_plane = window.app_state.section_collection.planes[1]
             window.section_axis.set("X")
@@ -1967,6 +2004,7 @@ class MainWindowUiTests(unittest.TestCase):
             window._set_section_offset(0.5, clamp=True, refresh=True)
             window.compute_section()
             second_result = window.app_state.section_collection.results[1]
+            second_curve = window.app_state.curve_collection.curves[1]
 
             window.tools_menu.invoke(6)
 
@@ -1975,6 +2013,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(first_plane.selected)
             self.assertEqual(window.app_state.section_collection.results, [first_result])
             self.assertNotIn(second_result, window.app_state.section_collection.results)
+            self.assertEqual(window.app_state.curve_collection.curves, [first_curve])
+            self.assertNotIn(second_curve, window.app_state.curve_collection.curves)
+            self.assertEqual(window.app_state.curve_results, [first_curve])
             self.assertIs(window.app_state.section_result, first_result.result)
             self.assertEqual(window.section_result_text.get(), "Section result: Section 1 - 1 segments")
             self.assertEqual(window.section_axis.get(), "Z")
@@ -1985,8 +2026,10 @@ class MainWindowUiTests(unittest.TestCase):
             tree = window.scene_browser.tree
             first_plane_node = section_plane_node_id(first_plane.id)
             first_result_node = section_result_node_id(first_result.id)
+            first_curve_node = curve_node_id(first_curve.id)
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (first_plane_node,))
             self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (first_result_node,))
+            self.assertEqual(tree.get_children(NODE_CURVES), (first_curve_node,))
             self.assertEqual(tree.selection(), (first_plane_node,))
 
             window.tools_menu.invoke(6)
@@ -2001,9 +2044,12 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(restored_plane.selected)
             self.assertEqual(window.app_state.section_collection.active_plane_id, restored_plane.id)
             self.assertEqual(window.app_state.section_collection.results, [])
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertEqual(window.app_state.curve_results, [])
             self.assertIsNone(window.app_state.section_result)
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
+            self.assertFalse(tree.exists(NODE_CURVES))
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (restored_node,))
             self.assertEqual(tree.selection(), (restored_node,))
 

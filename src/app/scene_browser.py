@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from tkinter import ttk
 
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
+from curves.curve_state import StoredCurve
 from sections.section_state import SectionPlaneState, StoredSectionResult
 
 
@@ -16,6 +17,7 @@ NODE_SECTION_PLANE = "section_plane"
 NODE_SECTION_RESULTS = "section_results"
 NODE_SECTION_RESULT = "section_result"
 NODE_CURVES = "curves"
+NODE_CURVE = "curve"
 
 
 def section_plane_node_id(plane_id: str) -> str:
@@ -40,6 +42,10 @@ def section_result_node_id(result_id: str) -> str:
     return f"{NODE_SECTION_RESULT}:{result_id}"
 
 
+def curve_node_id(curve_id: str) -> str:
+    return f"{NODE_CURVE}:{curve_id}"
+
+
 class SceneBrowser:
     """Owns the right-side scene hierarchy and selection synchronization."""
 
@@ -54,6 +60,7 @@ class SceneBrowser:
         self._active_section_plane_node_id: str | None = None
         self._section_plane_node_ids: set[str] = set()
         self._section_result_node_ids: set[str] = set()
+        self._curve_node_ids: set[str] = set()
 
         self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
         self.frame.grid_propagate(False)
@@ -84,6 +91,7 @@ class SceneBrowser:
         section_planes: Sequence[SectionPlaneState],
         active_section_plane_id: str | None,
         section_results: Sequence[StoredSectionResult],
+        curves: Sequence[StoredCurve],
         has_section_result: bool,
         has_curves: bool,
         selected_item: str | None,
@@ -112,9 +120,9 @@ class SceneBrowser:
                 self._remove_section_result_nodes()
 
             if has_curves:
-                self._ensure_node(NODE_CURVES, "Curves")
+                self._sync_curve_nodes(curves)
             else:
-                self._remove_node(NODE_CURVES)
+                self._remove_curve_nodes()
 
             self._order_nodes()
             self._sync_tree_selection(selected_item)
@@ -200,6 +208,30 @@ class SceneBrowser:
     def _remove_section_result_nodes(self) -> None:
         self._section_result_node_ids = set()
         self._remove_node(NODE_SECTION_RESULTS)
+
+    def _sync_curve_nodes(
+        self,
+        curves: Sequence[StoredCurve],
+    ) -> None:
+        self._ensure_node(NODE_CURVES, "Curves", open_node=True)
+
+        current_node_ids: list[str] = []
+        for index, curve in enumerate(curves, start=1):
+            node_id = curve_node_id(curve.id)
+            current_node_ids.append(node_id)
+            label = curve.name or f"Curve {index}"
+            self._ensure_node(node_id, label, parent=NODE_CURVES)
+
+        current_node_id_set = set(current_node_ids)
+        for child_id in self.tree.get_children(NODE_CURVES):
+            if child_id not in current_node_id_set:
+                self.tree.delete(child_id)
+
+        self._curve_node_ids = current_node_id_set
+
+    def _remove_curve_nodes(self) -> None:
+        self._curve_node_ids = set()
+        self._remove_node(NODE_CURVES)
 
     def _remove_node(self, node_id: str) -> None:
         if self.tree.exists(node_id):

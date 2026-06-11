@@ -12,6 +12,7 @@ from app.app_state import AppState
 from app.object_state import MeshObjectState
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
 from app.transform_state import ActiveTransformState
+from curves.curve_state import CurveCollection
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.display_proxy import DEFAULT_PROXY_QUALITY
@@ -87,6 +88,10 @@ class AppStateTests(unittest.TestCase):
         self.assertIsNone(state.section_result)
         self.assertEqual(state.curve_results, [])
         self.assertIsNot(state.curve_results, other_state.curve_results)
+        self.assertIsInstance(state.curve_collection, CurveCollection)
+        self.assertIsNot(state.curve_collection, other_state.curve_collection)
+        self.assertEqual(state.curve_collection.curves, [])
+        self.assertIsNone(state.curve_collection.active_curve_id)
         self.assertIsInstance(state.section_collection, SectionCollection)
         self.assertIsNot(state.section_collection, other_state.section_collection)
         self.assertEqual(len(state.section_collection.planes), 1)
@@ -146,6 +151,8 @@ class AppStateTests(unittest.TestCase):
         self.assertIs(state.transform_state, transform_state)
         self.assertIsNone(state.section_result)
         self.assertEqual(state.curve_results, [])
+        self.assertEqual(state.curve_collection.curves, [])
+        self.assertIsNone(state.curve_collection.active_curve_id)
         self.assertEqual(len(state.section_collection.planes), 1)
         self.assertEqual(state.section_collection.results, [])
 

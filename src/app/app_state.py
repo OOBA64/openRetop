@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from curves.curve_state import CurveCollection, StoredCurve
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 
@@ -32,10 +33,11 @@ class AppState:
     active_transform_axis: str | None = None
     transform_state: ActiveTransformState | None = None
     section_result: SectionResult | None = None
-    curve_results: list[CurveFitResult] = field(default_factory=list)
+    curve_results: list[CurveFitResult | StoredCurve] = field(default_factory=list)
     section_collection: SectionCollection = field(
         default_factory=_default_section_collection
     )
+    curve_collection: CurveCollection = field(default_factory=CurveCollection)
 
     def clear_selection(self) -> None:
         self.selected_item = None
@@ -47,3 +49,5 @@ class AppState:
         self.section_result = None
         self.curve_results = []
         self.section_collection.results = []
+        self.curve_collection.curves = []
+        self.curve_collection.active_curve_id = None
