@@ -48,7 +48,7 @@ MESH_FILE_TYPES = (
     ("PLY files", "*.ply"),
     ("All files", "*.*"),
 )
-OPEN_MODEL_MENU_INDEX = 0
+OPEN_MODEL_MENU_INDEX = 1
 LOAD_PROGRESS_STAGES = (
     "Loading mesh",
     "Computing bounds",
@@ -191,12 +191,24 @@ class OpenRetopWindow:
         self.menu_bar = Menu(self.root, tearoff=False)
 
         self.file_menu = Menu(self.menu_bar, tearoff=False)
+        self.file_menu.add_command(label="New Project", command=self._new_project_placeholder)
         self.file_menu.add_command(label="Open Model", command=self.open_model)
-        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Open Project", command=self._open_project_placeholder)
+        self.file_menu.add_command(label="Save Project", command=self._save_project_placeholder)
+        self.file_menu.add_command(label="Save Project As", command=self._save_project_as_placeholder)
         self.file_menu.add_command(label="Exit", command=self._on_exit)
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
 
+        self.edit_menu = Menu(self.menu_bar, tearoff=False)
+        self.edit_menu.add_command(label="Undo", command=self._undo_placeholder)
+        self.edit_menu.add_command(label="Redo", command=self._redo_placeholder)
+        self.edit_menu.add_command(label="Preferences", command=self._preferences_placeholder)
+        self.menu_bar.add_cascade(label="Edit", menu=self.edit_menu)
+
         self.view_menu = Menu(self.menu_bar, tearoff=False)
+        self.view_menu.add_command(label="Frame All", command=self.frame_all)
+        self.view_menu.add_command(label="Frame Selected", command=self.frame_selected)
+        self.view_menu.add_command(label="Reset View", command=self.reset_view)
         self.view_menu.add_checkbutton(
             label="Show Grid",
             variable=self.show_grid,
@@ -212,11 +224,46 @@ class OpenRetopWindow:
             variable=self.show_normals,
             command=self._on_view_option_changed,
         )
-        self.view_menu.add_separator()
-        self.view_menu.add_command(label="Frame All", command=self.frame_all)
-        self.view_menu.add_command(label="Reset View", command=self.reset_view)
         self.menu_bar.add_cascade(label="View", menu=self.view_menu)
+
+        self.tools_menu = Menu(self.menu_bar, tearoff=False)
+        self.tools_menu.add_command(label="Select Model", command=self.select_model)
+        self.tools_menu.add_command(label="Select Section Plane", command=self.select_section_plane)
+        self.tools_menu.add_command(label="Compute Section", command=self.compute_section)
+        self.tools_menu.add_command(label="Clear Section", command=self.clear_section)
+        self.menu_bar.add_cascade(label="Tools", menu=self.tools_menu)
+
+        self.help_menu = Menu(self.menu_bar, tearoff=False)
+        self.help_menu.add_command(label="About", command=self._about_placeholder)
+        self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.root.configure(menu=self.menu_bar)
+
+    def _not_implemented(self, feature_name: str) -> None:
+        self.status_text.set(f"{feature_name}: Not implemented yet")
+
+    def _new_project_placeholder(self) -> None:
+        self._not_implemented("New Project")
+
+    def _open_project_placeholder(self) -> None:
+        self._not_implemented("Open Project")
+
+    def _save_project_placeholder(self) -> None:
+        self._not_implemented("Save Project")
+
+    def _save_project_as_placeholder(self) -> None:
+        self._not_implemented("Save Project As")
+
+    def _undo_placeholder(self) -> None:
+        self._not_implemented("Undo")
+
+    def _redo_placeholder(self) -> None:
+        self._not_implemented("Redo")
+
+    def _preferences_placeholder(self) -> None:
+        self._not_implemented("Preferences")
+
+    def _about_placeholder(self) -> None:
+        self._not_implemented("About")
 
     def _build_layout(self) -> None:
         style = ttk.Style(self.root)

@@ -162,17 +162,33 @@ class MainWindowUiTests(unittest.TestCase):
 
         try:
             self.assertEqual(window.menu_bar.entrycget(0, "label"), "File")
-            self.assertEqual(window.menu_bar.entrycget(1, "label"), "View")
-            self.assertEqual(window.file_menu.entrycget(0, "label"), "Open Model")
-            self.assertEqual(window.file_menu.entrycget(2, "label"), "Exit")
-            self.assertEqual(window.view_menu.entrycget(0, "label"), "Show Grid")
-            self.assertEqual(window.view_menu.entrycget(1, "label"), "Show Axes")
-            self.assertEqual(window.view_menu.entrycget(2, "label"), "Show Normals")
-            self.assertEqual(window.view_menu.entrycget(4, "label"), "Frame All")
-            self.assertEqual(window.view_menu.entrycget(5, "label"), "Reset View")
-            self.assertEqual(window.view_menu.type(0), "checkbutton")
-            self.assertEqual(window.view_menu.type(1), "checkbutton")
-            self.assertEqual(window.view_menu.type(2), "checkbutton")
+            self.assertEqual(window.menu_bar.entrycget(1, "label"), "Edit")
+            self.assertEqual(window.menu_bar.entrycget(2, "label"), "View")
+            self.assertEqual(window.menu_bar.entrycget(3, "label"), "Tools")
+            self.assertEqual(window.menu_bar.entrycget(4, "label"), "Help")
+            self.assertEqual(window.file_menu.entrycget(0, "label"), "New Project")
+            self.assertEqual(window.file_menu.entrycget(1, "label"), "Open Model")
+            self.assertEqual(window.file_menu.entrycget(2, "label"), "Open Project")
+            self.assertEqual(window.file_menu.entrycget(3, "label"), "Save Project")
+            self.assertEqual(window.file_menu.entrycget(4, "label"), "Save Project As")
+            self.assertEqual(window.file_menu.entrycget(5, "label"), "Exit")
+            self.assertEqual(window.edit_menu.entrycget(0, "label"), "Undo")
+            self.assertEqual(window.edit_menu.entrycget(1, "label"), "Redo")
+            self.assertEqual(window.edit_menu.entrycget(2, "label"), "Preferences")
+            self.assertEqual(window.view_menu.entrycget(0, "label"), "Frame All")
+            self.assertEqual(window.view_menu.entrycget(1, "label"), "Frame Selected")
+            self.assertEqual(window.view_menu.entrycget(2, "label"), "Reset View")
+            self.assertEqual(window.view_menu.entrycget(3, "label"), "Show Grid")
+            self.assertEqual(window.view_menu.entrycget(4, "label"), "Show Axes")
+            self.assertEqual(window.view_menu.entrycget(5, "label"), "Show Normals")
+            self.assertEqual(window.view_menu.type(3), "checkbutton")
+            self.assertEqual(window.view_menu.type(4), "checkbutton")
+            self.assertEqual(window.view_menu.type(5), "checkbutton")
+            self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
+            self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
+            self.assertEqual(window.tools_menu.entrycget(2, "label"), "Compute Section")
+            self.assertEqual(window.tools_menu.entrycget(3, "label"), "Clear Section")
+            self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
@@ -193,6 +209,44 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertEqual(window.scale_value.get(), "1.000")
+        finally:
+            window.root.destroy()
+
+    def test_menu_placeholders_report_not_implemented_without_crashing(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            placeholder_invocations = (
+                (window.file_menu, 0, "New Project"),
+                (window.file_menu, 2, "Open Project"),
+                (window.file_menu, 3, "Save Project"),
+                (window.file_menu, 4, "Save Project As"),
+                (window.edit_menu, 0, "Undo"),
+                (window.edit_menu, 1, "Redo"),
+                (window.edit_menu, 2, "Preferences"),
+                (window.help_menu, 0, "About"),
+            )
+
+            for menu, index, label in placeholder_invocations:
+                menu.invoke(index)
+                self.assertEqual(window.status_text.get(), f"{label}: Not implemented yet")
+        finally:
+            window.root.destroy()
+
+    def test_tools_menu_commands_keep_existing_no_selection_behavior(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.tools_menu.invoke(0)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.tools_menu.invoke(1)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.tools_menu.invoke(2)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.tools_menu.invoke(3)
+            self.assertEqual(window.status_text.get(), "Section cleared")
         finally:
             window.root.destroy()
 
