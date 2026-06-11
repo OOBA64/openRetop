@@ -131,6 +131,8 @@ class OpenRetopWindow:
         self._is_loading_model = False
         self._start_viewport_after_id: str | None = None
         self.current_project_path: Path | None = None
+        self.project_dirty = False
+        self._update_window_title()
 
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
@@ -251,8 +253,12 @@ class OpenRetopWindow:
         self.status_text.set(f"{feature_name}: Not implemented yet")
 
     def new_project(self) -> None:
+        if not self._confirm_unsaved_project_changes("starting a new project"):
+            return
+
         self.current_project_path = None
-        self.status_text.set("New project")
+        self._set_project_dirty(False)
+        self.status_text.set("Project ready: Untitled Project")
 
     def open_project(self) -> None:
         selected_path = filedialog.askopenfilename(
@@ -271,9 +277,11 @@ class OpenRetopWindow:
             return
 
         self.current_project_path = project_path
+        self._update_window_title()
         if project.mesh_path is None:
             self._restore_project_controls(project)
-            self.status_text.set(f"Project opened: {project.name} ({project_path})")
+            self._set_project_dirty(False)
+            self.status_text.set(f"Project loaded: {project.name} ({project_path})")
             return
 
         mesh_path = self._project_mesh_path(project_path, project.mesh_path)
@@ -284,7 +292,35 @@ class OpenRetopWindow:
 
         self._restore_project_controls(project)
         self._restore_project_transform(project)
-        self.status_text.set(f"Project opened: {project.name} ({project_path})")
+        self._set_project_dirty(False)
+        self.status_text.set(f"Project loaded: {project.name} ({project_path})")
+
+    def _project_display_name(self) -> str:
+        if self.current_project_path is None:
+            return "Untitled Project"
+        return self.current_project_path.name
+
+    def _update_window_title(self) -> None:
+        marker = " *" if self.project_dirty else ""
+        self.root.title(f"openRetop - {self._project_display_name()}{marker}")
+
+    def _set_project_dirty(self, dirty: bool = True) -> None:
+        self.project_dirty = bool(dirty)
+        self._update_window_title()
+
+    def _confirm_unsaved_project_changes(self, action: str) -> bool:
+        if not self.project_dirty:
+            return True
+
+        response = messagebox.askyesnocancel(
+            "Unsaved Project",
+            f"Save changes to {self._project_display_name()} before {action}?",
+        )
+        if response is None:
+            return False
+        if response:
+            return self.save_project()
+        return True
 
     def _project_mesh_path(self, project_path: Path, mesh_path: str) -> Path:
         restored_mesh_path = Path(mesh_path).expanduser()
@@ -316,25 +352,23 @@ class OpenRetopWindow:
         self._update_section_plane_label(set_status=False)
         self._refresh_viewport(reset_camera=False)
 
-    def save_project(self) -> None:
+    def save_project(self) -> bool:
         if self.current_project_path is None:
-            self.save_project_as()
-            return
+            return self.save_project_as()
 
-        self._write_project(self.current_project_path)
+        return self._write_project(self.current_project_path)
 
-    def save_project_as(self) -> None:
+    def save_project_as(self) -> bool:
         selected_path = filedialog.asksaveasfilename(
             title="Save Project",
             defaultextension=".openretop",
             filetypes=PROJECT_FILE_TYPES,
         )
         if not selected_path:
-            return
+            return False
 
         project_path = Path(selected_path)
-        if self._write_project(project_path):
-            self.current_project_path = project_path
+        return self._write_project(project_path)
 
     def _write_project(self, project_path: Path) -> bool:
         try:
@@ -354,7 +388,9 @@ class OpenRetopWindow:
             messagebox.showerror("Could not save project", str(exc))
             return False
 
-        self.status_text.set(f"Project saved: {project_path.name}")
+        self.current_project_path = project_path
+        self._set_project_dirty(False)
+        self.status_text.set(f"Project saved: {project_path}")
         return True
 
     def _undo_placeholder(self) -> None:
@@ -899,6 +935,7 @@ class OpenRetopWindow:
             self._set_selected_item(None, status="No selection")
             self._refresh_viewport(reset_camera=True)
             self.status_text.set(self._display_mesh_status(display_result))
+            self._set_project_dirty(True)
             return True
         finally:
             if progress is not None:
@@ -1095,6 +1132,7 @@ class OpenRetopWindow:
 
     def _on_view_option_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
+        self._set_project_dirty(True)
 
     def _on_proxy_quality_changed(self, _event: object | None = None) -> None:
         quality = normalize_proxy_quality(self.proxy_quality.get())
@@ -1104,6 +1142,7 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             self._update_stats()
             self.status_text.set(f"Proxy quality: {quality}")
+            self._set_project_dirty(True)
             return
 
         self.status_text.set(f"Rebuilding {quality} display proxy")
@@ -1113,21 +1152,24 @@ class OpenRetopWindow:
         self._update_stats()
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._display_mesh_status(display_result))
+        self._set_project_dirty(True)
 
     def _on_section_plane_visibility_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
+        self._set_project_dirty(True)
 
     def _on_section_axis_changed(self, _event: object | None = None) -> None:
         self._configure_offset_range(reset=False)
         self._update_section_plane_label(set_status=True)
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=False)
+        self._set_project_dirty(True)
 
     def _on_offset_slider_changed(self, value: object) -> None:
         if self._updating_offset:
             return
 
-        self._set_section_offset(float(value), clamp=False, refresh=True)
+        self._set_section_offset(float(value), clamp=False, refresh=True, mark_dirty=True)
 
     def _on_offset_input_changed(self, _event: object | None = None) -> None:
         if self._updating_offset:
@@ -1137,7 +1179,7 @@ class OpenRetopWindow:
         if offset is None:
             return
 
-        self._set_section_offset(offset, clamp=True, refresh=True)
+        self._set_section_offset(offset, clamp=True, refresh=True, mark_dirty=True)
 
     def _parse_offset(self, *, show_error: bool = True) -> float | None:
         try:
@@ -1153,6 +1195,7 @@ class OpenRetopWindow:
         *,
         clamp: bool,
         refresh: bool,
+        mark_dirty: bool = False,
     ) -> None:
         minimum, maximum = self._section_offset_bounds
         next_offset = min(max(float(offset), minimum), maximum) if clamp else float(offset)
@@ -1167,6 +1210,8 @@ class OpenRetopWindow:
         self._clear_section_for_plane_change()
         if refresh:
             self._refresh_viewport(reset_camera=False)
+        if mark_dirty:
+            self._set_project_dirty(True)
 
     def _configure_offset_range(self, *, reset: bool) -> None:
         if self.app_state.mesh_object is None:
@@ -1220,6 +1265,7 @@ class OpenRetopWindow:
         self.app_state.mesh_object.scale = scale
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Transforms update live")
+        self._set_project_dirty(True)
 
     def _parse_object_transform(
         self,
@@ -1306,6 +1352,7 @@ class OpenRetopWindow:
         )
         self._change_origin_keep_geometry(new_origin)
         self.status_text.set("Origin set to geometry")
+        self._set_project_dirty(True)
 
     def move_origin_to_world_origin(self) -> None:
         if self.app_state.mesh_object is None:
@@ -1323,6 +1370,7 @@ class OpenRetopWindow:
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Origin moved to world origin")
+        self._set_project_dirty(True)
 
     def center_geometry_on_origin(self) -> None:
         if self.app_state.mesh_object is None:
@@ -1344,6 +1392,7 @@ class OpenRetopWindow:
         ) + delta
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Geometry centered on origin")
+        self._set_project_dirty(True)
 
     def reset_object_transform(self) -> None:
         if self.app_state.mesh_object is None:
@@ -1356,6 +1405,7 @@ class OpenRetopWindow:
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=True)
         self.status_text.set("Selected: " + self.app_state.mesh_object.name)
+        self._set_project_dirty(True)
 
     def _change_origin_keep_geometry(self, new_origin: np.ndarray) -> None:
         if self.app_state.mesh_object is None:
@@ -1656,6 +1706,8 @@ class OpenRetopWindow:
         self._active_transform_angle_delta = None
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(status)
+        if commit:
+            self._set_project_dirty(True)
 
     def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
         if state.selected_item == SELECT_MODEL and self.app_state.mesh_object is not None:
@@ -1679,6 +1731,7 @@ class OpenRetopWindow:
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Section plane axis cycled to {next_axis}")
+        self._set_project_dirty(True)
 
     def _active_transform_status(self) -> str:
         if self.app_state.transform_state is None:
@@ -1759,6 +1812,7 @@ class OpenRetopWindow:
         self._update_stats()
         self._set_selection_buttons_enabled(False)
         self._set_selected_item(None, status="Selected model removed")
+        self._set_project_dirty(True)
 
     def _set_selection_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -1766,6 +1820,9 @@ class OpenRetopWindow:
             button.configure(state=state)
 
     def _on_exit(self) -> None:
+        if not self._confirm_unsaved_project_changes("closing openRetop"):
+            return
+
         if self._start_viewport_after_id is not None:
             self.root.after_cancel(self._start_viewport_after_id)
             self._start_viewport_after_id = None

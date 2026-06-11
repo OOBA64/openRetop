@@ -201,6 +201,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tuple(window.proxy_quality_dropdown.cget("values")), ("Low", "Medium", "High"))
             self.assertEqual(window.status_text.get(), "No selection")
             self.assertIsNone(window.current_project_path)
+            self.assertFalse(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project")
             self.assertIsNone(window.app_state.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
@@ -250,10 +252,52 @@ class MainWindowUiTests(unittest.TestCase):
             window.file_menu.invoke(0)
 
             self.assertIsNone(window.current_project_path)
-            self.assertEqual(window.status_text.get(), "New project")
+            self.assertFalse(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project")
+            self.assertEqual(window.status_text.get(), "Project ready: Untitled Project")
             self.assertIs(window.app_state.mesh_object, mesh_object)
             self.assertEqual(window.app_state.selected_item, "model")
             self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
+        finally:
+            window.root.destroy()
+
+    def test_new_project_dirty_prompt_cancel_keeps_project_metadata(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            project_path = Path("saved.openretop")
+            window.current_project_path = project_path
+            window._set_project_dirty(True)
+            window.status_text.set("Working")
+
+            with patch("app.main_window.messagebox.askyesnocancel", return_value=None) as prompt:
+                window.file_menu.invoke(0)
+
+            prompt.assert_called_once()
+            self.assertEqual(window.current_project_path, project_path)
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - saved.openretop *")
+            self.assertEqual(window.status_text.get(), "Working")
+        finally:
+            window.root.destroy()
+
+    def test_new_project_dirty_prompt_dont_save_resets_metadata(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.current_project_path = Path("saved.openretop")
+            window._set_project_dirty(True)
+
+            with patch("app.main_window.messagebox.askyesnocancel", return_value=False) as prompt:
+                window.file_menu.invoke(0)
+
+            prompt.assert_called_once()
+            self.assertIsNone(window.current_project_path)
+            self.assertFalse(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project")
+            self.assertEqual(window.status_text.get(), "Project ready: Untitled Project")
         finally:
             window.root.destroy()
 
@@ -294,8 +338,10 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(window.current_project_path, project_path)
                 self.assertEqual(
                     window.status_text.get(),
-                    f"Project opened: Saved Metadata ({project_path})",
+                    f"Project loaded: Saved Metadata ({project_path})",
                 )
+                self.assertFalse(window.project_dirty)
+                self.assertEqual(window.root.title(), "openRetop - saved.openretop")
                 self.assertIs(window.app_state.mesh_object, mesh_object)
                 self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
                 self.assertFalse(window.show_grid.get())
@@ -383,8 +429,10 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(progress_dialogs[0].closed)
                 self.assertEqual(
                     window.status_text.get(),
-                    f"Project opened: Restored Project ({project_path})",
+                    f"Project loaded: Restored Project ({project_path})",
                 )
+                self.assertFalse(window.project_dirty)
+                self.assertEqual(window.root.title(), "openRetop - saved.openretop")
                 self.assertIsNotNone(window.app_state.mesh_object)
                 self.assertTrue(np.allclose(window.app_state.mesh_object.location, [4.0, 5.0, 6.0]))
                 self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, [10.0, 20.0, 30.0]))
@@ -528,7 +576,9 @@ class MainWindowUiTests(unittest.TestCase):
                 ask_save.assert_called_once()
                 show_error.assert_not_called()
                 self.assertEqual(window.current_project_path, project_path)
-                self.assertEqual(window.status_text.get(), "Project saved: empty.openretop")
+                self.assertFalse(window.project_dirty)
+                self.assertEqual(window.root.title(), "openRetop - empty.openretop")
+                self.assertEqual(window.status_text.get(), f"Project saved: {project_path}")
 
                 project = load_project(project_path)
                 self.assertEqual(project.name, "Untitled Project")
@@ -556,6 +606,7 @@ class MainWindowUiTests(unittest.TestCase):
                 project_path = Path(tmpdir) / "current.openretop"
                 project_path.write_text("old contents", encoding="utf-8")
                 window.current_project_path = project_path
+                window._set_project_dirty(True)
                 window.show_grid.set(False)
 
                 with (
@@ -567,7 +618,9 @@ class MainWindowUiTests(unittest.TestCase):
                 ask_save.assert_not_called()
                 show_error.assert_not_called()
                 self.assertEqual(window.current_project_path, project_path)
-                self.assertEqual(window.status_text.get(), "Project saved: current.openretop")
+                self.assertFalse(window.project_dirty)
+                self.assertEqual(window.root.title(), "openRetop - current.openretop")
+                self.assertEqual(window.status_text.get(), f"Project saved: {project_path}")
                 self.assertFalse(load_project(project_path).display.show_grid)
         finally:
             window.root.destroy()
@@ -608,7 +661,9 @@ class MainWindowUiTests(unittest.TestCase):
                 ask_save.assert_called_once()
                 show_error.assert_not_called()
                 self.assertEqual(window.current_project_path, project_path)
-                self.assertEqual(window.status_text.get(), "Project saved: mesh.openretop")
+                self.assertFalse(window.project_dirty)
+                self.assertEqual(window.root.title(), "openRetop - mesh.openretop")
+                self.assertEqual(window.status_text.get(), f"Project saved: {project_path}")
 
                 project = load_project(project_path)
                 self.assertEqual(project.mesh_path, str(mesh_path))
@@ -641,6 +696,74 @@ class MainWindowUiTests(unittest.TestCase):
 
             show_error.assert_called_once_with("Could not save project", "disk full")
             self.assertEqual(window.status_text.get(), "Project save failed")
+        finally:
+            window.root.destroy()
+
+    def test_dirty_close_cancel_keeps_window_open(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window._set_project_dirty(True)
+
+            with (
+                patch("app.main_window.messagebox.askyesnocancel", return_value=None) as prompt,
+                patch.object(window.root, "destroy") as destroy,
+            ):
+                window._on_exit()
+
+            prompt.assert_called_once()
+            destroy.assert_not_called()
+            self.assertFalse(window.viewport.closed)
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project *")
+        finally:
+            window.root.destroy()
+
+    def test_dirty_close_dont_save_closes_without_saving(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window._set_project_dirty(True)
+
+            with (
+                patch("app.main_window.messagebox.askyesnocancel", return_value=False) as prompt,
+                patch.object(window.root, "destroy") as destroy,
+                patch("app.main_window.save_project") as save_project_fn,
+            ):
+                window._on_exit()
+
+            prompt.assert_called_once()
+            save_project_fn.assert_not_called()
+            destroy.assert_called_once()
+            self.assertTrue(window.viewport.closed)
+        finally:
+            window.root.destroy()
+
+    def test_dirty_close_save_writes_project_then_closes(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "closing.openretop"
+                window.current_project_path = project_path
+                window._set_project_dirty(True)
+
+                with (
+                    patch("app.main_window.messagebox.askyesnocancel", return_value=True) as prompt,
+                    patch.object(window.root, "destroy") as destroy,
+                ):
+                    window._on_exit()
+
+                prompt.assert_called_once()
+                destroy.assert_called_once()
+                self.assertTrue(window.viewport.closed)
+                self.assertFalse(window.project_dirty)
+                self.assertEqual(window.root.title(), "openRetop - closing.openretop")
+                self.assertTrue(project_path.exists())
+                self.assertEqual(load_project(project_path).name, "Untitled Project")
         finally:
             window.root.destroy()
 
@@ -722,6 +845,8 @@ class MainWindowUiTests(unittest.TestCase):
                 "Source: 1 tris | Display: 1 tris | Reduction: 0.0% | "
                 "No proxy (Medium) | Full-resolution source preserved",
             )
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project *")
             self.assertIsNone(window.app_state.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
@@ -898,6 +1023,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             window.select_model()
+            window._set_project_dirty(False)
             self.assertEqual(window.app_state.selected_item, "model")
             self.assertEqual(window.status_text.get(), "Selected: sample.stl")
             self.assertEqual(window.no_selection_frame.winfo_manager(), "")
@@ -910,6 +1036,8 @@ class MainWindowUiTests(unittest.TestCase):
             window.location_x.set("1.500")
             window._on_object_transform_changed()
             self.assertEqual(window.status_text.get(), "Transforms update live")
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project *")
             self.assertAlmostEqual(window.app_state.mesh_object.location[0], 1.5)
             self.assertIsNotNone(window.app_state.mesh_object.transform_matrix)
             self.assertEqual(window.viewport.scene_calls[-1]["mesh"], window.app_state.mesh_object.display_mesh)
@@ -954,11 +1082,14 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             window.select_model()
+            window._set_project_dirty(False)
             reset_count = window.viewport.reset_count
             window._handle_shortcut("Delete")
 
             self.assertIsNone(window.app_state.mesh_object)
             self.assertEqual(window.status_text.get(), "Selected model removed")
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project *")
             self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
             self.assertEqual(window.viewport.reset_count, reset_count)
