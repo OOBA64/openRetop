@@ -11,6 +11,7 @@ import numpy as np
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.triangle_mesh import TriangleMeshData
+from sections.section_state import SectionPlaneState
 from viewer.overlays import (
     LineGeometry,
     build_active_axis_indicator,
@@ -70,6 +71,15 @@ class CameraVectors:
     focal_point: np.ndarray
 
 
+@dataclass(frozen=True)
+class ViewportSectionPlane:
+    id: str
+    axis: str
+    offset: float
+    visible: bool
+    selected: bool
+
+
 class EmbeddedVTKViewport:
     """VTK viewport hosted inside a Tk frame."""
 
@@ -101,6 +111,7 @@ class EmbeddedVTKViewport:
         self._rotation_overlay_max_bound: np.ndarray | None = None
         self._section_plane_actors: list[vtkActor] = []
         self._section_plane_pick_geometry: LineGeometry | None = None
+        self._section_plane_pick_geometries: list[LineGeometry] = []
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
@@ -193,6 +204,8 @@ class EmbeddedVTKViewport:
         show_section_plane: bool,
         section_axis: str,
         section_offset: float,
+        section_planes: Sequence[SectionPlaneState] | None = None,
+        active_section_plane_id: str | None = None,
         selected_item: str | None = None,
         object_origin: Sequence[float] | None = None,
         scene_bounds_min: Sequence[float] | None = None,
@@ -230,6 +243,8 @@ class EmbeddedVTKViewport:
             show_section_plane=show_section_plane,
             section_axis=section_axis,
             section_offset=section_offset,
+            section_planes=section_planes,
+            active_section_plane_id=active_section_plane_id,
             selected_item=selected_item,
             object_origin=object_origin,
             active_transform_mode=active_transform_mode,
@@ -252,12 +267,14 @@ class EmbeddedVTKViewport:
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
         self._update_normal_actor(mesh, matrix, show_normals)
-        self._update_section_plane_actor(
+        self._update_section_plane_actors(
             mesh,
             show_section_plane=show_section_plane,
             section_axis=section_axis,
             section_offset=section_offset,
-            selected=(selected_item == "section_plane"),
+            section_planes=section_planes,
+            active_section_plane_id=active_section_plane_id,
+            selected_item=selected_item,
         )
         self._update_section_result_actor(section_result)
         self._update_curve_result_actor(curve_results)
@@ -297,6 +314,8 @@ class EmbeddedVTKViewport:
         show_section_plane: bool,
         section_axis: str,
         section_offset: float,
+        section_planes: Sequence[SectionPlaneState] | None,
+        active_section_plane_id: str | None,
         selected_item: str | None,
         object_origin: Sequence[float] | None,
         active_transform_mode: str | None,
@@ -329,12 +348,14 @@ class EmbeddedVTKViewport:
         )
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
-        self._update_section_plane_actor(
+        self._update_section_plane_actors(
             mesh,
             show_section_plane=show_section_plane,
             section_axis=section_axis,
             section_offset=section_offset,
-            selected=(selected_item == "section_plane"),
+            section_planes=section_planes,
+            active_section_plane_id=active_section_plane_id,
+            selected_item=selected_item,
         )
         self._render()
         return True
@@ -530,55 +551,130 @@ class EmbeddedVTKViewport:
 
         self._actors_by_role["normal"].SetUserMatrix(_vtk_matrix(matrix))
 
-    def _update_section_plane_actor(
+    def _update_section_plane_actors(
         self,
         mesh: TriangleMeshData | None,
         *,
         show_section_plane: bool,
         section_axis: str,
         section_offset: float,
-        selected: bool,
+        section_planes: Sequence[SectionPlaneState] | None,
+        active_section_plane_id: str | None,
+        selected_item: str | None,
     ) -> None:
         if (
             mesh is None
-            or not show_section_plane
             or self._mesh_min_bound is None
             or self._mesh_max_bound is None
         ):
-            self._remove_actor("section_plane")
-            self._section_plane_actors = []
-            self._section_plane_pick_geometry = None
+            self._clear_section_plane_actors()
+            return
+
+        planes_to_render = self._section_planes_for_viewport(
+            show_section_plane=show_section_plane,
+            section_axis=section_axis,
+            section_offset=section_offset,
+            section_planes=section_planes,
+            active_section_plane_id=active_section_plane_id,
+            selected_item=selected_item,
+        )
+        if not planes_to_render:
+            self._clear_section_plane_actors()
             return
 
         key = (
-            "section_plane",
-            section_axis,
-            round(float(section_offset), 9),
+            "section_planes",
+            tuple(
+                (
+                    plane.id,
+                    plane.axis,
+                    round(float(plane.offset), 9),
+                    bool(plane.visible),
+                    bool(plane.selected),
+                )
+                for plane in planes_to_render
+            ),
             self._bounds_key(),
-            bool(selected),
         )
         if (
-            self._actor_keys.get("section_plane") == key
-            and "section_plane" in self._actors_by_role
-            and self._section_plane_pick_geometry is not None
+            self._group_keys.get("section_planes") == key
+            and "section_planes" in self._actor_groups
+            and self._section_plane_pick_geometries
         ):
-            self._section_plane_actors = [self._actors_by_role["section_plane"]]
+            self._section_plane_actors = self._actor_groups["section_planes"]
             return
 
-        section_geometry = build_section_plane_preview(
-            section_axis,
-            section_offset,
-            self._mesh_min_bound,
-            self._mesh_max_bound,
-            selected=selected,
-        )
-        self._section_plane_pick_geometry = section_geometry
-        section_actor = _line_actor(
-            section_geometry,
-            line_width=3.0 if selected else 2.0,
-        )
-        self._replace_actor("section_plane", section_actor, key=key)
-        self._section_plane_actors = [section_actor]
+        section_actors: list[vtkActor] = []
+        section_geometries: list[LineGeometry] = []
+        for plane in planes_to_render:
+            section_geometry = build_section_plane_preview(
+                plane.axis,
+                plane.offset,
+                self._mesh_min_bound,
+                self._mesh_max_bound,
+                selected=plane.selected,
+            )
+            section_geometries.append(section_geometry)
+            section_actors.append(
+                _line_actor(
+                    section_geometry,
+                    line_width=3.0 if plane.selected else 2.0,
+                )
+            )
+
+        self._section_plane_actors = section_actors
+        self._section_plane_pick_geometries = section_geometries
+        self._section_plane_pick_geometry = section_geometries[0]
+        self._remove_actor("section_plane")
+        self._replace_overlay_group("section_planes", section_actors, key=key)
+
+    def _section_planes_for_viewport(
+        self,
+        *,
+        show_section_plane: bool,
+        section_axis: str,
+        section_offset: float,
+        section_planes: Sequence[SectionPlaneState] | None,
+        active_section_plane_id: str | None,
+        selected_item: str | None,
+    ) -> tuple[ViewportSectionPlane, ...]:
+        if section_planes is None:
+            if not show_section_plane:
+                return ()
+
+            return (
+                ViewportSectionPlane(
+                    id="section_plane",
+                    axis=section_axis,
+                    offset=float(section_offset),
+                    visible=True,
+                    selected=(selected_item == "section_plane"),
+                ),
+            )
+
+        planes: list[ViewportSectionPlane] = []
+        for plane in section_planes:
+            if not plane.visible:
+                continue
+
+            selected = bool(plane.selected) or plane.id == active_section_plane_id
+            planes.append(
+                ViewportSectionPlane(
+                    id=plane.id,
+                    axis=plane.axis,
+                    offset=float(plane.offset),
+                    visible=True,
+                    selected=selected,
+                )
+            )
+        return tuple(planes)
+
+    def _clear_section_plane_actors(self) -> None:
+        self._remove_actor("section_plane")
+        self._clear_overlay_group("section_planes")
+        self._section_plane_actors = []
+        self._section_plane_pick_geometry = None
+        self._section_plane_pick_geometries = []
 
     def _update_section_result_actor(self, section_result: SectionResult | None) -> None:
         if section_result is None:
@@ -979,13 +1075,14 @@ class EmbeddedVTKViewport:
 
         height = max(int(self.widget.winfo_height()), 1)
         display_point = np.asarray([float(x_position), float(height - y_position)], dtype=float)
-        if _screen_point_near_geometry(
-            self.renderer,
-            self._section_plane_pick_geometry,
-            display_point,
-            tolerance=12.0,
-        ):
-            return "section_plane"
+        for section_plane_geometry in self._section_plane_pick_geometries:
+            if _screen_point_near_geometry(
+                self.renderer,
+                section_plane_geometry,
+                display_point,
+                tolerance=12.0,
+            ):
+                return "section_plane"
         if self._screen_point_inside_mesh_bounds(display_point, padding=10.0):
             return "model"
         return None

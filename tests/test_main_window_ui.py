@@ -1164,6 +1164,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(scene["show_section_plane"], False)
             self.assertEqual(scene["section_axis"], "Z")
             self.assertEqual(scene["section_offset"], 0.0)
+            self.assertEqual(scene["section_planes"], window.app_state.section_collection.planes)
+            self.assertEqual(
+                scene["active_section_plane_id"],
+                window.app_state.section_collection.active_plane_id,
+            )
             self.assertIsNone(scene["selected_item"])
             self.assertTrue(np.allclose(scene["scene_bounds_min"], [0.0, 0.0, 0.0]))
             self.assertTrue(np.allclose(scene["scene_bounds_max"], [1.0, 2.0, 3.0]))
@@ -1313,6 +1318,14 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
             self.assertEqual(window.viewport.scene_calls[-1]["section_axis"], "X")
             self.assertEqual(window.viewport.scene_calls[-1]["section_offset"], 0.5)
+            self.assertEqual(
+                window.viewport.scene_calls[-1]["section_planes"],
+                window.app_state.section_collection.planes,
+            )
+            self.assertEqual(
+                window.viewport.scene_calls[-1]["active_section_plane_id"],
+                second_plane.id,
+            )
 
             window.section_axis.set("Y")
             window._on_section_axis_changed()
@@ -1786,7 +1799,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
-            self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], True)
+            self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], False)
 
             window._set_section_offset(0.5, clamp=True, refresh=True)
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.500")
@@ -1811,7 +1824,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Section cleared")
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertIsNone(window.viewport.scene_calls[-1]["section_result"])
-            self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], True)
+            self.assertEqual(window.viewport.scene_calls[-1]["show_section_plane"], False)
 
             window.clear_selection()
             self.assertIsNone(window.app_state.selected_item)

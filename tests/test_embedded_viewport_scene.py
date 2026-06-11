@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
+from sections.section_state import SectionPlaneState
 from viewer.embedded_viewport import (
     EmbeddedVTKViewport,
     SELECTION_BOUNDING_BOX_LINE_WIDTH,
@@ -219,6 +220,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             show_section_plane=False,
             section_axis="Z",
             section_offset=0.0,
+            section_planes=None,
+            active_section_plane_id=None,
             selected_item="model",
             object_origin=(4.0, 0.0, 0.0),
             active_transform_mode="move",
@@ -480,8 +483,77 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(third_count, first_count)
         self.assertEqual(
             set(viewport._actors_by_role),
-            {"mesh", "grid", "axes", "section_plane"},
+            {"mesh", "grid", "axes"},
         )
+        self.assertEqual(set(viewport._actor_groups), {"section_planes"})
+        self.assertEqual(len(viewport._actor_groups["section_planes"]), 1)
+
+    def test_multiple_section_planes_render_visible_planes_with_selected_styling(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        first_plane = SectionPlaneState(
+            id="plane-1",
+            name="Section Plane 1",
+            axis="Z",
+            offset=0.0,
+            visible=True,
+            selected=False,
+        )
+        second_plane = SectionPlaneState(
+            id="plane-2",
+            name="Section Plane 2",
+            axis="X",
+            offset=0.25,
+            visible=True,
+            selected=True,
+        )
+        hidden_plane = SectionPlaneState(
+            id="plane-3",
+            name="Section Plane 3",
+            axis="Y",
+            offset=0.5,
+            visible=False,
+            selected=False,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            show_section_plane=False,
+            section_planes=(first_plane, second_plane, hidden_plane),
+            active_section_plane_id=second_plane.id,
+        )
+
+        self.assertEqual(self._actor_count(viewport), 5)
+        self.assertEqual(len(viewport._section_plane_actors), 2)
+        self.assertEqual(len(viewport._section_plane_pick_geometries), 2)
+        self.assertEqual(len(viewport._actor_groups["section_planes"]), 2)
+        self.assertEqual(
+            [
+                actor.GetProperty().GetLineWidth()
+                for actor in viewport._section_plane_actors
+            ],
+            [2.0, 3.0],
+        )
+        first_points = self._actor_points(viewport._section_plane_actors[0])
+        second_points = self._actor_points(viewport._section_plane_actors[1])
+        self.assertTrue(np.allclose(first_points[:, 2], 0.0))
+        self.assertTrue(np.allclose(second_points[:, 0], 0.25))
+
+        first_plane.visible = False
+        second_plane.visible = False
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            show_section_plane=True,
+            section_planes=(first_plane, second_plane, hidden_plane),
+            active_section_plane_id=second_plane.id,
+        )
+
+        self.assertEqual(self._actor_count(viewport), 3)
+        self.assertEqual(viewport._section_plane_actors, [])
+        self.assertEqual(viewport._section_plane_pick_geometries, [])
+        self.assertNotIn("section_planes", viewport._actor_groups)
 
     def test_clearing_mesh_preserves_view_metrics_and_reference_actors(self) -> None:
         viewport = self._viewport()

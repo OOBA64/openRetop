@@ -1311,6 +1311,8 @@ class OpenRetopWindow:
             show_section_plane=self._should_show_section_plane(),
             section_axis=self.section_axis.get(),
             section_offset=self.section_offset.get(),
+            section_planes=self.app_state.section_collection.planes,
+            active_section_plane_id=self.app_state.section_collection.active_plane_id,
             selected_item=self.app_state.selected_item,
             object_origin=origin,
             scene_bounds_min=(
@@ -1342,16 +1344,7 @@ class OpenRetopWindow:
         if not self.mesh_state.is_loaded:
             return False
 
-        return self.show_section_plane.get() or self._is_section_plane_active()
-
-    def _is_section_plane_active(self) -> bool:
-        if self.app_state.selected_item == SELECT_SECTION_PLANE:
-            return True
-
-        return (
-            self.app_state.transform_state is not None
-            and self.app_state.transform_state.selected_item == SELECT_SECTION_PLANE
-        )
+        return any(plane.visible for plane in self.app_state.section_collection.planes)
 
     def _sync_active_section_plane_from_controls(self) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
