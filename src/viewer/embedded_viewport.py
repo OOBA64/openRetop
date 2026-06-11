@@ -175,18 +175,26 @@ class EmbeddedVTKViewport:
             active_transform_axis,
             selected_item,
         )
+        self._update_view_metrics(mesh, matrix, scene_bounds_min, scene_bounds_max)
         if self._try_update_interactive_mesh_transform(
             mesh,
             matrix,
             transform_key=transform_key,
             reset_camera=reset_camera,
+            show_grid=show_grid,
+            show_axes=show_axes,
             show_normals=show_normals,
+            show_section_plane=show_section_plane,
+            section_axis=section_axis,
+            section_offset=section_offset,
+            selected_item=selected_item,
+            object_origin=object_origin,
+            active_transform_mode=active_transform_mode,
+            active_transform_axis=active_transform_axis,
             section_result=section_result,
             curve_results=curve_results,
         ):
             return
-
-        self._update_view_metrics(mesh, matrix, scene_bounds_min, scene_bounds_max)
 
         self._update_mesh_actor(mesh, matrix)
         self._update_selection_overlay_actors(
@@ -238,7 +246,16 @@ class EmbeddedVTKViewport:
         *,
         transform_key: tuple[int, str, str | None, str | None] | None,
         reset_camera: bool,
+        show_grid: bool,
+        show_axes: bool,
         show_normals: bool,
+        show_section_plane: bool,
+        section_axis: str,
+        section_offset: float,
+        selected_item: str | None,
+        object_origin: Sequence[float] | None,
+        active_transform_mode: str | None,
+        active_transform_axis: str | None,
         section_result: SectionResult | None,
         curve_results: Sequence[CurveFitResult] | None,
     ) -> bool:
@@ -256,6 +273,22 @@ class EmbeddedVTKViewport:
             return False
 
         self._mesh_actor.SetUserMatrix(_vtk_matrix(matrix))
+        self._update_selection_overlay_actors(
+            mesh,
+            selected_item=selected_item,
+            object_origin=object_origin,
+            active_transform_mode=active_transform_mode,
+            active_transform_axis=active_transform_axis,
+        )
+        self._update_grid_actor(show_grid)
+        self._update_axes_actor(show_axes)
+        self._update_section_plane_actor(
+            mesh,
+            show_section_plane=show_section_plane,
+            section_axis=section_axis,
+            section_offset=section_offset,
+            selected=(selected_item == "section_plane"),
+        )
         self._render()
         return True
 

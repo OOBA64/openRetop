@@ -183,7 +183,16 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             matrix,
             transform_key=transform_key,
             reset_camera=False,
+            show_grid=False,
+            show_axes=False,
             show_normals=False,
+            show_section_plane=False,
+            section_axis="Z",
+            section_offset=0.0,
+            selected_item="model",
+            object_origin=(4.0, 0.0, 0.0),
+            active_transform_mode="move",
+            active_transform_axis="X",
             section_result=None,
             curve_results=[],
         )
@@ -192,6 +201,91 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(render_calls, [True])
         self.assertIs(actor, viewport._mesh_actor)
         self.assertAlmostEqual(actor.GetUserMatrix().GetElement(0, 3), 4.0)
+
+    def test_interactive_move_updates_selection_overlays_without_duplicate_actors(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="move",
+            active_transform_axis="X",
+        )
+        first_actor = viewport._mesh_actor
+        first_count = self._actor_count(viewport)
+        first_selection_key = viewport._group_keys["selection_overlays"]
+        first_gizmo_key = viewport._group_keys["active_transform_gizmo"]
+        translated = np.identity(4)
+        translated[0, 3] = 2.0
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            transform_matrix=translated,
+            selected_item="model",
+            object_origin=(2.0, 0.0, 0.0),
+            active_transform_mode="move",
+            active_transform_axis="X",
+        )
+
+        self.assertIs(viewport._mesh_actor, first_actor)
+        self.assertEqual(self._actor_count(viewport), first_count)
+        self.assertNotEqual(viewport._group_keys["selection_overlays"], first_selection_key)
+        self.assertNotEqual(viewport._group_keys["active_transform_gizmo"], first_gizmo_key)
+        self.assertIn((2.0, 0.0, 0.0), viewport._group_keys["selection_overlays"])
+        self.assertIn((2.0, 0.0, 0.0), viewport._group_keys["active_transform_gizmo"])
+
+    def test_interactive_rotate_updates_selection_bounds_without_duplicate_actors(self) -> None:
+        viewport = self._viewport()
+        mesh = TriangleMeshData(
+            vertices=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=float,
+            ),
+            triangles=np.asarray([[0, 1, 2]], dtype=int),
+        )
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="rotate",
+            active_transform_axis="Z",
+        )
+        first_actor = viewport._mesh_actor
+        first_count = self._actor_count(viewport)
+        first_selection_key = viewport._group_keys["selection_overlays"]
+        rotation = np.asarray(
+            [
+                [0.0, -1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            transform_matrix=rotation,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="rotate",
+            active_transform_axis="Z",
+        )
+
+        self.assertIs(viewport._mesh_actor, first_actor)
+        self.assertEqual(self._actor_count(viewport), first_count)
+        self.assertNotEqual(viewport._group_keys["selection_overlays"], first_selection_key)
+        self.assertTrue(np.allclose(viewport._mesh_min_bound, [-1.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(viewport._mesh_max_bound, [0.0, 2.0, 0.0]))
 
     def test_repeated_set_scene_calls_do_not_duplicate_actors(self) -> None:
         viewport = self._viewport()
