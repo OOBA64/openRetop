@@ -11,7 +11,7 @@ import numpy as np
 
 from app.app_state import AppState
 from app.object_state import MeshObjectState
-from app.scene_browser import SceneBrowser
+from app.scene_browser import SceneBrowser, section_plane_id_from_node
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
 from app.transform_state import ActiveTransformState
 from app.transforms import (
@@ -49,7 +49,12 @@ from settings.settings_data import (
     AppUiSettings,
 )
 from settings.settings_io import load_settings, save_settings
-from sections.section_state import get_active_plane
+from sections.section_state import (
+    add_plane,
+    create_default_section_plane,
+    get_active_plane,
+    set_active_plane,
+)
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -265,6 +270,7 @@ class OpenRetopWindow:
         self.tools_menu = Menu(self.menu_bar, tearoff=False)
         self.tools_menu.add_command(label="Select Model", command=self.select_model)
         self.tools_menu.add_command(label="Select Section Plane", command=self.select_section_plane)
+        self.tools_menu.add_command(label="Add Section Plane", command=self.add_section_plane)
         self.tools_menu.add_command(label="Compute Section", command=self.compute_section)
         self.tools_menu.add_command(label="Clear Section", command=self.clear_section)
         self.menu_bar.add_cascade(label="Tools", menu=self.tools_menu)
@@ -1123,12 +1129,47 @@ class OpenRetopWindow:
 
         self._set_selected_item(SELECT_MODEL, status=f"Selected: {self.app_state.mesh_object.name}")
 
-    def select_section_plane(self) -> None:
+    def select_section_plane(self, plane_id: str | None = None) -> None:
         if self.app_state.mesh_object is None:
             self._set_selected_item(None, status="No selection")
             return
 
+        if plane_id is not None:
+            try:
+                set_active_plane(self.app_state.section_collection, plane_id)
+            except ValueError:
+                self._refresh_scene_browser()
+                self.status_text.set("Section plane not found")
+                return
+            self._sync_section_controls_from_active_plane()
+
         self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
+
+    def add_section_plane(self) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        plane = create_default_section_plane(
+            axis=self.section_axis.get(),
+            offset=self.section_offset.get(),
+        )
+        plane.name = self._next_section_plane_name()
+        plane.visible = bool(self.show_section_plane.get())
+        add_plane(self.app_state.section_collection, plane)
+        set_active_plane(self.app_state.section_collection, plane.id)
+        self._sync_section_controls_from_active_plane()
+        self._set_selected_item(SELECT_SECTION_PLANE, status=f"Added: {plane.name}")
+        self._set_project_dirty(True)
+
+    def _next_section_plane_name(self) -> str:
+        existing_names = {
+            plane.name for plane in self.app_state.section_collection.planes
+        }
+        index = 1
+        while f"Section Plane {index}" in existing_names:
+            index += 1
+        return f"Section Plane {index}"
 
     def clear_selection(self) -> None:
         self._set_selected_item(None, status="No selection")
@@ -1156,8 +1197,11 @@ class OpenRetopWindow:
             self.clear_selection()
 
     def _on_scene_browser_selection(self, selected_item: str | None) -> None:
+        section_plane_id = section_plane_id_from_node(selected_item)
         if selected_item == SELECT_MODEL:
             self.select_model()
+        elif section_plane_id is not None:
+            self.select_section_plane(section_plane_id)
         elif selected_item == SELECT_SECTION_PLANE:
             self.select_section_plane()
         else:
@@ -1318,6 +1362,18 @@ class OpenRetopWindow:
         active_plane.offset = float(self.section_offset.get())
         active_plane.visible = bool(self.show_section_plane.get())
 
+    def _sync_section_controls_from_active_plane(self) -> None:
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            return
+
+        desired_offset = float(active_plane.offset)
+        self.section_axis.set(normalize_axis(active_plane.axis))
+        self.show_section_plane.set(bool(active_plane.visible))
+        self._update_section_offset_range()
+        self._set_section_offset(desired_offset, clamp=True, refresh=False)
+        self._update_section_plane_label(set_status=False)
+
     def _on_view_option_changed(self) -> None:
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
@@ -1405,11 +1461,19 @@ class OpenRetopWindow:
             self._set_project_dirty(True)
 
     def _configure_offset_range(self, *, reset: bool) -> None:
+        minimum, maximum = self._update_section_offset_range()
+
+        current = self.section_offset.get()
+        if reset:
+            current = 0.0 if minimum <= 0.0 <= maximum else (minimum + maximum) * 0.5
+
+        self._set_section_offset(current, clamp=True, refresh=False)
+
+    def _update_section_offset_range(self) -> tuple[float, float]:
         if self.app_state.mesh_object is None:
             self._section_offset_bounds = (-1.0, 1.0)
             self.offset_slider.configure(from_=-1.0, to=1.0)
-            self._set_section_offset(0.0, clamp=True, refresh=False)
-            return
+            return self._section_offset_bounds
 
         axis_index = AXIS_TO_INDEX[self.section_axis.get()]
         minimum_bound, maximum_bound = self._transformed_source_bounds()
@@ -1421,11 +1485,7 @@ class OpenRetopWindow:
 
         self._section_offset_bounds = (minimum, maximum)
         self.offset_slider.configure(from_=minimum, to=maximum)
-        current = self.section_offset.get()
-        if reset:
-            current = 0.0 if minimum <= 0.0 <= maximum else (minimum + maximum) * 0.5
-
-        self._set_section_offset(current, clamp=True, refresh=False)
+        return self._section_offset_bounds
 
     def _update_section_plane_label(self, *, set_status: bool) -> None:
         axis = self.section_axis.get()

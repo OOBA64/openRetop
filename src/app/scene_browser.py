@@ -23,6 +23,18 @@ def section_plane_node_id(plane_id: str) -> str:
     return f"{NODE_SECTION_PLANE}:{plane_id}"
 
 
+def section_plane_id_from_node(node_id: str | None) -> str | None:
+    if node_id is None:
+        return None
+
+    prefix = f"{NODE_SECTION_PLANE}:"
+    if not node_id.startswith(prefix):
+        return None
+
+    plane_id = node_id[len(prefix) :]
+    return plane_id or None
+
+
 class SceneBrowser:
     """Owns the right-side scene hierarchy and selection synchronization."""
 
@@ -204,5 +216,5 @@ class SceneBrowser:
         if node_id == NODE_MESH:
             return SELECT_MODEL
         if node_id in self._section_plane_node_ids:
-            return SELECT_SECTION_PLANE
+            return node_id
         return None

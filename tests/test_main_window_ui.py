@@ -235,8 +235,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.view_menu.type(5), "checkbutton")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
-            self.assertEqual(window.tools_menu.entrycget(2, "label"), "Compute Section")
-            self.assertEqual(window.tools_menu.entrycget(3, "label"), "Clear Section")
+            self.assertEqual(window.tools_menu.entrycget(2, "label"), "Add Section Plane")
+            self.assertEqual(window.tools_menu.entrycget(3, "label"), "Compute Section")
+            self.assertEqual(window.tools_menu.entrycget(4, "label"), "Clear Section")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -1071,6 +1072,8 @@ class MainWindowUiTests(unittest.TestCase):
             window.tools_menu.invoke(2)
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(3)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.tools_menu.invoke(4)
             self.assertEqual(window.status_text.get(), "Section cleared")
         finally:
             window.root.destroy()
@@ -1247,6 +1250,95 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
             self.assertFalse(tree.exists(NODE_CURVES))
+        finally:
+            window.root.destroy()
+
+    def test_add_section_plane_command_creates_active_plane_and_updates_browser(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            first_plane = window.app_state.section_collection.planes[0]
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+
+            window.tools_menu.invoke(2)
+
+            planes = window.app_state.section_collection.planes
+            self.assertEqual(len(planes), 2)
+            self.assertIs(planes[0], first_plane)
+            second_plane = planes[1]
+            self.assertEqual(first_plane.name, "Section Plane 1")
+            self.assertEqual(second_plane.name, "Section Plane 2")
+            self.assertEqual(second_plane.axis, "X")
+            self.assertEqual(second_plane.offset, 0.5)
+            self.assertFalse(second_plane.visible)
+            self.assertEqual(window.app_state.section_collection.active_plane_id, second_plane.id)
+            self.assertFalse(first_plane.selected)
+            self.assertTrue(second_plane.selected)
+            self.assertEqual(window.section_axis.get(), "X")
+            self.assertEqual(window.section_offset.get(), 0.5)
+            self.assertEqual(window.section_offset_text.get(), "0.500")
+            self.assertEqual(window.status_text.get(), "Added: Section Plane 2")
+            self.assertIsNone(window.app_state.section_result)
+            self.assertEqual(window.section_result_text.get(), "Section result: none")
+
+            tree = window.scene_browser.tree
+            first_node = section_plane_node_id(first_plane.id)
+            second_node = section_plane_node_id(second_plane.id)
+            self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (first_node, second_node))
+            self.assertEqual(tree.item(first_node, "text"), "Section Plane 1")
+            self.assertEqual(tree.item(second_node, "text"), "Section Plane 2")
+            self.assertEqual(tree.selection(), (second_node,))
+            self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
+            self.assertEqual(window.viewport.scene_calls[-1]["section_axis"], "X")
+            self.assertEqual(window.viewport.scene_calls[-1]["section_offset"], 0.5)
+
+            window.section_axis.set("Y")
+            window._on_section_axis_changed()
+            window._set_section_offset(1.0, clamp=True, refresh=True)
+            self.assertEqual(second_plane.axis, "Y")
+            self.assertEqual(second_plane.offset, 1.0)
+
+            tree.selection_set(first_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.section_collection.active_plane_id, first_plane.id)
+            self.assertTrue(first_plane.selected)
+            self.assertFalse(second_plane.selected)
+            self.assertEqual(window.section_axis.get(), "X")
+            self.assertEqual(window.section_offset.get(), 0.5)
+            self.assertEqual(tree.selection(), (first_node,))
+
+            tree.selection_set(second_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.section_collection.active_plane_id, second_plane.id)
+            self.assertFalse(first_plane.selected)
+            self.assertTrue(second_plane.selected)
+            self.assertEqual(window.section_axis.get(), "Y")
+            self.assertEqual(window.section_offset.get(), 1.0)
+            self.assertEqual(tree.selection(), (second_node,))
         finally:
             window.root.destroy()
 
