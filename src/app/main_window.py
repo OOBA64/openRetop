@@ -11,6 +11,7 @@ import numpy as np
 
 from app.app_state import AppState
 from app.object_state import MeshObjectState
+from app.scene_browser import SceneBrowser
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
 from app.transform_state import ActiveTransformState
 from app.transforms import (
@@ -178,6 +179,7 @@ class OpenRetopWindow:
         self._build_layout()
         self._set_selection_buttons_enabled(False)
         self._show_context(None)
+        self._refresh_scene_browser()
         self._bind_keyboard_shortcuts()
 
         self.viewport = EmbeddedVTKViewport(self.viewport_frame)
@@ -481,6 +483,12 @@ class OpenRetopWindow:
 
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
+
+        self.scene_browser = SceneBrowser(
+            main,
+            selection_callback=self._on_scene_browser_selection,
+        )
+        self.scene_browser.frame.grid(row=0, column=2, sticky="ns")
 
         status_bar = ttk.Label(
             self.root,
@@ -995,6 +1003,14 @@ class OpenRetopWindow:
         else:
             self.clear_selection()
 
+    def _on_scene_browser_selection(self, selected_item: str | None) -> None:
+        if selected_item == SELECT_MODEL:
+            self.select_model()
+        elif selected_item == SELECT_SECTION_PLANE:
+            self.select_section_plane()
+        else:
+            self.clear_selection()
+
     def _on_viewport_pointer_event(
         self,
         event_type: str,
@@ -1113,6 +1129,15 @@ class OpenRetopWindow:
             section_result=None if hide_expensive_overlays else self.app_state.section_result,
             curve_results=[] if hide_expensive_overlays else self.app_state.curve_results,
             reset_camera=reset_camera,
+        )
+        self._refresh_scene_browser()
+
+    def _refresh_scene_browser(self) -> None:
+        self.scene_browser.update_scene(
+            has_mesh=self.app_state.mesh_object is not None,
+            has_section_result=self.app_state.section_result is not None,
+            has_curves=bool(self.app_state.curve_results),
+            selected_item=self.app_state.selected_item,
         )
 
     def _should_show_section_plane(self) -> bool:

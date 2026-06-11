@@ -18,6 +18,13 @@ from app.main_window import (
     OPEN_MODEL_MENU_INDEX,
     OpenRetopWindow,
 )
+from app.scene_browser import (
+    NODE_CURVES,
+    NODE_MESH,
+    NODE_SCENE,
+    NODE_SECTION_PLANE,
+    NODE_SECTION_RESULTS,
+)
 from mesh.loader import LoadedMesh, MeshMetadata
 from project.project_data import default_project_data
 from project.project_io import load_project, save_project
@@ -215,6 +222,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertEqual(window.scale_value.get(), "1.000")
+            self.assertEqual(window.scene_browser.frame.winfo_manager(), "grid")
+            self.assertEqual(window.scene_browser.tree.item(NODE_SCENE, "text"), "Scene")
+            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), ())
         finally:
             window.root.destroy()
 
@@ -875,6 +885,79 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_scene_browser_syncs_mesh_section_nodes_and_selection(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            tree = window.scene_browser.tree
+            self.assertEqual(
+                tree.get_children(NODE_SCENE),
+                (NODE_MESH, NODE_SECTION_PLANE),
+            )
+            self.assertEqual(tree.item(NODE_MESH, "text"), "Mesh")
+            self.assertEqual(tree.item(NODE_SECTION_PLANE, "text"), "Section Plane")
+            self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
+            self.assertFalse(tree.exists(NODE_CURVES))
+
+            tree.selection_set(NODE_MESH)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.selected_item, "model")
+            self.assertEqual(window.status_text.get(), "Selected: sample.stl")
+            self.assertEqual(tree.selection(), (NODE_MESH,))
+
+            tree.selection_set(NODE_SECTION_PLANE)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.selected_item, "section_plane")
+            self.assertEqual(window.status_text.get(), "Selected: Section Plane")
+            self.assertEqual(tree.selection(), (NODE_SECTION_PLANE,))
+
+            window._on_viewport_selection("model")
+            self.assertEqual(window.app_state.selected_item, "model")
+            self.assertEqual(tree.selection(), (NODE_MESH,))
+
+            window.compute_section()
+            self.assertEqual(
+                tree.get_children(NODE_SCENE),
+                (
+                    NODE_MESH,
+                    NODE_SECTION_PLANE,
+                    NODE_SECTION_RESULTS,
+                    NODE_CURVES,
+                ),
+            )
+
+            window.clear_section()
+            self.assertEqual(
+                tree.get_children(NODE_SCENE),
+                (NODE_MESH, NODE_SECTION_PLANE),
+            )
+            self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
+            self.assertFalse(tree.exists(NODE_CURVES))
+        finally:
+            window.root.destroy()
+
     def test_loading_mesh_shows_progress_stages_and_disables_open_model(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
@@ -1096,6 +1179,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
             self.assertEqual(window.viewport.scene_calls[-1]["reset_camera"], False)
             self.assertIsNone(window.viewport.scene_calls[-1]["selected_item"])
+            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), ())
         finally:
             window.root.destroy()
 
