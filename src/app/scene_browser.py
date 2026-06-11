@@ -5,9 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from tkinter import ttk
 
-from app.selection_types import SELECT_CURVE, SELECT_MODEL, SELECT_SECTION_PLANE
+from app.selection_types import (
+    SELECT_CURVE,
+    SELECT_MODEL,
+    SELECT_SECTION_PLANE,
+    SELECT_SURFACE,
+)
 from curves.curve_state import StoredCurve
 from sections.section_state import SectionPlaneState, StoredSectionResult
+from surfaces.surface_state import SurfacePatch
 
 
 NODE_SCENE = "scene"
@@ -18,6 +24,8 @@ NODE_SECTION_RESULTS = "section_results"
 NODE_SECTION_RESULT = "section_result"
 NODE_CURVES = "curves"
 NODE_CURVE = "curve"
+NODE_SURFACES = "surfaces"
+NODE_SURFACE = "surface"
 
 
 def section_plane_node_id(plane_id: str) -> str:
@@ -58,6 +66,22 @@ def curve_id_from_node(node_id: str | None) -> str | None:
     return curve_id or None
 
 
+def surface_node_id(surface_id: str) -> str:
+    return f"{NODE_SURFACE}:{surface_id}"
+
+
+def surface_id_from_node(node_id: str | None) -> str | None:
+    if node_id is None:
+        return None
+
+    prefix = f"{NODE_SURFACE}:"
+    if not node_id.startswith(prefix):
+        return None
+
+    surface_id = node_id[len(prefix) :]
+    return surface_id or None
+
+
 class SceneBrowser:
     """Owns the right-side scene hierarchy and selection synchronization."""
 
@@ -74,6 +98,8 @@ class SceneBrowser:
         self._section_result_node_ids: set[str] = set()
         self._curve_node_ids: set[str] = set()
         self._active_curve_node_id: str | None = None
+        self._surface_node_ids: set[str] = set()
+        self._active_surface_node_id: str | None = None
 
         self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
         self.frame.grid_propagate(False)
@@ -106,8 +132,11 @@ class SceneBrowser:
         section_results: Sequence[StoredSectionResult],
         curves: Sequence[StoredCurve],
         active_curve_id: str | None,
+        surfaces: Sequence[SurfacePatch],
+        active_surface_id: str | None,
         has_section_result: bool,
         has_curves: bool,
+        has_surfaces: bool,
         selected_item: str | None,
     ) -> None:
         """Refresh visible nodes from app state and mirror viewport selection."""
@@ -115,6 +144,7 @@ class SceneBrowser:
         has_mesh = bool(has_mesh)
         has_section_result = has_mesh and bool(has_section_result)
         has_curves = has_mesh and bool(has_curves)
+        has_surfaces = has_mesh and bool(has_surfaces)
 
         self._syncing_selection = True
         try:
@@ -137,6 +167,14 @@ class SceneBrowser:
                 self._sync_curve_nodes(curves, active_curve_id=active_curve_id)
             else:
                 self._remove_curve_nodes()
+
+            if has_surfaces:
+                self._sync_surface_nodes(
+                    surfaces,
+                    active_surface_id=active_surface_id,
+                )
+            else:
+                self._remove_surface_nodes()
 
             self._order_nodes()
             self._sync_tree_selection(selected_item)
@@ -259,6 +297,44 @@ class SceneBrowser:
         self._active_curve_node_id = None
         self._remove_node(NODE_CURVES)
 
+    def _sync_surface_nodes(
+        self,
+        surfaces: Sequence[SurfacePatch],
+        *,
+        active_surface_id: str | None,
+    ) -> None:
+        self._ensure_node(NODE_SURFACES, "Surfaces", open_node=True)
+
+        current_node_ids: list[str] = []
+        for index, surface in enumerate(surfaces, start=1):
+            node_id = surface_node_id(surface.id)
+            current_node_ids.append(node_id)
+            label = surface.name or f"Surface {index}"
+            self._ensure_node(node_id, label, parent=NODE_SURFACES)
+
+        current_node_id_set = set(current_node_ids)
+        for child_id in self.tree.get_children(NODE_SURFACES):
+            if child_id not in current_node_id_set:
+                self.tree.delete(child_id)
+
+        self._surface_node_ids = current_node_id_set
+        active_node_id = (
+            surface_node_id(active_surface_id)
+            if active_surface_id is not None
+            else None
+        )
+        if active_node_id in current_node_id_set:
+            self._active_surface_node_id = active_node_id
+        else:
+            self._active_surface_node_id = (
+                current_node_ids[0] if current_node_ids else None
+            )
+
+    def _remove_surface_nodes(self) -> None:
+        self._surface_node_ids = set()
+        self._active_surface_node_id = None
+        self._remove_node(NODE_SURFACES)
+
     def _remove_node(self, node_id: str) -> None:
         if self.tree.exists(node_id):
             self.tree.delete(node_id)
@@ -269,6 +345,7 @@ class SceneBrowser:
             NODE_SECTION_PLANES,
             NODE_SECTION_RESULTS,
             NODE_CURVES,
+            NODE_SURFACES,
         )
         for index, node_id in enumerate(ordered_nodes):
             if self.tree.exists(node_id):
@@ -301,6 +378,8 @@ class SceneBrowser:
             return self._active_section_plane_node_id
         if selected_item == SELECT_CURVE:
             return self._active_curve_node_id
+        if selected_item == SELECT_SURFACE:
+            return self._active_surface_node_id
         return None
 
     def _selection_for_node(self, node_id: str | None) -> str | None:
@@ -309,5 +388,7 @@ class SceneBrowser:
         if node_id in self._section_plane_node_ids:
             return node_id
         if node_id in self._curve_node_ids:
+            return node_id
+        if node_id in self._surface_node_ids:
             return node_id
         return None

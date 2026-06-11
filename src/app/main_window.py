@@ -12,8 +12,18 @@ import numpy as np
 
 from app.app_state import AppState
 from app.object_state import MeshObjectState
-from app.scene_browser import SceneBrowser, curve_id_from_node, section_plane_id_from_node
-from app.selection_types import SELECT_CURVE, SELECT_MODEL, SELECT_SECTION_PLANE
+from app.scene_browser import (
+    SceneBrowser,
+    curve_id_from_node,
+    section_plane_id_from_node,
+    surface_id_from_node,
+)
+from app.selection_types import (
+    SELECT_CURVE,
+    SELECT_MODEL,
+    SELECT_SECTION_PLANE,
+    SELECT_SURFACE,
+)
 from app.transform_state import ActiveTransformState
 from app.transforms import (
     axis_constrained_camera_move_delta,
@@ -71,6 +81,12 @@ from sections.section_state import (
     get_active_plane,
     remove_plane,
     set_active_plane,
+)
+from surfaces.surface_state import (
+    SurfacePatch,
+    get_active_surface,
+    remove_surface,
+    set_active_surface,
 )
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
@@ -225,6 +241,11 @@ class OpenRetopWindow:
         self.curve_mean_error_text = StringVar(value="0.000")
         self.curve_max_error_text = StringVar(value="0.000")
         self.curve_closed_text = StringVar(value="Open")
+        self.surface_visible = BooleanVar(value=True)
+        self.surface_name_text = StringVar(value="(none)")
+        self.surface_type_text = StringVar(value="(none)")
+        self.surface_source_curve_count_text = StringVar(value="0")
+        self.surface_metadata_text = StringVar(value="(none)")
         self.selection_buttons: list[ttk.Button] = []
         self._sync_active_section_plane_from_controls()
 
@@ -795,6 +816,11 @@ class OpenRetopWindow:
         self.curve_context_frame.columnconfigure(0, weight=1)
         self._build_curve_context(self.curve_context_frame)
 
+        self.surface_context_frame = ttk.Frame(self.sidebar)
+        self.surface_context_frame.grid(row=row, column=0, sticky="ew")
+        self.surface_context_frame.columnconfigure(0, weight=1)
+        self._build_surface_context(self.surface_context_frame)
+
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
 
@@ -1125,6 +1151,42 @@ class OpenRetopWindow:
         self.curve_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.selection_buttons.append(self.curve_deselect_button)
 
+    def _build_surface_context(self, parent: ttk.Frame) -> None:
+        row = self._add_separator(parent, 0)
+        row = self._add_heading(parent, row, "Surface")
+        self.surface_visible_check = ttk.Checkbutton(
+            parent,
+            text="Visible",
+            variable=self.surface_visible,
+            command=self._on_surface_visibility_changed,
+        )
+        self.surface_visible_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        row = self._add_info_row(parent, row, "Name", self.surface_name_text)
+        row = self._add_info_row(parent, row, "Type", self.surface_type_text)
+        row = self._add_info_row(
+            parent,
+            row,
+            "Source curves",
+            self.surface_source_curve_count_text,
+        )
+        row = self._add_info_row(parent, row, "Metadata", self.surface_metadata_text)
+        self.delete_surface_button = ttk.Button(
+            parent,
+            text="Delete Surface",
+            command=self.delete_selected_surface,
+        )
+        self.delete_surface_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.selection_buttons.append(self.delete_surface_button)
+        row += 1
+        self.surface_deselect_button = ttk.Button(
+            parent,
+            text="Deselect",
+            command=self.clear_selection,
+        )
+        self.surface_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.surface_deselect_button)
+
     def _add_heading(self, parent: ttk.Frame, row: int, text: str) -> int:
         ttk.Label(parent, text=text, style="SidebarHeading.TLabel").grid(
             row=row,
@@ -1192,6 +1254,7 @@ class OpenRetopWindow:
             self.model_context_frame,
             self.section_context_frame,
             self.curve_context_frame,
+            self.surface_context_frame,
         ):
             frame.grid_remove()
 
@@ -1201,6 +1264,8 @@ class OpenRetopWindow:
             self.section_context_frame.grid()
         elif selected_item == SELECT_CURVE and self.app_state.mesh_object is not None:
             self.curve_context_frame.grid()
+        elif selected_item == SELECT_SURFACE and self.app_state.mesh_object is not None:
+            self.surface_context_frame.grid()
         else:
             self.no_selection_frame.grid()
 
@@ -1293,6 +1358,8 @@ class OpenRetopWindow:
             self.app_state.curve_results = []
             self.app_state.curve_collection.curves = []
             self.app_state.curve_collection.active_curve_id = None
+            self.app_state.surface_collection.surfaces = []
+            self.app_state.surface_collection.active_surface_id = None
             self.section_result_text.set("Section result: none")
             self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[3])
             self._set_transform_inputs_from_object()
@@ -1369,6 +1436,27 @@ class OpenRetopWindow:
         self._sync_curve_context_from_active_curve()
         self._set_selected_item(SELECT_CURVE, status=f"Selected: {active_curve.name}")
 
+    def select_surface(self, surface_id: str | None = None) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        if surface_id is not None:
+            try:
+                set_active_surface(self.app_state.surface_collection, surface_id)
+            except ValueError:
+                self._refresh_scene_browser()
+                self.status_text.set("Surface not found")
+                return
+
+        active_surface = self._active_surface()
+        if active_surface is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        self._sync_surface_context_from_active_surface()
+        self._set_selected_item(SELECT_SURFACE, status=f"Selected: {active_surface.name}")
+
     def add_section_plane(self) -> None:
         if self.app_state.mesh_object is None:
             self._set_selected_item(None, status="No selection")
@@ -1423,16 +1511,21 @@ class OpenRetopWindow:
     def _on_scene_browser_selection(self, selected_item: str | None) -> None:
         section_plane_id = section_plane_id_from_node(selected_item)
         curve_id = curve_id_from_node(selected_item)
+        surface_id = surface_id_from_node(selected_item)
         if selected_item == SELECT_MODEL:
             self.select_model()
         elif section_plane_id is not None:
             self.select_section_plane(section_plane_id)
         elif curve_id is not None:
             self.select_curve(curve_id)
+        elif surface_id is not None:
+            self.select_surface(surface_id)
         elif selected_item == SELECT_SECTION_PLANE:
             self.select_section_plane()
         elif selected_item == SELECT_CURVE:
             self.select_curve()
+        elif selected_item == SELECT_SURFACE:
+            self.select_surface()
         else:
             self.clear_selection()
 
@@ -1709,6 +1802,63 @@ class OpenRetopWindow:
             self._set_selected_item(None, status=f"Deleted: {removed_name}")
         self._set_project_dirty(True)
 
+    def _active_surface(self) -> SurfacePatch | None:
+        return get_active_surface(self.app_state.surface_collection)
+
+    def _sync_surface_context_from_active_surface(self) -> None:
+        active_surface = self._active_surface()
+        if active_surface is None:
+            self.surface_visible.set(False)
+            self.surface_name_text.set("(none)")
+            self.surface_type_text.set("(none)")
+            self.surface_source_curve_count_text.set("0")
+            self.surface_metadata_text.set("(none)")
+            return
+
+        self.surface_visible.set(bool(active_surface.visible))
+        self.surface_name_text.set(active_surface.name)
+        self.surface_type_text.set(active_surface.surface_type)
+        self.surface_source_curve_count_text.set(str(len(active_surface.source_curve_ids)))
+        self.surface_metadata_text.set(self._surface_metadata_summary(active_surface.metadata))
+
+    @staticmethod
+    def _surface_metadata_summary(metadata: dict[str, object]) -> str:
+        if not metadata:
+            return "(none)"
+
+        parts = [
+            f"{key}={metadata[key]}"
+            for key in sorted(metadata)
+        ]
+        return ", ".join(parts)
+
+    def _on_surface_visibility_changed(self) -> None:
+        active_surface = self._active_surface()
+        if active_surface is None:
+            self.status_text.set("No selection")
+            return
+
+        active_surface.visible = bool(self.surface_visible.get())
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Selected: {active_surface.name}")
+        self._set_project_dirty(True)
+
+    def delete_selected_surface(self) -> None:
+        active_surface = self._active_surface()
+        if active_surface is None:
+            self.status_text.set("No selection")
+            return
+
+        removed_name = active_surface.name or "Surface"
+        remove_surface(self.app_state.surface_collection, active_surface.id)
+        if self._active_surface() is not None:
+            self._sync_surface_context_from_active_surface()
+            self._set_selected_item(SELECT_SURFACE, status=f"Deleted: {removed_name}")
+        else:
+            self._sync_surface_context_from_active_surface()
+            self._set_selected_item(None, status=f"Deleted: {removed_name}")
+        self._set_project_dirty(True)
+
     @staticmethod
     def _section_result_summary(stored_result: StoredSectionResult) -> str:
         return (
@@ -1813,9 +1963,12 @@ class OpenRetopWindow:
             section_results=self.app_state.section_collection.results,
             curves=self.app_state.curve_collection.curves,
             active_curve_id=self.app_state.curve_collection.active_curve_id,
+            surfaces=self.app_state.surface_collection.surfaces,
+            active_surface_id=self.app_state.surface_collection.active_surface_id,
             has_section_result=bool(self.app_state.section_collection.results)
             or self.app_state.section_result is not None,
             has_curves=bool(self.app_state.curve_collection.curves),
+            has_surfaces=bool(self.app_state.surface_collection.surfaces),
             selected_item=self.app_state.selected_item,
         )
 
@@ -2543,6 +2696,10 @@ class OpenRetopWindow:
             self._start_active_transform("rotate")
 
     def _delete_selected_if_safe(self) -> None:
+        if self.app_state.selected_item == SELECT_SURFACE:
+            self.delete_selected_surface()
+            return
+
         if self.app_state.selected_item == SELECT_CURVE:
             self.delete_selected_curve()
             return
@@ -2561,6 +2718,8 @@ class OpenRetopWindow:
         self.app_state.curve_results = []
         self.app_state.curve_collection.curves = []
         self.app_state.curve_collection.active_curve_id = None
+        self.app_state.surface_collection.surfaces = []
+        self.app_state.surface_collection.active_surface_id = None
         self.app_state.section_collection.results = []
         self.section_result_text.set("Section result: none")
         self._update_stats()

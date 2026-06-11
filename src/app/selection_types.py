@@ -3,3 +3,4 @@
 SELECT_MODEL = "model"
 SELECT_SECTION_PLANE = "section_plane"
 SELECT_CURVE = "curve"
+SELECT_SURFACE = "surface"

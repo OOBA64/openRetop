@@ -10,7 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from app.app_state import AppState
 from app.object_state import MeshObjectState
-from app.selection_types import SELECT_CURVE, SELECT_MODEL, SELECT_SECTION_PLANE
+from app.selection_types import (
+    SELECT_CURVE,
+    SELECT_MODEL,
+    SELECT_SECTION_PLANE,
+    SELECT_SURFACE,
+)
 from app.transform_state import ActiveTransformState
 from curves.curve_state import CurveCollection
 from geometry.curves import CurveFitResult
@@ -234,6 +239,7 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(SELECT_MODEL, "model")
         self.assertEqual(SELECT_SECTION_PLANE, "section_plane")
         self.assertEqual(SELECT_CURVE, "curve")
+        self.assertEqual(SELECT_SURFACE, "surface")
 
 
 if __name__ == "__main__":

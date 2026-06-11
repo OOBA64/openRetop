@@ -25,10 +25,13 @@ from app.scene_browser import (
     NODE_SCENE,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
+    NODE_SURFACES,
     curve_id_from_node,
     curve_node_id,
     section_plane_node_id,
     section_result_node_id,
+    surface_id_from_node,
+    surface_node_id,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
 from project.project_data import ProjectCurve, ProjectSectionPlane, default_project_data
@@ -36,6 +39,7 @@ from project.project_io import load_project, save_project
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
 from sections.section_state import SectionPlaneState, add_plane, set_active_plane
+from surfaces.surface_state import SurfacePatch, add_surface
 
 
 class FakeBounds:
@@ -263,6 +267,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
             self.assertEqual(window.curve_context_frame.winfo_manager(), "")
+            self.assertEqual(window.surface_context_frame.winfo_manager(), "")
             self.assertFalse(hasattr(window, "apply_transform_button"))
             self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
@@ -1904,6 +1909,129 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
             self.assertFalse(tree.exists(NODE_CURVES))
+        finally:
+            window.root.destroy()
+
+    def test_surface_scene_browser_selection_visibility_and_delete(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            source_curve = window.app_state.curve_collection.curves[0]
+            first_surface = SurfacePatch(
+                id="surface-1",
+                name="Patch A",
+                source_curve_ids=[source_curve.id],
+                surface_type="loft",
+                metadata={"degree": 3, "quality": "draft"},
+            )
+            second_surface = SurfacePatch(
+                id="surface-2",
+                name="Patch B",
+                source_curve_ids=[source_curve.id, "curve-extra"],
+                surface_type="patch",
+                visible=False,
+            )
+            add_surface(window.app_state.surface_collection, first_surface)
+            add_surface(window.app_state.surface_collection, second_surface)
+            window._refresh_scene_browser()
+
+            tree = window.scene_browser.tree
+            first_surface_node = surface_node_id(first_surface.id)
+            second_surface_node = surface_node_id(second_surface.id)
+            self.assertEqual(surface_id_from_node(second_surface_node), second_surface.id)
+            self.assertEqual(
+                tree.get_children(NODE_SCENE),
+                (
+                    NODE_MESH,
+                    NODE_SECTION_PLANES,
+                    NODE_SECTION_RESULTS,
+                    NODE_CURVES,
+                    NODE_SURFACES,
+                ),
+            )
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "Surfaces")
+            self.assertEqual(
+                tree.get_children(NODE_SURFACES),
+                (first_surface_node, second_surface_node),
+            )
+            self.assertEqual(tree.item(first_surface_node, "text"), "Patch A")
+            self.assertEqual(tree.item(second_surface_node, "text"), "Patch B")
+
+            tree.selection_set(first_surface_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "surface")
+            self.assertEqual(window.app_state.surface_collection.active_surface_id, first_surface.id)
+            self.assertTrue(first_surface.selected)
+            self.assertFalse(second_surface.selected)
+            self.assertEqual(tree.selection(), (first_surface_node,))
+            self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.surface_name_text.get(), "Patch A")
+            self.assertEqual(window.surface_type_text.get(), "loft")
+            self.assertEqual(window.surface_source_curve_count_text.get(), "1")
+            self.assertEqual(window.surface_metadata_text.get(), "degree=3, quality=draft")
+            self.assertTrue(window.surface_visible.get())
+
+            window._set_project_dirty(False)
+            window.surface_visible.set(False)
+            window._on_surface_visibility_changed()
+
+            self.assertFalse(first_surface.visible)
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.status_text.get(), "Selected: Patch A")
+            self.assertEqual(tree.get_children(NODE_SURFACES), (first_surface_node, second_surface_node))
+
+            tree.selection_set(second_surface_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.surface_collection.active_surface_id, second_surface.id)
+            self.assertFalse(first_surface.selected)
+            self.assertTrue(second_surface.selected)
+            self.assertFalse(window.surface_visible.get())
+            self.assertEqual(window.surface_source_curve_count_text.get(), "2")
+            self.assertEqual(window.surface_metadata_text.get(), "(none)")
+
+            window.delete_selected_surface()
+
+            self.assertEqual(window.app_state.curve_collection.curves, [source_curve])
+            self.assertEqual(window.app_state.surface_collection.surfaces, [first_surface])
+            self.assertEqual(window.app_state.surface_collection.active_surface_id, first_surface.id)
+            self.assertEqual(tree.get_children(NODE_SURFACES), (first_surface_node,))
+            self.assertEqual(tree.selection(), (first_surface_node,))
+            self.assertEqual(window.status_text.get(), "Deleted: Patch B")
+            self.assertEqual(window.app_state.selected_item, "surface")
+
+            window.delete_selected_surface()
+
+            self.assertEqual(window.app_state.curve_collection.curves, [source_curve])
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+            self.assertIsNone(window.app_state.surface_collection.active_surface_id)
+            self.assertFalse(tree.exists(NODE_SURFACES))
+            self.assertEqual(window.app_state.selected_item, None)
+            self.assertEqual(window.status_text.get(), "Deleted: Patch A")
         finally:
             window.root.destroy()
 
