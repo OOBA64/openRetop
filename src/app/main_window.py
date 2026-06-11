@@ -199,7 +199,7 @@ class OpenRetopWindow:
         self.menu_bar = Menu(self.root, tearoff=False)
 
         self.file_menu = Menu(self.menu_bar, tearoff=False)
-        self.file_menu.add_command(label="New Project", command=self._new_project_placeholder)
+        self.file_menu.add_command(label="New Project", command=self.new_project)
         self.file_menu.add_command(label="Open Model", command=self.open_model)
         self.file_menu.add_command(label="Open Project", command=self.open_project)
         self.file_menu.add_command(label="Save Project", command=self.save_project)
@@ -249,8 +249,9 @@ class OpenRetopWindow:
     def _not_implemented(self, feature_name: str) -> None:
         self.status_text.set(f"{feature_name}: Not implemented yet")
 
-    def _new_project_placeholder(self) -> None:
-        self._not_implemented("New Project")
+    def new_project(self) -> None:
+        self.current_project_path = None
+        self.status_text.set("New project")
 
     def open_project(self) -> None:
         selected_path = filedialog.askopenfilename(

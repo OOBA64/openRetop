@@ -222,7 +222,6 @@ class MainWindowUiTests(unittest.TestCase):
 
         try:
             placeholder_invocations = (
-                (window.file_menu, 0, "New Project"),
                 (window.edit_menu, 0, "Undo"),
                 (window.edit_menu, 1, "Redo"),
                 (window.edit_menu, 2, "Preferences"),
@@ -232,6 +231,29 @@ class MainWindowUiTests(unittest.TestCase):
             for menu, index, label in placeholder_invocations:
                 menu.invoke(index)
                 self.assertEqual(window.status_text.get(), f"{label}: Not implemented yet")
+        finally:
+            window.root.destroy()
+
+    def test_new_project_resets_project_path_without_touching_loaded_mesh(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            mesh_object = SimpleNamespace(name="sample.stl")
+            project_path = Path("saved.openretop")
+            window.current_project_path = project_path
+            window.app_state.mesh_object = mesh_object
+            window.app_state.selected_item = "model"
+            window.status_text.set(f"Project opened: Saved Metadata ({project_path})")
+            scene_call_count = len(window.viewport.scene_calls)
+
+            window.file_menu.invoke(0)
+
+            self.assertIsNone(window.current_project_path)
+            self.assertEqual(window.status_text.get(), "New project")
+            self.assertIs(window.app_state.mesh_object, mesh_object)
+            self.assertEqual(window.app_state.selected_item, "model")
+            self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
         finally:
             window.root.destroy()
 
