@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from curves.curve_state import CurveCollection
 from project.project_data import (
+    ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
     ProjectSectionPlane,
@@ -27,6 +29,7 @@ def project_from_app_state(
     section_offset: float,
     show_section_plane: bool,
     section_collection: SectionCollection | None = None,
+    curve_collection: CurveCollection | None = None,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
@@ -41,6 +44,7 @@ def project_from_app_state(
         section_collection,
         section_planes,
     )
+    curves = _curves_from_collection(curve_collection)
 
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
@@ -78,6 +82,7 @@ def project_from_app_state(
         section=section,
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
+        curves=curves,
     )
 
 
@@ -130,6 +135,63 @@ def _section_planes_from_collection(
         )
         for plane in section_collection.planes
     ]
+
+
+def _curves_from_collection(
+    curve_collection: CurveCollection | None,
+) -> list[ProjectCurve]:
+    if curve_collection is None:
+        return []
+
+    return [
+        ProjectCurve(
+            id=str(curve.id),
+            name=str(curve.name),
+            section_result_id=str(curve.section_result_id),
+            plane_id=str(curve.plane_id),
+            original_points=_points_from_value(
+                curve.original_points,
+                "curve_collection.curve.original_points",
+            ),
+            fitted_points=_points_from_value(
+                curve.fitted_points,
+                "curve_collection.curve.fitted_points",
+            ),
+            mean_error=_float_from_value(
+                curve.mean_error,
+                "curve_collection.curve.mean_error",
+            ),
+            max_error=_float_from_value(
+                curve.max_error,
+                "curve_collection.curve.max_error",
+            ),
+            is_closed=bool(curve.is_closed),
+            visible=bool(curve.visible),
+        )
+        for curve in curve_collection.curves
+    ]
+
+
+def _points_from_value(value: object, field_name: str) -> list[list[float]]:
+    if isinstance(value, str) or not isinstance(value, Iterable):
+        raise ValueError(f"{field_name} must be an iterable of 3D points.")
+
+    points: list[list[float]] = []
+    for index, raw_point in enumerate(value):
+        point_field = f"{field_name}[{index}]"
+        if isinstance(raw_point, str) or not isinstance(raw_point, Iterable):
+            raise ValueError(f"{point_field} must be an iterable of three numbers.")
+        point = list(raw_point)
+        if len(point) != 3:
+            raise ValueError(f"{point_field} must contain exactly three values.")
+        points.append(
+            [
+                _float_from_value(component, f"{point_field}[{component_index}]")
+                for component_index, component in enumerate(point)
+            ]
+        )
+
+    return points
 
 
 def _active_plane_id_from_collection(

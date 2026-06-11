@@ -9,6 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from curves.curve_state import CurveCollection, StoredCurve, add_curve
 from project.project_data import PROJECT_VERSION
 from project.project_state import project_from_app_state
 from sections.section_state import (
@@ -48,6 +49,7 @@ class ProjectStateTests(unittest.TestCase):
         self.assertTrue(project.section.show_plane)
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
+        self.assertEqual(project.curves, [])
 
     def test_project_from_app_state_uses_fake_mesh_transform_and_path(self) -> None:
         mesh_path = Path("models") / "scan.stl"
@@ -129,6 +131,64 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.section_planes[1].offset, -0.5)
         self.assertFalse(project.section_planes[1].visible)
         self.assertEqual(project.active_section_plane_id, "plane-b")
+
+    def test_project_from_app_state_exports_all_stored_curves(self) -> None:
+        curve_collection = CurveCollection()
+        add_curve(
+            curve_collection,
+            StoredCurve(
+                id="curve-a",
+                name="Section 1 Curve 1",
+                section_result_id="section-a",
+                plane_id="plane-a",
+                original_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+                fitted_points=np.asarray(
+                    [[0.0, 0.0, 0.0], [0.5, 0.25, 0.0], [1.0, 0.0, 0.0]]
+                ),
+                mean_error=0.05,
+                max_error=0.1,
+                is_closed=False,
+                visible=True,
+            ),
+        )
+        add_curve(
+            curve_collection,
+            StoredCurve(
+                id="curve-b",
+                name="Section 2 Curve 1",
+                section_result_id="section-b",
+                plane_id="plane-b",
+                original_points=np.asarray([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
+                fitted_points=np.asarray([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=False,
+            ),
+        )
+
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            curve_collection=curve_collection,
+        )
+
+        self.assertEqual(len(project.curves), 2)
+        self.assertEqual(project.curves[0].id, "curve-a")
+        self.assertEqual(project.curves[0].original_points, [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        self.assertEqual(
+            project.curves[0].fitted_points,
+            [[0.0, 0.0, 0.0], [0.5, 0.25, 0.0], [1.0, 0.0, 0.0]],
+        )
+        self.assertTrue(project.curves[0].visible)
+        self.assertEqual(project.curves[1].id, "curve-b")
+        self.assertFalse(project.curves[1].visible)
 
     def test_project_from_app_state_handles_mesh_without_file_path(self) -> None:
         mesh_object = SimpleNamespace(

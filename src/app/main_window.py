@@ -29,6 +29,7 @@ from app.transforms import (
     world_axis_vector,
 )
 from curves.curve_state import (
+    CurveCollection,
     StoredCurve,
     add_curve,
     clear_curves_for_plane,
@@ -405,6 +406,7 @@ class OpenRetopWindow:
         self.show_axes.set(project.display.show_axes)
         self.show_normals.set(project.display.show_normals)
         self._restore_project_section_collection(project)
+        self._restore_project_curve_collection(project)
         self._refresh_scene_browser()
 
     def _restore_project_transform(self, project: ProjectData) -> None:
@@ -459,10 +461,32 @@ class OpenRetopWindow:
             add_plane(collection, create_default_section_plane())
 
         self.app_state.section_collection = collection
-        self.app_state.curve_collection.curves = []
-        self.app_state.curve_collection.active_curve_id = None
         self._set_display_section_result(None)
         self._sync_section_controls_from_active_plane(clamp_offset=False)
+
+    def _restore_project_curve_collection(self, project: ProjectData) -> None:
+        curves = [
+            StoredCurve(
+                id=project_curve.id,
+                name=project_curve.name,
+                section_result_id=project_curve.section_result_id,
+                plane_id=project_curve.plane_id,
+                original_points=np.asarray(project_curve.original_points, dtype=float),
+                fitted_points=np.asarray(project_curve.fitted_points, dtype=float),
+                mean_error=project_curve.mean_error,
+                max_error=project_curve.max_error,
+                is_closed=project_curve.is_closed,
+                visible=project_curve.visible,
+                selected=False,
+            )
+            for project_curve in project.curves
+        ]
+        self.app_state.curve_collection = CurveCollection(
+            curves=curves,
+            active_curve_id=None,
+        )
+        self._sync_visible_curve_results()
+        self._sync_curve_context_from_active_curve()
 
     def _set_restored_active_section_plane(
         self,
@@ -538,6 +562,7 @@ class OpenRetopWindow:
                 section_offset=self.section_offset.get(),
                 show_section_plane=self.show_section_plane.get(),
                 section_collection=self.app_state.section_collection,
+                curve_collection=self.app_state.curve_collection,
             )
             save_project(project, project_path)
         except (OSError, ValueError, RuntimeError) as exc:

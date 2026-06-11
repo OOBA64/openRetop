@@ -31,7 +31,7 @@ from app.scene_browser import (
     section_result_node_id,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
-from project.project_data import ProjectSectionPlane, default_project_data
+from project.project_data import ProjectCurve, ProjectSectionPlane, default_project_data
 from project.project_io import load_project, save_project
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
@@ -1142,6 +1142,121 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(scene["show_section_plane"])
                 self.assertEqual(scene["section_axis"], "X")
                 self.assertEqual(scene["section_offset"], 0.5)
+        finally:
+            window.root.destroy()
+
+    def test_open_project_restores_saved_curves_and_visibility(self) -> None:
+        mesh = FakeMesh()
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, _file_name: str) -> None:
+                return None
+
+            def update_stage(self, _stage: str) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                mesh_path = Path(tmpdir) / "sample.stl"
+                project_path = Path(tmpdir) / "curves.openretop"
+                metadata = MeshMetadata(
+                    file_path=mesh_path,
+                    file_name="sample.stl",
+                    extension=".stl",
+                    vertex_count=3,
+                    triangle_count=1,
+                    had_vertex_normals=True,
+                    had_triangle_normals=True,
+                    computed_vertex_normals=False,
+                    computed_triangle_normals=False,
+                )
+                project = default_project_data()
+                project.name = "Restored Curves"
+                project.mesh_path = str(mesh_path)
+                project.section_planes = [
+                    ProjectSectionPlane(
+                        id="plane-a",
+                        name="Base Section",
+                        axis="Z",
+                        offset=0.0,
+                        visible=True,
+                    ),
+                    ProjectSectionPlane(
+                        id="plane-b",
+                        name="Side Section",
+                        axis="X",
+                        offset=0.5,
+                        visible=True,
+                    ),
+                ]
+                project.active_section_plane_id = "plane-a"
+                project.curves = [
+                    ProjectCurve(
+                        id="curve-a",
+                        name="Section 1 Curve 1",
+                        section_result_id="section-a",
+                        plane_id="plane-a",
+                        original_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        fitted_points=[
+                            [0.0, 0.0, 0.0],
+                            [0.5, 0.25, 0.0],
+                            [1.0, 0.0, 0.0],
+                        ],
+                        mean_error=0.05,
+                        max_error=0.1,
+                        is_closed=False,
+                        visible=True,
+                    ),
+                    ProjectCurve(
+                        id="curve-b",
+                        name="Section 2 Curve 1",
+                        section_result_id="section-b",
+                        plane_id="plane-b",
+                        original_points=[[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                        fitted_points=[[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                        mean_error=0.0,
+                        max_error=0.0,
+                        is_closed=False,
+                        visible=False,
+                    ),
+                ]
+                save_project(project, project_path)
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_not_called()
+                curves = window.app_state.curve_collection.curves
+                self.assertEqual([curve.id for curve in curves], ["curve-a", "curve-b"])
+                self.assertEqual([curve.visible for curve in curves], [True, False])
+                self.assertIsNone(window.app_state.curve_collection.active_curve_id)
+                self.assertEqual(window.app_state.curve_results, [curves[0]])
+                self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [curves[0]])
+
+                tree = window.scene_browser.tree
+                first_curve_node = curve_node_id("curve-a")
+                second_curve_node = curve_node_id("curve-b")
+                self.assertEqual(tree.get_children(NODE_CURVES), (first_curve_node, second_curve_node))
+                self.assertEqual(tree.item(first_curve_node, "text"), "Section 1 Curve 1")
+                self.assertEqual(tree.item(second_curve_node, "text"), "Section 2 Curve 1")
+                self.assertEqual(tree.selection(), ())
         finally:
             window.root.destroy()
 

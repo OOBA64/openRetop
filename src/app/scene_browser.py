@@ -114,7 +114,7 @@ class SceneBrowser:
 
         has_mesh = bool(has_mesh)
         has_section_result = has_mesh and bool(has_section_result)
-        has_curves = has_section_result and bool(has_curves)
+        has_curves = has_mesh and bool(has_curves)
 
         self._syncing_selection = True
         try:

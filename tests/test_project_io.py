@@ -6,10 +6,13 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project.project_data import (
     PROJECT_VERSION,
+    ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
     ProjectSectionPlane,
@@ -64,6 +67,32 @@ def _sample_project() -> ProjectData:
             ),
         ],
         active_section_plane_id="plane-b",
+        curves=[
+            ProjectCurve(
+                id="curve-a",
+                name="Section 1 Curve 1",
+                section_result_id="section-a",
+                plane_id="plane-a",
+                original_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                fitted_points=[[0.0, 0.0, 0.0], [0.5, 0.25, 0.0], [1.0, 0.0, 0.0]],
+                mean_error=0.05,
+                max_error=0.1,
+                is_closed=False,
+                visible=True,
+            ),
+            ProjectCurve(
+                id="curve-b",
+                name="Section 2 Curve 1",
+                section_result_id="section-b",
+                plane_id="plane-b",
+                original_points=[[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                fitted_points=[[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=False,
+            ),
+        ],
     )
 
 
@@ -87,6 +116,7 @@ class ProjectDataTests(unittest.TestCase):
         self.assertFalse(project.section.show_plane)
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
+        self.assertEqual(project.curves, [])
 
     def test_default_project_data_uses_fresh_mutable_values(self) -> None:
         project = default_project_data()
@@ -145,7 +175,74 @@ class ProjectIOTests(unittest.TestCase):
                     },
                 ],
                 "active_section_plane_id": "plane-b",
+                "curves": [
+                    {
+                        "id": "curve-a",
+                        "name": "Section 1 Curve 1",
+                        "section_result_id": "section-a",
+                        "plane_id": "plane-a",
+                        "original_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        "fitted_points": [
+                            [0.0, 0.0, 0.0],
+                            [0.5, 0.25, 0.0],
+                            [1.0, 0.0, 0.0],
+                        ],
+                        "mean_error": 0.05,
+                        "max_error": 0.1,
+                        "is_closed": False,
+                        "visible": True,
+                    },
+                    {
+                        "id": "curve-b",
+                        "name": "Section 2 Curve 1",
+                        "section_result_id": "section-b",
+                        "plane_id": "plane-b",
+                        "original_points": [[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                        "fitted_points": [[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                        "mean_error": 0.0,
+                        "max_error": 0.0,
+                        "is_closed": False,
+                        "visible": False,
+                    },
+                ],
             },
+        )
+
+    def test_project_to_dict_converts_numpy_curve_points(self) -> None:
+        project = default_project_data()
+        project.curves = [
+            ProjectCurve(
+                id="curve-a",
+                name="Curve A",
+                section_result_id="section-a",
+                plane_id="plane-a",
+                original_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),  # type: ignore[arg-type]
+                fitted_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]]),  # type: ignore[arg-type]
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+            ),
+        ]
+
+        data = project_to_dict(project)
+
+        self.assertEqual(
+            data["curves"],
+            [
+                {
+                    "id": "curve-a",
+                    "name": "Curve A",
+                    "section_result_id": "section-a",
+                    "plane_id": "plane-a",
+                    "original_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    "fitted_points": [[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]],
+                    "mean_error": 0.0,
+                    "max_error": 0.0,
+                    "is_closed": False,
+                    "visible": True,
+                },
+            ],
         )
 
     def test_project_from_dict_round_trips_to_project_data(self) -> None:
@@ -182,6 +279,7 @@ class ProjectIOTests(unittest.TestCase):
         self.assertFalse(project.section.show_plane)
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
+        self.assertEqual(project.curves, [])
 
     def test_project_from_dict_loads_legacy_single_section_without_new_fields(self) -> None:
         project = project_from_dict(
@@ -202,6 +300,74 @@ class ProjectIOTests(unittest.TestCase):
         self.assertTrue(project.section.show_plane)
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
+        self.assertEqual(project.curves, [])
+
+    def test_project_from_dict_parses_curves(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "curves": [
+                    {
+                        "id": "curve-a",
+                        "name": "Section 1 Curve 1",
+                        "section_result_id": "section-a",
+                        "plane_id": "plane-a",
+                        "original_points": [[0, 0, 0], [1, 0, 0]],
+                        "fitted_points": [[0, 0, 0], [0.5, 0.25, 0], [1, 0, 0]],
+                        "mean_error": 0.05,
+                        "max_error": 0.1,
+                        "is_closed": False,
+                        "visible": False,
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(
+            project.curves,
+            [
+                ProjectCurve(
+                    id="curve-a",
+                    name="Section 1 Curve 1",
+                    section_result_id="section-a",
+                    plane_id="plane-a",
+                    original_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    fitted_points=[
+                        [0.0, 0.0, 0.0],
+                        [0.5, 0.25, 0.0],
+                        [1.0, 0.0, 0.0],
+                    ],
+                    mean_error=0.05,
+                    max_error=0.1,
+                    is_closed=False,
+                    visible=False,
+                ),
+            ],
+        )
+
+    def test_project_from_dict_rejects_invalid_curve_points_clearly(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            project_from_dict(
+                {
+                    "version": PROJECT_VERSION,
+                    "curves": [
+                        {
+                            "id": "curve-a",
+                            "name": "Broken Curve",
+                            "section_result_id": "section-a",
+                            "plane_id": "plane-a",
+                            "original_points": [[0.0, 0.0]],
+                            "fitted_points": [[0.0, 0.0, 0.0]],
+                            "mean_error": 0.0,
+                            "max_error": 0.0,
+                            "is_closed": False,
+                            "visible": True,
+                        },
+                    ],
+                }
+            )
+
+        self.assertIn("curves[0].original_points[0]", str(context.exception))
 
     def test_project_from_dict_parses_section_planes_with_defaults(self) -> None:
         project = project_from_dict(
@@ -323,6 +489,19 @@ class ProjectIOTests(unittest.TestCase):
             {"section_planes": [{"id": "plane-a", "visible": "yes"}]},
             {"section_planes": [{"id": "plane-a"}, {"id": "plane-a"}]},
             {"active_section_plane_id": 12},
+            {"curves": {}},
+            {"curves": [12]},
+            {"curves": [{"id": ""}]},
+            {"curves": [{"id": "curve-a", "name": 12}]},
+            {"curves": [{"id": "curve-a", "section_result_id": 12}]},
+            {"curves": [{"id": "curve-a", "plane_id": 12}]},
+            {"curves": [{"id": "curve-a", "original_points": {}}]},
+            {"curves": [{"id": "curve-a", "fitted_points": [[0.0, "bad", 0.0]]}]},
+            {"curves": [{"id": "curve-a", "mean_error": False}]},
+            {"curves": [{"id": "curve-a", "max_error": False}]},
+            {"curves": [{"id": "curve-a", "is_closed": "no"}]},
+            {"curves": [{"id": "curve-a", "visible": "yes"}]},
+            {"curves": [{"id": "curve-a"}, {"id": "curve-a"}]},
         ]
 
         for shape in invalid_shapes:

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from json import JSONDecodeError
 from pathlib import Path
 
 from project.project_data import (
     PROJECT_VERSION,
+    ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
     ProjectSectionPlane,
@@ -74,6 +75,27 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             for plane in project.section_planes
         ],
         "active_section_plane_id": project.active_section_plane_id,
+        "curves": [
+            {
+                "id": curve.id,
+                "name": curve.name,
+                "section_result_id": curve.section_result_id,
+                "plane_id": curve.plane_id,
+                "original_points": _points_to_nested_lists(
+                    curve.original_points,
+                    f"curves[{index}].original_points",
+                ),
+                "fitted_points": _points_to_nested_lists(
+                    curve.fitted_points,
+                    f"curves[{index}].fitted_points",
+                ),
+                "mean_error": float(curve.mean_error),
+                "max_error": float(curve.max_error),
+                "is_closed": bool(curve.is_closed),
+                "visible": bool(curve.visible),
+            }
+            for index, curve in enumerate(project.curves)
+        ],
     }
 
 
@@ -150,6 +172,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         data.get("active_section_plane_id", defaults.active_section_plane_id),
         "active_section_plane_id",
     )
+    curves = _curves_value(data.get("curves", defaults.curves))
     return ProjectData(
         version=version,
         name=name,
@@ -159,6 +182,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         section=section,
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
+        curves=curves,
     )
 
 
@@ -288,6 +312,105 @@ def _section_planes_value(
         )
 
     return planes
+
+
+def _curves_value(value: object) -> list[ProjectCurve]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("curves must be a list.")
+
+    curves: list[ProjectCurve] = []
+    seen_ids: set[str] = set()
+    for index, raw_curve in enumerate(value):
+        field_prefix = f"curves[{index}]"
+        curve_data = _mapping_value(raw_curve, field_prefix)
+        curve_id = _string_value(
+            _nested_value(curve_data, "id", ""),
+            f"{field_prefix}.id",
+        )
+        if not curve_id:
+            raise ValueError(f"{field_prefix}.id must not be empty.")
+        if curve_id in seen_ids:
+            raise ValueError(f"{field_prefix}.id must be unique.")
+        seen_ids.add(curve_id)
+
+        curves.append(
+            ProjectCurve(
+                id=curve_id,
+                name=_string_value(
+                    _nested_value(curve_data, "name", f"Curve {index + 1}"),
+                    f"{field_prefix}.name",
+                ),
+                section_result_id=_string_value(
+                    _nested_value(curve_data, "section_result_id", ""),
+                    f"{field_prefix}.section_result_id",
+                ),
+                plane_id=_string_value(
+                    _nested_value(curve_data, "plane_id", ""),
+                    f"{field_prefix}.plane_id",
+                ),
+                original_points=_points_value(
+                    _nested_value(curve_data, "original_points", []),
+                    f"{field_prefix}.original_points",
+                ),
+                fitted_points=_points_value(
+                    _nested_value(curve_data, "fitted_points", []),
+                    f"{field_prefix}.fitted_points",
+                ),
+                mean_error=_float_value(
+                    _nested_value(curve_data, "mean_error", 0.0),
+                    f"{field_prefix}.mean_error",
+                ),
+                max_error=_float_value(
+                    _nested_value(curve_data, "max_error", 0.0),
+                    f"{field_prefix}.max_error",
+                ),
+                is_closed=_bool_value(
+                    _nested_value(curve_data, "is_closed", False),
+                    f"{field_prefix}.is_closed",
+                ),
+                visible=_bool_value(
+                    _nested_value(curve_data, "visible", True),
+                    f"{field_prefix}.visible",
+                ),
+            )
+        )
+
+    return curves
+
+
+def _points_value(value: object, field_name: str) -> list[list[float]]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of 3D points.")
+
+    points: list[list[float]] = []
+    for index, raw_point in enumerate(value):
+        point_field = f"{field_name}[{index}]"
+        if not isinstance(raw_point, list | tuple):
+            raise ValueError(f"{point_field} must be a list of three numbers.")
+        if len(raw_point) != 3:
+            raise ValueError(f"{point_field} must contain exactly three values.")
+        points.append(
+            [
+                _float_value(component, f"{point_field}[{component_index}]")
+                for component_index, component in enumerate(raw_point)
+            ]
+        )
+    return points
+
+
+def _points_to_nested_lists(value: object, field_name: str) -> list[list[float]]:
+    if isinstance(value, str) or not isinstance(value, Iterable):
+        raise ValueError(f"{field_name} must be an iterable of 3D points.")
+
+    point_rows: list[list[object]] = []
+    for index, point in enumerate(value):
+        if isinstance(point, str) or not isinstance(point, Iterable):
+            raise ValueError(f"{field_name}[{index}] must be an iterable of three numbers.")
+        point_rows.append(list(point))
+
+    return _points_value(point_rows, field_name)
 
 
 def _axis_value(value: object, field_name: str) -> str:

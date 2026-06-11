@@ -41,6 +41,20 @@ class ProjectSectionPlane:
 
 
 @dataclass
+class ProjectCurve:
+    id: str
+    name: str
+    section_result_id: str
+    plane_id: str
+    original_points: list[list[float]]
+    fitted_points: list[list[float]]
+    mean_error: float
+    max_error: float
+    is_closed: bool
+    visible: bool
+
+
+@dataclass
 class ProjectData:
     version: int
     name: str
@@ -50,6 +64,7 @@ class ProjectData:
     section: ProjectSectionSettings
     section_planes: list[ProjectSectionPlane] = field(default_factory=list)
     active_section_plane_id: str | None = None
+    curves: list[ProjectCurve] = field(default_factory=list)
 
 
 def default_project_data() -> ProjectData:
