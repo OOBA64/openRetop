@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from json import JSONDecodeError
+from pathlib import Path
 
 from project.project_data import (
     PROJECT_VERSION,
@@ -12,6 +15,26 @@ from project.project_data import (
     ProjectTransform,
     default_project_data,
 )
+
+
+def save_project(project: ProjectData, path: Path) -> None:
+    project_path = Path(path)
+    project_path.write_text(
+        json.dumps(project_to_dict(project), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_project(path: Path) -> ProjectData:
+    project_path = Path(path)
+    try:
+        data = json.loads(project_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except JSONDecodeError as exc:
+        raise ValueError(f"Invalid project JSON: {exc.msg}") from exc
+
+    return project_from_dict(data)
 
 
 def project_to_dict(project: ProjectData) -> dict[str, object]:
