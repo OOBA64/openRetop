@@ -153,7 +153,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.proxy_quality.get(), "Medium")
             self.assertEqual(tuple(window.proxy_quality_dropdown.cget("values")), ("Low", "Medium", "High"))
             self.assertEqual(window.status_text.get(), "No selection")
-            self.assertIsNone(window.selected_item)
+            self.assertIsNone(window.app_state.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
@@ -201,7 +201,7 @@ class MainWindowUiTests(unittest.TestCase):
                 "Source: 1 tris | Display: 1 tris | Reduction: 0.0% | "
                 "No proxy (Medium) | Full-resolution source preserved",
             )
-            self.assertIsNone(window.selected_item)
+            self.assertIsNone(window.app_state.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
@@ -254,7 +254,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             window.select_model()
-            self.assertEqual(window.selected_item, "model")
+            self.assertEqual(window.app_state.selected_item, "model")
             self.assertEqual(window.status_text.get(), "Selected: sample.stl")
             self.assertEqual(window.no_selection_frame.winfo_manager(), "")
             self.assertEqual(window.model_context_frame.winfo_manager(), "grid")
@@ -266,18 +266,18 @@ class MainWindowUiTests(unittest.TestCase):
             window.location_x.set("1.500")
             window._on_object_transform_changed()
             self.assertEqual(window.status_text.get(), "Transforms update live")
-            self.assertAlmostEqual(window.mesh_object.location[0], 1.5)
-            self.assertIsNotNone(window.mesh_object.transform_matrix)
-            self.assertEqual(window.viewport.scene_calls[-1]["mesh"], window.mesh_object.display_mesh)
+            self.assertAlmostEqual(window.app_state.mesh_object.location[0], 1.5)
+            self.assertIsNotNone(window.app_state.mesh_object.transform_matrix)
+            self.assertEqual(window.viewport.scene_calls[-1]["mesh"], window.app_state.mesh_object.display_mesh)
             self.assertIsNotNone(window.viewport.scene_calls[-1]["transform_matrix"])
 
             window.rotation_z.set("90.000")
             window._on_object_transform_changed()
             mapped_origin = window._current_object_matrix() @ np.append(
-                window.mesh_object.origin,
+                window.app_state.mesh_object.origin,
                 1.0,
             )
-            self.assertTrue(np.allclose(mapped_origin[:3], window.mesh_object.location))
+            self.assertTrue(np.allclose(mapped_origin[:3], window.app_state.mesh_object.location))
 
             window.frame_selected()
             self.assertEqual(window.viewport.frame_count, 1)
@@ -312,7 +312,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             window.select_model()
-            start_location = window.mesh_object.location.copy()
+            start_location = window.app_state.mesh_object.location.copy()
             window._on_viewport_pointer_event("motion", 10, 10)
             window._handle_shortcut("G")
             self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
@@ -328,7 +328,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             handled = window._on_viewport_pointer_event("motion", 80, 10)
             self.assertTrue(handled)
-            moved_location = window.mesh_object.location.copy()
+            moved_location = window.app_state.mesh_object.location.copy()
             self.assertGreater(moved_location[0], start_location[0])
             self.assertAlmostEqual(moved_location[1], start_location[1])
             self.assertAlmostEqual(moved_location[2], start_location[2])
@@ -337,7 +337,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             window._handle_shortcut("Escape")
             self.assertEqual(window.status_text.get(), "Transform cancelled")
-            self.assertTrue(np.allclose(window.mesh_object.location, start_location))
+            self.assertTrue(np.allclose(window.app_state.mesh_object.location, start_location))
             self.assertEqual(window.location_x.get(), f"{start_location[0]:.3f}")
             self.assertIsNone(window.viewport.scene_calls[-1]["active_transform_mode"])
 
@@ -345,14 +345,14 @@ class MainWindowUiTests(unittest.TestCase):
             window._handle_shortcut("G")
             window._handle_shortcut("X")
             window._on_viewport_pointer_event("motion", 100, 0)
-            normal_location = window.mesh_object.location.copy()
+            normal_location = window.app_state.mesh_object.location.copy()
             window._handle_shortcut("Escape")
 
             window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("G")
             window._handle_shortcut("X")
             window._on_viewport_pointer_event("motion", 100, 0, shift_pressed=True)
-            fine_location = window.mesh_object.location.copy()
+            fine_location = window.app_state.mesh_object.location.copy()
             normal_delta = normal_location[0] - start_location[0]
             fine_delta = fine_location[0] - start_location[0]
             self.assertAlmostEqual(fine_delta, normal_delta * 0.1, places=6)
@@ -360,10 +360,10 @@ class MainWindowUiTests(unittest.TestCase):
 
             window._handle_shortcut("G")
             window._on_viewport_pointer_event("motion", 150, 10)
-            confirmed_location = window.mesh_object.location.copy()
+            confirmed_location = window.app_state.mesh_object.location.copy()
             window._handle_shortcut("Enter")
             self.assertEqual(window.status_text.get(), "Transform confirmed")
-            self.assertTrue(np.allclose(window.mesh_object.location, confirmed_location))
+            self.assertTrue(np.allclose(window.app_state.mesh_object.location, confirmed_location))
             self.assertGreater(confirmed_location[0], start_location[0])
         finally:
             window.root.destroy()
@@ -406,17 +406,17 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_axis"], "X")
 
             window._on_viewport_pointer_event("motion", 40, 0)
-            self.assertGreater(window.mesh_object.rotation[0], 0.0)
+            self.assertGreater(window.app_state.mesh_object.rotation[0], 0.0)
             self.assertIn("20.0 deg", window.status_text.get())
-            self.assertEqual(window.rotation_x.get(), f"{window.mesh_object.rotation[0]:.3f}")
+            self.assertEqual(window.rotation_x.get(), f"{window.app_state.mesh_object.rotation[0]:.3f}")
             self.assertEqual(window.rotation_y.get(), "0.000")
             self.assertEqual(window.rotation_z.get(), "0.000")
 
             mapped_origin = window._current_object_matrix() @ np.append(
-                window.mesh_object.origin,
+                window.app_state.mesh_object.origin,
                 1.0,
             )
-            self.assertTrue(np.allclose(mapped_origin[:3], window.mesh_object.location))
+            self.assertTrue(np.allclose(mapped_origin[:3], window.app_state.mesh_object.location))
         finally:
             window.root.destroy()
 
@@ -445,7 +445,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             window.select_section_plane()
-            self.assertEqual(window.selected_item, "section_plane")
+            self.assertEqual(window.app_state.selected_item, "section_plane")
             self.assertEqual(window.status_text.get(), "Selected: Section Plane")
             self.assertEqual(window.no_selection_frame.winfo_manager(), "")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")

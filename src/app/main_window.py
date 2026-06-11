@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
 from math import cos, radians, sin
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, filedialog
@@ -11,8 +10,12 @@ from tkinter import messagebox, ttk
 
 import numpy as np
 
-from geometry.curves import CurveFitResult, fit_section_polylines
-from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, SectionResult, extract_section
+from app.app_state import AppState
+from app.object_state import MeshObjectState
+from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
+from app.transform_state import ActiveTransformState
+from geometry.curves import fit_section_polylines
+from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section
 from mesh.display_proxy import (
     DEFAULT_PROXY_QUALITY,
     PROXY_QUALITY_LABELS,
@@ -33,47 +36,9 @@ MESH_FILE_TYPES = (
     ("PLY files", "*.ply"),
     ("All files", "*.*"),
 )
-SELECT_MODEL = "model"
-SELECT_SECTION_PLANE = "section_plane"
 MOVE_SENSITIVITY = 0.001
 ROTATION_SENSITIVITY = 0.5
 FINE_TRANSFORM_MULTIPLIER = 0.1
-
-
-@dataclass
-class MeshObjectState:
-    """Selection-oriented state for the loaded mesh object."""
-
-    source_mesh: TriangleMeshData
-    display_mesh: TriangleMeshData
-    file_path: Path | None
-    name: str
-    origin: np.ndarray
-    location: np.ndarray
-    rotation: np.ndarray
-    scale: float = 1.0
-    transform_matrix: np.ndarray | None = None
-    source_triangle_count: int = 0
-    display_triangle_count: int = 0
-    display_proxy_enabled: bool = False
-    display_reduction_percent: float = 0.0
-    proxy_quality: str = DEFAULT_PROXY_QUALITY
-    source_bounds_min: np.ndarray | None = None
-    source_bounds_max: np.ndarray | None = None
-
-
-@dataclass
-class ActiveTransformState:
-    """Start values for one viewport hotkey transform."""
-
-    selected_item: str
-    mode: str
-    mouse_start: tuple[int, int]
-    axis_constraint: str | None
-    location: np.ndarray
-    rotation: np.ndarray
-    section_axis: str
-    section_offset: float
 
 
 class OpenRetopWindow:
@@ -86,15 +51,9 @@ class OpenRetopWindow:
         self.root.minsize(980, 620)
 
         self.mesh_state = MeshState()
-        self.mesh_object: MeshObjectState | None = None
-        self.selected_item: str | None = None
-        self.active_transform_mode: str | None = None
-        self.active_transform_axis: str | None = None
-        self.transform_state: ActiveTransformState | None = None
+        self.app_state = AppState()
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
-        self.section_result: SectionResult | None = None
-        self.curve_results: list[CurveFitResult] = []
 
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
@@ -615,9 +574,9 @@ class OpenRetopWindow:
         ):
             frame.grid_remove()
 
-        if selected_item == SELECT_MODEL and self.mesh_object is not None:
+        if selected_item == SELECT_MODEL and self.app_state.mesh_object is not None:
             self.model_context_frame.grid()
-        elif selected_item == SELECT_SECTION_PLANE and self.mesh_object is not None:
+        elif selected_item == SELECT_SECTION_PLANE and self.app_state.mesh_object is not None:
             self.section_context_frame.grid()
         else:
             self.no_selection_frame.grid()
@@ -674,7 +633,7 @@ class OpenRetopWindow:
         display_result = build_display_mesh(loaded.mesh, quality=self.proxy_quality.get())
         bounds = display_result.source_mesh.get_axis_aligned_bounding_box()
         origin = np.asarray(bounds.get_center(), dtype=float)
-        self.mesh_object = MeshObjectState(
+        self.app_state.mesh_object = MeshObjectState(
             source_mesh=display_result.source_mesh,
             display_mesh=display_result.display_mesh,
             file_path=loaded.metadata.file_path,
@@ -692,8 +651,8 @@ class OpenRetopWindow:
             source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
             source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
         )
-        self.section_result = None
-        self.curve_results = []
+        self.app_state.section_result = None
+        self.app_state.curve_results = []
         self.section_result_text.set("Section result: none")
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
@@ -705,14 +664,14 @@ class OpenRetopWindow:
         self.status_text.set(self._display_mesh_status(display_result))
 
     def select_model(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self._set_selected_item(None, status="No selection")
             return
 
-        self._set_selected_item(SELECT_MODEL, status=f"Selected: {self.mesh_object.name}")
+        self._set_selected_item(SELECT_MODEL, status=f"Selected: {self.app_state.mesh_object.name}")
 
     def select_section_plane(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self._set_selected_item(None, status="No selection")
             return
 
@@ -722,13 +681,13 @@ class OpenRetopWindow:
         self._set_selected_item(None, status="No selection")
 
     def _set_selected_item(self, selected_item: str | None, *, status: str | None = None) -> None:
-        if self.transform_state is not None:
+        if self.app_state.transform_state is not None:
             self._end_active_transform(commit=False, status="Transform cancelled")
 
-        self.selected_item = selected_item
-        self.active_transform_mode = None
-        self.active_transform_axis = None
-        self.transform_state = None
+        self.app_state.selected_item = selected_item
+        self.app_state.active_transform_mode = None
+        self.app_state.active_transform_axis = None
+        self.app_state.transform_state = None
         self._show_context(selected_item)
         self._refresh_viewport(reset_camera=False)
         if status is not None:
@@ -751,7 +710,7 @@ class OpenRetopWindow:
         _ctrl_pressed: bool = False,
     ) -> bool:
         self._last_viewport_mouse = (int(x_position), int(y_position))
-        if self.transform_state is None:
+        if self.app_state.transform_state is None:
             return False
 
         if event_type == "motion":
@@ -772,7 +731,7 @@ class OpenRetopWindow:
         return True
 
     def compute_section(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
@@ -781,24 +740,24 @@ class OpenRetopWindow:
             return
 
         section_mesh = self._transformed_source_mesh()
-        self.section_result = extract_section(
+        self.app_state.section_result = extract_section(
             section_mesh,
             axis=self.section_axis.get(),
             offset=offset,
         )
-        self.curve_results = fit_section_polylines(self.section_result.polylines)
+        self.app_state.curve_results = fit_section_polylines(self.app_state.section_result.polylines)
         self.section_result_text.set(
-            f"Section result: {self.section_result.segment_count} segments"
+            f"Section result: {self.app_state.section_result.segment_count} segments"
         )
         self._update_section_plane_label(set_status=False)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(
-            f"Section computed: {self.section_result.segment_count} segments"
+            f"Section computed: {self.app_state.section_result.segment_count} segments"
         )
 
     def clear_section(self) -> None:
-        self.section_result = None
-        self.curve_results = []
+        self.app_state.section_result = None
+        self.app_state.curve_results = []
         self.section_result_text.set("Section result: none")
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Section cleared")
@@ -808,10 +767,10 @@ class OpenRetopWindow:
         self.status_text.set("View framed")
 
     def frame_selected(self) -> None:
-        if self.selected_item == SELECT_MODEL:
+        if self.app_state.selected_item == SELECT_MODEL:
             self.viewport.frame_model()
-            self.status_text.set(f"Selected: {self.mesh_object.name}")
-        elif self.selected_item == SELECT_SECTION_PLANE:
+            self.status_text.set(f"Selected: {self.app_state.mesh_object.name}")
+        elif self.app_state.selected_item == SELECT_SECTION_PLANE:
             self.viewport.frame_model()
             self.status_text.set("Selected: Section Plane")
         else:
@@ -825,14 +784,14 @@ class OpenRetopWindow:
         self.reset_view()
 
     def _refresh_viewport(self, *, reset_camera: bool) -> None:
-        origin = self.mesh_object.location if self.mesh_object is not None else None
-        display_mesh = self.mesh_object.display_mesh if self.mesh_object is not None else None
+        origin = self.app_state.mesh_object.location if self.app_state.mesh_object is not None else None
+        display_mesh = self.app_state.mesh_object.display_mesh if self.app_state.mesh_object is not None else None
         transform_matrix = (
-            self.mesh_object.transform_matrix
-            if self.mesh_object is not None and self.mesh_object.transform_matrix is not None
+            self.app_state.mesh_object.transform_matrix
+            if self.app_state.mesh_object is not None and self.app_state.mesh_object.transform_matrix is not None
             else None
         )
-        hide_expensive_overlays = self.transform_state is not None
+        hide_expensive_overlays = self.app_state.transform_state is not None
         self.viewport.set_scene(
             display_mesh,
             transform_matrix=transform_matrix,
@@ -841,25 +800,25 @@ class OpenRetopWindow:
             show_normals=self.show_normals.get()
             and not hide_expensive_overlays
             and not (
-                self.mesh_object is not None and self.mesh_object.display_proxy_enabled
+                self.app_state.mesh_object is not None and self.app_state.mesh_object.display_proxy_enabled
             ),
             show_section_plane=(
                 self.show_section_plane.get() and self.mesh_state.is_loaded
             ),
             section_axis=self.section_axis.get(),
             section_offset=self.section_offset.get(),
-            selected_item=self.selected_item,
+            selected_item=self.app_state.selected_item,
             object_origin=origin,
             scene_bounds_min=(
-                self.mesh_object.source_bounds_min if self.mesh_object is not None else None
+                self.app_state.mesh_object.source_bounds_min if self.app_state.mesh_object is not None else None
             ),
             scene_bounds_max=(
-                self.mesh_object.source_bounds_max if self.mesh_object is not None else None
+                self.app_state.mesh_object.source_bounds_max if self.app_state.mesh_object is not None else None
             ),
-            active_transform_mode=self.active_transform_mode,
-            active_transform_axis=self.active_transform_axis,
-            section_result=None if hide_expensive_overlays else self.section_result,
-            curve_results=[] if hide_expensive_overlays else self.curve_results,
+            active_transform_mode=self.app_state.active_transform_mode,
+            active_transform_axis=self.app_state.active_transform_axis,
+            section_result=None if hide_expensive_overlays else self.app_state.section_result,
+            curve_results=[] if hide_expensive_overlays else self.app_state.curve_results,
             reset_camera=reset_camera,
         )
 
@@ -871,14 +830,14 @@ class OpenRetopWindow:
         if quality != self.proxy_quality.get():
             self.proxy_quality.set(quality)
 
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self._update_stats()
             self.status_text.set(f"Proxy quality: {quality}")
             return
 
         self.status_text.set(f"Rebuilding {quality} display proxy")
         self.root.update_idletasks()
-        display_result = build_display_mesh(self.mesh_object.source_mesh, quality=quality)
+        display_result = build_display_mesh(self.app_state.mesh_object.source_mesh, quality=quality)
         self._apply_display_mesh_result(display_result)
         self._update_stats()
         self._refresh_viewport(reset_camera=False)
@@ -939,7 +898,7 @@ class OpenRetopWindow:
             self._refresh_viewport(reset_camera=False)
 
     def _configure_offset_range(self, *, reset: bool) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self._section_offset_bounds = (-1.0, 1.0)
             self.offset_slider.configure(from_=-1.0, to=1.0)
             self._set_section_offset(0.0, clamp=True, refresh=False)
@@ -965,19 +924,19 @@ class OpenRetopWindow:
         axis = self.section_axis.get()
         offset = self.section_offset.get()
         self.section_plane_text.set(f"Section: {axis} = {offset:.3f}")
-        if set_status and self.selected_item == SELECT_SECTION_PLANE:
+        if set_status and self.app_state.selected_item == SELECT_SECTION_PLANE:
             self.status_text.set(f"Section plane: {axis} = {offset:.3f}")
 
     def _clear_section_for_plane_change(self) -> None:
-        if self.section_result is None and not self.curve_results:
+        if self.app_state.section_result is None and not self.app_state.curve_results:
             return
 
-        self.section_result = None
-        self.curve_results = []
+        self.app_state.section_result = None
+        self.app_state.curve_results = []
         self.section_result_text.set("Section result: none")
 
     def _on_object_transform_changed(self, _event: object | None = None) -> None:
-        if self.selected_item != SELECT_MODEL or self.mesh_object is None:
+        if self.app_state.selected_item != SELECT_MODEL or self.app_state.mesh_object is None:
             return
 
         values = self._parse_object_transform(show_error=False)
@@ -985,9 +944,9 @@ class OpenRetopWindow:
             return
 
         location, rotation, scale = values
-        self.mesh_object.location = location
-        self.mesh_object.rotation = rotation
-        self.mesh_object.scale = scale
+        self.app_state.mesh_object.location = location
+        self.app_state.mesh_object.rotation = rotation
+        self.app_state.mesh_object.scale = scale
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Transforms update live")
 
@@ -1027,21 +986,21 @@ class OpenRetopWindow:
         return (location, rotation, scale)
 
     def _apply_object_transform(self, *, reset_camera: bool) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self.mesh_state = MeshState()
             self._update_stats()
             self._refresh_viewport(reset_camera=reset_camera)
             return
 
-        self.mesh_object.transform_matrix = _build_object_transform_matrix(
-            self.mesh_object.location,
-            self.mesh_object.rotation,
-            self.mesh_object.scale,
-            self.mesh_object.origin,
+        self.app_state.mesh_object.transform_matrix = _build_object_transform_matrix(
+            self.app_state.mesh_object.location,
+            self.app_state.mesh_object.rotation,
+            self.app_state.mesh_object.scale,
+            self.app_state.mesh_object.origin,
         )
         self.mesh_state = MeshState.from_mesh(
-            self.mesh_object.display_mesh,
-            file_path=self.mesh_object.file_path,
+            self.app_state.mesh_object.display_mesh,
+            file_path=self.app_state.mesh_object.file_path,
         )
         self._update_stats()
         self._configure_offset_range(reset=False)
@@ -1049,22 +1008,22 @@ class OpenRetopWindow:
         self._refresh_viewport(reset_camera=reset_camera)
 
     def _apply_display_mesh_result(self, display_result: DisplayMeshResult) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             return
 
-        self.mesh_object.display_mesh = display_result.display_mesh
-        self.mesh_object.source_triangle_count = display_result.source_triangle_count
-        self.mesh_object.display_triangle_count = display_result.display_triangle_count
-        self.mesh_object.display_proxy_enabled = display_result.proxy_enabled
-        self.mesh_object.display_reduction_percent = display_result.reduction_percent
-        self.mesh_object.proxy_quality = display_result.quality
+        self.app_state.mesh_object.display_mesh = display_result.display_mesh
+        self.app_state.mesh_object.source_triangle_count = display_result.source_triangle_count
+        self.app_state.mesh_object.display_triangle_count = display_result.display_triangle_count
+        self.app_state.mesh_object.display_proxy_enabled = display_result.proxy_enabled
+        self.app_state.mesh_object.display_reduction_percent = display_result.reduction_percent
+        self.app_state.mesh_object.proxy_quality = display_result.quality
         self.mesh_state = MeshState.from_mesh(
-            self.mesh_object.display_mesh,
-            file_path=self.mesh_object.file_path,
+            self.app_state.mesh_object.display_mesh,
+            file_path=self.app_state.mesh_object.file_path,
         )
 
     def set_origin_to_geometry(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
@@ -1078,35 +1037,35 @@ class OpenRetopWindow:
         self.status_text.set("Origin set to geometry")
 
     def move_origin_to_world_origin(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        rotation_scale = _rotation_matrix(self.mesh_object.rotation) * self.mesh_object.scale
-        new_origin = self.mesh_object.origin + np.linalg.inv(rotation_scale) @ (
-            np.asarray([0.0, 0.0, 0.0], dtype=float) - self.mesh_object.location
+        rotation_scale = _rotation_matrix(self.app_state.mesh_object.rotation) * self.app_state.mesh_object.scale
+        new_origin = self.app_state.mesh_object.origin + np.linalg.inv(rotation_scale) @ (
+            np.asarray([0.0, 0.0, 0.0], dtype=float) - self.app_state.mesh_object.location
         )
-        self.mesh_object.origin = new_origin
-        self.mesh_object.location = np.asarray([0.0, 0.0, 0.0], dtype=float)
+        self.app_state.mesh_object.origin = new_origin
+        self.app_state.mesh_object.location = np.asarray([0.0, 0.0, 0.0], dtype=float)
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Origin moved to world origin")
 
     def center_geometry_on_origin(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        bounds = self.mesh_object.source_mesh.get_axis_aligned_bounding_box()
+        bounds = self.app_state.mesh_object.source_mesh.get_axis_aligned_bounding_box()
         raw_center = np.asarray(bounds.get_center(), dtype=float)
-        delta = self.mesh_object.origin - raw_center
-        self.mesh_object.source_mesh.translate(delta.tolist())
-        self.mesh_object.display_mesh.translate(delta.tolist())
-        self.mesh_object.source_bounds_min = np.asarray(
+        delta = self.app_state.mesh_object.origin - raw_center
+        self.app_state.mesh_object.source_mesh.translate(delta.tolist())
+        self.app_state.mesh_object.display_mesh.translate(delta.tolist())
+        self.app_state.mesh_object.source_bounds_min = np.asarray(
             bounds.get_min_bound(),
             dtype=float,
         ) + delta
-        self.mesh_object.source_bounds_max = np.asarray(
+        self.app_state.mesh_object.source_bounds_max = np.asarray(
             bounds.get_max_bound(),
             dtype=float,
         ) + delta
@@ -1114,51 +1073,51 @@ class OpenRetopWindow:
         self.status_text.set("Geometry centered on origin")
 
     def reset_object_transform(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        self.mesh_object.location = self.mesh_object.origin.copy()
-        self.mesh_object.rotation = np.asarray([0.0, 0.0, 0.0], dtype=float)
-        self.mesh_object.scale = 1.0
+        self.app_state.mesh_object.location = self.app_state.mesh_object.origin.copy()
+        self.app_state.mesh_object.rotation = np.asarray([0.0, 0.0, 0.0], dtype=float)
+        self.app_state.mesh_object.scale = 1.0
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=True)
-        self.status_text.set("Selected: " + self.mesh_object.name)
+        self.status_text.set("Selected: " + self.app_state.mesh_object.name)
 
     def _change_origin_keep_geometry(self, new_origin: np.ndarray) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             return
 
-        rotation_scale = _rotation_matrix(self.mesh_object.rotation) * self.mesh_object.scale
-        old_origin = self.mesh_object.origin.copy()
-        self.mesh_object.origin = np.asarray(new_origin, dtype=float)
-        self.mesh_object.location = (
-            self.mesh_object.location
-            + rotation_scale @ (self.mesh_object.origin - old_origin)
+        rotation_scale = _rotation_matrix(self.app_state.mesh_object.rotation) * self.app_state.mesh_object.scale
+        old_origin = self.app_state.mesh_object.origin.copy()
+        self.app_state.mesh_object.origin = np.asarray(new_origin, dtype=float)
+        self.app_state.mesh_object.location = (
+            self.app_state.mesh_object.location
+            + rotation_scale @ (self.app_state.mesh_object.origin - old_origin)
         )
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
 
     def _current_object_matrix(self) -> np.ndarray:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             return np.identity(4)
 
         return _build_object_transform_matrix(
-            self.mesh_object.location,
-            self.mesh_object.rotation,
-            self.mesh_object.scale,
-            self.mesh_object.origin,
+            self.app_state.mesh_object.location,
+            self.app_state.mesh_object.rotation,
+            self.app_state.mesh_object.scale,
+            self.app_state.mesh_object.origin,
         )
 
     def _set_transform_inputs_from_object(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             location = np.asarray([0.0, 0.0, 0.0], dtype=float)
             rotation = np.asarray([0.0, 0.0, 0.0], dtype=float)
             scale = 1.0
         else:
-            location = self.mesh_object.location
-            rotation = self.mesh_object.rotation
-            scale = self.mesh_object.scale
+            location = self.app_state.mesh_object.location
+            rotation = self.app_state.mesh_object.rotation
+            scale = self.app_state.mesh_object.scale
 
         self.location_x.set(f"{location[0]:.3f}")
         self.location_y.set(f"{location[1]:.3f}")
@@ -1169,7 +1128,7 @@ class OpenRetopWindow:
         self.scale_value.set(f"{scale:.3f}")
 
     def _update_stats(self) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             file_name = "(none)"
             vertex_count = "0"
             source_triangles = "0"
@@ -1180,15 +1139,15 @@ class OpenRetopWindow:
             bbox_extent = "-"
         else:
             minimum_bound, maximum_bound = self._transformed_source_bounds()
-            file_name = self.mesh_object.name
-            vertex_count = _format_count(len(self.mesh_object.source_mesh.vertices))
-            source_triangles = _format_count(self.mesh_object.source_triangle_count)
-            display_triangles = _format_count(self.mesh_object.display_triangle_count)
-            reduction = _format_percent(self.mesh_object.display_reduction_percent)
+            file_name = self.app_state.mesh_object.name
+            vertex_count = _format_count(len(self.app_state.mesh_object.source_mesh.vertices))
+            source_triangles = _format_count(self.app_state.mesh_object.source_triangle_count)
+            display_triangles = _format_count(self.app_state.mesh_object.display_triangle_count)
+            reduction = _format_percent(self.app_state.mesh_object.display_reduction_percent)
             display_proxy = (
-                f"Enabled ({self.mesh_object.proxy_quality})"
-                if self.mesh_object.display_proxy_enabled
-                else f"Disabled ({self.mesh_object.proxy_quality})"
+                f"Enabled ({self.app_state.mesh_object.proxy_quality})"
+                if self.app_state.mesh_object.display_proxy_enabled
+                else f"Disabled ({self.app_state.mesh_object.proxy_quality})"
             )
             source_retained = "Full-resolution source preserved"
             bbox_extent = _format_vector(maximum_bound - minimum_bound)
@@ -1224,71 +1183,71 @@ class OpenRetopWindow:
 
     def _transformed_source_bounds(self) -> tuple[np.ndarray, np.ndarray]:
         if (
-            self.mesh_object is None
-            or self.mesh_object.source_bounds_min is None
-            or self.mesh_object.source_bounds_max is None
+            self.app_state.mesh_object is None
+            or self.app_state.mesh_object.source_bounds_min is None
+            or self.app_state.mesh_object.source_bounds_max is None
         ):
             zero = np.asarray([0.0, 0.0, 0.0], dtype=float)
             return (zero, zero)
 
         return _transform_bounds(
-            self.mesh_object.source_bounds_min,
-            self.mesh_object.source_bounds_max,
+            self.app_state.mesh_object.source_bounds_min,
+            self.app_state.mesh_object.source_bounds_max,
             self._current_object_matrix(),
         )
 
     def _transformed_source_mesh(self) -> TriangleMeshData:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             return TriangleMeshData(
                 vertices=np.zeros((0, 3), dtype=float),
                 triangles=np.zeros((0, 3), dtype=int),
             )
 
-        mesh = self.mesh_object.source_mesh.copy()
+        mesh = self.app_state.mesh_object.source_mesh.copy()
         mesh.transform(self._current_object_matrix())
         return mesh
 
     def _start_active_transform(self, mode: str) -> None:
-        if self.selected_item is None or self.mesh_object is None:
+        if self.app_state.selected_item is None or self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        if self.selected_item == SELECT_SECTION_PLANE and mode == "rotate":
+        if self.app_state.selected_item == SELECT_SECTION_PLANE and mode == "rotate":
             self._cycle_section_axis_for_rotation()
             return
 
-        self.transform_state = ActiveTransformState(
-            selected_item=self.selected_item,
+        self.app_state.transform_state = ActiveTransformState(
+            selected_item=self.app_state.selected_item,
             mode=mode,
             mouse_start=self._last_viewport_mouse,
             axis_constraint=None,
-            location=self.mesh_object.location.copy(),
-            rotation=self.mesh_object.rotation.copy(),
+            location=self.app_state.mesh_object.location.copy(),
+            rotation=self.app_state.mesh_object.rotation.copy(),
             section_axis=self.section_axis.get(),
             section_offset=self.section_offset.get(),
         )
-        self.active_transform_mode = mode
-        self.active_transform_axis = self._display_transform_axis(self.transform_state)
+        self.app_state.active_transform_mode = mode
+        self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
         self._last_transform_readout = None
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._active_transform_status())
 
     def _set_transform_axis_constraint(self, axis: str) -> None:
-        if self.transform_state is None:
-            self.active_transform_axis = axis
+        if self.app_state.transform_state is None:
+            self.app_state.active_transform_axis = axis
             self.status_text.set(f"Axis constraint: {axis}")
             return
 
-        next_axis = None if self.transform_state.axis_constraint == axis else axis
-        self.transform_state.axis_constraint = next_axis
-        self.active_transform_axis = self._display_transform_axis(self.transform_state)
+        next_axis = None if self.app_state.transform_state.axis_constraint == axis else axis
+        self.app_state.transform_state.axis_constraint = next_axis
+        self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
         self._last_transform_readout = None
-        if self.transform_state.selected_item == SELECT_SECTION_PLANE and next_axis is not None:
+        if self.app_state.transform_state.selected_item == SELECT_SECTION_PLANE and next_axis is not None:
             self.section_axis.set(axis)
             self._configure_offset_range(reset=False)
-            self.transform_state.section_axis = axis
-            self.transform_state.section_offset = self.section_offset.get()
-            self.transform_state.mouse_start = self._last_viewport_mouse
+            self.app_state.transform_state.section_axis = axis
+            self.app_state.transform_state.section_offset = self.section_offset.get()
+            self.app_state.transform_state.mouse_start = self._last_viewport_mouse
             self._update_section_plane_label(set_status=False)
 
         self._refresh_viewport(reset_camera=False)
@@ -1300,7 +1259,7 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        state = self.transform_state
+        state = self.app_state.transform_state
         if state is None:
             return
 
@@ -1319,7 +1278,7 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             return
 
         delta = self._mouse_delta(state, mouse_position)
@@ -1341,7 +1300,7 @@ class OpenRetopWindow:
                 f"Delta X: {movement[0]:.2f}, Delta Y: {movement[1]:.2f}"
             )
 
-        self.mesh_object.location = state.location + movement
+        self.app_state.mesh_object.location = state.location + movement
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
         self.status_text.set(self._active_transform_status())
@@ -1353,7 +1312,7 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             return
 
         delta = self._mouse_delta(state, mouse_position)
@@ -1361,9 +1320,9 @@ class OpenRetopWindow:
         axis = self._display_transform_axis(state) or "Z"
         rotation = state.rotation.copy()
         rotation[AXIS_TO_INDEX[axis]] += angle_delta
-        self.active_transform_axis = axis
+        self.app_state.active_transform_axis = axis
         self._last_transform_readout = f"{angle_delta:.1f} deg"
-        self.mesh_object.rotation = rotation
+        self.app_state.mesh_object.rotation = rotation
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
         self.status_text.set(self._active_transform_status())
@@ -1390,24 +1349,24 @@ class OpenRetopWindow:
         self.status_text.set(self._active_transform_status())
 
     def _end_active_transform(self, *, commit: bool, status: str) -> None:
-        state = self.transform_state
+        state = self.app_state.transform_state
         if state is None:
             return
 
         if not commit:
             self._restore_transform_start_state(state)
 
-        self.transform_state = None
-        self.active_transform_mode = None
-        self.active_transform_axis = None
+        self.app_state.transform_state = None
+        self.app_state.active_transform_mode = None
+        self.app_state.active_transform_axis = None
         self._last_transform_readout = None
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(status)
 
     def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
-        if state.selected_item == SELECT_MODEL and self.mesh_object is not None:
-            self.mesh_object.location = state.location.copy()
-            self.mesh_object.rotation = state.rotation.copy()
+        if state.selected_item == SELECT_MODEL and self.app_state.mesh_object is not None:
+            self.app_state.mesh_object.location = state.location.copy()
+            self.app_state.mesh_object.rotation = state.rotation.copy()
             self._set_transform_inputs_from_object()
             self._apply_object_transform(reset_camera=False)
             return
@@ -1428,21 +1387,21 @@ class OpenRetopWindow:
         self.status_text.set(f"Section plane axis cycled to {next_axis}")
 
     def _active_transform_status(self) -> str:
-        if self.transform_state is None:
-            return "No selection" if self.selected_item is None else "Transform"
+        if self.app_state.transform_state is None:
+            return "No selection" if self.app_state.selected_item is None else "Transform"
 
-        mode_label = "Move mode" if self.transform_state.mode == "move" else "Rotate mode"
-        axis = self._display_transform_axis(self.transform_state)
+        mode_label = "Move mode" if self.app_state.transform_state.mode == "move" else "Rotate mode"
+        axis = self._display_transform_axis(self.app_state.transform_state)
         parts = [mode_label]
         if axis is not None:
             parts.append(f"{axis} axis")
         if self._last_transform_readout is not None:
             parts.append(self._last_transform_readout)
-        elif self.transform_state.mode == "move" and axis is None:
+        elif self.app_state.transform_state.mode == "move" and axis is None:
             parts.append(
                 "press X/Y/Z to constrain, Enter/Click to confirm, Esc/Right-click to cancel"
             )
-        elif self.transform_state.mode == "rotate":
+        elif self.app_state.transform_state.mode == "rotate":
             parts.append("move mouse horizontally")
         return " - ".join(parts)
 
@@ -1454,7 +1413,7 @@ class OpenRetopWindow:
         return state.axis_constraint
 
     def _movement_scale(self, *, fine: bool) -> float:
-        if self.mesh_object is None:
+        if self.app_state.mesh_object is None:
             model_diagonal = 1.0
         else:
             minimum_bound, maximum_bound = self._transformed_source_bounds()
@@ -1484,18 +1443,18 @@ class OpenRetopWindow:
             return
 
         if key == "Escape":
-            if self.transform_state is None:
-                self.active_transform_mode = None
-                self.active_transform_axis = None
+            if self.app_state.transform_state is None:
+                self.app_state.active_transform_mode = None
+                self.app_state.active_transform_axis = None
                 self.status_text.set("Transform cancelled")
             else:
                 self._end_active_transform(commit=False, status="Transform cancelled")
             return
 
         if key == "Enter":
-            if self.transform_state is None:
-                self.active_transform_mode = None
-                self.active_transform_axis = None
+            if self.app_state.transform_state is None:
+                self.app_state.active_transform_mode = None
+                self.app_state.active_transform_axis = None
                 self.status_text.set("Transform confirmed")
             else:
                 self._end_active_transform(commit=True, status="Transform confirmed")
@@ -1513,14 +1472,14 @@ class OpenRetopWindow:
             self._start_active_transform("rotate")
 
     def _delete_selected_if_safe(self) -> None:
-        if self.selected_item != SELECT_MODEL or self.mesh_object is None:
+        if self.app_state.selected_item != SELECT_MODEL or self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        self.mesh_object = None
+        self.app_state.mesh_object = None
         self.mesh_state = MeshState()
-        self.section_result = None
-        self.curve_results = []
+        self.app_state.section_result = None
+        self.app_state.curve_results = []
         self.section_result_text.set("Section result: none")
         self._update_stats()
         self._set_selection_buttons_enabled(False)
