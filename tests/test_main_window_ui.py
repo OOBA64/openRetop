@@ -283,15 +283,25 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_preferences_dialog_opens_with_current_values_and_controls(self) -> None:
-        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
-            window = _create_window()
+    def test_preferences_dialog_opens_with_startup_values_and_controls(self) -> None:
+        settings = default_app_settings()
+        settings.display.show_grid = False
+        settings.display.show_axes = False
+        settings.display.show_normals = True
+        settings.import_settings.default_proxy_quality = "High"
+
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            save_settings(settings, settings_path)
+
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
 
         try:
-            window.show_grid.set(False)
+            window.show_grid.set(True)
             window.show_axes.set(True)
-            window.show_normals.set(True)
-            window.proxy_quality.set("High")
+            window.show_normals.set(False)
+            window.proxy_quality.set("Medium")
 
             window.edit_menu.invoke(2)
             window.root.update()
@@ -301,14 +311,17 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertEqual(dialog.title(), "Preferences")
             self.assertFalse(window.preferences_vars["show_grid"].get())
-            self.assertTrue(window.preferences_vars["show_axes"].get())
+            self.assertFalse(window.preferences_vars["show_axes"].get())
             self.assertTrue(window.preferences_vars["show_normals"].get())
             self.assertEqual(window.preferences_vars["default_proxy_quality"].get(), "High")
             self.assertTrue(_widgets_with_text(dialog, "Display"))
             self.assertTrue(_widgets_with_text(dialog, "Import"))
-            self.assertTrue(_widgets_with_text(dialog, "Show Grid"))
-            self.assertTrue(_widgets_with_text(dialog, "Show Axes"))
-            self.assertTrue(_widgets_with_text(dialog, "Show Normals"))
+            self.assertTrue(_widgets_with_text(dialog, "Startup Show Grid"))
+            self.assertTrue(_widgets_with_text(dialog, "Startup Show Axes"))
+            self.assertTrue(_widgets_with_text(dialog, "Startup Show Normals"))
+            self.assertFalse(_widgets_with_text(dialog, "Show Grid"))
+            self.assertFalse(_widgets_with_text(dialog, "Show Axes"))
+            self.assertFalse(_widgets_with_text(dialog, "Show Normals"))
             self.assertTrue(_widgets_with_text(dialog, "Default Proxy Quality"))
             for button_text in ("OK", "Cancel", "Apply"):
                 self.assertIsNotNone(_button_by_text(dialog, button_text))
@@ -329,7 +342,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window._close_preferences_dialog()
             window.root.destroy()
 
-    def test_preferences_apply_updates_settings_without_closing_dialog(self) -> None:
+    def test_preferences_apply_updates_startup_defaults_without_changing_current_scene(self) -> None:
         with TemporaryDirectory() as tmpdir:
             settings_path = Path(tmpdir) / "settings.json"
             with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
@@ -341,6 +354,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertIsNotNone(dialog)
                 assert dialog is not None
 
+                scene_call_count = len(window.viewport.scene_calls)
                 window.preferences_vars["show_grid"].set(False)
                 window.preferences_vars["show_axes"].set(False)
                 window.preferences_vars["show_normals"].set(True)
@@ -348,14 +362,19 @@ class MainWindowUiTests(unittest.TestCase):
                 _button_by_text(dialog, "Apply").invoke()
 
                 self.assertIsNotNone(window.preferences_dialog)
-                self.assertFalse(window.show_grid.get())
-                self.assertFalse(window.show_axes.get())
-                self.assertTrue(window.show_normals.get())
-                self.assertEqual(window.proxy_quality.get(), "Low")
+                self.assertTrue(window.show_grid.get())
+                self.assertTrue(window.show_axes.get())
+                self.assertFalse(window.show_normals.get())
+                self.assertEqual(window.proxy_quality.get(), "Medium")
                 self.assertEqual(window.status_text.get(), "Preferences applied")
-                self.assertEqual(window.viewport.scene_calls[-1]["show_grid"], False)
-                self.assertEqual(window.viewport.scene_calls[-1]["show_axes"], False)
-                self.assertEqual(window.viewport.scene_calls[-1]["show_normals"], True)
+                self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
+                self.assertFalse(window.settings.display.show_grid)
+                self.assertFalse(window.settings.display.show_axes)
+                self.assertTrue(window.settings.display.show_normals)
+                self.assertEqual(
+                    window.settings.import_settings.default_proxy_quality,
+                    "Low",
+                )
 
                 saved_settings = load_settings(settings_path)
                 self.assertFalse(saved_settings.display.show_grid)
@@ -382,24 +401,28 @@ class MainWindowUiTests(unittest.TestCase):
                 restored_window.root.destroy()
 
     def test_preferences_ok_applies_and_closes_dialog(self) -> None:
-        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
-            window = _create_window()
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
 
-        try:
-            window.edit_menu.invoke(2)
-            dialog = window.preferences_dialog
-            self.assertIsNotNone(dialog)
-            assert dialog is not None
+            try:
+                window.edit_menu.invoke(2)
+                dialog = window.preferences_dialog
+                self.assertIsNotNone(dialog)
+                assert dialog is not None
 
-            window.preferences_vars["show_grid"].set(False)
-            _button_by_text(dialog, "OK").invoke()
+                window.preferences_vars["show_grid"].set(False)
+                _button_by_text(dialog, "OK").invoke()
 
-            self.assertIsNone(window.preferences_dialog)
-            self.assertEqual(window.preferences_vars, {})
-            self.assertFalse(window.show_grid.get())
-            self.assertEqual(window.status_text.get(), "Preferences applied")
-        finally:
-            window.root.destroy()
+                self.assertIsNone(window.preferences_dialog)
+                self.assertEqual(window.preferences_vars, {})
+                self.assertTrue(window.show_grid.get())
+                self.assertFalse(window.settings.display.show_grid)
+                self.assertFalse(load_settings(settings_path).display.show_grid)
+                self.assertEqual(window.status_text.get(), "Preferences applied")
+            finally:
+                window.root.destroy()
 
     def test_preferences_cancel_closes_without_applying(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -468,7 +491,7 @@ class MainWindowUiTests(unittest.TestCase):
             finally:
                 window.root.destroy()
 
-    def test_exit_saves_preferences_and_next_launch_uses_them(self) -> None:
+    def test_exit_saves_window_size_without_overwriting_startup_preferences(self) -> None:
         with TemporaryDirectory() as tmpdir:
             settings_path = Path(tmpdir) / "settings.json"
 
@@ -485,10 +508,10 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertTrue(settings_path.exists())
             saved_settings = load_settings(settings_path)
-            self.assertFalse(saved_settings.display.show_grid)
-            self.assertFalse(saved_settings.display.show_axes)
-            self.assertTrue(saved_settings.display.show_normals)
-            self.assertEqual(saved_settings.import_settings.default_proxy_quality, "Low")
+            self.assertTrue(saved_settings.display.show_grid)
+            self.assertTrue(saved_settings.display.show_axes)
+            self.assertFalse(saved_settings.display.show_normals)
+            self.assertEqual(saved_settings.import_settings.default_proxy_quality, "Medium")
             self.assertEqual(saved_settings.ui.window_width, 1180)
             self.assertEqual(saved_settings.ui.window_height, 740)
 
@@ -496,10 +519,10 @@ class MainWindowUiTests(unittest.TestCase):
                 restored_window = _create_window(settings_path=settings_path)
 
             try:
-                self.assertFalse(restored_window.show_grid.get())
-                self.assertFalse(restored_window.show_axes.get())
-                self.assertTrue(restored_window.show_normals.get())
-                self.assertEqual(restored_window.proxy_quality.get(), "Low")
+                self.assertTrue(restored_window.show_grid.get())
+                self.assertTrue(restored_window.show_axes.get())
+                self.assertFalse(restored_window.show_normals.get())
+                self.assertEqual(restored_window.proxy_quality.get(), "Medium")
                 self.assertTrue(restored_window.root.geometry().startswith("1180x740"))
             finally:
                 restored_window.root.destroy()

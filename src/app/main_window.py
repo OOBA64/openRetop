@@ -436,12 +436,23 @@ class OpenRetopWindow:
         dialog.columnconfigure(0, weight=1)
         self.preferences_dialog = dialog
         self.preferences_vars = {
-            "show_grid": BooleanVar(master=dialog, value=self.show_grid.get()),
-            "show_axes": BooleanVar(master=dialog, value=self.show_axes.get()),
-            "show_normals": BooleanVar(master=dialog, value=self.show_normals.get()),
+            "show_grid": BooleanVar(
+                master=dialog,
+                value=self.settings.display.show_grid,
+            ),
+            "show_axes": BooleanVar(
+                master=dialog,
+                value=self.settings.display.show_axes,
+            ),
+            "show_normals": BooleanVar(
+                master=dialog,
+                value=self.settings.display.show_normals,
+            ),
             "default_proxy_quality": StringVar(
                 master=dialog,
-                value=normalize_proxy_quality(self.proxy_quality.get()),
+                value=normalize_proxy_quality(
+                    self.settings.import_settings.default_proxy_quality
+                ),
             ),
         }
 
@@ -454,17 +465,17 @@ class OpenRetopWindow:
         display_frame.columnconfigure(0, weight=1)
         ttk.Checkbutton(
             display_frame,
-            text="Show Grid",
+            text="Startup Show Grid",
             variable=self.preferences_vars["show_grid"],
         ).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
             display_frame,
-            text="Show Axes",
+            text="Startup Show Axes",
             variable=self.preferences_vars["show_axes"],
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Checkbutton(
             display_frame,
-            text="Show Normals",
+            text="Startup Show Normals",
             variable=self.preferences_vars["show_normals"],
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
@@ -516,23 +527,23 @@ class OpenRetopWindow:
             str(self.preferences_vars["default_proxy_quality"].get())
         )
 
-        display_changed = (
-            show_grid != self.show_grid.get()
-            or show_axes != self.show_axes.get()
-            or show_normals != self.show_normals.get()
+        width, height = self._current_window_size()
+        self.settings = AppSettings(
+            version=SETTINGS_VERSION,
+            display=AppDisplaySettings(
+                show_grid=show_grid,
+                show_axes=show_axes,
+                show_normals=show_normals,
+            ),
+            import_settings=AppImportSettings(
+                default_proxy_quality=proxy_quality,
+            ),
+            ui=AppUiSettings(
+                window_width=width,
+                window_height=height,
+            ),
+            future=dict(self.settings.future),
         )
-        proxy_changed = proxy_quality != normalize_proxy_quality(self.proxy_quality.get())
-
-        self.show_grid.set(show_grid)
-        self.show_axes.set(show_axes)
-        self.show_normals.set(show_normals)
-        if display_changed:
-            self._on_view_option_changed()
-
-        if proxy_changed:
-            self.proxy_quality.set(proxy_quality)
-            self._on_proxy_quality_changed()
-
         self._save_app_settings()
         self.status_text.set("Preferences applied")
 
@@ -1988,12 +1999,14 @@ class OpenRetopWindow:
         return AppSettings(
             version=SETTINGS_VERSION,
             display=AppDisplaySettings(
-                show_grid=self.show_grid.get(),
-                show_axes=self.show_axes.get(),
-                show_normals=self.show_normals.get(),
+                show_grid=self.settings.display.show_grid,
+                show_axes=self.settings.display.show_axes,
+                show_normals=self.settings.display.show_normals,
             ),
             import_settings=AppImportSettings(
-                default_proxy_quality=normalize_proxy_quality(self.proxy_quality.get()),
+                default_proxy_quality=normalize_proxy_quality(
+                    self.settings.import_settings.default_proxy_quality
+                ),
             ),
             ui=AppUiSettings(
                 window_width=width,
