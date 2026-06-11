@@ -38,6 +38,8 @@ from mesh.display_proxy import (
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
 from mesh.triangle_mesh import TriangleMeshData
+from project.project_io import save_project
+from project.project_state import project_from_app_state
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -46,6 +48,11 @@ MESH_FILE_TYPES = (
     ("STL files", "*.stl"),
     ("OBJ files", "*.obj"),
     ("PLY files", "*.ply"),
+    ("All files", "*.*"),
+)
+PROJECT_FILE_TYPES = (
+    ("openRetop project files", "*.openretop"),
+    ("JSON files", "*.json"),
     ("All files", "*.*"),
 )
 OPEN_MODEL_MENU_INDEX = 1
@@ -122,6 +129,7 @@ class OpenRetopWindow:
         self._active_transform_angle_delta: float | None = None
         self._is_loading_model = False
         self._start_viewport_after_id: str | None = None
+        self.current_project_path: Path | None = None
 
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
@@ -194,8 +202,8 @@ class OpenRetopWindow:
         self.file_menu.add_command(label="New Project", command=self._new_project_placeholder)
         self.file_menu.add_command(label="Open Model", command=self.open_model)
         self.file_menu.add_command(label="Open Project", command=self._open_project_placeholder)
-        self.file_menu.add_command(label="Save Project", command=self._save_project_placeholder)
-        self.file_menu.add_command(label="Save Project As", command=self._save_project_as_placeholder)
+        self.file_menu.add_command(label="Save Project", command=self.save_project)
+        self.file_menu.add_command(label="Save Project As", command=self.save_project_as)
         self.file_menu.add_command(label="Exit", command=self._on_exit)
         self.menu_bar.add_cascade(label="File", menu=self.file_menu)
 
@@ -247,11 +255,46 @@ class OpenRetopWindow:
     def _open_project_placeholder(self) -> None:
         self._not_implemented("Open Project")
 
-    def _save_project_placeholder(self) -> None:
-        self._not_implemented("Save Project")
+    def save_project(self) -> None:
+        if self.current_project_path is None:
+            self.save_project_as()
+            return
 
-    def _save_project_as_placeholder(self) -> None:
-        self._not_implemented("Save Project As")
+        self._write_project(self.current_project_path)
+
+    def save_project_as(self) -> None:
+        selected_path = filedialog.asksaveasfilename(
+            title="Save Project",
+            defaultextension=".openretop",
+            filetypes=PROJECT_FILE_TYPES,
+        )
+        if not selected_path:
+            return
+
+        project_path = Path(selected_path)
+        if self._write_project(project_path):
+            self.current_project_path = project_path
+
+    def _write_project(self, project_path: Path) -> bool:
+        try:
+            project = project_from_app_state(
+                mesh_object=self.app_state.mesh_object,
+                proxy_quality=self.proxy_quality.get(),
+                show_grid=self.show_grid.get(),
+                show_axes=self.show_axes.get(),
+                show_normals=self.show_normals.get(),
+                section_axis=self.section_axis.get(),
+                section_offset=self.section_offset.get(),
+                show_section_plane=self.show_section_plane.get(),
+            )
+            save_project(project, project_path)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.status_text.set("Project save failed")
+            messagebox.showerror("Could not save project", str(exc))
+            return False
+
+        self.status_text.set(f"Project saved: {project_path.name}")
+        return True
 
     def _undo_placeholder(self) -> None:
         self._not_implemented("Undo")

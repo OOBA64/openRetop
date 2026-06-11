@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from tkinter import TclError, Tk
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from app.main_window import (
     OpenRetopWindow,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
+from project.project_io import load_project
 
 
 class FakeBounds:
@@ -197,6 +199,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.proxy_quality.get(), "Medium")
             self.assertEqual(tuple(window.proxy_quality_dropdown.cget("values")), ("Low", "Medium", "High"))
             self.assertEqual(window.status_text.get(), "No selection")
+            self.assertIsNone(window.current_project_path)
             self.assertIsNone(window.app_state.selected_item)
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
@@ -212,7 +215,7 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_menu_placeholders_report_not_implemented_without_crashing(self) -> None:
+    def test_remaining_menu_placeholders_report_not_implemented_without_crashing(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
 
@@ -220,8 +223,6 @@ class MainWindowUiTests(unittest.TestCase):
             placeholder_invocations = (
                 (window.file_menu, 0, "New Project"),
                 (window.file_menu, 2, "Open Project"),
-                (window.file_menu, 3, "Save Project"),
-                (window.file_menu, 4, "Save Project As"),
                 (window.edit_menu, 0, "Undo"),
                 (window.edit_menu, 1, "Redo"),
                 (window.edit_menu, 2, "Preferences"),
@@ -231,6 +232,142 @@ class MainWindowUiTests(unittest.TestCase):
             for menu, index, label in placeholder_invocations:
                 menu.invoke(index)
                 self.assertEqual(window.status_text.get(), f"{label}: Not implemented yet")
+        finally:
+            window.root.destroy()
+
+    def test_save_project_prompts_for_path_and_writes_project_without_mesh(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "empty.openretop"
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(project_path),
+                    ) as ask_save,
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(3)
+
+                ask_save.assert_called_once()
+                show_error.assert_not_called()
+                self.assertEqual(window.current_project_path, project_path)
+                self.assertEqual(window.status_text.get(), "Project saved: empty.openretop")
+
+                project = load_project(project_path)
+                self.assertEqual(project.name, "Untitled Project")
+                self.assertIsNone(project.mesh_path)
+                self.assertEqual(project.transform.location, [0.0, 0.0, 0.0])
+                self.assertEqual(project.transform.rotation, [0.0, 0.0, 0.0])
+                self.assertEqual(project.transform.scale, 1.0)
+                self.assertEqual(project.transform.origin, [0.0, 0.0, 0.0])
+                self.assertEqual(project.display.proxy_quality, "Medium")
+                self.assertTrue(project.display.show_grid)
+                self.assertTrue(project.display.show_axes)
+                self.assertFalse(project.display.show_normals)
+                self.assertEqual(project.section.axis, "Z")
+                self.assertEqual(project.section.offset, 0.0)
+                self.assertFalse(project.section.show_plane)
+        finally:
+            window.root.destroy()
+
+    def test_save_project_overwrites_current_project_path_without_prompting(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "current.openretop"
+                project_path.write_text("old contents", encoding="utf-8")
+                window.current_project_path = project_path
+                window.show_grid.set(False)
+
+                with (
+                    patch("app.main_window.filedialog.asksaveasfilename") as ask_save,
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(3)
+
+                ask_save.assert_not_called()
+                show_error.assert_not_called()
+                self.assertEqual(window.current_project_path, project_path)
+                self.assertEqual(window.status_text.get(), "Project saved: current.openretop")
+                self.assertFalse(load_project(project_path).display.show_grid)
+        finally:
+            window.root.destroy()
+
+    def test_save_project_as_writes_loaded_mesh_transform_and_settings(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            mesh_path = Path("sample.stl")
+            window.app_state.mesh_object = SimpleNamespace(
+                file_path=mesh_path,
+                location=np.asarray([1.0, 2.0, 3.0], dtype=float),
+                rotation=np.asarray([10.0, 20.0, 30.0], dtype=float),
+                scale=1.75,
+                origin=np.asarray([0.5, 0.25, 0.0], dtype=float),
+            )
+            window.proxy_quality.set("High")
+            window.show_grid.set(False)
+            window.show_axes.set(False)
+            window.show_normals.set(True)
+            window.section_axis.set("X")
+            window.section_offset.set(0.5)
+            window.show_section_plane.set(True)
+
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "mesh.openretop"
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(project_path),
+                    ) as ask_save,
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(4)
+
+                ask_save.assert_called_once()
+                show_error.assert_not_called()
+                self.assertEqual(window.current_project_path, project_path)
+                self.assertEqual(window.status_text.get(), "Project saved: mesh.openretop")
+
+                project = load_project(project_path)
+                self.assertEqual(project.mesh_path, str(mesh_path))
+                self.assertEqual(project.transform.location, [1.0, 2.0, 3.0])
+                self.assertEqual(project.transform.rotation, [10.0, 20.0, 30.0])
+                self.assertEqual(project.transform.scale, 1.75)
+                self.assertEqual(project.transform.origin, [0.5, 0.25, 0.0])
+                self.assertEqual(project.display.proxy_quality, "High")
+                self.assertFalse(project.display.show_grid)
+                self.assertFalse(project.display.show_axes)
+                self.assertTrue(project.display.show_normals)
+                self.assertEqual(project.section.axis, "X")
+                self.assertEqual(project.section.offset, 0.5)
+                self.assertTrue(project.section.show_plane)
+        finally:
+            window.root.destroy()
+
+    def test_save_project_failure_reports_error(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.current_project_path = Path("broken.openretop")
+
+            with (
+                patch("app.main_window.save_project", side_effect=OSError("disk full")),
+                patch("app.main_window.messagebox.showerror") as show_error,
+            ):
+                window.file_menu.invoke(3)
+
+            show_error.assert_called_once_with("Could not save project", "disk full")
+            self.assertEqual(window.status_text.get(), "Project save failed")
         finally:
             window.root.destroy()
 
