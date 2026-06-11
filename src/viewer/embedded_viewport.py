@@ -62,6 +62,10 @@ class EmbeddedVTKViewport:
         self._mesh_max_bound: np.ndarray | None = None
         self._mesh_actor: vtkActor | None = None
         self._mesh_actor_mesh_id: int | None = None
+        self._actors_by_role: dict[str, vtkActor] = {}
+        self._actor_groups: dict[str, list[vtkActor]] = {}
+        self._actor_keys: dict[str, object] = {}
+        self._group_keys: dict[str, object] = {}
         self._mesh_bounds_mesh_id: int | None = None
         self._mesh_local_min_bound: np.ndarray | None = None
         self._mesh_local_max_bound: np.ndarray | None = None
@@ -169,107 +173,28 @@ class EmbeddedVTKViewport:
         ):
             return
 
-        self.renderer.RemoveAllViewProps()
-        self._section_plane_actors = []
-        self._section_plane_pick_geometry = None
-        if mesh is None:
-            self._mesh_actor = None
-            self._mesh_actor_mesh_id = None
         self._update_view_metrics(mesh, matrix, scene_bounds_min, scene_bounds_max)
 
-        if mesh is not None:
-            self._mesh_actor = self._ensure_mesh_actor(mesh)
-            self._mesh_actor.SetUserMatrix(_vtk_matrix(matrix))
-            self.renderer.AddActor(self._mesh_actor)
-            if (
-                selected_item == "model"
-                and self._mesh_min_bound is not None
-                and self._mesh_max_bound is not None
-            ):
-                self._add_line_actor(
-                    build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound),
-                    line_width=1.6,
-                )
-                if object_origin is not None:
-                    self._add_line_actor(
-                        build_origin_marker(object_origin, self._view_extent),
-                        line_width=2.2,
-                    )
-                    active_axis = _active_axis_for_gizmo(
-                        active_transform_mode,
-                        active_transform_axis,
-                    )
-                    if active_axis is not None:
-                        self._add_line_actor(
-                            build_active_axis_indicator(
-                                object_origin,
-                                active_axis,
-                                self._view_extent,
-                            ),
-                            line_width=2.8,
-                        )
-                    if active_transform_mode == "rotate":
-                        self._add_line_actor(
-                            build_rotation_ring(
-                                object_origin,
-                                active_axis or "Z",
-                                self._view_extent,
-                            ),
-                            line_width=2.4,
-                        )
-
-        if show_grid:
-            self._add_line_actor(
-                build_xy_grid(self._mesh_min_bound, self._mesh_max_bound),
-                line_width=1.0,
-            )
-
-        if show_axes:
-            self._add_line_actor(
-                build_world_axes(reference_extent(self._mesh_min_bound, self._mesh_max_bound)),
-                line_width=3.0,
-            )
-
-        if mesh is not None and show_normals and mesh.has_vertex_normals():
-            normal_actor = self._add_line_actor(
-                _normal_lines(mesh, normal_scale=0.012),
-                line_width=1.0,
-            )
-            normal_actor.SetUserMatrix(_vtk_matrix(matrix))
-
-        if (
-            mesh is not None
-            and show_section_plane
-            and self._mesh_min_bound is not None
-            and self._mesh_max_bound is not None
-        ):
-            section_geometry = build_section_plane_preview(
-                section_axis,
-                section_offset,
-                self._mesh_min_bound,
-                self._mesh_max_bound,
-                selected=(selected_item == "section_plane"),
-            )
-            self._section_plane_pick_geometry = section_geometry
-            section_actor = self._add_line_actor(
-                section_geometry,
-                line_width=3.0 if selected_item == "section_plane" else 2.0,
-            )
-            self._section_plane_actors.append(section_actor)
-
-        if section_result is not None:
-            section_lines = _polyline_geometry(
-                [polyline.points for polyline in section_result.polylines],
-                color=(1.0, 0.88, 0.05),
-            )
-            self._add_tube_actor(section_lines, radius=max(self._view_extent * 0.002, 0.002))
-
-        if curve_results:
-            fitted_lines = _polyline_geometry(
-                [result.fitted_points for result in curve_results],
-                color=(0.1, 0.78, 0.28),
-            )
-            self._add_line_actor(fitted_lines, line_width=2.5)
+        self._update_mesh_actor(mesh, matrix)
+        self._update_selection_overlay_actors(
+            mesh,
+            selected_item=selected_item,
+            object_origin=object_origin,
+            active_transform_mode=active_transform_mode,
+            active_transform_axis=active_transform_axis,
+        )
+        self._update_grid_actor(show_grid)
+        self._update_axes_actor(show_axes)
+        self._update_normal_actor(mesh, matrix, show_normals)
+        self._update_section_plane_actor(
+            mesh,
+            show_section_plane=show_section_plane,
+            section_axis=section_axis,
+            section_offset=section_offset,
+            selected=(selected_item == "section_plane"),
+        )
+        self._update_section_result_actor(section_result)
+        self._update_curve_result_actor(curve_results)
 
         if reset_camera:
             self.reset_view()
@@ -321,6 +246,311 @@ class EmbeddedVTKViewport:
         self._render()
         return True
 
+    def _update_mesh_actor(
+        self,
+        mesh: TriangleMeshData | None,
+        matrix: np.ndarray,
+    ) -> None:
+        if mesh is None:
+            self._remove_actor("mesh")
+            self._mesh_actor = None
+            self._mesh_actor_mesh_id = None
+            return
+
+        mesh_actor = self._ensure_mesh_actor(mesh)
+        mesh_actor.SetUserMatrix(_vtk_matrix(matrix))
+        self._replace_actor("mesh", mesh_actor, key=id(mesh))
+
+    def _update_selection_overlay_actors(
+        self,
+        mesh: TriangleMeshData | None,
+        *,
+        selected_item: str | None,
+        object_origin: Sequence[float] | None,
+        active_transform_mode: str | None,
+        active_transform_axis: str | None,
+    ) -> None:
+        if (
+            mesh is None
+            or selected_item != "model"
+            or self._mesh_min_bound is None
+            or self._mesh_max_bound is None
+        ):
+            self._clear_overlay_group("selection_overlays")
+            self._clear_overlay_group("active_transform_gizmo")
+            return
+
+        bounds_key = self._bounds_key()
+        origin_key = _array_key(object_origin) if object_origin is not None else None
+        selection_key = ("selection", bounds_key, origin_key, round(float(self._view_extent), 9))
+        if self._group_keys.get("selection_overlays") != selection_key:
+            selection_actors = [
+                _line_actor(
+                    build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound),
+                    line_width=1.6,
+                )
+            ]
+            if object_origin is not None:
+                selection_actors.append(
+                    _line_actor(
+                        build_origin_marker(object_origin, self._view_extent),
+                        line_width=2.2,
+                    )
+                )
+            self._replace_overlay_group(
+                "selection_overlays",
+                selection_actors,
+                key=selection_key,
+            )
+
+        active_axis = _active_axis_for_gizmo(active_transform_mode, active_transform_axis)
+        gizmo_key = (
+            "gizmo",
+            origin_key,
+            active_transform_mode,
+            active_axis,
+            round(float(self._view_extent), 9),
+        )
+        if object_origin is None or active_transform_mode not in {"move", "rotate"}:
+            self._clear_overlay_group("active_transform_gizmo")
+            return
+
+        if self._group_keys.get("active_transform_gizmo") == gizmo_key:
+            return
+
+        gizmo_actors: list[vtkActor] = []
+        if active_axis is not None:
+            gizmo_actors.append(
+                _line_actor(
+                    build_active_axis_indicator(
+                        object_origin,
+                        active_axis,
+                        self._view_extent,
+                    ),
+                    line_width=2.8,
+                )
+            )
+        if active_transform_mode == "rotate":
+            gizmo_actors.append(
+                _line_actor(
+                    build_rotation_ring(
+                        object_origin,
+                        active_axis or "Z",
+                        self._view_extent,
+                    ),
+                    line_width=2.4,
+                )
+            )
+        self._replace_overlay_group(
+            "active_transform_gizmo",
+            gizmo_actors,
+            key=gizmo_key,
+        )
+
+    def _update_grid_actor(self, show_grid: bool) -> None:
+        if not show_grid:
+            self._remove_actor("grid")
+            return
+
+        key = ("grid", self._bounds_key())
+        if self._actor_keys.get("grid") == key and "grid" in self._actors_by_role:
+            return
+
+        self._replace_actor(
+            "grid",
+            _line_actor(
+                build_xy_grid(self._mesh_min_bound, self._mesh_max_bound),
+                line_width=1.0,
+            ),
+            key=key,
+        )
+
+    def _update_axes_actor(self, show_axes: bool) -> None:
+        if not show_axes:
+            self._remove_actor("axes")
+            return
+
+        key = ("axes", self._bounds_key())
+        if self._actor_keys.get("axes") == key and "axes" in self._actors_by_role:
+            return
+
+        self._replace_actor(
+            "axes",
+            _line_actor(
+                build_world_axes(reference_extent(self._mesh_min_bound, self._mesh_max_bound)),
+                line_width=3.0,
+            ),
+            key=key,
+        )
+
+    def _update_normal_actor(
+        self,
+        mesh: TriangleMeshData | None,
+        matrix: np.ndarray,
+        show_normals: bool,
+    ) -> None:
+        if mesh is None or not show_normals or not mesh.has_vertex_normals():
+            self._remove_actor("normal")
+            return
+
+        key = ("normal", id(mesh))
+        if self._actor_keys.get("normal") != key or "normal" not in self._actors_by_role:
+            self._replace_actor(
+                "normal",
+                _line_actor(
+                    _normal_lines(mesh, normal_scale=0.012),
+                    line_width=1.0,
+                ),
+                key=key,
+            )
+
+        self._actors_by_role["normal"].SetUserMatrix(_vtk_matrix(matrix))
+
+    def _update_section_plane_actor(
+        self,
+        mesh: TriangleMeshData | None,
+        *,
+        show_section_plane: bool,
+        section_axis: str,
+        section_offset: float,
+        selected: bool,
+    ) -> None:
+        if (
+            mesh is None
+            or not show_section_plane
+            or self._mesh_min_bound is None
+            or self._mesh_max_bound is None
+        ):
+            self._remove_actor("section_plane")
+            self._section_plane_actors = []
+            self._section_plane_pick_geometry = None
+            return
+
+        key = (
+            "section_plane",
+            section_axis,
+            round(float(section_offset), 9),
+            self._bounds_key(),
+            bool(selected),
+        )
+        if (
+            self._actor_keys.get("section_plane") == key
+            and "section_plane" in self._actors_by_role
+            and self._section_plane_pick_geometry is not None
+        ):
+            self._section_plane_actors = [self._actors_by_role["section_plane"]]
+            return
+
+        section_geometry = build_section_plane_preview(
+            section_axis,
+            section_offset,
+            self._mesh_min_bound,
+            self._mesh_max_bound,
+            selected=selected,
+        )
+        self._section_plane_pick_geometry = section_geometry
+        section_actor = _line_actor(
+            section_geometry,
+            line_width=3.0 if selected else 2.0,
+        )
+        self._replace_actor("section_plane", section_actor, key=key)
+        self._section_plane_actors = [section_actor]
+
+    def _update_section_result_actor(self, section_result: SectionResult | None) -> None:
+        if section_result is None:
+            self._remove_actor("section_result")
+            return
+
+        key = (
+            "section_result",
+            id(section_result),
+            section_result.segment_count,
+            section_result.point_count,
+        )
+        if self._actor_keys.get("section_result") == key and "section_result" in self._actors_by_role:
+            return
+
+        section_lines = _polyline_geometry(
+            [polyline.points for polyline in section_result.polylines],
+            color=(1.0, 0.88, 0.05),
+        )
+        self._replace_actor(
+            "section_result",
+            _tube_actor(section_lines, radius=max(self._view_extent * 0.002, 0.002)),
+            key=key,
+        )
+
+    def _update_curve_result_actor(
+        self,
+        curve_results: Sequence[CurveFitResult] | None,
+    ) -> None:
+        if not curve_results:
+            self._remove_actor("curve_result")
+            return
+
+        key = (
+            "curve_result",
+            tuple(id(result) for result in curve_results),
+            tuple(len(result.fitted_points) for result in curve_results),
+        )
+        if self._actor_keys.get("curve_result") == key and "curve_result" in self._actors_by_role:
+            return
+
+        fitted_lines = _polyline_geometry(
+            [result.fitted_points for result in curve_results],
+            color=(0.1, 0.78, 0.28),
+        )
+        self._replace_actor(
+            "curve_result",
+            _line_actor(fitted_lines, line_width=2.5),
+            key=key,
+        )
+
+    def _replace_actor(self, role: str, actor: vtkActor, *, key: object | None = None) -> None:
+        current_actor = self._actors_by_role.get(role)
+        if current_actor is actor:
+            self._actor_keys[role] = key
+            return
+
+        if current_actor is not None:
+            self.renderer.RemoveActor(current_actor)
+
+        self._actors_by_role[role] = actor
+        self._actor_keys[role] = key
+        self.renderer.AddActor(actor)
+
+    def _remove_actor(self, role: str) -> None:
+        actor = self._actors_by_role.pop(role, None)
+        self._actor_keys.pop(role, None)
+        if actor is not None:
+            self.renderer.RemoveActor(actor)
+
+    def _replace_overlay_group(
+        self,
+        group_name: str,
+        actors: Sequence[vtkActor],
+        *,
+        key: object | None = None,
+    ) -> None:
+        self._clear_overlay_group(group_name)
+        actor_list = list(actors)
+        self._actor_groups[group_name] = actor_list
+        self._group_keys[group_name] = key
+        for actor in actor_list:
+            self.renderer.AddActor(actor)
+
+    def _clear_overlay_group(self, group_name: str) -> None:
+        actors = self._actor_groups.pop(group_name, [])
+        self._group_keys.pop(group_name, None)
+        for actor in actors:
+            self.renderer.RemoveActor(actor)
+
+    def _set_actor_visible(self, actor: vtkActor, visible: bool) -> None:
+        actor.SetVisibility(1 if visible else 0)
+
+    def _bounds_key(self) -> tuple[tuple[float, ...] | None, tuple[float, ...] | None]:
+        return (_array_key(self._mesh_min_bound), _array_key(self._mesh_max_bound))
+
     def frame_model(self) -> None:
         self.reset_view()
 
@@ -342,25 +572,12 @@ class EmbeddedVTKViewport:
         self.reset_view()
 
     def _add_line_actor(self, geometry: LineGeometry, *, line_width: float) -> vtkActor:
-        actor = vtkActor()
-        mapper = vtkPolyDataMapper()
-        mapper.SetInputData(_line_polydata(geometry))
-        actor.SetMapper(mapper)
-        actor.GetProperty().SetLineWidth(float(line_width))
+        actor = _line_actor(geometry, line_width=line_width)
         self.renderer.AddActor(actor)
         return actor
 
     def _add_tube_actor(self, geometry: LineGeometry, *, radius: float) -> vtkActor:
-        tube = vtkTubeFilter()
-        tube.SetInputData(_line_polydata(geometry))
-        tube.SetRadius(float(radius))
-        tube.SetNumberOfSides(10)
-        tube.CappingOn()
-        mapper = vtkPolyDataMapper()
-        mapper.SetInputConnection(tube.GetOutputPort())
-        actor = vtkActor()
-        actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(1.0, 0.88, 0.05)
+        actor = _tube_actor(geometry, radius=radius)
         self.renderer.AddActor(actor)
         return actor
 
@@ -709,6 +926,29 @@ def _point_to_segment_distance(
     return float(np.linalg.norm(point_array - closest))
 
 
+def _line_actor(geometry: LineGeometry, *, line_width: float) -> vtkActor:
+    actor = vtkActor()
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(_line_polydata(geometry))
+    actor.SetMapper(mapper)
+    actor.GetProperty().SetLineWidth(float(line_width))
+    return actor
+
+
+def _tube_actor(geometry: LineGeometry, *, radius: float) -> vtkActor:
+    tube = vtkTubeFilter()
+    tube.SetInputData(_line_polydata(geometry))
+    tube.SetRadius(float(radius))
+    tube.SetNumberOfSides(10)
+    tube.CappingOn()
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputConnection(tube.GetOutputPort())
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    actor.GetProperty().SetColor(1.0, 0.88, 0.05)
+    return actor
+
+
 def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
     normals = vtkPolyDataNormals()
     normals.SetInputData(_mesh_polydata(mesh))
@@ -734,6 +974,13 @@ def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
     actor.GetProperty().SetSpecularPower(18.0)
     actor.GetProperty().SetInterpolationToPhong()
     return actor
+
+
+def _array_key(values: Sequence[float] | np.ndarray | None) -> tuple[float, ...] | None:
+    if values is None:
+        return None
+
+    return tuple(round(float(value), 9) for value in np.asarray(values, dtype=float).ravel())
 
 
 def _active_axis_for_gizmo(mode: str | None, axis: str | None) -> str | None:

@@ -8,6 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from viewer.embedded_viewport import (
     EmbeddedVTKViewport,
@@ -33,6 +34,42 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             ),
             triangles=np.asarray([[0, 1, 2]], dtype=int),
         )
+
+    def _viewport(self) -> EmbeddedVTKViewport:
+        viewport = EmbeddedVTKViewport(parent=object())
+        viewport._is_started = True
+        viewport._render = lambda: None  # type: ignore[method-assign]
+        return viewport
+
+    def _set_basic_scene(
+        self,
+        viewport: EmbeddedVTKViewport,
+        mesh: TriangleMeshData | None,
+        **kwargs: object,
+    ) -> None:
+        scene_kwargs = {
+            "transform_matrix": np.identity(4),
+            "show_grid": True,
+            "show_axes": True,
+            "show_normals": False,
+            "show_section_plane": True,
+            "section_axis": "Z",
+            "section_offset": 0.0,
+            "selected_item": None,
+            "object_origin": None,
+            "scene_bounds_min": None,
+            "scene_bounds_max": None,
+            "active_transform_mode": None,
+            "active_transform_axis": None,
+            "section_result": None,
+            "curve_results": [],
+            "reset_camera": False,
+        }
+        scene_kwargs.update(kwargs)
+        viewport.set_scene(mesh, **scene_kwargs)
+
+    def _actor_count(self, viewport: EmbeddedVTKViewport) -> int:
+        return int(viewport.renderer.GetActors().GetNumberOfItems())
 
     def test_triangle_mesh_converts_to_vtk_polydata(self) -> None:
         mesh = self._triangle_mesh()
@@ -104,6 +141,81 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(render_calls, [True])
         self.assertIs(actor, viewport._mesh_actor)
         self.assertAlmostEqual(actor.GetUserMatrix().GetElement(0, 3), 4.0)
+
+    def test_repeated_set_scene_calls_do_not_duplicate_actors(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+
+        self._set_basic_scene(viewport, mesh)
+        first_count = self._actor_count(viewport)
+        self._set_basic_scene(viewport, mesh)
+        second_count = self._actor_count(viewport)
+        self._set_basic_scene(viewport, mesh)
+        third_count = self._actor_count(viewport)
+
+        self.assertEqual(first_count, 4)
+        self.assertEqual(second_count, first_count)
+        self.assertEqual(third_count, first_count)
+        self.assertEqual(
+            set(viewport._actors_by_role),
+            {"mesh", "grid", "axes", "section_plane"},
+        )
+
+    def test_set_scene_reuses_mesh_actor_when_mesh_identity_is_unchanged(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        self._set_basic_scene(viewport, mesh)
+        first_actor = viewport._mesh_actor
+        translated = np.identity(4)
+        translated[0, 3] = 2.5
+
+        self._set_basic_scene(viewport, mesh, transform_matrix=translated)
+
+        self.assertIs(viewport._mesh_actor, first_actor)
+        self.assertIs(viewport._actors_by_role["mesh"], first_actor)
+        self.assertAlmostEqual(first_actor.GetUserMatrix().GetElement(0, 3), 2.5)
+
+    def test_set_scene_replaces_mesh_actor_when_mesh_identity_changes(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        self._set_basic_scene(viewport, mesh)
+        first_actor = viewport._mesh_actor
+
+        self._set_basic_scene(viewport, mesh.copy())
+
+        self.assertIsNot(viewport._mesh_actor, first_actor)
+        self.assertIs(viewport._actors_by_role["mesh"], viewport._mesh_actor)
+
+    def test_clearing_section_result_removes_section_actor(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        section_result = SectionResult(
+            axis="Z",
+            offset=0.0,
+            polylines=(
+                SectionPolyline(
+                    points=np.asarray(
+                        [
+                            [0.0, 0.0, 0.0],
+                            [1.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0],
+                        ],
+                        dtype=float,
+                    )
+                ),
+            ),
+            segment_count=2,
+        )
+
+        self._set_basic_scene(viewport, mesh, section_result=section_result)
+        section_count = self._actor_count(viewport)
+        section_actor = viewport._actors_by_role["section_result"]
+
+        self._set_basic_scene(viewport, mesh, section_result=None)
+
+        self.assertNotIn("section_result", viewport._actors_by_role)
+        self.assertEqual(self._actor_count(viewport), section_count - 1)
+        self.assertIsNot(viewport._actors_by_role.get("section_result"), section_actor)
 
     def test_line_geometry_converts_to_vtk_polydata_with_cell_colors(self) -> None:
         lines = build_bounding_box_outline((0.0, 0.0, 0.0), (1.0, 2.0, 3.0))
