@@ -257,7 +257,7 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_open_project_reads_metadata_without_reconstructing_scene(self) -> None:
+    def test_open_project_without_mesh_path_reads_metadata_only(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
 
@@ -266,10 +266,13 @@ class MainWindowUiTests(unittest.TestCase):
                 project_path = Path(tmpdir) / "saved.openretop"
                 project = default_project_data()
                 project.name = "Saved Metadata"
-                project.mesh_path = "models/scan.stl"
+                project.mesh_path = None
                 project.display.show_grid = False
+                project.display.show_axes = False
+                project.display.show_normals = True
                 project.section.axis = "X"
                 project.section.offset = 2.0
+                project.section.show_plane = True
                 save_project(project, project_path)
 
                 scene_call_count = len(window.viewport.scene_calls)
@@ -295,9 +298,183 @@ class MainWindowUiTests(unittest.TestCase):
                 )
                 self.assertIs(window.app_state.mesh_object, mesh_object)
                 self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
-                self.assertTrue(window.show_grid.get())
-                self.assertEqual(window.section_axis.get(), "Z")
-                self.assertEqual(window.section_offset.get(), 0.0)
+                self.assertFalse(window.show_grid.get())
+                self.assertFalse(window.show_axes.get())
+                self.assertTrue(window.show_normals.get())
+                self.assertTrue(window.show_section_plane.get())
+                self.assertEqual(window.section_axis.get(), "X")
+                self.assertEqual(window.section_offset.get(), 2.0)
+                self.assertEqual(window.section_offset_text.get(), "2.000")
+                self.assertEqual(window.section_plane_text.get(), "Section: X = 2.000")
+        finally:
+            window.root.destroy()
+
+    def test_open_project_reloads_mesh_and_restores_saved_state(self) -> None:
+        mesh = FakeMesh()
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        progress_dialogs: list[object] = []
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, file_name: str) -> None:
+                self.file_name = file_name
+                self.stages: list[str] = []
+                self.closed = False
+                progress_dialogs.append(self)
+
+            def update_stage(self, stage: str) -> None:
+                self.stages.append(stage)
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                mesh_path = Path(tmpdir) / "sample.stl"
+                project_path = Path(tmpdir) / "saved.openretop"
+                metadata = MeshMetadata(
+                    file_path=mesh_path,
+                    file_name="sample.stl",
+                    extension=".stl",
+                    vertex_count=3,
+                    triangle_count=1,
+                    had_vertex_normals=True,
+                    had_triangle_normals=True,
+                    computed_vertex_normals=False,
+                    computed_triangle_normals=False,
+                )
+                project = default_project_data()
+                project.name = "Restored Project"
+                project.mesh_path = str(mesh_path)
+                project.transform.location = [4.0, 5.0, 6.0]
+                project.transform.rotation = [10.0, 20.0, 30.0]
+                project.transform.scale = 1.5
+                project.transform.origin = [0.25, 0.5, 0.75]
+                project.display.proxy_quality = "High"
+                project.display.show_grid = False
+                project.display.show_axes = False
+                project.display.show_normals = True
+                project.section.axis = "X"
+                project.section.offset = 0.5
+                project.section.show_plane = True
+                save_project(project, project_path)
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                    ) as load_mesh,
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                load_mesh.assert_called_once_with(mesh_path)
+                show_error.assert_not_called()
+                self.assertEqual(window.current_project_path, project_path)
+                self.assertEqual(progress_dialogs[0].file_name, "sample.stl")
+                self.assertEqual(progress_dialogs[0].stages, list(LOAD_PROGRESS_STAGES))
+                self.assertTrue(progress_dialogs[0].closed)
+                self.assertEqual(
+                    window.status_text.get(),
+                    f"Project opened: Restored Project ({project_path})",
+                )
+                self.assertIsNotNone(window.app_state.mesh_object)
+                self.assertTrue(np.allclose(window.app_state.mesh_object.location, [4.0, 5.0, 6.0]))
+                self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, [10.0, 20.0, 30.0]))
+                self.assertAlmostEqual(window.app_state.mesh_object.scale, 1.5)
+                self.assertTrue(np.allclose(window.app_state.mesh_object.origin, [0.25, 0.5, 0.75]))
+                self.assertEqual(window.location_x.get(), "4.000")
+                self.assertEqual(window.location_y.get(), "5.000")
+                self.assertEqual(window.location_z.get(), "6.000")
+                self.assertEqual(window.rotation_x.get(), "10.000")
+                self.assertEqual(window.rotation_y.get(), "20.000")
+                self.assertEqual(window.rotation_z.get(), "30.000")
+                self.assertEqual(window.scale_value.get(), "1.500")
+                self.assertEqual(window.proxy_quality.get(), "High")
+                self.assertFalse(window.show_grid.get())
+                self.assertFalse(window.show_axes.get())
+                self.assertTrue(window.show_normals.get())
+                self.assertTrue(window.show_section_plane.get())
+                self.assertEqual(window.section_axis.get(), "X")
+                self.assertEqual(window.section_offset.get(), 0.5)
+                self.assertEqual(window.section_offset_text.get(), "0.500")
+                self.assertEqual(window.section_plane_text.get(), "Section: X = 0.500")
+                scene = window.viewport.scene_calls[-1]
+                self.assertEqual(scene["show_grid"], False)
+                self.assertEqual(scene["show_axes"], False)
+                self.assertEqual(scene["show_normals"], True)
+                self.assertEqual(scene["show_section_plane"], True)
+                self.assertEqual(scene["section_axis"], "X")
+                self.assertEqual(scene["section_offset"], 0.5)
+                self.assertEqual(scene["mesh"], window.app_state.mesh_object.display_mesh)
+                self.assertIsNotNone(scene["transform_matrix"])
+        finally:
+            window.root.destroy()
+
+    def test_open_project_missing_mesh_path_reports_error_and_keeps_app_usable(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        progress_dialogs: list[object] = []
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, file_name: str) -> None:
+                self.file_name = file_name
+                self.stages: list[str] = []
+                self.closed = False
+                progress_dialogs.append(self)
+
+            def update_stage(self, stage: str) -> None:
+                self.stages.append(stage)
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "missing-mesh.openretop"
+                previous_mesh = SimpleNamespace(name="previous.stl")
+                window.app_state.mesh_object = previous_mesh
+                project = default_project_data()
+                project.name = "Missing Mesh Project"
+                project.mesh_path = "missing.stl"
+                save_project(project, project_path)
+
+                with (
+                    patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                    patch(
+                        "app.main_window.filedialog.askopenfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch(
+                        "app.main_window.load_mesh",
+                        side_effect=FileNotFoundError("Mesh file does not exist: missing.stl"),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(2)
+
+                show_error.assert_called_once_with(
+                    "Could not open project",
+                    "Mesh file does not exist: missing.stl",
+                )
+                self.assertEqual(window.current_project_path, project_path)
+                self.assertIs(window.app_state.mesh_object, previous_mesh)
+                self.assertEqual(window.status_text.get(), "Project open failed")
+                self.assertEqual(str(window.open_model_button.cget("state")), "normal")
+                self.assertEqual(
+                    window.file_menu.entrycget(OPEN_MODEL_MENU_INDEX, "state"),
+                    "normal",
+                )
+                self.assertEqual(progress_dialogs[0].stages, [LOAD_PROGRESS_STAGES[0]])
+                self.assertTrue(progress_dialogs[0].closed)
         finally:
             window.root.destroy()
 

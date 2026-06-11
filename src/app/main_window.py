@@ -38,6 +38,7 @@ from mesh.display_proxy import (
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
 from mesh.triangle_mesh import TriangleMeshData
+from project.project_data import ProjectData
 from project.project_io import load_project, save_project
 from project.project_state import project_from_app_state
 from viewer.embedded_viewport import EmbeddedVTKViewport
@@ -270,7 +271,50 @@ class OpenRetopWindow:
             return
 
         self.current_project_path = project_path
+        if project.mesh_path is None:
+            self._restore_project_controls(project)
+            self.status_text.set(f"Project opened: {project.name} ({project_path})")
+            return
+
+        mesh_path = self._project_mesh_path(project_path, project.mesh_path)
+        self.proxy_quality.set(normalize_proxy_quality(project.display.proxy_quality))
+        if not self.load_model(mesh_path, error_title="Could not open project"):
+            self.status_text.set("Project open failed")
+            return
+
+        self._restore_project_controls(project)
+        self._restore_project_transform(project)
         self.status_text.set(f"Project opened: {project.name} ({project_path})")
+
+    def _project_mesh_path(self, project_path: Path, mesh_path: str) -> Path:
+        restored_mesh_path = Path(mesh_path).expanduser()
+        if not restored_mesh_path.is_absolute():
+            restored_mesh_path = project_path.parent / restored_mesh_path
+        return restored_mesh_path
+
+    def _restore_project_controls(self, project: ProjectData) -> None:
+        self.proxy_quality.set(normalize_proxy_quality(project.display.proxy_quality))
+        self.show_grid.set(project.display.show_grid)
+        self.show_axes.set(project.display.show_axes)
+        self.show_normals.set(project.display.show_normals)
+        self.section_axis.set(project.section.axis)
+        self.show_section_plane.set(project.section.show_plane)
+        self._set_section_offset(project.section.offset, clamp=False, refresh=False)
+        self._update_section_plane_label(set_status=False)
+
+    def _restore_project_transform(self, project: ProjectData) -> None:
+        if self.app_state.mesh_object is None:
+            return
+
+        self.app_state.mesh_object.location = np.asarray(project.transform.location, dtype=float)
+        self.app_state.mesh_object.rotation = np.asarray(project.transform.rotation, dtype=float)
+        self.app_state.mesh_object.scale = float(project.transform.scale)
+        self.app_state.mesh_object.origin = np.asarray(project.transform.origin, dtype=float)
+        self._set_transform_inputs_from_object()
+        self._apply_object_transform(reset_camera=False)
+        self._set_section_offset(project.section.offset, clamp=False, refresh=False)
+        self._update_section_plane_label(set_status=False)
+        self._refresh_viewport(reset_camera=False)
 
     def save_project(self) -> None:
         if self.current_project_path is None:
@@ -798,9 +842,9 @@ class OpenRetopWindow:
 
         self.load_model(Path(selected_path))
 
-    def load_model(self, file_path: Path) -> None:
+    def load_model(self, file_path: Path, *, error_title: str = "Could not open model") -> bool:
         if self._is_loading_model:
-            return
+            return False
 
         self._is_loading_model = True
         self._set_open_model_enabled(False)
@@ -820,8 +864,8 @@ class OpenRetopWindow:
                 self.status_text.set("No selection")
                 progress.close()
                 progress = None
-                messagebox.showerror("Could not open model", str(exc))
-                return
+                messagebox.showerror(error_title, str(exc))
+                return False
 
             origin = np.asarray(bounds.get_center(), dtype=float)
             self.app_state.mesh_object = MeshObjectState(
@@ -855,6 +899,7 @@ class OpenRetopWindow:
             self._set_selected_item(None, status="No selection")
             self._refresh_viewport(reset_camera=True)
             self.status_text.set(self._display_mesh_status(display_result))
+            return True
         finally:
             if progress is not None:
                 progress.close()
