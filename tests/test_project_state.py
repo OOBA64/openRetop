@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from project.project_data import PROJECT_VERSION
+from project.project_state import project_from_app_state
+
+
+class ProjectStateTests(unittest.TestCase):
+    def test_project_from_app_state_uses_defaults_without_mesh(self) -> None:
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Low",
+            show_grid=False,
+            show_axes=False,
+            show_normals=True,
+            section_axis="Y",
+            section_offset=1.25,
+            show_section_plane=True,
+        )
+
+        self.assertEqual(project.version, PROJECT_VERSION)
+        self.assertEqual(project.name, "Untitled Project")
+        self.assertIsNone(project.mesh_path)
+        self.assertEqual(project.transform.location, [0.0, 0.0, 0.0])
+        self.assertEqual(project.transform.rotation, [0.0, 0.0, 0.0])
+        self.assertEqual(project.transform.scale, 1.0)
+        self.assertEqual(project.transform.origin, [0.0, 0.0, 0.0])
+        self.assertEqual(project.display.proxy_quality, "Low")
+        self.assertFalse(project.display.show_grid)
+        self.assertFalse(project.display.show_axes)
+        self.assertTrue(project.display.show_normals)
+        self.assertEqual(project.section.axis, "Y")
+        self.assertEqual(project.section.offset, 1.25)
+        self.assertTrue(project.section.show_plane)
+
+    def test_project_from_app_state_uses_fake_mesh_transform_and_path(self) -> None:
+        mesh_path = Path("models") / "scan.stl"
+        mesh_object = SimpleNamespace(
+            file_path=mesh_path,
+            location=np.asarray([1.0, 2.0, 3.0], dtype=float),
+            rotation=np.asarray([10.0, 20.0, 30.0], dtype=float),
+            scale=2.5,
+            origin=np.asarray([0.5, 0.25, 0.0], dtype=float),
+        )
+
+        project = project_from_app_state(
+            mesh_object=mesh_object,
+            proxy_quality="High",
+            show_grid=True,
+            show_axes=False,
+            show_normals=False,
+            section_axis="z",
+            section_offset=-0.5,
+            show_section_plane=False,
+        )
+
+        self.assertEqual(project.mesh_path, str(mesh_path))
+        self.assertEqual(project.transform.location, [1.0, 2.0, 3.0])
+        self.assertEqual(project.transform.rotation, [10.0, 20.0, 30.0])
+        self.assertEqual(project.transform.scale, 2.5)
+        self.assertEqual(project.transform.origin, [0.5, 0.25, 0.0])
+        self.assertEqual(project.display.proxy_quality, "High")
+        self.assertTrue(project.display.show_grid)
+        self.assertFalse(project.display.show_axes)
+        self.assertFalse(project.display.show_normals)
+        self.assertEqual(project.section.axis, "Z")
+        self.assertEqual(project.section.offset, -0.5)
+        self.assertFalse(project.section.show_plane)
+
+    def test_project_from_app_state_handles_mesh_without_file_path(self) -> None:
+        mesh_object = SimpleNamespace(
+            file_path=None,
+            location=[4.0, 5.0, 6.0],
+            rotation=(40.0, 50.0, 60.0),
+            scale=1.5,
+            origin=[1.0, 2.0, 3.0],
+        )
+
+        project = project_from_app_state(
+            mesh_object=mesh_object,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="X",
+            section_offset=0.0,
+            show_section_plane=False,
+        )
+
+        self.assertIsNone(project.mesh_path)
+        self.assertEqual(project.transform.location, [4.0, 5.0, 6.0])
+        self.assertEqual(project.transform.rotation, [40.0, 50.0, 60.0])
+        self.assertEqual(project.transform.scale, 1.5)
+        self.assertEqual(project.transform.origin, [1.0, 2.0, 3.0])
+
+    def test_project_from_app_state_rejects_invalid_mesh_shape(self) -> None:
+        mesh_object = SimpleNamespace(
+            file_path=Path("broken.stl"),
+            location=[1.0, 2.0],
+            rotation=[0.0, 0.0, 0.0],
+            scale=1.0,
+            origin=[0.0, 0.0, 0.0],
+        )
+
+        with self.assertRaises(ValueError) as context:
+            project_from_app_state(
+                mesh_object=mesh_object,
+                proxy_quality="Medium",
+                show_grid=True,
+                show_axes=True,
+                show_normals=False,
+                section_axis="Z",
+                section_offset=0.0,
+                show_section_plane=False,
+            )
+
+        self.assertIn("mesh_object.location", str(context.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
