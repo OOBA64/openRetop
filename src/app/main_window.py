@@ -1102,7 +1102,7 @@ class OpenRetopWindow:
         )
         self.curve_visible_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
-        row = self._add_info_row(parent, row, "Name", self.curve_name_text)
+        row = self._add_curve_name_row(parent, row)
         row = self._add_info_row(parent, row, "Section", self.curve_section_text)
         row = self._add_info_row(parent, row, "Plane", self.curve_plane_text)
         row = self._add_info_row(parent, row, "Points", self.curve_point_count_text)
@@ -1176,6 +1176,14 @@ class OpenRetopWindow:
         entry.bind("<KeyRelease>", self._on_object_transform_changed)
         entry.bind("<FocusOut>", self._on_object_transform_changed)
         self.object_transform_widgets.extend([label, entry])
+        return row + 1
+
+    def _add_curve_name_row(self, parent: ttk.Frame, row: int) -> int:
+        ttk.Label(parent, text="Name").grid(row=row, column=0, sticky="w", pady=2)
+        self.curve_name_entry = ttk.Entry(parent, textvariable=self.curve_name_text)
+        self.curve_name_entry.grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
+        self.curve_name_entry.bind("<KeyRelease>", self._on_curve_name_changed)
+        self.curve_name_entry.bind("<FocusOut>", self._on_curve_name_changed)
         return row + 1
 
     def _show_context(self, selected_item: str | None) -> None:
@@ -1636,7 +1644,7 @@ class OpenRetopWindow:
         self.curve_visible.set(bool(active_curve.visible))
         self.curve_name_text.set(active_curve.name)
         self.curve_section_text.set(self._section_result_name_for_curve(active_curve))
-        self.curve_plane_text.set(self._section_plane_name_for_curve(active_curve))
+        self.curve_plane_text.set(self._section_plane_summary_for_curve(active_curve))
         self.curve_point_count_text.set(str(len(active_curve.fitted_points)))
         self.curve_mean_error_text.set(f"{active_curve.mean_error:.3f}")
         self.curve_max_error_text.set(f"{active_curve.max_error:.3f}")
@@ -1648,11 +1656,29 @@ class OpenRetopWindow:
                 return result.name
         return "(missing)"
 
-    def _section_plane_name_for_curve(self, curve: StoredCurve) -> str:
+    def _section_plane_summary_for_curve(self, curve: StoredCurve) -> str:
         for plane in self.app_state.section_collection.planes:
             if plane.id == curve.plane_id:
-                return plane.name
+                return f"{plane.name} ({plane.axis} = {plane.offset:.3f})"
         return "(missing)"
+
+    def _on_curve_name_changed(self, _event: object | None = None) -> None:
+        active_curve = self._active_curve()
+        if active_curve is None:
+            return
+
+        candidate = self.curve_name_text.get().strip()
+        if not candidate:
+            if self.root.focus_get() is not self.curve_name_entry:
+                self.curve_name_text.set(active_curve.name)
+            return
+        if candidate == active_curve.name:
+            return
+
+        active_curve.name = candidate
+        self._refresh_scene_browser()
+        self.status_text.set(f"Selected: {active_curve.name}")
+        self._set_project_dirty(True)
 
     def _on_curve_visibility_changed(self) -> None:
         active_curve = self._active_curve()

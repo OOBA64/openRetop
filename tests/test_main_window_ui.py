@@ -1257,6 +1257,16 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(tree.item(first_curve_node, "text"), "Section 1 Curve 1")
                 self.assertEqual(tree.item(second_curve_node, "text"), "Section 2 Curve 1")
                 self.assertEqual(tree.selection(), ())
+
+                tree.selection_set(second_curve_node)
+                tree.event_generate("<<TreeviewSelect>>")
+                window.root.update()
+                window.curve_visible.set(True)
+                window._on_curve_visibility_changed()
+
+                self.assertTrue(curves[1].visible)
+                self.assertEqual(window.app_state.curve_results, curves)
+                self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], curves)
         finally:
             window.root.destroy()
 
@@ -1473,6 +1483,68 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(project.section_planes[1].offset, -0.5)
                 self.assertFalse(project.section_planes[1].visible)
                 self.assertEqual(project.active_section_plane_id, "plane-b")
+        finally:
+            window.root.destroy()
+
+    def test_save_project_preserves_curve_names_and_visibility(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.add_section_plane()
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_curve = window.app_state.curve_collection.curves[1]
+
+            window.select_curve(first_curve.id)
+            window.curve_name_text.set("Rim Curve")
+            window._on_curve_name_changed()
+            window.select_curve(second_curve.id)
+            window.curve_visible.set(False)
+            window._on_curve_visibility_changed()
+
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "curves.openretop"
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(3)
+
+                show_error.assert_not_called()
+                project = load_project(project_path)
+                self.assertEqual([curve.id for curve in project.curves], [first_curve.id, second_curve.id])
+                self.assertEqual([curve.name for curve in project.curves], ["Rim Curve", "Section 2 Curve 1"])
+                self.assertEqual([curve.visible for curve in project.curves], [True, False])
+                self.assertEqual(project.curves[0].section_result_id, first_curve.section_result_id)
+                self.assertEqual(project.curves[1].plane_id, second_curve.plane_id)
         finally:
             window.root.destroy()
 
@@ -2089,10 +2161,22 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.no_selection_frame.winfo_manager(), "")
             self.assertEqual(window.curve_name_text.get(), "Section 1 Curve 1")
             self.assertEqual(window.curve_section_text.get(), "Section 1")
-            self.assertEqual(window.curve_plane_text.get(), first_plane.name)
+            self.assertEqual(window.curve_plane_text.get(), f"{first_plane.name} (Z = 0.000)")
             self.assertEqual(window.curve_point_count_text.get(), "2")
             self.assertEqual(window.curve_closed_text.get(), "Open")
             self.assertTrue(window.curve_visible.get())
+            self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [first_curve, second_curve])
+            self.assertTrue(window.viewport.scene_calls[-1]["curve_results"][0].selected)
+            self.assertFalse(window.viewport.scene_calls[-1]["curve_results"][1].selected)
+
+            window._set_project_dirty(False)
+            window.curve_name_text.set("Rim Curve")
+            window._on_curve_name_changed()
+
+            self.assertEqual(first_curve.name, "Rim Curve")
+            self.assertEqual(tree.item(first_curve_node, "text"), "Rim Curve")
+            self.assertEqual(window.status_text.get(), "Selected: Rim Curve")
+            self.assertTrue(window.project_dirty)
 
             window.curve_visible.set(False)
             window._on_curve_visibility_changed()
@@ -2104,17 +2188,28 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.get_children(NODE_CURVES), (first_curve_node, second_curve_node))
             self.assertEqual(tree.selection(), (first_curve_node,))
 
+            window.curve_visible.set(True)
+            window._on_curve_visibility_changed()
+
+            self.assertTrue(first_curve.visible)
+            self.assertEqual(window.app_state.curve_results, [first_curve, second_curve])
+            self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [first_curve, second_curve])
+
+            window.curve_visible.set(False)
+            window._on_curve_visibility_changed()
+
             window.tools_menu.invoke(7)
 
             self.assertEqual(window.app_state.section_collection.results, [first_result, second_result])
+            self.assertEqual(window.app_state.section_collection.planes, [first_plane, second_plane])
             self.assertEqual(window.app_state.curve_collection.curves, [second_curve])
             self.assertEqual(window.app_state.curve_collection.active_curve_id, second_curve.id)
             self.assertEqual(window.app_state.curve_results, [second_curve])
             self.assertEqual(tree.get_children(NODE_CURVES), (second_curve_node,))
             self.assertEqual(tree.selection(), (second_curve_node,))
-            self.assertEqual(window.status_text.get(), "Deleted: Section 1 Curve 1")
+            self.assertEqual(window.status_text.get(), "Deleted: Rim Curve")
             self.assertEqual(window.curve_section_text.get(), "Section 2")
-            self.assertEqual(window.curve_plane_text.get(), second_plane.name)
+            self.assertEqual(window.curve_plane_text.get(), f"{second_plane.name} (X = 0.500)")
         finally:
             window.root.destroy()
 
