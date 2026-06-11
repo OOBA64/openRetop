@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from math import cos, radians, sin
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, filedialog
 from tkinter import messagebox, ttk
@@ -14,6 +13,17 @@ from app.app_state import AppState
 from app.object_state import MeshObjectState
 from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
 from app.transform_state import ActiveTransformState
+from app.transforms import (
+    build_object_transform_matrix,
+    calculate_geometry_centering_delta,
+    calculate_location_for_origin_change,
+    calculate_origin_to_world_origin,
+    mesh_move_delta,
+    mesh_rotate_delta,
+    section_offset_delta,
+    transform_bounds,
+    transform_point,
+)
 from geometry.curves import fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section
 from mesh.display_proxy import (
@@ -36,10 +46,6 @@ MESH_FILE_TYPES = (
     ("PLY files", "*.ply"),
     ("All files", "*.*"),
 )
-MOVE_SENSITIVITY = 0.001
-ROTATION_SENSITIVITY = 0.5
-FINE_TRANSFORM_MULTIPLIER = 0.1
-
 
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
@@ -992,7 +998,7 @@ class OpenRetopWindow:
             self._refresh_viewport(reset_camera=reset_camera)
             return
 
-        self.app_state.mesh_object.transform_matrix = _build_object_transform_matrix(
+        self.app_state.mesh_object.transform_matrix = build_object_transform_matrix(
             self.app_state.mesh_object.location,
             self.app_state.mesh_object.rotation,
             self.app_state.mesh_object.scale,
@@ -1029,7 +1035,7 @@ class OpenRetopWindow:
 
         minimum_bound, maximum_bound = self._transformed_source_bounds()
         current_center = (minimum_bound + maximum_bound) * 0.5
-        new_origin = _transform_point(
+        new_origin = transform_point(
             np.linalg.inv(self._current_object_matrix()),
             current_center,
         )
@@ -1041,12 +1047,14 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        rotation_scale = _rotation_matrix(self.app_state.mesh_object.rotation) * self.app_state.mesh_object.scale
-        new_origin = self.app_state.mesh_object.origin + np.linalg.inv(rotation_scale) @ (
-            np.asarray([0.0, 0.0, 0.0], dtype=float) - self.app_state.mesh_object.location
+        new_origin, new_location = calculate_origin_to_world_origin(
+            self.app_state.mesh_object.origin,
+            self.app_state.mesh_object.location,
+            self.app_state.mesh_object.rotation,
+            self.app_state.mesh_object.scale,
         )
         self.app_state.mesh_object.origin = new_origin
-        self.app_state.mesh_object.location = np.asarray([0.0, 0.0, 0.0], dtype=float)
+        self.app_state.mesh_object.location = new_location
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
         self.status_text.set("Origin moved to world origin")
@@ -1058,7 +1066,7 @@ class OpenRetopWindow:
 
         bounds = self.app_state.mesh_object.source_mesh.get_axis_aligned_bounding_box()
         raw_center = np.asarray(bounds.get_center(), dtype=float)
-        delta = self.app_state.mesh_object.origin - raw_center
+        delta = calculate_geometry_centering_delta(self.app_state.mesh_object.origin, raw_center)
         self.app_state.mesh_object.source_mesh.translate(delta.tolist())
         self.app_state.mesh_object.display_mesh.translate(delta.tolist())
         self.app_state.mesh_object.source_bounds_min = np.asarray(
@@ -1088,12 +1096,14 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             return
 
-        rotation_scale = _rotation_matrix(self.app_state.mesh_object.rotation) * self.app_state.mesh_object.scale
         old_origin = self.app_state.mesh_object.origin.copy()
         self.app_state.mesh_object.origin = np.asarray(new_origin, dtype=float)
-        self.app_state.mesh_object.location = (
-            self.app_state.mesh_object.location
-            + rotation_scale @ (self.app_state.mesh_object.origin - old_origin)
+        self.app_state.mesh_object.location = calculate_location_for_origin_change(
+            self.app_state.mesh_object.location,
+            self.app_state.mesh_object.rotation,
+            self.app_state.mesh_object.scale,
+            old_origin,
+            self.app_state.mesh_object.origin,
         )
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
@@ -1102,7 +1112,7 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             return np.identity(4)
 
-        return _build_object_transform_matrix(
+        return build_object_transform_matrix(
             self.app_state.mesh_object.location,
             self.app_state.mesh_object.rotation,
             self.app_state.mesh_object.scale,
@@ -1190,7 +1200,7 @@ class OpenRetopWindow:
             zero = np.asarray([0.0, 0.0, 0.0], dtype=float)
             return (zero, zero)
 
-        return _transform_bounds(
+        return transform_bounds(
             self.app_state.mesh_object.source_bounds_min,
             self.app_state.mesh_object.source_bounds_max,
             self._current_object_matrix(),
@@ -1281,25 +1291,17 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             return
 
-        delta = self._mouse_delta(state, mouse_position)
-        scale = self._movement_scale(fine=fine)
-        drag_amount = (delta[0] - delta[1]) * scale
-        axis = state.axis_constraint
-        if axis == "X":
-            movement = np.asarray([drag_amount, 0.0, 0.0], dtype=float)
-            self._last_transform_readout = f"Delta X: {movement[0]:.2f}"
-        elif axis == "Y":
-            movement = np.asarray([0.0, drag_amount, 0.0], dtype=float)
-            self._last_transform_readout = f"Delta Y: {movement[1]:.2f}"
-        elif axis == "Z":
-            movement = np.asarray([0.0, 0.0, drag_amount], dtype=float)
-            self._last_transform_readout = f"Delta Z: {movement[2]:.2f}"
-        else:
-            movement = np.asarray([delta[0] * scale, -delta[1] * scale, 0.0], dtype=float)
-            self._last_transform_readout = (
-                f"Delta X: {movement[0]:.2f}, Delta Y: {movement[1]:.2f}"
-            )
+        minimum_bound, maximum_bound = self._transformed_source_bounds()
+        model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
+        movement, readout = mesh_move_delta(
+            state.mouse_start,
+            mouse_position,
+            state.axis_constraint,
+            model_diagonal,
+            fine=fine,
+        )
 
+        self._last_transform_readout = readout
         self.app_state.mesh_object.location = state.location + movement
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
@@ -1315,11 +1317,14 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             return
 
-        delta = self._mouse_delta(state, mouse_position)
-        angle_delta = delta[0] * ROTATION_SENSITIVITY * self._fine_multiplier(fine)
         axis = self._display_transform_axis(state) or "Z"
-        rotation = state.rotation.copy()
-        rotation[AXIS_TO_INDEX[axis]] += angle_delta
+        rotation, angle_delta = mesh_rotate_delta(
+            state.mouse_start,
+            mouse_position,
+            state.rotation,
+            axis,
+            fine=fine,
+        )
         self.app_state.active_transform_axis = axis
         self._last_transform_readout = f"{angle_delta:.1f} deg"
         self.app_state.mesh_object.rotation = rotation
@@ -1334,10 +1339,12 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        delta = self._mouse_delta(state, mouse_position)
-        minimum, maximum = self._section_offset_bounds
-        offset_scale = (max(abs(maximum - minimum), 1.0) / 300.0) * self._fine_multiplier(fine)
-        offset_delta = (delta[0] - delta[1]) * offset_scale
+        offset_delta = section_offset_delta(
+            state.mouse_start,
+            mouse_position,
+            self._section_offset_bounds,
+            fine=fine,
+        )
         self._set_section_offset(
             state.section_offset + offset_delta,
             clamp=True,
@@ -1411,27 +1418,6 @@ class OpenRetopWindow:
         if state.selected_item == SELECT_SECTION_PLANE:
             return state.axis_constraint or self.section_axis.get()
         return state.axis_constraint
-
-    def _movement_scale(self, *, fine: bool) -> float:
-        if self.app_state.mesh_object is None:
-            model_diagonal = 1.0
-        else:
-            minimum_bound, maximum_bound = self._transformed_source_bounds()
-            model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
-        return max(model_diagonal, 1.0) * MOVE_SENSITIVITY * self._fine_multiplier(fine)
-
-    def _fine_multiplier(self, fine: bool) -> float:
-        return FINE_TRANSFORM_MULTIPLIER if fine else 1.0
-
-    def _mouse_delta(
-        self,
-        state: ActiveTransformState,
-        mouse_position: tuple[int, int],
-    ) -> tuple[float, float]:
-        return (
-            float(mouse_position[0] - state.mouse_start[0]),
-            float(mouse_position[1] - state.mouse_start[1]),
-        )
 
     def _handle_shortcut(self, key: str) -> None:
         if key == "F":
@@ -1512,92 +1498,3 @@ def _format_count(value: int) -> str:
 
 def _format_percent(value: float) -> str:
     return f"{float(value):.1f}%"
-
-
-def _build_object_transform_matrix(
-    location: np.ndarray,
-    rotation: np.ndarray,
-    scale: float,
-    origin: np.ndarray,
-) -> np.ndarray:
-    matrix = np.identity(4)
-    matrix[:3, :3] = _rotation_matrix(rotation) * float(scale)
-    matrix[:3, 3] = np.asarray(location, dtype=float) - matrix[:3, :3] @ np.asarray(origin, dtype=float)
-    return matrix
-
-
-def _rotation_matrix(rotation: np.ndarray) -> np.ndarray:
-    rx, ry, rz = rotation
-    return _rotation_z(rz) @ _rotation_y(ry) @ _rotation_x(rx)
-
-
-def _rotation_x(angle_degrees: float) -> np.ndarray:
-    angle = radians(float(angle_degrees))
-    c = cos(angle)
-    s = sin(angle)
-    return np.asarray(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, c, -s],
-            [0.0, s, c],
-        ],
-        dtype=float,
-    )
-
-
-def _rotation_y(angle_degrees: float) -> np.ndarray:
-    angle = radians(float(angle_degrees))
-    c = cos(angle)
-    s = sin(angle)
-    return np.asarray(
-        [
-            [c, 0.0, s],
-            [0.0, 1.0, 0.0],
-            [-s, 0.0, c],
-        ],
-        dtype=float,
-    )
-
-
-def _rotation_z(angle_degrees: float) -> np.ndarray:
-    angle = radians(float(angle_degrees))
-    c = cos(angle)
-    s = sin(angle)
-    return np.asarray(
-        [
-            [c, -s, 0.0],
-            [s, c, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=float,
-    )
-
-
-def _transform_point(matrix: np.ndarray, point: np.ndarray) -> np.ndarray:
-    homogeneous = np.append(np.asarray(point, dtype=float), 1.0)
-    return (np.asarray(matrix, dtype=float) @ homogeneous)[:3]
-
-
-def _transform_bounds(
-    minimum: np.ndarray,
-    maximum: np.ndarray,
-    matrix: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    minimum = np.asarray(minimum, dtype=float)
-    maximum = np.asarray(maximum, dtype=float)
-    corners = np.asarray(
-        [
-            [minimum[0], minimum[1], minimum[2]],
-            [maximum[0], minimum[1], minimum[2]],
-            [maximum[0], maximum[1], minimum[2]],
-            [minimum[0], maximum[1], minimum[2]],
-            [minimum[0], minimum[1], maximum[2]],
-            [maximum[0], minimum[1], maximum[2]],
-            [maximum[0], maximum[1], maximum[2]],
-            [minimum[0], maximum[1], maximum[2]],
-        ],
-        dtype=float,
-    )
-    homogeneous = np.column_stack((corners, np.ones(len(corners))))
-    transformed = (np.asarray(matrix, dtype=float) @ homogeneous.T).T[:, :3]
-    return (np.min(transformed, axis=0), np.max(transformed, axis=0))
