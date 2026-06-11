@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, filedialog
+from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
 
 import numpy as np
@@ -46,6 +46,56 @@ MESH_FILE_TYPES = (
     ("PLY files", "*.ply"),
     ("All files", "*.*"),
 )
+OPEN_MODEL_MENU_INDEX = 0
+LOAD_PROGRESS_STAGES = (
+    "Loading mesh",
+    "Computing bounds",
+    "Building display proxy",
+    "Creating viewport actors",
+    "Finalizing scene",
+)
+
+
+class LoadProgressDialog:
+    """Small stage-based progress window for synchronous mesh loading."""
+
+    def __init__(self, parent: Tk, file_name: str) -> None:
+        self.window = Toplevel(parent)
+        self.window.title("Opening Model")
+        self.window.resizable(False, False)
+        self.window.transient(parent)
+        self.window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        self.stage_text = StringVar(master=self.window, value="Preparing")
+        frame = ttk.Frame(self.window, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text=f"Opening {file_name}").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, textvariable=self.stage_text).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+        )
+        self.progress_bar = ttk.Progressbar(
+            frame,
+            mode="indeterminate",
+            length=260,
+        )
+        self.progress_bar.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.progress_bar.start(12)
+
+        self.window.update_idletasks()
+        self.window.lift()
+
+    def update_stage(self, stage: str) -> None:
+        self.stage_text.set(stage)
+        self.window.update_idletasks()
+        self.window.lift()
+
+    def close(self) -> None:
+        self.progress_bar.stop()
+        self.window.destroy()
+
 
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
@@ -61,6 +111,7 @@ class OpenRetopWindow:
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
         self._active_transform_angle_delta: float | None = None
+        self._is_loading_model = False
 
         self.show_grid = BooleanVar(value=True)
         self.show_axes = BooleanVar(value=True)
@@ -617,6 +668,9 @@ class OpenRetopWindow:
             self._handle_shortcut(key_map[key])
 
     def open_model(self) -> None:
+        if self._is_loading_model:
+            return
+
         selected_path = filedialog.askopenfilename(
             title="Open Model",
             filetypes=MESH_FILE_TYPES,
@@ -627,48 +681,80 @@ class OpenRetopWindow:
         self.load_model(Path(selected_path))
 
     def load_model(self, file_path: Path) -> None:
-        self.status_text.set(f"Loading: {file_path.name}")
-        self.root.update_idletasks()
-
-        try:
-            loaded = load_mesh(file_path)
-        except (FileNotFoundError, ValueError, SystemExit) as exc:
-            self.status_text.set("No selection")
-            messagebox.showerror("Could not open model", str(exc))
+        if self._is_loading_model:
             return
 
-        display_result = build_display_mesh(loaded.mesh, quality=self.proxy_quality.get())
-        bounds = display_result.source_mesh.get_axis_aligned_bounding_box()
-        origin = np.asarray(bounds.get_center(), dtype=float)
-        self.app_state.mesh_object = MeshObjectState(
-            source_mesh=display_result.source_mesh,
-            display_mesh=display_result.display_mesh,
-            file_path=loaded.metadata.file_path,
-            name=loaded.metadata.file_name,
-            origin=origin,
-            location=origin.copy(),
-            rotation=np.asarray([0.0, 0.0, 0.0], dtype=float),
-            scale=1.0,
-            transform_matrix=np.identity(4),
-            source_triangle_count=display_result.source_triangle_count,
-            display_triangle_count=display_result.display_triangle_count,
-            display_proxy_enabled=display_result.proxy_enabled,
-            display_reduction_percent=display_result.reduction_percent,
-            proxy_quality=display_result.quality,
-            source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
-            source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
-        )
-        self.app_state.section_result = None
-        self.app_state.curve_results = []
-        self.section_result_text.set("Section result: none")
-        self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
-        self._configure_offset_range(reset=True)
-        self._update_section_plane_label(set_status=False)
-        self._set_selection_buttons_enabled(True)
-        self._set_selected_item(None, status="No selection")
-        self._refresh_viewport(reset_camera=True)
-        self.status_text.set(self._display_mesh_status(display_result))
+        self._is_loading_model = True
+        self._set_open_model_enabled(False)
+        progress: LoadProgressDialog | None = None
+        try:
+            progress = LoadProgressDialog(self.root, file_path.name)
+            try:
+                self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[0])
+                loaded = load_mesh(file_path)
+
+                self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[1])
+                bounds = loaded.mesh.get_axis_aligned_bounding_box()
+
+                self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[2])
+                display_result = build_display_mesh(loaded.mesh, quality=self.proxy_quality.get())
+            except (FileNotFoundError, ValueError, RuntimeError, SystemExit) as exc:
+                self.status_text.set("No selection")
+                progress.close()
+                progress = None
+                messagebox.showerror("Could not open model", str(exc))
+                return
+
+            origin = np.asarray(bounds.get_center(), dtype=float)
+            self.app_state.mesh_object = MeshObjectState(
+                source_mesh=display_result.source_mesh,
+                display_mesh=display_result.display_mesh,
+                file_path=loaded.metadata.file_path,
+                name=loaded.metadata.file_name,
+                origin=origin,
+                location=origin.copy(),
+                rotation=np.asarray([0.0, 0.0, 0.0], dtype=float),
+                scale=1.0,
+                transform_matrix=np.identity(4),
+                source_triangle_count=display_result.source_triangle_count,
+                display_triangle_count=display_result.display_triangle_count,
+                display_proxy_enabled=display_result.proxy_enabled,
+                display_reduction_percent=display_result.reduction_percent,
+                proxy_quality=display_result.quality,
+                source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
+                source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
+            )
+            self.app_state.section_result = None
+            self.app_state.curve_results = []
+            self.section_result_text.set("Section result: none")
+            self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[3])
+            self._set_transform_inputs_from_object()
+            self._apply_object_transform(reset_camera=False)
+            self._configure_offset_range(reset=True)
+            self._update_section_plane_label(set_status=False)
+            self._set_selection_buttons_enabled(True)
+            self._set_load_progress_stage(progress, LOAD_PROGRESS_STAGES[4])
+            self._set_selected_item(None, status="No selection")
+            self._refresh_viewport(reset_camera=True)
+            self.status_text.set(self._display_mesh_status(display_result))
+        finally:
+            if progress is not None:
+                progress.close()
+            self._is_loading_model = False
+            self._set_open_model_enabled(True)
+
+    def _set_open_model_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.open_model_button.configure(state=state)
+        self.file_menu.entryconfigure(OPEN_MODEL_MENU_INDEX, state=state)
+
+    def _set_load_progress_stage(
+        self,
+        progress: LoadProgressDialog,
+        stage: str,
+    ) -> None:
+        self.status_text.set(stage)
+        progress.update_stage(stage)
 
     def select_model(self) -> None:
         if self.app_state.mesh_object is None:

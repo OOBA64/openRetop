@@ -10,7 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.main_window import OpenRetopWindow
+from app.main_window import LOAD_PROGRESS_STAGES, OPEN_MODEL_MENU_INDEX, OpenRetopWindow
 from mesh.loader import LoadedMesh, MeshMetadata
 
 
@@ -226,6 +226,129 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIsNone(scene["selected_item"])
             self.assertTrue(np.allclose(scene["scene_bounds_min"], [0.0, 0.0, 0.0]))
             self.assertTrue(np.allclose(scene["scene_bounds_max"], [1.0, 2.0, 3.0]))
+        finally:
+            window.root.destroy()
+
+    def test_loading_mesh_shows_progress_stages_and_disables_open_model(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        observed_states: list[tuple[str, str, str]] = []
+        progress_dialogs: list[object] = []
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, file_name: str) -> None:
+                self.file_name = file_name
+                self.stages: list[str] = []
+                self.closed = False
+                progress_dialogs.append(self)
+                observed_states.append(
+                    (
+                        "created",
+                        str(window.open_model_button.cget("state")),
+                        window.file_menu.entrycget(OPEN_MODEL_MENU_INDEX, "state"),
+                    )
+                )
+
+            def update_stage(self, stage: str) -> None:
+                self.stages.append(stage)
+                observed_states.append(
+                    (
+                        stage,
+                        str(window.open_model_button.cget("state")),
+                        window.file_menu.entrycget(OPEN_MODEL_MENU_INDEX, "state"),
+                    )
+                )
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with (
+                patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                patch(
+                    "app.main_window.load_mesh",
+                    return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+                ),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            progress = progress_dialogs[0]
+            self.assertEqual(progress.file_name, "sample.stl")
+            self.assertEqual(progress.stages, list(LOAD_PROGRESS_STAGES))
+            self.assertTrue(progress.closed)
+            self.assertTrue(observed_states)
+            self.assertTrue(
+                all(
+                    button_state == "disabled" and menu_state == "disabled"
+                    for _stage, button_state, menu_state in observed_states
+                )
+            )
+            self.assertEqual(str(window.open_model_button.cget("state")), "normal")
+            self.assertEqual(
+                window.file_menu.entrycget(OPEN_MODEL_MENU_INDEX, "state"),
+                "normal",
+            )
+            self.assertEqual(
+                window.status_text.get(),
+                "Source: 1 tris | Display: 1 tris | Reduction: 0.0% | "
+                "No proxy (Medium) | Full-resolution source preserved",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_loading_mesh_failure_closes_progress_and_reenables_open_model(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        progress_dialogs: list[object] = []
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, file_name: str) -> None:
+                self.file_name = file_name
+                self.stages: list[str] = []
+                self.closed = False
+                progress_dialogs.append(self)
+
+            def update_stage(self, stage: str) -> None:
+                self.stages.append(stage)
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with (
+                patch("app.main_window.LoadProgressDialog", RecordingProgressDialog),
+                patch("app.main_window.load_mesh", side_effect=ValueError("bad mesh")),
+                patch("app.main_window.messagebox.showerror") as show_error,
+            ):
+                window.load_model(Path("broken.stl"))
+
+            progress = progress_dialogs[0]
+            self.assertEqual(progress.file_name, "broken.stl")
+            self.assertEqual(progress.stages, [LOAD_PROGRESS_STAGES[0]])
+            self.assertTrue(progress.closed)
+            show_error.assert_called_once_with("Could not open model", "bad mesh")
+            self.assertIsNone(window.app_state.mesh_object)
+            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertEqual(str(window.open_model_button.cget("state")), "normal")
+            self.assertEqual(
+                window.file_menu.entrycget(OPEN_MODEL_MENU_INDEX, "state"),
+                "normal",
+            )
         finally:
             window.root.destroy()
 
