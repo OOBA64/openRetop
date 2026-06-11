@@ -16,6 +16,7 @@ from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.display_proxy import DEFAULT_PROXY_QUALITY
 from mesh.triangle_mesh import TriangleMeshData
+from sections.section_state import SectionCollection, StoredSectionResult
 
 
 def _mesh() -> TriangleMeshData:
@@ -86,6 +87,18 @@ class AppStateTests(unittest.TestCase):
         self.assertIsNone(state.section_result)
         self.assertEqual(state.curve_results, [])
         self.assertIsNot(state.curve_results, other_state.curve_results)
+        self.assertIsInstance(state.section_collection, SectionCollection)
+        self.assertIsNot(state.section_collection, other_state.section_collection)
+        self.assertEqual(len(state.section_collection.planes), 1)
+        self.assertEqual(state.section_collection.results, [])
+
+        active_plane = state.section_collection.planes[0]
+        self.assertEqual(state.section_collection.active_plane_id, active_plane.id)
+        self.assertEqual(active_plane.name, "Section Plane 1")
+        self.assertEqual(active_plane.axis, "Z")
+        self.assertEqual(active_plane.offset, 0.0)
+        self.assertTrue(active_plane.visible)
+        self.assertTrue(active_plane.selected)
 
     def test_clear_selection_resets_only_selection_and_transform_fields(self) -> None:
         mesh_object = _mesh_object()
@@ -133,6 +146,32 @@ class AppStateTests(unittest.TestCase):
         self.assertIs(state.transform_state, transform_state)
         self.assertIsNone(state.section_result)
         self.assertEqual(state.curve_results, [])
+        self.assertEqual(len(state.section_collection.planes), 1)
+        self.assertEqual(state.section_collection.results, [])
+
+    def test_clear_sections_clears_section_collection_results_without_removing_planes(self) -> None:
+        state = AppState()
+        active_plane = state.section_collection.planes[0]
+        stored_result = StoredSectionResult(
+            id="result-1",
+            name="Section 1",
+            plane_id=active_plane.id,
+            axis="Z",
+            offset=0.0,
+            result=SectionResult(
+                axis="Z",
+                offset=0.0,
+                polylines=tuple(),
+                segment_count=0,
+            ),
+        )
+        state.section_collection.results.append(stored_result)
+
+        state.clear_sections()
+
+        self.assertEqual(state.section_collection.planes, [active_plane])
+        self.assertEqual(state.section_collection.active_plane_id, active_plane.id)
+        self.assertEqual(state.section_collection.results, [])
 
     def test_mesh_object_state_can_be_constructed(self) -> None:
         source_mesh = _mesh()
