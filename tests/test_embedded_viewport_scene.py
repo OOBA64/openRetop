@@ -9,6 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from curves.curve_state import StoredCurve
 from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from sections.section_state import SectionPlaneState
@@ -554,6 +555,55 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(viewport._section_plane_actors, [])
         self.assertEqual(viewport._section_plane_pick_geometries, [])
         self.assertNotIn("section_planes", viewport._actor_groups)
+
+    def test_selected_curve_renders_with_selected_overlay(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+        first_curve = StoredCurve(
+            id="curve-1",
+            name="Section 1 Curve 1",
+            section_result_id="section-result-1",
+            plane_id="plane-1",
+            original_points=points,
+            fitted_points=points.copy(),
+            mean_error=0.0,
+            max_error=0.0,
+            is_closed=False,
+            selected=False,
+        )
+        second_curve = StoredCurve(
+            id="curve-2",
+            name="Section 2 Curve 1",
+            section_result_id="section-result-2",
+            plane_id="plane-2",
+            original_points=points,
+            fitted_points=points.copy(),
+            mean_error=0.0,
+            max_error=0.0,
+            is_closed=False,
+            selected=True,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            curve_results=[first_curve, second_curve],
+        )
+
+        self.assertIn("curve_result", viewport._actors_by_role)
+        self.assertIn("selected_curve_result", viewport._actor_groups)
+        self.assertEqual(len(viewport._actor_groups["selected_curve_result"]), 1)
+        self.assertEqual(
+            viewport._actor_groups["selected_curve_result"][0].GetProperty().GetLineWidth(),
+            4.0,
+        )
 
     def test_clearing_mesh_preserves_view_metrics_and_reference_actors(self) -> None:
         viewport = self._viewport()

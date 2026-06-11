@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from tkinter import ttk
 
-from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
+from app.selection_types import SELECT_CURVE, SELECT_MODEL, SELECT_SECTION_PLANE
 from curves.curve_state import StoredCurve
 from sections.section_state import SectionPlaneState, StoredSectionResult
 
@@ -46,6 +46,18 @@ def curve_node_id(curve_id: str) -> str:
     return f"{NODE_CURVE}:{curve_id}"
 
 
+def curve_id_from_node(node_id: str | None) -> str | None:
+    if node_id is None:
+        return None
+
+    prefix = f"{NODE_CURVE}:"
+    if not node_id.startswith(prefix):
+        return None
+
+    curve_id = node_id[len(prefix) :]
+    return curve_id or None
+
+
 class SceneBrowser:
     """Owns the right-side scene hierarchy and selection synchronization."""
 
@@ -61,6 +73,7 @@ class SceneBrowser:
         self._section_plane_node_ids: set[str] = set()
         self._section_result_node_ids: set[str] = set()
         self._curve_node_ids: set[str] = set()
+        self._active_curve_node_id: str | None = None
 
         self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
         self.frame.grid_propagate(False)
@@ -92,6 +105,7 @@ class SceneBrowser:
         active_section_plane_id: str | None,
         section_results: Sequence[StoredSectionResult],
         curves: Sequence[StoredCurve],
+        active_curve_id: str | None,
         has_section_result: bool,
         has_curves: bool,
         selected_item: str | None,
@@ -120,7 +134,7 @@ class SceneBrowser:
                 self._remove_section_result_nodes()
 
             if has_curves:
-                self._sync_curve_nodes(curves)
+                self._sync_curve_nodes(curves, active_curve_id=active_curve_id)
             else:
                 self._remove_curve_nodes()
 
@@ -212,6 +226,8 @@ class SceneBrowser:
     def _sync_curve_nodes(
         self,
         curves: Sequence[StoredCurve],
+        *,
+        active_curve_id: str | None,
     ) -> None:
         self._ensure_node(NODE_CURVES, "Curves", open_node=True)
 
@@ -228,9 +244,19 @@ class SceneBrowser:
                 self.tree.delete(child_id)
 
         self._curve_node_ids = current_node_id_set
+        active_node_id = (
+            curve_node_id(active_curve_id)
+            if active_curve_id is not None
+            else None
+        )
+        if active_node_id in current_node_id_set:
+            self._active_curve_node_id = active_node_id
+        else:
+            self._active_curve_node_id = current_node_ids[0] if current_node_ids else None
 
     def _remove_curve_nodes(self) -> None:
         self._curve_node_ids = set()
+        self._active_curve_node_id = None
         self._remove_node(NODE_CURVES)
 
     def _remove_node(self, node_id: str) -> None:
@@ -273,11 +299,15 @@ class SceneBrowser:
             return NODE_MESH
         if selected_item == SELECT_SECTION_PLANE:
             return self._active_section_plane_node_id
+        if selected_item == SELECT_CURVE:
+            return self._active_curve_node_id
         return None
 
     def _selection_for_node(self, node_id: str | None) -> str | None:
         if node_id == NODE_MESH:
             return SELECT_MODEL
         if node_id in self._section_plane_node_ids:
+            return node_id
+        if node_id in self._curve_node_ids:
             return node_id
         return None

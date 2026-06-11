@@ -12,8 +12,8 @@ import numpy as np
 
 from app.app_state import AppState
 from app.object_state import MeshObjectState
-from app.scene_browser import SceneBrowser, section_plane_id_from_node
-from app.selection_types import SELECT_MODEL, SELECT_SECTION_PLANE
+from app.scene_browser import SceneBrowser, curve_id_from_node, section_plane_id_from_node
+from app.selection_types import SELECT_CURVE, SELECT_MODEL, SELECT_SECTION_PLANE
 from app.transform_state import ActiveTransformState
 from app.transforms import (
     axis_constrained_camera_move_delta,
@@ -34,6 +34,8 @@ from curves.curve_state import (
     clear_curves_for_plane,
     clear_curves_for_section_result,
     get_visible_curves,
+    remove_curve,
+    set_active_curve,
 )
 from geometry.curves import fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section, normalize_axis
@@ -214,6 +216,14 @@ class OpenRetopWindow:
         self.selected_bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
+        self.curve_visible = BooleanVar(value=True)
+        self.curve_name_text = StringVar(value="(none)")
+        self.curve_section_text = StringVar(value="(none)")
+        self.curve_plane_text = StringVar(value="(none)")
+        self.curve_point_count_text = StringVar(value="0")
+        self.curve_mean_error_text = StringVar(value="0.000")
+        self.curve_max_error_text = StringVar(value="0.000")
+        self.curve_closed_text = StringVar(value="Open")
         self.selection_buttons: list[ttk.Button] = []
         self._sync_active_section_plane_from_controls()
 
@@ -297,6 +307,10 @@ class OpenRetopWindow:
         self.tools_menu.add_command(
             label="Delete Active Section Plane",
             command=self.delete_active_section_plane,
+        )
+        self.tools_menu.add_command(
+            label="Delete Selected Curve",
+            command=self.delete_selected_curve,
         )
         self.menu_bar.add_cascade(label="Tools", menu=self.tools_menu)
 
@@ -751,6 +765,11 @@ class OpenRetopWindow:
         self.section_context_frame.columnconfigure(0, weight=1)
         self._build_section_context(self.section_context_frame)
 
+        self.curve_context_frame = ttk.Frame(self.sidebar)
+        self.curve_context_frame.grid(row=row, column=0, sticky="ew")
+        self.curve_context_frame.columnconfigure(0, weight=1)
+        self._build_curve_context(self.curve_context_frame)
+
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
 
@@ -1047,6 +1066,40 @@ class OpenRetopWindow:
         self.section_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.selection_buttons.append(self.section_deselect_button)
 
+    def _build_curve_context(self, parent: ttk.Frame) -> None:
+        row = self._add_separator(parent, 0)
+        row = self._add_heading(parent, row, "Curve")
+        self.curve_visible_check = ttk.Checkbutton(
+            parent,
+            text="Visible",
+            variable=self.curve_visible,
+            command=self._on_curve_visibility_changed,
+        )
+        self.curve_visible_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        row = self._add_info_row(parent, row, "Name", self.curve_name_text)
+        row = self._add_info_row(parent, row, "Section", self.curve_section_text)
+        row = self._add_info_row(parent, row, "Plane", self.curve_plane_text)
+        row = self._add_info_row(parent, row, "Points", self.curve_point_count_text)
+        row = self._add_info_row(parent, row, "Mean error", self.curve_mean_error_text)
+        row = self._add_info_row(parent, row, "Max error", self.curve_max_error_text)
+        row = self._add_info_row(parent, row, "Shape", self.curve_closed_text)
+        self.delete_curve_button = ttk.Button(
+            parent,
+            text="Delete Selected Curve",
+            command=self.delete_selected_curve,
+        )
+        self.delete_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.selection_buttons.append(self.delete_curve_button)
+        row += 1
+        self.curve_deselect_button = ttk.Button(
+            parent,
+            text="Deselect",
+            command=self.clear_selection,
+        )
+        self.curve_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.curve_deselect_button)
+
     def _add_heading(self, parent: ttk.Frame, row: int, text: str) -> int:
         ttk.Label(parent, text=text, style="SidebarHeading.TLabel").grid(
             row=row,
@@ -1105,6 +1158,7 @@ class OpenRetopWindow:
             self.no_selection_frame,
             self.model_context_frame,
             self.section_context_frame,
+            self.curve_context_frame,
         ):
             frame.grid_remove()
 
@@ -1112,6 +1166,8 @@ class OpenRetopWindow:
             self.model_context_frame.grid()
         elif selected_item == SELECT_SECTION_PLANE and self.app_state.mesh_object is not None:
             self.section_context_frame.grid()
+        elif selected_item == SELECT_CURVE and self.app_state.mesh_object is not None:
+            self.curve_context_frame.grid()
         else:
             self.no_selection_frame.grid()
 
@@ -1259,6 +1315,27 @@ class OpenRetopWindow:
 
         self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
 
+    def select_curve(self, curve_id: str | None = None) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        if curve_id is not None:
+            try:
+                set_active_curve(self.app_state.curve_collection, curve_id)
+            except ValueError:
+                self._refresh_scene_browser()
+                self.status_text.set("Curve not found")
+                return
+
+        active_curve = self._active_curve()
+        if active_curve is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        self._sync_curve_context_from_active_curve()
+        self._set_selected_item(SELECT_CURVE, status=f"Selected: {active_curve.name}")
+
     def add_section_plane(self) -> None:
         if self.app_state.mesh_object is None:
             self._set_selected_item(None, status="No selection")
@@ -1312,12 +1389,17 @@ class OpenRetopWindow:
 
     def _on_scene_browser_selection(self, selected_item: str | None) -> None:
         section_plane_id = section_plane_id_from_node(selected_item)
+        curve_id = curve_id_from_node(selected_item)
         if selected_item == SELECT_MODEL:
             self.select_model()
         elif section_plane_id is not None:
             self.select_section_plane(section_plane_id)
+        elif curve_id is not None:
+            self.select_curve(curve_id)
         elif selected_item == SELECT_SECTION_PLANE:
             self.select_section_plane()
+        elif selected_item == SELECT_CURVE:
+            self.select_curve()
         else:
             self.clear_selection()
 
@@ -1503,6 +1585,79 @@ class OpenRetopWindow:
             get_visible_curves(self.app_state.curve_collection)
         )
 
+    def _active_curve(self) -> StoredCurve | None:
+        active_curve_id = self.app_state.curve_collection.active_curve_id
+        if active_curve_id is None:
+            return None
+
+        for curve in self.app_state.curve_collection.curves:
+            if curve.id == active_curve_id:
+                return curve
+        return None
+
+    def _sync_curve_context_from_active_curve(self) -> None:
+        active_curve = self._active_curve()
+        if active_curve is None:
+            self.curve_visible.set(False)
+            self.curve_name_text.set("(none)")
+            self.curve_section_text.set("(none)")
+            self.curve_plane_text.set("(none)")
+            self.curve_point_count_text.set("0")
+            self.curve_mean_error_text.set("0.000")
+            self.curve_max_error_text.set("0.000")
+            self.curve_closed_text.set("Open")
+            return
+
+        self.curve_visible.set(bool(active_curve.visible))
+        self.curve_name_text.set(active_curve.name)
+        self.curve_section_text.set(self._section_result_name_for_curve(active_curve))
+        self.curve_plane_text.set(self._section_plane_name_for_curve(active_curve))
+        self.curve_point_count_text.set(str(len(active_curve.fitted_points)))
+        self.curve_mean_error_text.set(f"{active_curve.mean_error:.3f}")
+        self.curve_max_error_text.set(f"{active_curve.max_error:.3f}")
+        self.curve_closed_text.set("Closed" if active_curve.is_closed else "Open")
+
+    def _section_result_name_for_curve(self, curve: StoredCurve) -> str:
+        for result in self.app_state.section_collection.results:
+            if result.id == curve.section_result_id:
+                return result.name
+        return "(missing)"
+
+    def _section_plane_name_for_curve(self, curve: StoredCurve) -> str:
+        for plane in self.app_state.section_collection.planes:
+            if plane.id == curve.plane_id:
+                return plane.name
+        return "(missing)"
+
+    def _on_curve_visibility_changed(self) -> None:
+        active_curve = self._active_curve()
+        if active_curve is None:
+            self.status_text.set("No selection")
+            return
+
+        active_curve.visible = bool(self.curve_visible.get())
+        self._sync_visible_curve_results()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Selected: {active_curve.name}")
+        self._set_project_dirty(True)
+
+    def delete_selected_curve(self) -> None:
+        active_curve = self._active_curve()
+        if active_curve is None:
+            self.status_text.set("No selection")
+            return
+
+        removed_name = active_curve.name or "Curve"
+        remove_curve(self.app_state.curve_collection, active_curve.id)
+        self._sync_visible_curve_results()
+        if self._active_curve() is not None:
+            self._sync_curve_context_from_active_curve()
+            self._set_selected_item(SELECT_CURVE, status=f"Deleted: {removed_name}")
+        else:
+            self._sync_curve_context_from_active_curve()
+            self._set_selected_item(None, status=f"Deleted: {removed_name}")
+        self._set_project_dirty(True)
+
     @staticmethod
     def _section_result_summary(stored_result: StoredSectionResult) -> str:
         return (
@@ -1606,6 +1761,7 @@ class OpenRetopWindow:
             active_section_plane_id=self.app_state.section_collection.active_plane_id,
             section_results=self.app_state.section_collection.results,
             curves=self.app_state.curve_collection.curves,
+            active_curve_id=self.app_state.curve_collection.active_curve_id,
             has_section_result=bool(self.app_state.section_collection.results)
             or self.app_state.section_result is not None,
             has_curves=bool(self.app_state.curve_collection.curves),
@@ -2336,6 +2492,10 @@ class OpenRetopWindow:
             self._start_active_transform("rotate")
 
     def _delete_selected_if_safe(self) -> None:
+        if self.app_state.selected_item == SELECT_CURVE:
+            self.delete_selected_curve()
+            return
+
         if self.app_state.selected_item == SELECT_SECTION_PLANE:
             self.delete_active_section_plane()
             return

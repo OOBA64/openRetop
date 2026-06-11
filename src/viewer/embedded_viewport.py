@@ -706,25 +706,81 @@ class EmbeddedVTKViewport:
     ) -> None:
         if not curve_results:
             self._remove_actor("curve_result")
+            self._clear_overlay_group("selected_curve_result")
             return
 
+        unselected_results = [
+            result for result in curve_results if not getattr(result, "selected", False)
+        ]
+        selected_results = [
+            result for result in curve_results if getattr(result, "selected", False)
+        ]
         key = (
             "curve_result",
             tuple(id(result) for result in curve_results),
             tuple(len(result.fitted_points) for result in curve_results),
+            tuple(bool(getattr(result, "selected", False)) for result in curve_results),
         )
-        if self._actor_keys.get("curve_result") == key and "curve_result" in self._actors_by_role:
+        selected_key = (
+            "selected_curve_result",
+            tuple(id(result) for result in selected_results),
+            tuple(len(result.fitted_points) for result in selected_results),
+        )
+        unselected_actor_matches = (
+            (
+                bool(unselected_results)
+                and self._actor_keys.get("curve_result") == key
+                and "curve_result" in self._actors_by_role
+            )
+            or (
+                not unselected_results
+                and self._actor_keys.get("curve_result") == key
+                and "curve_result" not in self._actors_by_role
+            )
+        )
+        selected_actor_matches = (
+            (
+                bool(selected_results)
+                and self._group_keys.get("selected_curve_result") == selected_key
+                and "selected_curve_result" in self._actor_groups
+            )
+            or (
+                not selected_results
+                and "selected_curve_result" not in self._actor_groups
+            )
+        )
+        if (
+            unselected_actor_matches
+            and selected_actor_matches
+        ):
             return
 
-        fitted_lines = _polyline_geometry(
-            [result.fitted_points for result in curve_results],
-            color=(0.1, 0.78, 0.28),
-        )
-        self._replace_actor(
-            "curve_result",
-            _line_actor(fitted_lines, line_width=2.5),
-            key=key,
-        )
+        if unselected_results:
+            fitted_lines = _polyline_geometry(
+                [result.fitted_points for result in unselected_results],
+                color=(0.1, 0.78, 0.28),
+            )
+            self._replace_actor(
+                "curve_result",
+                _line_actor(fitted_lines, line_width=2.5),
+                key=key,
+            )
+        else:
+            self._remove_actor("curve_result")
+            self._actor_keys["curve_result"] = key
+
+        if selected_results:
+            selected_lines = _polyline_geometry(
+                [result.fitted_points for result in selected_results],
+                color=(0.05, 0.95, 0.95),
+            )
+            self._replace_overlay_group(
+                "selected_curve_result",
+                [_line_actor(selected_lines, line_width=4.0)],
+                key=selected_key,
+            )
+        else:
+            self._clear_overlay_group("selected_curve_result")
 
     def _replace_actor(self, role: str, actor: vtkActor, *, key: object | None = None) -> None:
         current_actor = self._actors_by_role.get(role)

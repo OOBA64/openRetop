@@ -25,6 +25,7 @@ from app.scene_browser import (
     NODE_SCENE,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
+    curve_id_from_node,
     curve_node_id,
     section_plane_node_id,
     section_result_node_id,
@@ -244,6 +245,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.tools_menu.entrycget(4, "label"), "Clear Active Section Result")
             self.assertEqual(window.tools_menu.entrycget(5, "label"), "Clear All Section Results")
             self.assertEqual(window.tools_menu.entrycget(6, "label"), "Delete Active Section Plane")
+            self.assertEqual(window.tools_menu.entrycget(7, "label"), "Delete Selected Curve")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -260,6 +262,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertEqual(window.curve_context_frame.winfo_manager(), "")
             self.assertFalse(hasattr(window, "apply_transform_button"))
             self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
@@ -1913,6 +1916,90 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.app_state.curve_collection.curves, [second_curve])
             self.assertEqual(window.app_state.curve_results, [second_curve])
             self.assertEqual(tree.get_children(NODE_CURVES), (second_curve_node,))
+        finally:
+            window.root.destroy()
+
+    def test_curve_selection_visibility_and_delete_preserve_section_results(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            first_plane = window.app_state.section_collection.planes[0]
+            window.compute_section()
+            first_result = window.app_state.section_collection.results[0]
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.add_section_plane()
+            second_plane = window.app_state.section_collection.planes[1]
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_result = window.app_state.section_collection.results[1]
+            second_curve = window.app_state.curve_collection.curves[1]
+
+            tree = window.scene_browser.tree
+            first_curve_node = curve_node_id(first_curve.id)
+            second_curve_node = curve_node_id(second_curve.id)
+            self.assertEqual(curve_id_from_node(first_curve_node), first_curve.id)
+
+            tree.selection_set(first_curve_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, first_curve.id)
+            self.assertTrue(first_curve.selected)
+            self.assertFalse(second_curve.selected)
+            self.assertEqual(tree.selection(), (first_curve_node,))
+            self.assertEqual(window.curve_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.curve_name_text.get(), "Section 1 Curve 1")
+            self.assertEqual(window.curve_section_text.get(), "Section 1")
+            self.assertEqual(window.curve_plane_text.get(), first_plane.name)
+            self.assertEqual(window.curve_point_count_text.get(), "2")
+            self.assertEqual(window.curve_closed_text.get(), "Open")
+            self.assertTrue(window.curve_visible.get())
+
+            window.curve_visible.set(False)
+            window._on_curve_visibility_changed()
+
+            self.assertFalse(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(window.app_state.curve_results, [second_curve])
+            self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [second_curve])
+            self.assertEqual(tree.get_children(NODE_CURVES), (first_curve_node, second_curve_node))
+            self.assertEqual(tree.selection(), (first_curve_node,))
+
+            window.tools_menu.invoke(7)
+
+            self.assertEqual(window.app_state.section_collection.results, [first_result, second_result])
+            self.assertEqual(window.app_state.curve_collection.curves, [second_curve])
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, second_curve.id)
+            self.assertEqual(window.app_state.curve_results, [second_curve])
+            self.assertEqual(tree.get_children(NODE_CURVES), (second_curve_node,))
+            self.assertEqual(tree.selection(), (second_curve_node,))
+            self.assertEqual(window.status_text.get(), "Deleted: Section 1 Curve 1")
+            self.assertEqual(window.curve_section_text.get(), "Section 2")
+            self.assertEqual(window.curve_plane_text.get(), second_plane.name)
         finally:
             window.root.destroy()
 
