@@ -11,6 +11,7 @@ from project.project_data import (
     ProjectData,
     ProjectDisplaySettings,
     ProjectSectionPlane,
+    ProjectSectionResult,
     ProjectSectionSettings,
     ProjectSurface,
     ProjectTransform,
@@ -36,6 +37,8 @@ def project_from_app_state(
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
+    mesh_name = None
+    mesh_visible = True
     transform = defaults.transform
     section = ProjectSectionSettings(
         axis=str(section_axis).upper(),
@@ -43,6 +46,7 @@ def project_from_app_state(
         show_plane=bool(show_section_plane),
     )
     section_planes = _section_planes_from_collection(section_collection)
+    section_results = _section_results_from_collection(section_collection)
     active_section_plane_id = _active_plane_id_from_collection(
         section_collection,
         section_planes,
@@ -53,6 +57,9 @@ def project_from_app_state(
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
         mesh_path = str(file_path) if file_path is not None else None
+        mesh_name = getattr(mesh_object, "name", None)
+        mesh_name = str(mesh_name) if mesh_name is not None else None
+        mesh_visible = bool(getattr(mesh_object, "visible", True))
         transform = ProjectTransform(
             location=_vector3_from_value(
                 _required_mesh_value(mesh_object, "location"),
@@ -76,6 +83,8 @@ def project_from_app_state(
         version=defaults.version,
         name=defaults.name,
         mesh_path=mesh_path,
+        mesh_name=mesh_name,
+        mesh_visible=mesh_visible,
         transform=transform,
         display=ProjectDisplaySettings(
             proxy_quality=str(proxy_quality),
@@ -86,6 +95,7 @@ def project_from_app_state(
         section=section,
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
+        section_results=section_results,
         curves=curves,
         surfaces=surfaces,
     )
@@ -174,6 +184,36 @@ def _curves_from_collection(
             visible=bool(curve.visible),
         )
         for curve in curve_collection.curves
+    ]
+
+
+def _section_results_from_collection(
+    section_collection: SectionCollection | None,
+) -> list[ProjectSectionResult]:
+    if section_collection is None:
+        return []
+
+    return [
+        ProjectSectionResult(
+            id=str(result.id),
+            name=str(result.name),
+            plane_id=str(result.plane_id),
+            axis=str(result.axis).upper(),
+            offset=_float_from_value(
+                result.offset,
+                "section_collection.result.offset",
+            ),
+            visible=bool(result.visible),
+            polylines=[
+                _points_from_value(
+                    polyline.points,
+                    "section_collection.result.polylines",
+                )
+                for polyline in result.result.polylines
+            ],
+            segment_count=int(result.result.segment_count),
+        )
+        for result in section_collection.results
     ]
 
 

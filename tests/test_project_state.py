@@ -10,12 +10,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from curves.curve_state import CurveCollection, StoredCurve, add_curve
+from geometry.sections import SectionPolyline, SectionResult
 from project.project_data import PROJECT_VERSION
 from project.project_state import project_from_app_state
 from sections.section_state import (
     SectionCollection,
     SectionPlaneState,
+    StoredSectionResult,
     add_plane,
+    add_result,
     set_active_plane,
 )
 from surfaces.surface_state import SurfaceCollection, SurfacePatch, add_surface
@@ -37,6 +40,8 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.version, PROJECT_VERSION)
         self.assertEqual(project.name, "Untitled Project")
         self.assertIsNone(project.mesh_path)
+        self.assertIsNone(project.mesh_name)
+        self.assertTrue(project.mesh_visible)
         self.assertEqual(project.transform.location, [0.0, 0.0, 0.0])
         self.assertEqual(project.transform.rotation, [0.0, 0.0, 0.0])
         self.assertEqual(project.transform.scale, 1.0)
@@ -50,6 +55,7 @@ class ProjectStateTests(unittest.TestCase):
         self.assertTrue(project.section.show_plane)
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
+        self.assertEqual(project.section_results, [])
         self.assertEqual(project.curves, [])
         self.assertEqual(project.surfaces, [])
 
@@ -57,6 +63,8 @@ class ProjectStateTests(unittest.TestCase):
         mesh_path = Path("models") / "scan.stl"
         mesh_object = SimpleNamespace(
             file_path=mesh_path,
+            name="Scan Body",
+            visible=False,
             location=np.asarray([1.0, 2.0, 3.0], dtype=float),
             rotation=np.asarray([10.0, 20.0, 30.0], dtype=float),
             scale=2.5,
@@ -75,6 +83,8 @@ class ProjectStateTests(unittest.TestCase):
         )
 
         self.assertEqual(project.mesh_path, str(mesh_path))
+        self.assertEqual(project.mesh_name, "Scan Body")
+        self.assertFalse(project.mesh_visible)
         self.assertEqual(project.transform.location, [1.0, 2.0, 3.0])
         self.assertEqual(project.transform.rotation, [10.0, 20.0, 30.0])
         self.assertEqual(project.transform.scale, 2.5)
@@ -133,6 +143,66 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.section_planes[1].offset, -0.5)
         self.assertFalse(project.section_planes[1].visible)
         self.assertEqual(project.active_section_plane_id, "plane-b")
+
+    def test_project_from_app_state_exports_section_results(self) -> None:
+        collection = SectionCollection()
+        add_plane(
+            collection,
+            SectionPlaneState(
+                id="plane-a",
+                name="Cut Plane",
+                axis="Z",
+                offset=0.25,
+                visible=True,
+            ),
+        )
+        add_result(
+            collection,
+            StoredSectionResult(
+                id="section-a",
+                name="Rim Section",
+                plane_id="plane-a",
+                axis="Z",
+                offset=0.25,
+                visible=False,
+                result=SectionResult(
+                    axis="Z",
+                    offset=0.25,
+                    polylines=(
+                        SectionPolyline(
+                            points=np.asarray(
+                                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                                dtype=float,
+                            )
+                        ),
+                    ),
+                    segment_count=1,
+                ),
+            ),
+        )
+
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            section_collection=collection,
+        )
+
+        self.assertEqual(len(project.section_results), 1)
+        result = project.section_results[0]
+        self.assertEqual(result.id, "section-a")
+        self.assertEqual(result.name, "Rim Section")
+        self.assertEqual(result.plane_id, "plane-a")
+        self.assertEqual(result.axis, "Z")
+        self.assertEqual(result.offset, 0.25)
+        self.assertFalse(result.visible)
+        self.assertEqual(result.polylines, [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]])
+        self.assertEqual(result.segment_count, 1)
 
     def test_project_from_app_state_exports_all_stored_curves(self) -> None:
         curve_collection = CurveCollection()

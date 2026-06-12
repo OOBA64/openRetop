@@ -280,6 +280,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.tools_menu.entrycget(9, "label"), "Hide Unselected Curves")
             self.assertEqual(window.tools_menu.entrycget(10, "label"), "Show All Curves")
             self.assertEqual(window.tools_menu.entrycget(11, "label"), "Create Surface From Curves")
+            self.assertEqual(window.tools_menu.entrycget(12, "label"), "Rename Selected")
+            self.assertEqual(window.tools_menu.entrycget(13, "label"), "Hide Selected")
+            self.assertEqual(window.tools_menu.entrycget(14, "label"), "Hide Unselected")
+            self.assertEqual(window.tools_menu.entrycget(15, "label"), "Show All")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -1695,6 +1699,80 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_save_project_preserves_global_renames_and_mesh_visibility(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            window.mesh_name_text.set("Scan Body")
+            window._on_mesh_name_changed()
+            window.mesh_visible.set(False)
+            window._on_mesh_visibility_changed()
+            active_plane = window.app_state.section_collection.planes[0]
+            window.select_section_plane(active_plane.id)
+            window.section_plane_name_text.set("Cut Plane")
+            window._on_section_plane_name_changed()
+            window.compute_section()
+            stored_result = window.app_state.section_collection.results[0]
+            source_curve = window.app_state.curve_collection.curves[0]
+            window.select_section_result(stored_result.id)
+            window.section_result_name_text.set("Rim Section")
+            window._on_section_result_name_changed()
+            window.select_curve(source_curve.id)
+            window.curve_name_text.set("Rim Curve")
+            window._on_curve_name_changed()
+            _make_curve_closed(source_curve)
+            window.create_surface_from_curves()
+            surface = window.app_state.surface_collection.surfaces[0]
+            window.surface_name_text.set("Preview Surface")
+            window._on_surface_name_changed()
+
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "renamed.openretop"
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(3)
+
+                show_error.assert_not_called()
+                project = load_project(project_path)
+                self.assertEqual(project.mesh_path, str(metadata.file_path))
+                self.assertEqual(project.mesh_name, "Scan Body")
+                self.assertFalse(project.mesh_visible)
+                self.assertEqual(project.section_planes[0].name, "Cut Plane")
+                self.assertEqual(project.section_results[0].name, "Rim Section")
+                self.assertEqual(project.section_results[0].id, stored_result.id)
+                self.assertEqual(project.curves[0].name, "Rim Curve")
+                self.assertEqual(project.surfaces[0].name, "Preview Surface")
+                self.assertEqual(project.surfaces[0].id, surface.id)
+        finally:
+            window.root.destroy()
+
     def test_save_project_as_writes_loaded_mesh_transform_and_settings(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -2002,7 +2080,7 @@ class MainWindowUiTests(unittest.TestCase):
                 tree.get_children(NODE_SCENE),
                 (NODE_MESH, NODE_SECTION_PLANES),
             )
-            self.assertEqual(tree.item(NODE_MESH, "text"), "Mesh")
+            self.assertEqual(tree.item(NODE_MESH, "text"), "[V] sample.stl")
             self.assertEqual(tree.item(NODE_SECTION_PLANES, "text"), "Section Planes")
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertEqual(tree.item(section_plane_node, "text"), "[H] Section Plane 1")
@@ -2297,6 +2375,226 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIs(window.viewport.scene_calls[-1]["section_result"], stored_result.result)
             self.assertEqual(tree.item(section_result_node, "text"), "[V] Section 1")
             self.assertEqual(tree.item(surface_node, "text"), "[V] Surface 1")
+        finally:
+            window.root.destroy()
+
+    def test_global_rename_updates_scene_browser_and_contexts(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            tree = window.scene_browser.tree
+            window.select_model()
+            window._set_project_dirty(False)
+            window.mesh_name_text.set("Scan Body")
+            window._on_mesh_name_changed()
+
+            self.assertEqual(window.app_state.mesh_object.name, "Scan Body")
+            self.assertEqual(window.file_name_text.get(), "sample.stl")
+            self.assertEqual(window.selected_object_text.get(), "Scan Body")
+            self.assertEqual(tree.item(NODE_MESH, "text"), "[V] Scan Body")
+            self.assertTrue(window.project_dirty)
+
+            active_plane = window.app_state.section_collection.planes[0]
+            window.select_section_plane(active_plane.id)
+            window.section_plane_name_text.set("Cut Plane")
+            window._on_section_plane_name_changed()
+
+            plane_node = section_plane_node_id(active_plane.id)
+            self.assertEqual(active_plane.name, "Cut Plane")
+            self.assertEqual(tree.item(plane_node, "text"), "[H] Cut Plane")
+
+            window.compute_section()
+            stored_result = window.app_state.section_collection.results[0]
+            stored_curve = window.app_state.curve_collection.curves[0]
+            result_node = section_result_node_id(stored_result.id)
+            curve_group = curve_group_node_id(stored_result.id)
+            window.select_section_result(stored_result.id)
+            window.section_result_name_text.set("Rim Section")
+            window._on_section_result_name_changed()
+
+            self.assertEqual(stored_result.name, "Rim Section")
+            self.assertEqual(tree.item(result_node, "text"), "[V] Rim Section")
+            self.assertEqual(tree.item(curve_group, "text"), "Rim Section")
+
+            window.select_curve(stored_curve.id)
+            self.assertEqual(window.curve_section_text.get(), "Rim Section")
+            self.assertEqual(window.curve_plane_text.get(), "Cut Plane (Z = 0.000)")
+            window.curve_name_text.set("Rim Curve")
+            window._on_curve_name_changed()
+
+            curve_node = curve_node_id(stored_curve.id)
+            self.assertEqual(stored_curve.name, "Rim Curve")
+            self.assertEqual(tree.item(curve_node, "text"), "[V] Rim Curve")
+
+            _make_curve_closed(stored_curve)
+            window.create_surface_from_curves()
+            surface = window.app_state.surface_collection.surfaces[0]
+            surface_node = surface_node_id(surface.id)
+            window.surface_name_text.set("Preview Surface")
+            window._on_surface_name_changed()
+
+            self.assertEqual(surface.name, "Preview Surface")
+            self.assertEqual(tree.item(surface_node, "text"), "[V] Preview Surface")
+        finally:
+            window.root.destroy()
+
+    def test_f2_focuses_selected_object_name_field(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            window._handle_shortcut("F2")
+
+            self.assertEqual(window.status_text.get(), "Rename selected object")
+            self.assertTrue(window.mesh_name_entry.selection_present())
+        finally:
+            window.root.destroy()
+
+    def test_section_result_and_curve_group_selection_select_child_curves(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            first_result = window.app_state.section_collection.results[0]
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.add_section_plane()
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_result = window.app_state.section_collection.results[1]
+            second_curve = window.app_state.curve_collection.curves[1]
+
+            tree = window.scene_browser.tree
+            first_result_node = section_result_node_id(first_result.id)
+            tree.selection_set(first_result_node)
+            tree.focus(first_result_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "section_result")
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id},
+            )
+            self.assertTrue(first_curve.selected)
+            self.assertFalse(second_curve.selected)
+            self.assertTrue(window.viewport.scene_calls[-1]["curve_results"][0].selected)
+
+            second_group = curve_group_node_id(second_result.id)
+            tree.selection_set(second_group)
+            tree.focus(second_group)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {second_curve.id},
+            )
+            self.assertFalse(first_curve.selected)
+            self.assertTrue(second_curve.selected)
+        finally:
+            window.root.destroy()
+
+    def test_mesh_visibility_hotkeys_hide_isolate_and_show_all(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            window._handle_shortcut("H")
+
+            self.assertFalse(window.app_state.mesh_object.visible)
+            self.assertFalse(window.mesh_visible.get())
+            self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
+            self.assertEqual(window.scene_browser.tree.item(NODE_MESH, "text"), "[H] sample.stl")
+
+            window._handle_shortcut("Alt+H")
+
+            self.assertTrue(window.app_state.mesh_object.visible)
+            self.assertTrue(window.mesh_visible.get())
+            self.assertIs(window.viewport.scene_calls[-1]["mesh"], window.app_state.mesh_object.display_mesh)
+            self.assertEqual(window.scene_browser.tree.item(NODE_MESH, "text"), "[V] sample.stl")
         finally:
             window.root.destroy()
 

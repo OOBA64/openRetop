@@ -69,6 +69,20 @@ def curve_group_node_id(section_result_id: str) -> str:
     return f"{NODE_CURVE_GROUP}:{section_result_id}"
 
 
+def curve_group_id_from_node(node_id: str | None) -> str | None:
+    if node_id is None:
+        return None
+    if node_id == NODE_CURVE_GROUP_UNASSIGNED:
+        return ""
+
+    prefix = f"{NODE_CURVE_GROUP}:"
+    if not node_id.startswith(prefix):
+        return None
+
+    result_id = node_id[len(prefix) :]
+    return result_id or None
+
+
 def curve_node_id(curve_id: str) -> str:
     return f"{NODE_CURVE}:{curve_id}"
 
@@ -175,6 +189,8 @@ class SceneBrowser:
         self,
         *,
         has_mesh: bool,
+        mesh_name: str | None,
+        mesh_visible: bool,
         section_planes: Sequence[SectionPlaneState],
         active_section_plane_id: str | None,
         section_results: Sequence[StoredSectionResult],
@@ -199,7 +215,10 @@ class SceneBrowser:
         self._syncing_selection = True
         try:
             if has_mesh:
-                self._ensure_node(NODE_MESH, "Mesh")
+                self._ensure_node(
+                    NODE_MESH,
+                    _visibility_label(mesh_name or "Mesh", bool(mesh_visible)),
+                )
                 self._sync_section_plane_nodes(
                     section_planes,
                     active_section_plane_id=active_section_plane_id,
@@ -581,6 +600,15 @@ class SceneBrowser:
     def _selection_for_node(self, node_id: str | None) -> str | None:
         if node_id == NODE_MESH:
             return SELECT_MODEL
+        if node_id in {
+            NODE_SECTION_PLANES,
+            NODE_SECTION_RESULTS,
+            NODE_CURVES,
+            NODE_SURFACES,
+        }:
+            return node_id
+        if node_id in self._curve_group_node_ids:
+            return node_id
         if node_id in self._section_plane_node_ids:
             return node_id
         if node_id in self._section_result_node_ids:

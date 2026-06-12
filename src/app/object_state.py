@@ -31,3 +31,4 @@ class MeshObjectState:
     proxy_quality: str = DEFAULT_PROXY_QUALITY
     source_bounds_min: np.ndarray | None = None
     source_bounds_max: np.ndarray | None = None
+    visible: bool = True

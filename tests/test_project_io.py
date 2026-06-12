@@ -16,6 +16,7 @@ from project.project_data import (
     ProjectData,
     ProjectDisplaySettings,
     ProjectSectionPlane,
+    ProjectSectionResult,
     ProjectSectionSettings,
     ProjectSurface,
     ProjectTransform,
@@ -34,6 +35,8 @@ def _sample_project() -> ProjectData:
         version=PROJECT_VERSION,
         name="Scan Cleanup",
         mesh_path="models/scan.stl",
+        mesh_name="Scan Object",
+        mesh_visible=False,
         transform=ProjectTransform(
             location=[1.0, 2.0, 3.0],
             rotation=[10.0, 20.0, 30.0],
@@ -68,6 +71,18 @@ def _sample_project() -> ProjectData:
             ),
         ],
         active_section_plane_id="plane-b",
+        section_results=[
+            ProjectSectionResult(
+                id="section-a",
+                name="Renamed Section",
+                plane_id="plane-a",
+                axis="Y",
+                offset=0.75,
+                visible=True,
+                polylines=[[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]],
+                segment_count=1,
+            ),
+        ],
         curves=[
             ProjectCurve(
                 id="curve-a",
@@ -165,6 +180,8 @@ class ProjectIOTests(unittest.TestCase):
                 "version": PROJECT_VERSION,
                 "name": "Scan Cleanup",
                 "mesh_path": "models/scan.stl",
+                "mesh_name": "Scan Object",
+                "mesh_visible": False,
                 "transform": {
                     "location": [1.0, 2.0, 3.0],
                     "rotation": [10.0, 20.0, 30.0],
@@ -199,6 +216,20 @@ class ProjectIOTests(unittest.TestCase):
                     },
                 ],
                 "active_section_plane_id": "plane-b",
+                "section_results": [
+                    {
+                        "id": "section-a",
+                        "name": "Renamed Section",
+                        "plane_id": "plane-a",
+                        "axis": "Y",
+                        "offset": 0.75,
+                        "visible": True,
+                        "polylines": [
+                            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                        ],
+                        "segment_count": 1,
+                    },
+                ],
                 "curves": [
                     {
                         "id": "curve-a",
@@ -315,6 +346,8 @@ class ProjectIOTests(unittest.TestCase):
 
         self.assertEqual(project.name, "Partial")
         self.assertIsNone(project.mesh_path)
+        self.assertIsNone(project.mesh_name)
+        self.assertTrue(project.mesh_visible)
         self.assertEqual(project.transform.location, [0.0, 0.0, 0.0])
         self.assertEqual(project.transform.rotation, [0.0, 0.0, 0.0])
         self.assertEqual(project.transform.scale, 1.0)
@@ -328,6 +361,7 @@ class ProjectIOTests(unittest.TestCase):
         self.assertFalse(project.section.show_plane)
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
+        self.assertEqual(project.section_results, [])
         self.assertEqual(project.curves, [])
         self.assertEqual(project.surfaces, [])
 

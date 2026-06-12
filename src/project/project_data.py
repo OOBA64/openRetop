@@ -41,6 +41,18 @@ class ProjectSectionPlane:
 
 
 @dataclass
+class ProjectSectionResult:
+    id: str
+    name: str
+    plane_id: str
+    axis: str
+    offset: float
+    visible: bool
+    polylines: list[list[list[float]]]
+    segment_count: int
+
+
+@dataclass
 class ProjectCurve:
     id: str
     name: str
@@ -74,6 +86,9 @@ class ProjectData:
     section: ProjectSectionSettings
     section_planes: list[ProjectSectionPlane] = field(default_factory=list)
     active_section_plane_id: str | None = None
+    mesh_name: str | None = None
+    mesh_visible: bool = True
+    section_results: list[ProjectSectionResult] = field(default_factory=list)
     curves: list[ProjectCurve] = field(default_factory=list)
     surfaces: list[ProjectSurface] = field(default_factory=list)
 
@@ -83,6 +98,8 @@ def default_project_data() -> ProjectData:
         version=PROJECT_VERSION,
         name="Untitled Project",
         mesh_path=None,
+        mesh_name=None,
+        mesh_visible=True,
         transform=ProjectTransform(
             location=[0.0, 0.0, 0.0],
             rotation=[0.0, 0.0, 0.0],

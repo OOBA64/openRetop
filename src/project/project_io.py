@@ -13,6 +13,7 @@ from project.project_data import (
     ProjectData,
     ProjectDisplaySettings,
     ProjectSectionPlane,
+    ProjectSectionResult,
     ProjectSectionSettings,
     ProjectSurface,
     ProjectTransform,
@@ -48,6 +49,8 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
         "version": int(project.version),
         "name": project.name,
         "mesh_path": project.mesh_path,
+        "mesh_name": project.mesh_name,
+        "mesh_visible": bool(project.mesh_visible),
         "transform": {
             "location": list(project.transform.location),
             "rotation": list(project.transform.rotation),
@@ -76,6 +79,25 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             for plane in project.section_planes
         ],
         "active_section_plane_id": project.active_section_plane_id,
+        "section_results": [
+            {
+                "id": result.id,
+                "name": result.name,
+                "plane_id": result.plane_id,
+                "axis": result.axis,
+                "offset": float(result.offset),
+                "visible": bool(result.visible),
+                "polylines": [
+                    _points_to_nested_lists(
+                        polyline,
+                        f"section_results[{index}].polylines[{polyline_index}]",
+                    )
+                    for polyline_index, polyline in enumerate(result.polylines)
+                ],
+                "segment_count": int(result.segment_count),
+            }
+            for index, result in enumerate(project.section_results)
+        ],
         "curves": [
             {
                 "id": curve.id,
@@ -124,6 +146,14 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
     mesh_path = _optional_string_value(
         data.get("mesh_path", defaults.mesh_path),
         "mesh_path",
+    )
+    mesh_name = _optional_string_value(
+        data.get("mesh_name", defaults.mesh_name),
+        "mesh_name",
+    )
+    mesh_visible = _bool_value(
+        data.get("mesh_visible", defaults.mesh_visible),
+        "mesh_visible",
     )
     transform_data = _optional_mapping(data.get("transform"), "transform")
     display_data = _optional_mapping(data.get("display"), "display")
@@ -187,17 +217,23 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         data.get("active_section_plane_id", defaults.active_section_plane_id),
         "active_section_plane_id",
     )
+    section_results = _section_results_value(
+        data.get("section_results", defaults.section_results)
+    )
     curves = _curves_value(data.get("curves", defaults.curves))
     surfaces = _surfaces_value(data.get("surfaces", defaults.surfaces))
     return ProjectData(
         version=version,
         name=name,
         mesh_path=mesh_path,
+        mesh_name=mesh_name,
+        mesh_visible=mesh_visible,
         transform=transform,
         display=display,
         section=section,
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
+        section_results=section_results,
         curves=curves,
         surfaces=surfaces,
     )
@@ -397,6 +433,64 @@ def _curves_value(value: object) -> list[ProjectCurve]:
     return curves
 
 
+def _section_results_value(value: object) -> list[ProjectSectionResult]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("section_results must be a list.")
+
+    results: list[ProjectSectionResult] = []
+    seen_ids: set[str] = set()
+    for index, raw_result in enumerate(value):
+        field_prefix = f"section_results[{index}]"
+        result_data = _mapping_value(raw_result, field_prefix)
+        result_id = _string_value(
+            _nested_value(result_data, "id", ""),
+            f"{field_prefix}.id",
+        )
+        if not result_id:
+            raise ValueError(f"{field_prefix}.id must not be empty.")
+        if result_id in seen_ids:
+            raise ValueError(f"{field_prefix}.id must be unique.")
+        seen_ids.add(result_id)
+
+        results.append(
+            ProjectSectionResult(
+                id=result_id,
+                name=_string_value(
+                    _nested_value(result_data, "name", f"Section {index + 1}"),
+                    f"{field_prefix}.name",
+                ),
+                plane_id=_string_value(
+                    _nested_value(result_data, "plane_id", ""),
+                    f"{field_prefix}.plane_id",
+                ),
+                axis=_axis_value(
+                    _nested_value(result_data, "axis", "Z"),
+                    f"{field_prefix}.axis",
+                ),
+                offset=_float_value(
+                    _nested_value(result_data, "offset", 0.0),
+                    f"{field_prefix}.offset",
+                ),
+                visible=_bool_value(
+                    _nested_value(result_data, "visible", True),
+                    f"{field_prefix}.visible",
+                ),
+                polylines=_polyline_list_value(
+                    _nested_value(result_data, "polylines", []),
+                    f"{field_prefix}.polylines",
+                ),
+                segment_count=_int_value(
+                    _nested_value(result_data, "segment_count", 0),
+                    f"{field_prefix}.segment_count",
+                ),
+            )
+        )
+
+    return results
+
+
 def _surfaces_value(value: object) -> list[ProjectSurface]:
     if value is None:
         return []
@@ -513,6 +607,16 @@ def _points_to_nested_lists(value: object, field_name: str) -> list[list[float]]
         point_rows.append(list(point))
 
     return _points_value(point_rows, field_name)
+
+
+def _polyline_list_value(value: object, field_name: str) -> list[list[list[float]]]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list.")
+
+    return [
+        _points_value(polyline, f"{field_name}[{index}]")
+        for index, polyline in enumerate(value)
+    ]
 
 
 def _axis_value(value: object, field_name: str) -> str:
