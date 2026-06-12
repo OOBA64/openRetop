@@ -12,11 +12,14 @@ from curves.curve_state import (
     CurveCollection,
     StoredCurve,
     add_curve,
+    clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
+    get_selected_curves,
     get_visible_curves,
     remove_curve,
     set_active_curve,
+    set_selected_curves,
 )
 
 
@@ -58,6 +61,7 @@ class CurveStateTests(unittest.TestCase):
         self.assertIs(returned, collection)
         self.assertEqual(collection.curves, [curve])
         self.assertEqual(collection.active_curve_id, curve.id)
+        self.assertEqual(collection.selected_curve_ids, {curve.id})
         self.assertTrue(curve.selected)
 
     def test_remove_active_curve_selects_next_curve(self) -> None:
@@ -72,7 +76,45 @@ class CurveStateTests(unittest.TestCase):
 
         self.assertEqual(collection.curves, [first_curve])
         self.assertEqual(collection.active_curve_id, first_curve.id)
+        self.assertEqual(collection.selected_curve_ids, {first_curve.id})
         self.assertTrue(first_curve.selected)
+
+    def test_set_selected_curves_tracks_multi_selection_and_primary_active_curve(self) -> None:
+        collection = CurveCollection()
+        first_curve = _curve("curve-1")
+        second_curve = _curve("curve-2")
+        third_curve = _curve("curve-3")
+        add_curve(collection, first_curve)
+        add_curve(collection, second_curve)
+        add_curve(collection, third_curve)
+
+        set_selected_curves(
+            collection,
+            [first_curve.id, third_curve.id],
+            active_curve_id=third_curve.id,
+        )
+
+        self.assertEqual(collection.active_curve_id, third_curve.id)
+        self.assertEqual(collection.selected_curve_ids, {first_curve.id, third_curve.id})
+        self.assertEqual(get_selected_curves(collection), [first_curve, third_curve])
+        self.assertTrue(first_curve.selected)
+        self.assertFalse(second_curve.selected)
+        self.assertTrue(third_curve.selected)
+
+    def test_clear_curve_selection_clears_active_and_selected_flags(self) -> None:
+        collection = CurveCollection()
+        first_curve = _curve("curve-1")
+        second_curve = _curve("curve-2")
+        add_curve(collection, first_curve)
+        add_curve(collection, second_curve)
+        set_selected_curves(collection, [first_curve.id, second_curve.id])
+
+        clear_curve_selection(collection)
+
+        self.assertIsNone(collection.active_curve_id)
+        self.assertEqual(collection.selected_curve_ids, set())
+        self.assertFalse(first_curve.selected)
+        self.assertFalse(second_curve.selected)
 
     def test_get_visible_curves_filters_hidden_curves(self) -> None:
         collection = CurveCollection()
@@ -93,6 +135,7 @@ class CurveStateTests(unittest.TestCase):
         clear_curves_for_section_result(collection, "section-result-1")
 
         self.assertEqual(collection.curves, [second_curve])
+        self.assertEqual(collection.selected_curve_ids, {second_curve.id})
 
     def test_clear_curves_for_plane_leaves_other_planes(self) -> None:
         collection = CurveCollection()
@@ -104,6 +147,7 @@ class CurveStateTests(unittest.TestCase):
         clear_curves_for_plane(collection, "plane-1")
 
         self.assertEqual(collection.curves, [second_curve])
+        self.assertEqual(collection.selected_curve_ids, {second_curve.id})
 
     def test_multiple_section_results_keep_separate_curve_records(self) -> None:
         collection = CurveCollection()
@@ -130,6 +174,15 @@ class CurveStateTests(unittest.TestCase):
 
         with self.assertRaises(ValueError) as context:
             set_active_curve(collection, "missing-curve")
+
+        self.assertIn("Curve not found: missing-curve", str(context.exception))
+
+    def test_set_selected_curves_rejects_missing_curve_id(self) -> None:
+        collection = CurveCollection()
+        add_curve(collection, _curve("curve-1"))
+
+        with self.assertRaises(ValueError) as context:
+            set_selected_curves(collection, ["curve-1", "missing-curve"])
 
         self.assertIn("Curve not found: missing-curve", str(context.exception))
 

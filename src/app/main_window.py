@@ -42,11 +42,14 @@ from curves.curve_state import (
     CurveCollection,
     StoredCurve,
     add_curve,
+    clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
+    get_selected_curves,
     get_visible_curves,
     remove_curve,
     set_active_curve,
+    set_selected_curves,
 )
 from geometry.curves import fit_section_polylines
 from geometry.sections import AXIS_TO_INDEX, SECTION_AXES, extract_section, normalize_axis
@@ -337,6 +340,18 @@ class OpenRetopWindow:
         self.tools_menu.add_command(
             label="Delete Selected Curve",
             command=self.delete_selected_curve,
+        )
+        self.tools_menu.add_command(
+            label="Hide Selected Curves",
+            command=self.hide_selected_curves,
+        )
+        self.tools_menu.add_command(
+            label="Hide Unselected Curves",
+            command=self.hide_unselected_curves,
+        )
+        self.tools_menu.add_command(
+            label="Show All Curves",
+            command=self.show_all_curves,
         )
         self.tools_menu.add_command(
             label="Create Surface From Curves",
@@ -1183,6 +1198,48 @@ class OpenRetopWindow:
         self.delete_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.selection_buttons.append(self.delete_curve_button)
         row += 1
+        self.hide_selected_curves_button = ttk.Button(
+            parent,
+            text="Hide Selected Curves",
+            command=self.hide_selected_curves,
+        )
+        self.hide_selected_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.hide_selected_curves_button)
+        row += 1
+        self.hide_unselected_curves_button = ttk.Button(
+            parent,
+            text="Hide Unselected Curves",
+            command=self.hide_unselected_curves,
+        )
+        self.hide_unselected_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.hide_unselected_curves_button)
+        row += 1
+        self.show_all_curves_button = ttk.Button(
+            parent,
+            text="Show All Curves",
+            command=self.show_all_curves,
+        )
+        self.show_all_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.show_all_curves_button)
+        row += 1
         self.curve_deselect_button = ttk.Button(
             parent,
             text="Deselect",
@@ -1398,6 +1455,7 @@ class OpenRetopWindow:
             self.app_state.curve_results = []
             self.app_state.curve_collection.curves = []
             self.app_state.curve_collection.active_curve_id = None
+            self.app_state.curve_collection.selected_curve_ids.clear()
             self.app_state.surface_collection.surfaces = []
             self.app_state.surface_collection.active_surface_id = None
             self.section_result_text.set("Section result: none")
@@ -1437,6 +1495,7 @@ class OpenRetopWindow:
             self._set_selected_item(None, status="No selection")
             return
 
+        clear_curve_selection(self.app_state.curve_collection)
         self._set_selected_item(SELECT_MODEL, status=f"Selected: {self.app_state.mesh_object.name}")
 
     def select_section_plane(self, plane_id: str | None = None) -> None:
@@ -1444,6 +1503,7 @@ class OpenRetopWindow:
             self._set_selected_item(None, status="No selection")
             return
 
+        clear_curve_selection(self.app_state.curve_collection)
         if plane_id is not None:
             try:
                 set_active_plane(self.app_state.section_collection, plane_id)
@@ -1476,11 +1536,51 @@ class OpenRetopWindow:
         self._sync_curve_context_from_active_curve()
         self._set_selected_item(SELECT_CURVE, status=f"Selected: {active_curve.name}")
 
+    def select_curves(
+        self,
+        curve_ids: list[str],
+        *,
+        active_curve_id: str | None = None,
+    ) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        if not curve_ids:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        try:
+            set_selected_curves(
+                self.app_state.curve_collection,
+                curve_ids,
+                active_curve_id=active_curve_id,
+            )
+        except ValueError:
+            self._refresh_scene_browser()
+            self.status_text.set("Curve not found")
+            return
+
+        active_curve = self._active_curve()
+        if active_curve is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        self._sync_curve_context_from_active_curve()
+        selected_count = len(self.app_state.curve_collection.selected_curve_ids)
+        status = (
+            f"Selected: {active_curve.name}"
+            if selected_count == 1
+            else f"Selected: {selected_count} curves"
+        )
+        self._set_selected_item(SELECT_CURVE, status=status)
+
     def select_surface(self, surface_id: str | None = None) -> None:
         if self.app_state.mesh_object is None:
             self._set_selected_item(None, status="No selection")
             return
 
+        clear_curve_selection(self.app_state.curve_collection)
         if surface_id is not None:
             try:
                 set_active_surface(self.app_state.surface_collection, surface_id)
@@ -1524,12 +1624,15 @@ class OpenRetopWindow:
         return f"Section Plane {index}"
 
     def clear_selection(self) -> None:
+        clear_curve_selection(self.app_state.curve_collection)
         self._set_selected_item(None, status="No selection")
 
     def _set_selected_item(self, selected_item: str | None, *, status: str | None = None) -> None:
         if self.app_state.transform_state is not None:
             self._end_active_transform(commit=False, status="Transform cancelled")
 
+        if selected_item != SELECT_CURVE:
+            clear_curve_selection(self.app_state.curve_collection)
         self.app_state.selected_item = selected_item
         self.app_state.active_transform_mode = None
         self.app_state.active_transform_axis = None
@@ -1548,7 +1651,11 @@ class OpenRetopWindow:
         else:
             self.clear_selection()
 
-    def _on_scene_browser_selection(self, selected_item: str | None) -> None:
+    def _on_scene_browser_selection(
+        self,
+        selected_item: str | None,
+        selected_items: tuple[str, ...] = (),
+    ) -> None:
         section_plane_id = section_plane_id_from_node(selected_item)
         curve_id = curve_id_from_node(selected_item)
         surface_id = surface_id_from_node(selected_item)
@@ -1557,7 +1664,16 @@ class OpenRetopWindow:
         elif section_plane_id is not None:
             self.select_section_plane(section_plane_id)
         elif curve_id is not None:
-            self.select_curve(curve_id)
+            curve_ids = [
+                selected_curve_id
+                for selected_curve_id in (
+                    curve_id_from_node(item) for item in selected_items
+                )
+                if selected_curve_id is not None
+            ]
+            if not curve_ids:
+                curve_ids = [curve_id]
+            self.select_curves(curve_ids, active_curve_id=curve_id)
         elif surface_id is not None:
             self.select_surface(surface_id)
         elif selected_item == SELECT_SECTION_PLANE:
@@ -1646,6 +1762,7 @@ class OpenRetopWindow:
         self.app_state.section_collection.results = []
         self.app_state.curve_collection.curves = []
         self.app_state.curve_collection.active_curve_id = None
+        self.app_state.curve_collection.selected_curve_ids.clear()
         self.app_state.surface_collection.surfaces = []
         self.app_state.surface_collection.active_surface_id = None
         self._set_display_section_result(None)
@@ -1838,37 +1955,63 @@ class OpenRetopWindow:
             self.status_text.set("No curves available")
             return
 
-        active_curve = self._active_curve()
-        if self.app_state.selected_item == SELECT_CURVE and active_curve is not None:
-            source_curves = [active_curve]
-            source = "selected_curve"
-        else:
-            source_curves = get_visible_curves(self.app_state.curve_collection)
-            source = "visible_curves"
-
+        source_curves = self._surface_source_curves_from_selection()
         if not source_curves:
-            self.status_text.set("No visible curves available")
+            self.status_text.set("Select one closed curve for fill or two curves for loft.")
+            return
+        if len(source_curves) > 2:
+            self.status_text.set("Select one closed curve for fill or exactly two curves for loft.")
             return
 
-        metadata: dict[str, object] = {
-            "curve_count": len(source_curves),
-            "source": source,
-            "note": "Placeholder surface; no geometry generated yet",
-        }
-        if len(source_curves) == 2:
-            metadata["surface_type"] = "preview_loft"
+        if len(source_curves) == 1:
+            if not self._curve_is_closed(source_curves[0]):
+                self.status_text.set("Single-curve surface requires a closed curve.")
+                return
+            surface_type = "preview_fill"
+            metadata: dict[str, object] = {
+                "curve_count": 1,
+                "source": "selected_curve",
+                "preview_mode": "closed_curve_fill",
+            }
+        else:
+            surface_type = "preview_loft"
+            metadata = {
+                "curve_count": 2,
+                "source": "selected_curves",
+                "preview_mode": "two_curve_loft",
+            }
+
 
         surface = SurfacePatch(
             id=f"surface-{uuid4().hex}",
             name=self._next_surface_name(),
             source_curve_ids=[curve.id for curve in source_curves],
-            surface_type="placeholder",
+            surface_type=surface_type,
             metadata=metadata,
         )
         add_surface(self.app_state.surface_collection, surface)
         self._sync_surface_context_from_active_surface()
         self._set_selected_item(SELECT_SURFACE, status=f"Created: {surface.name}")
         self._set_project_dirty(True)
+
+    def _surface_source_curves_from_selection(self) -> list[StoredCurve]:
+        selected_curves = get_selected_curves(self.app_state.curve_collection)
+        if selected_curves:
+            return selected_curves
+
+        active_curve = self._active_curve()
+        return [] if active_curve is None else [active_curve]
+
+    @staticmethod
+    def _curve_is_closed(curve: StoredCurve) -> bool:
+        if bool(curve.is_closed):
+            return True
+
+        points = np.asarray(curve.fitted_points, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+            return False
+
+        return bool(np.linalg.norm(points[0] - points[-1]) <= 1e-8)
 
     def _next_surface_name(self) -> str:
         existing_names = {
@@ -1915,6 +2058,58 @@ class OpenRetopWindow:
     def _clear_surfaces_for_curve_ids(self, curve_ids: list[str]) -> None:
         for curve_id in curve_ids:
             clear_surfaces_for_curve(self.app_state.surface_collection, curve_id)
+
+    def hide_selected_curves(self) -> None:
+        selected_ids = set(self.app_state.curve_collection.selected_curve_ids)
+        if not selected_ids:
+            self.status_text.set("No selected curves")
+            return
+
+        for curve in self.app_state.curve_collection.curves:
+            if curve.id in selected_ids:
+                curve.visible = False
+        self._sync_curve_context_from_active_curve()
+        self._sync_visible_curve_results()
+        self._refresh_viewport(reset_camera=False)
+        count = len(selected_ids)
+        self.status_text.set(
+            "Hidden selected curve" if count == 1 else f"Hidden {count} selected curves"
+        )
+        self._set_project_dirty(True)
+
+    def hide_unselected_curves(self) -> None:
+        selected_ids = set(self.app_state.curve_collection.selected_curve_ids)
+        if not selected_ids:
+            self.status_text.set("No selected curves")
+            return
+
+        hidden_count = 0
+        for curve in self.app_state.curve_collection.curves:
+            if curve.id not in selected_ids and curve.visible:
+                hidden_count += 1
+                curve.visible = False
+        self._sync_curve_context_from_active_curve()
+        self._sync_visible_curve_results()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(
+            "No unselected visible curves"
+            if hidden_count == 0
+            else f"Hidden {hidden_count} unselected curves"
+        )
+        self._set_project_dirty(True)
+
+    def show_all_curves(self) -> None:
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+
+        for curve in self.app_state.curve_collection.curves:
+            curve.visible = True
+        self._sync_curve_context_from_active_curve()
+        self._sync_visible_curve_results()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("All curves visible")
+        self._set_project_dirty(True)
 
     def _sync_surface_context_from_active_surface(self) -> None:
         active_surface = self._active_surface()
@@ -2083,6 +2278,7 @@ class OpenRetopWindow:
             section_results=self.app_state.section_collection.results,
             curves=self.app_state.curve_collection.curves,
             active_curve_id=self.app_state.curve_collection.active_curve_id,
+            selected_curve_ids=self.app_state.curve_collection.selected_curve_ids,
             surfaces=self.app_state.surface_collection.surfaces,
             active_surface_id=self.app_state.surface_collection.active_surface_id,
             has_section_result=bool(self.app_state.section_collection.results)
@@ -2844,6 +3040,7 @@ class OpenRetopWindow:
         self.app_state.curve_results = []
         self.app_state.curve_collection.curves = []
         self.app_state.curve_collection.active_curve_id = None
+        self.app_state.curve_collection.selected_curve_ids.clear()
         self.app_state.surface_collection.surfaces = []
         self.app_state.surface_collection.active_surface_id = None
         self.app_state.section_collection.results = []

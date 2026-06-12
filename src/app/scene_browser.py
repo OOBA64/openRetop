@@ -89,7 +89,7 @@ class SceneBrowser:
         self,
         parent: ttk.Frame,
         *,
-        selection_callback: Callable[[str | None], None],
+        selection_callback: Callable[[str | None, tuple[str, ...]], None],
     ) -> None:
         self.selection_callback = selection_callback
         self._syncing_selection = False
@@ -98,6 +98,7 @@ class SceneBrowser:
         self._section_result_node_ids: set[str] = set()
         self._curve_node_ids: set[str] = set()
         self._active_curve_node_id: str | None = None
+        self._selected_curve_node_ids: set[str] = set()
         self._surface_node_ids: set[str] = set()
         self._active_surface_node_id: str | None = None
 
@@ -115,7 +116,7 @@ class SceneBrowser:
         self.tree = ttk.Treeview(
             self.frame,
             show="tree",
-            selectmode="browse",
+            selectmode="extended",
             height=12,
         )
         self.tree.grid(row=1, column=0, sticky="nsew")
@@ -132,6 +133,7 @@ class SceneBrowser:
         section_results: Sequence[StoredSectionResult],
         curves: Sequence[StoredCurve],
         active_curve_id: str | None,
+        selected_curve_ids: set[str],
         surfaces: Sequence[SurfacePatch],
         active_surface_id: str | None,
         has_section_result: bool,
@@ -164,7 +166,11 @@ class SceneBrowser:
                 self._remove_section_result_nodes()
 
             if has_curves:
-                self._sync_curve_nodes(curves, active_curve_id=active_curve_id)
+                self._sync_curve_nodes(
+                    curves,
+                    active_curve_id=active_curve_id,
+                    selected_curve_ids=selected_curve_ids,
+                )
             else:
                 self._remove_curve_nodes()
 
@@ -266,8 +272,12 @@ class SceneBrowser:
         curves: Sequence[StoredCurve],
         *,
         active_curve_id: str | None,
+        selected_curve_ids: set[str],
     ) -> None:
         self._ensure_node(NODE_CURVES, "Curves", open_node=True)
+        # TODO(task-38): Group curve nodes by section_result_id once the
+        # browser supports grouped multi-selection without breaking flat-node
+        # keyboard navigation and existing project scene tests.
 
         current_node_ids: list[str] = []
         for index, curve in enumerate(curves, start=1):
@@ -291,10 +301,16 @@ class SceneBrowser:
             self._active_curve_node_id = active_node_id
         else:
             self._active_curve_node_id = current_node_ids[0] if current_node_ids else None
+        self._selected_curve_node_ids = {
+            curve_node_id(curve_id)
+            for curve_id in selected_curve_ids
+            if curve_node_id(curve_id) in current_node_id_set
+        }
 
     def _remove_curve_nodes(self) -> None:
         self._curve_node_ids = set()
         self._active_curve_node_id = None
+        self._selected_curve_node_ids = set()
         self._remove_node(NODE_CURVES)
 
     def _sync_surface_nodes(
@@ -352,6 +368,22 @@ class SceneBrowser:
                 self.tree.move(node_id, NODE_SCENE, index)
 
     def _sync_tree_selection(self, selected_item: str | None) -> None:
+        if selected_item == SELECT_CURVE and self._selected_curve_node_ids:
+            node_ids = tuple(
+                node_id
+                for node_id in self.tree.get_children(NODE_CURVES)
+                if node_id in self._selected_curve_node_ids
+            )
+            if node_ids and self.tree.selection() != node_ids:
+                self.tree.selection_set(node_ids)
+            if self._active_curve_node_id is not None and self.tree.exists(
+                self._active_curve_node_id
+            ):
+                self.tree.see(self._active_curve_node_id)
+            elif node_ids:
+                self.tree.see(node_ids[0])
+            return
+
         node_id = self._node_for_selection(selected_item)
         if node_id is not None and self.tree.exists(node_id):
             if self.tree.selection() != (node_id,):
@@ -368,8 +400,35 @@ class SceneBrowser:
             return
 
         selection = self.tree.selection()
-        node_id = selection[0] if selection else None
-        self.selection_callback(self._selection_for_node(node_id))
+        if not selection:
+            self.selection_callback(None, ())
+            return
+
+        curve_selection = tuple(
+            node_id for node_id in selection if node_id in self._curve_node_ids
+        )
+        if curve_selection and len(curve_selection) == len(selection):
+            focused_node = self.tree.focus()
+            node_id = focused_node if focused_node in curve_selection else curve_selection[-1]
+            self.selection_callback(
+                self._selection_for_node(node_id),
+                tuple(self._selection_for_node(item) or item for item in curve_selection),
+            )
+            return
+
+        focused_node = self.tree.focus()
+        node_id = focused_node if focused_node in selection else selection[0]
+        if len(selection) > 1:
+            self._syncing_selection = True
+            try:
+                self.tree.selection_set(node_id)
+            finally:
+                self._syncing_selection = False
+        selected_item = self._selection_for_node(node_id)
+        self.selection_callback(
+            selected_item,
+            () if selected_item is None else (selected_item,),
+        )
 
     def _node_for_selection(self, selected_item: str | None) -> str | None:
         if selected_item == SELECT_MODEL:

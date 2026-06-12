@@ -53,3 +53,4 @@ class AppState:
         self.section_collection.results = []
         self.curve_collection.curves = []
         self.curve_collection.active_curve_id = None
+        self.curve_collection.selected_curve_ids.clear()

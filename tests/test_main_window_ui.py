@@ -219,6 +219,22 @@ def _widgets_with_text(widget: object, text: str) -> list[object]:
     return matches
 
 
+def _make_curve_closed(curve: StoredCurve) -> None:
+    closed_points = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=float,
+    )
+    curve.original_points = closed_points.copy()
+    curve.fitted_points = closed_points.copy()
+    curve.is_closed = True
+
+
 class MainWindowUiTests(unittest.TestCase):
     def test_menu_bar_and_initial_no_selection_context_match_instructions(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
@@ -256,7 +272,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.tools_menu.entrycget(5, "label"), "Clear All Section Results")
             self.assertEqual(window.tools_menu.entrycget(6, "label"), "Delete Active Section Plane")
             self.assertEqual(window.tools_menu.entrycget(7, "label"), "Delete Selected Curve")
-            self.assertEqual(window.tools_menu.entrycget(8, "label"), "Create Surface From Curves")
+            self.assertEqual(window.tools_menu.entrycget(8, "label"), "Hide Selected Curves")
+            self.assertEqual(window.tools_menu.entrycget(9, "label"), "Hide Unselected Curves")
+            self.assertEqual(window.tools_menu.entrycget(10, "label"), "Show All Curves")
+            self.assertEqual(window.tools_menu.entrycget(11, "label"), "Create Surface From Curves")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -1628,6 +1647,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.compute_section()
             source_curve = window.app_state.curve_collection.curves[0]
+            _make_curve_closed(source_curve)
             window.select_curve(source_curve.id)
             window.create_surface_from_curves()
             surface = window.app_state.surface_collection.surfaces[0]
@@ -1653,10 +1673,14 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(project_surface.id, surface.id)
                 self.assertEqual(project_surface.name, "Surface 1")
                 self.assertEqual(project_surface.source_curve_ids, [source_curve.id])
-                self.assertEqual(project_surface.surface_type, "placeholder")
+                self.assertEqual(project_surface.surface_type, "preview_fill")
                 self.assertFalse(project_surface.visible)
                 self.assertEqual(project_surface.metadata["curve_count"], 1)
                 self.assertEqual(project_surface.metadata["source"], "selected_curve")
+                self.assertEqual(
+                    project_surface.metadata["preview_mode"],
+                    "closed_curve_fill",
+                )
         finally:
             window.root.destroy()
 
@@ -1829,6 +1853,12 @@ class MainWindowUiTests(unittest.TestCase):
             window.tools_menu.invoke(6)
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(8)
+            self.assertEqual(window.status_text.get(), "No selected curves")
+            window.tools_menu.invoke(9)
+            self.assertEqual(window.status_text.get(), "No selected curves")
+            window.tools_menu.invoke(10)
+            self.assertEqual(window.status_text.get(), "No curves available")
+            window.tools_menu.invoke(11)
             self.assertEqual(window.status_text.get(), "No curves available")
         finally:
             window.root.destroy()
@@ -2170,24 +2200,25 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.compute_section()
             source_curve = window.app_state.curve_collection.curves[0]
+            _make_curve_closed(source_curve)
             window.select_curve(source_curve.id)
             window._set_project_dirty(False)
 
-            window.tools_menu.invoke(8)
+            window.tools_menu.invoke(11)
 
             surfaces = window.app_state.surface_collection.surfaces
             self.assertEqual(len(surfaces), 1)
             surface = surfaces[0]
             self.assertEqual(surface.name, "Surface 1")
-            self.assertEqual(surface.surface_type, "placeholder")
+            self.assertEqual(surface.surface_type, "preview_fill")
             self.assertEqual(surface.source_curve_ids, [source_curve.id])
             self.assertTrue(surface.visible)
             self.assertTrue(surface.selected)
             self.assertEqual(surface.metadata["curve_count"], 1)
             self.assertEqual(surface.metadata["source"], "selected_curve")
             self.assertEqual(
-                surface.metadata["note"],
-                "Placeholder surface; no geometry generated yet",
+                surface.metadata["preview_mode"],
+                "closed_curve_fill",
             )
             self.assertEqual(window.app_state.selected_item, "surface")
             self.assertEqual(window.app_state.surface_collection.active_surface_id, surface.id)
@@ -2195,7 +2226,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.project_dirty)
             self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
             self.assertEqual(window.surface_name_text.get(), "Surface 1")
-            self.assertEqual(window.surface_type_text.get(), "placeholder")
+            self.assertEqual(window.surface_type_text.get(), "preview_fill")
             self.assertEqual(window.surface_source_curve_count_text.get(), "1")
             self.assertIn("curve_count=1", window.surface_metadata_text.get())
             self.assertIn("source=selected_curve", window.surface_metadata_text.get())
@@ -2208,7 +2239,7 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_create_surface_from_visible_curves_uses_visible_curves_and_unique_names(self) -> None:
+    def test_create_surface_from_two_selected_curves_creates_loft_with_unique_names(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
             file_path=Path("sample.stl"),
@@ -2241,36 +2272,239 @@ class MainWindowUiTests(unittest.TestCase):
             window.compute_section()
             second_curve = window.app_state.curve_collection.curves[1]
 
-            window.clear_selection()
-            window.tools_menu.invoke(8)
+            window.select_curves(
+                [first_curve.id, second_curve.id],
+                active_curve_id=second_curve.id,
+            )
+            window.tools_menu.invoke(11)
             first_surface = window.app_state.surface_collection.surfaces[0]
             self.assertEqual(first_surface.name, "Surface 1")
             self.assertEqual(
                 first_surface.source_curve_ids,
                 [first_curve.id, second_curve.id],
             )
+            self.assertEqual(first_surface.surface_type, "preview_loft")
             self.assertEqual(first_surface.metadata["curve_count"], 2)
-            self.assertEqual(first_surface.metadata["source"], "visible_curves")
-            self.assertEqual(first_surface.metadata["surface_type"], "preview_loft")
+            self.assertEqual(first_surface.metadata["source"], "selected_curves")
+            self.assertEqual(first_surface.metadata["preview_mode"], "two_curve_loft")
 
-            first_curve.visible = False
-            window._sync_visible_curve_results()
-            window.clear_selection()
-            window.tools_menu.invoke(8)
+            window.select_curves(
+                [first_curve.id, second_curve.id],
+                active_curve_id=first_curve.id,
+            )
+            window.tools_menu.invoke(11)
 
             surfaces = window.app_state.surface_collection.surfaces
             self.assertEqual([surface.name for surface in surfaces], ["Surface 1", "Surface 2"])
             second_surface = surfaces[1]
-            self.assertEqual(second_surface.source_curve_ids, [second_curve.id])
-            self.assertEqual(second_surface.metadata["curve_count"], 1)
-            self.assertEqual(second_surface.metadata["source"], "visible_curves")
+            self.assertEqual(second_surface.source_curve_ids, [first_curve.id, second_curve.id])
+            self.assertEqual(second_surface.surface_type, "preview_loft")
 
-            second_curve.visible = False
-            window._sync_visible_curve_results()
             window.clear_selection()
-            window.tools_menu.invoke(8)
-            self.assertEqual(window.status_text.get(), "No visible curves available")
+            window.tools_menu.invoke(11)
+            self.assertEqual(
+                window.status_text.get(),
+                "Select one closed curve for fill or two curves for loft.",
+            )
             self.assertEqual(len(window.app_state.surface_collection.surfaces), 2)
+        finally:
+            window.root.destroy()
+
+    def test_scene_browser_multi_selects_curves_and_viewport_marks_each_selected(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.add_section_plane()
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_curve = window.app_state.curve_collection.curves[1]
+
+            tree = window.scene_browser.tree
+            first_curve_node = curve_node_id(first_curve.id)
+            second_curve_node = curve_node_id(second_curve.id)
+            tree.selection_set((first_curve_node, second_curve_node))
+            tree.focus(second_curve_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, second_curve.id)
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id, second_curve.id},
+            )
+            self.assertTrue(first_curve.selected)
+            self.assertTrue(second_curve.selected)
+            self.assertEqual(tree.selection(), (first_curve_node, second_curve_node))
+            self.assertEqual(window.status_text.get(), "Selected: 2 curves")
+            self.assertTrue(all(curve.selected for curve in window.viewport.scene_calls[-1]["curve_results"]))
+        finally:
+            window.root.destroy()
+
+    def test_curve_visibility_commands_hide_selected_unselected_and_show_all(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.add_section_plane()
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_curve = window.app_state.curve_collection.curves[1]
+
+            window.select_curve(first_curve.id)
+            window._set_project_dirty(False)
+            window.hide_selected_curves()
+
+            self.assertFalse(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(window.app_state.curve_results, [second_curve])
+            self.assertEqual(window.status_text.get(), "Hidden selected curve")
+            self.assertTrue(window.project_dirty)
+
+            window.show_all_curves()
+            self.assertTrue(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(window.app_state.curve_results, [first_curve, second_curve])
+
+            window.select_curve(first_curve.id)
+            window.hide_unselected_curves()
+
+            self.assertTrue(first_curve.visible)
+            self.assertFalse(second_curve.visible)
+            self.assertEqual(window.app_state.curve_results, [first_curve])
+            self.assertEqual(window.status_text.get(), "Hidden 1 unselected curves")
+
+            window.tools_menu.invoke(10)
+            self.assertTrue(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(window.status_text.get(), "All curves visible")
+        finally:
+            window.root.destroy()
+
+    def test_create_surface_rejects_open_single_curve_and_more_than_two_curves(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.select_curve(first_curve.id)
+            window.tools_menu.invoke(11)
+
+            self.assertEqual(
+                window.status_text.get(),
+                "Single-curve surface requires a closed curve.",
+            )
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+
+            points = np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            second_curve = StoredCurve(
+                id="curve-2",
+                name="Curve 2",
+                section_result_id="section-result-2",
+                plane_id="plane-2",
+                original_points=points.copy(),
+                fitted_points=points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            third_curve = StoredCurve(
+                id="curve-3",
+                name="Curve 3",
+                section_result_id="section-result-3",
+                plane_id="plane-3",
+                original_points=points.copy(),
+                fitted_points=points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, second_curve)
+            add_curve(window.app_state.curve_collection, third_curve)
+            window.select_curves(
+                [first_curve.id, second_curve.id, third_curve.id],
+                active_curve_id=third_curve.id,
+            )
+            window.tools_menu.invoke(11)
+
+            self.assertEqual(
+                window.status_text.get(),
+                "Select one closed curve for fill or exactly two curves for loft.",
+            )
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
         finally:
             window.root.destroy()
 
@@ -2353,8 +2587,9 @@ class MainWindowUiTests(unittest.TestCase):
             stored_result = window.app_state.section_collection.results[0]
             source_curve = window.app_state.curve_collection.curves[0]
             source_plane = window.app_state.section_collection.planes[0]
+            _make_curve_closed(source_curve)
             window.select_curve(source_curve.id)
-            window.tools_menu.invoke(8)
+            window.tools_menu.invoke(11)
             self.assertEqual(len(window.app_state.surface_collection.surfaces), 1)
 
             window.select_curve(source_curve.id)
@@ -2617,6 +2852,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertEqual(window.app_state.selected_item, "curve")
             self.assertEqual(window.app_state.curve_collection.active_curve_id, first_curve.id)
+            self.assertEqual(window.app_state.curve_collection.selected_curve_ids, {first_curve.id})
             self.assertTrue(first_curve.selected)
             self.assertFalse(second_curve.selected)
             self.assertEqual(tree.selection(), (first_curve_node,))
@@ -2667,6 +2903,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.app_state.section_collection.planes, [first_plane, second_plane])
             self.assertEqual(window.app_state.curve_collection.curves, [second_curve])
             self.assertEqual(window.app_state.curve_collection.active_curve_id, second_curve.id)
+            self.assertEqual(window.app_state.curve_collection.selected_curve_ids, {second_curve.id})
             self.assertEqual(window.app_state.curve_results, [second_curve])
             self.assertEqual(tree.get_children(NODE_CURVES), (second_curve_node,))
             self.assertEqual(tree.selection(), (second_curve_node,))
