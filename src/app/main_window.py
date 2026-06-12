@@ -13,15 +13,27 @@ import numpy as np
 from app.app_state import AppState
 from app.object_state import MeshObjectState
 from app.scene_browser import (
+    NODE_CURVES,
+    NODE_CURVE_GROUP_UNASSIGNED,
+    NODE_SECTION_PLANES,
+    NODE_SECTION_RESULTS,
+    NODE_SURFACES,
     SceneBrowser,
+    curve_group_node_id,
     curve_id_from_node,
+    curve_node_id,
+    section_result_id_from_node,
+    section_result_node_id,
     section_plane_id_from_node,
+    section_plane_node_id,
     surface_id_from_node,
+    surface_node_id,
 )
 from app.selection_types import (
     SELECT_CURVE,
     SELECT_MODEL,
     SELECT_SECTION_PLANE,
+    SELECT_SECTION_RESULT,
     SELECT_SURFACE,
 )
 from app.transform_state import ActiveTransformState
@@ -82,8 +94,10 @@ from sections.section_state import (
     clear_results_for_plane,
     create_default_section_plane,
     get_active_plane,
+    get_active_result,
     remove_plane,
     set_active_plane,
+    set_active_result,
 )
 from surfaces.surface_state import (
     SurfaceCollection,
@@ -117,6 +131,10 @@ LOAD_PROGRESS_STAGES = (
     "Building display proxy",
     "Creating viewport actors",
     "Finalizing scene",
+)
+GENERATED_GEOMETRY_TRANSFORM_WARNING = (
+    "Generated sections/curves/surfaces will not follow mesh transform. "
+    "Recompute after moving."
 )
 
 
@@ -240,6 +258,13 @@ class OpenRetopWindow:
         self.selected_bbox_size_text = StringVar(value="-")
         self.section_plane_text = StringVar(value="Section: Z = 0.000")
         self.section_result_text = StringVar(value="Section result: none")
+        self.section_result_visible = BooleanVar(value=True)
+        self.section_result_name_text = StringVar(value="(none)")
+        self.section_result_source_plane_text = StringVar(value="(none)")
+        self.section_result_axis_text = StringVar(value="(none)")
+        self.section_result_offset_text = StringVar(value="0.000")
+        self.section_result_segment_count_text = StringVar(value="0")
+        self.section_result_curve_count_text = StringVar(value="0")
         self.curve_visible = BooleanVar(value=True)
         self.curve_name_text = StringVar(value="(none)")
         self.curve_section_text = StringVar(value="(none)")
@@ -866,6 +891,11 @@ class OpenRetopWindow:
         self.section_context_frame.columnconfigure(0, weight=1)
         self._build_section_context(self.section_context_frame)
 
+        self.section_result_context_frame = ttk.Frame(self.sidebar)
+        self.section_result_context_frame.grid(row=row, column=0, sticky="ew")
+        self.section_result_context_frame.columnconfigure(0, weight=1)
+        self._build_section_result_context(self.section_result_context_frame)
+
         self.curve_context_frame = ttk.Frame(self.sidebar)
         self.curve_context_frame.grid(row=row, column=0, sticky="ew")
         self.curve_context_frame.columnconfigure(0, weight=1)
@@ -882,6 +912,7 @@ class OpenRetopWindow:
         self.scene_browser = SceneBrowser(
             main,
             selection_callback=self._on_scene_browser_selection,
+            visibility_callback=self._on_scene_browser_visibility,
         )
         self.scene_browser.frame.grid(row=0, column=2, sticky="ns")
 
@@ -1172,6 +1203,37 @@ class OpenRetopWindow:
         self.section_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.selection_buttons.append(self.section_deselect_button)
 
+    def _build_section_result_context(self, parent: ttk.Frame) -> None:
+        row = self._add_separator(parent, 0)
+        row = self._add_heading(parent, row, "Section Result")
+        self.section_result_visible_check = ttk.Checkbutton(
+            parent,
+            text="Visible",
+            variable=self.section_result_visible,
+            command=self._on_section_result_visibility_changed,
+        )
+        self.section_result_visible_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        row = self._add_info_row(parent, row, "Name", self.section_result_name_text)
+        row = self._add_info_row(parent, row, "Source plane", self.section_result_source_plane_text)
+        row = self._add_info_row(parent, row, "Axis", self.section_result_axis_text)
+        row = self._add_info_row(parent, row, "Offset", self.section_result_offset_text)
+        row = self._add_info_row(parent, row, "Segments", self.section_result_segment_count_text)
+        row = self._add_info_row(parent, row, "Curves", self.section_result_curve_count_text)
+        self.section_result_deselect_button = ttk.Button(
+            parent,
+            text="Deselect",
+            command=self.clear_selection,
+        )
+        self.section_result_deselect_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        self.selection_buttons.append(self.section_result_deselect_button)
+
     def _build_curve_context(self, parent: ttk.Frame) -> None:
         row = self._add_separator(parent, 0)
         row = self._add_heading(parent, row, "Curve")
@@ -1350,6 +1412,7 @@ class OpenRetopWindow:
             self.no_selection_frame,
             self.model_context_frame,
             self.section_context_frame,
+            self.section_result_context_frame,
             self.curve_context_frame,
             self.surface_context_frame,
         ):
@@ -1359,6 +1422,8 @@ class OpenRetopWindow:
             self.model_context_frame.grid()
         elif selected_item == SELECT_SECTION_PLANE and self.app_state.mesh_object is not None:
             self.section_context_frame.grid()
+        elif selected_item == SELECT_SECTION_RESULT and self.app_state.mesh_object is not None:
+            self.section_result_context_frame.grid()
         elif selected_item == SELECT_CURVE and self.app_state.mesh_object is not None:
             self.curve_context_frame.grid()
         elif selected_item == SELECT_SURFACE and self.app_state.mesh_object is not None:
@@ -1452,6 +1517,8 @@ class OpenRetopWindow:
                 source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
             )
             self.app_state.section_result = None
+            self.app_state.section_collection.results = []
+            self.app_state.section_collection.active_result_id = None
             self.app_state.curve_results = []
             self.app_state.curve_collection.curves = []
             self.app_state.curve_collection.active_curve_id = None
@@ -1514,6 +1581,29 @@ class OpenRetopWindow:
             self._sync_section_controls_from_active_plane()
 
         self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
+
+    def select_section_result(self, result_id: str | None = None) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        clear_curve_selection(self.app_state.curve_collection)
+        if result_id is not None:
+            try:
+                set_active_result(self.app_state.section_collection, result_id)
+            except ValueError:
+                self._refresh_scene_browser()
+                self.status_text.set("Section result not found")
+                return
+
+        active_result = self._active_section_result()
+        if active_result is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        self._set_display_section_result(active_result)
+        self._sync_section_result_context_from_active_result()
+        self._set_selected_item(SELECT_SECTION_RESULT, status=f"Selected: {active_result.name}")
 
     def select_curve(self, curve_id: str | None = None) -> None:
         if self.app_state.mesh_object is None:
@@ -1657,12 +1747,15 @@ class OpenRetopWindow:
         selected_items: tuple[str, ...] = (),
     ) -> None:
         section_plane_id = section_plane_id_from_node(selected_item)
+        section_result_id = section_result_id_from_node(selected_item)
         curve_id = curve_id_from_node(selected_item)
         surface_id = surface_id_from_node(selected_item)
         if selected_item == SELECT_MODEL:
             self.select_model()
         elif section_plane_id is not None:
             self.select_section_plane(section_plane_id)
+        elif section_result_id is not None:
+            self.select_section_result(section_result_id)
         elif curve_id is not None:
             curve_ids = [
                 selected_curve_id
@@ -1678,6 +1771,8 @@ class OpenRetopWindow:
             self.select_surface(surface_id)
         elif selected_item == SELECT_SECTION_PLANE:
             self.select_section_plane()
+        elif selected_item == SELECT_SECTION_RESULT:
+            self.select_section_result()
         elif selected_item == SELECT_CURVE:
             self.select_curve()
         elif selected_item == SELECT_SURFACE:
@@ -1760,6 +1855,7 @@ class OpenRetopWindow:
 
     def clear_all_section_results(self) -> None:
         self.app_state.section_collection.results = []
+        self.app_state.section_collection.active_result_id = None
         self.app_state.curve_collection.curves = []
         self.app_state.curve_collection.active_curve_id = None
         self.app_state.curve_collection.selected_curve_ids.clear()
@@ -1840,12 +1936,19 @@ class OpenRetopWindow:
     ) -> None:
         if stored_result is None:
             self.app_state.section_result = None
+            self.app_state.section_collection.active_result_id = None
             self.section_result_text.set("Section result: none")
+            self._sync_section_result_context_from_active_result()
             self._sync_visible_curve_results()
             return
 
-        self.app_state.section_result = stored_result.result
+        try:
+            set_active_result(self.app_state.section_collection, stored_result.id)
+        except ValueError:
+            pass
+        self.app_state.section_result = stored_result.result if stored_result.visible else None
         self.section_result_text.set(self._section_result_summary(stored_result))
+        self._sync_section_result_context_from_active_result()
         self._sync_visible_curve_results()
 
     def _store_curves_for_section_result(
@@ -1874,6 +1977,46 @@ class OpenRetopWindow:
     def _sync_visible_curve_results(self) -> None:
         self.app_state.curve_results = list(
             get_visible_curves(self.app_state.curve_collection)
+        )
+
+    def _active_section_result(self) -> StoredSectionResult | None:
+        return get_active_result(self.app_state.section_collection)
+
+    def _sync_section_result_context_from_active_result(self) -> None:
+        active_result = self._active_section_result()
+        if active_result is None:
+            self.section_result_visible.set(False)
+            self.section_result_name_text.set("(none)")
+            self.section_result_source_plane_text.set("(none)")
+            self.section_result_axis_text.set("(none)")
+            self.section_result_offset_text.set("0.000")
+            self.section_result_segment_count_text.set("0")
+            self.section_result_curve_count_text.set("0")
+            return
+
+        self.section_result_visible.set(bool(active_result.visible))
+        self.section_result_name_text.set(active_result.name)
+        self.section_result_source_plane_text.set(
+            self._section_plane_summary_for_result(active_result)
+        )
+        self.section_result_axis_text.set(active_result.axis)
+        self.section_result_offset_text.set(f"{active_result.offset:.3f}")
+        self.section_result_segment_count_text.set(str(active_result.result.segment_count))
+        self.section_result_curve_count_text.set(
+            str(self._curve_count_for_section_result(active_result.id))
+        )
+
+    def _section_plane_summary_for_result(self, result: StoredSectionResult) -> str:
+        for plane in self.app_state.section_collection.planes:
+            if plane.id == result.plane_id:
+                return f"{plane.name} ({plane.axis} = {plane.offset:.3f})"
+        return "(missing)"
+
+    def _curve_count_for_section_result(self, result_id: str) -> int:
+        return sum(
+            1
+            for curve in self.app_state.curve_collection.curves
+            if curve.section_result_id == result_id
         )
 
     def _active_curve(self) -> StoredCurve | None:
@@ -1980,7 +2123,11 @@ class OpenRetopWindow:
                 "source": "selected_curves",
                 "preview_mode": "two_curve_loft",
             }
-
+            if any(
+                not self._curve_has_min_fitted_points(curve, 2)
+                for curve in source_curves
+            ):
+                metadata["preview_reason"] = "Each selected curve needs at least 2 fitted points."
 
         surface = SurfacePatch(
             id=f"surface-{uuid4().hex}",
@@ -1989,9 +2136,25 @@ class OpenRetopWindow:
             surface_type=surface_type,
             metadata=metadata,
         )
+        preview = build_surface_preview_mesh(
+            surface,
+            self.app_state.curve_collection.curves,
+        )
+        surface.metadata["preview_available"] = preview is not None
+        if preview is None:
+            surface.metadata.setdefault(
+                "preview_reason",
+                self._surface_preview_unavailable_reason(source_curves),
+            )
         add_surface(self.app_state.surface_collection, surface)
         self._sync_surface_context_from_active_surface()
-        self._set_selected_item(SELECT_SURFACE, status=f"Created: {surface.name}")
+        curve_label = "curve" if len(source_curves) == 1 else "curves"
+        status = (
+            f"Created {surface.name} preview from {len(source_curves)} {curve_label}"
+            if surface.metadata["preview_available"]
+            else "Surface created, but preview unavailable for selected curves"
+        )
+        self._set_selected_item(SELECT_SURFACE, status=status)
         self._set_project_dirty(True)
 
     def _surface_source_curves_from_selection(self) -> list[StoredCurve]:
@@ -2012,6 +2175,28 @@ class OpenRetopWindow:
             return False
 
         return bool(np.linalg.norm(points[0] - points[-1]) <= 1e-8)
+
+    @staticmethod
+    def _curve_has_min_fitted_points(curve: StoredCurve, minimum_count: int) -> bool:
+        try:
+            points = np.asarray(curve.fitted_points, dtype=float)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            points.ndim == 2
+            and points.shape[1] == 3
+            and len(points) >= minimum_count
+        )
+
+    def _surface_preview_unavailable_reason(self, curves: list[StoredCurve]) -> str:
+        if len(curves) == 1:
+            return "Closed curve needs at least 3 fitted points."
+        if len(curves) == 2 and any(
+            not self._curve_has_min_fitted_points(curve, 2)
+            for curve in curves
+        ):
+            return "Each selected curve needs at least 2 fitted points."
+        return "Preview unavailable for selected curves."
 
     def _next_surface_name(self) -> str:
         existing_names = {
@@ -2276,6 +2461,7 @@ class OpenRetopWindow:
             section_planes=self.app_state.section_collection.planes,
             active_section_plane_id=self.app_state.section_collection.active_plane_id,
             section_results=self.app_state.section_collection.results,
+            active_section_result_id=self.app_state.section_collection.active_result_id,
             curves=self.app_state.curve_collection.curves,
             active_curve_id=self.app_state.curve_collection.active_curve_id,
             selected_curve_ids=self.app_state.curve_collection.selected_curve_ids,
@@ -2349,6 +2535,154 @@ class OpenRetopWindow:
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
 
+    def _on_section_result_visibility_changed(self) -> None:
+        active_result = self._active_section_result()
+        if active_result is None:
+            self.status_text.set("No selection")
+            return
+
+        active_result.visible = bool(self.section_result_visible.get())
+        self._set_display_section_result(active_result)
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Selected: {active_result.name}")
+        self._set_project_dirty(True)
+
+    def _on_scene_browser_visibility(
+        self,
+        action: str,
+        node_ids: tuple[str, ...],
+    ) -> None:
+        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
+        if action == "show_all":
+            changed_count = self._set_scene_visibility(
+                self._all_visibility_object_node_ids(),
+                True,
+            )
+            status = "All scene items visible"
+        elif action == "hide_selected":
+            changed_count = self._set_scene_visibility(expanded_node_ids, False)
+            status = self._visibility_status("Hidden", changed_count, "selected item")
+        elif action == "show_selected":
+            changed_count = self._set_scene_visibility(expanded_node_ids, True)
+            status = self._visibility_status("Shown", changed_count, "selected item")
+        elif action == "hide_unselected":
+            unselected_node_ids = self._all_visibility_object_node_ids() - expanded_node_ids
+            changed_count = self._set_scene_visibility(unselected_node_ids, False)
+            status = self._visibility_status("Hidden", changed_count, "unselected item")
+        else:
+            self.status_text.set("Unknown visibility command")
+            return
+
+        self._sync_after_scene_visibility_change()
+        self.status_text.set(status)
+        if changed_count:
+            self._set_project_dirty(True)
+
+    @staticmethod
+    def _visibility_status(prefix: str, changed_count: int, noun: str) -> str:
+        if changed_count == 0:
+            return "No visibility changes"
+        if changed_count == 1:
+            return f"{prefix} 1 {noun}"
+        return f"{prefix} {changed_count} {noun}s"
+
+    def _expanded_visibility_node_ids(self, node_ids: tuple[str, ...]) -> set[str]:
+        expanded_node_ids = set(node_ids)
+        section_result_ids = {
+            result.id for result in self.app_state.section_collection.results
+        }
+        for node_id in node_ids:
+            if node_id == NODE_SECTION_PLANES:
+                expanded_node_ids.update(
+                    section_plane_node_id(plane.id)
+                    for plane in self.app_state.section_collection.planes
+                )
+            elif node_id == NODE_SECTION_RESULTS:
+                expanded_node_ids.update(
+                    section_result_node_id(result.id)
+                    for result in self.app_state.section_collection.results
+                )
+            elif node_id == NODE_CURVES:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                )
+            elif node_id == NODE_SURFACES:
+                expanded_node_ids.update(
+                    surface_node_id(surface.id)
+                    for surface in self.app_state.surface_collection.surfaces
+                )
+            elif node_id == NODE_CURVE_GROUP_UNASSIGNED:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                    if curve.section_result_id not in section_result_ids
+                )
+            else:
+                for result in self.app_state.section_collection.results:
+                    if node_id != curve_group_node_id(result.id):
+                        continue
+                    expanded_node_ids.update(
+                        curve_node_id(curve.id)
+                        for curve in self.app_state.curve_collection.curves
+                        if curve.section_result_id == result.id
+                    )
+                    break
+        return expanded_node_ids
+
+    def _all_visibility_object_node_ids(self) -> set[str]:
+        return {
+            *(
+                section_plane_node_id(plane.id)
+                for plane in self.app_state.section_collection.planes
+            ),
+            *(
+                section_result_node_id(result.id)
+                for result in self.app_state.section_collection.results
+            ),
+            *(curve_node_id(curve.id) for curve in self.app_state.curve_collection.curves),
+            *(
+                surface_node_id(surface.id)
+                for surface in self.app_state.surface_collection.surfaces
+            ),
+        }
+
+    def _set_scene_visibility(self, node_ids: set[str], visible: bool) -> int:
+        changed_count = 0
+        for plane in self.app_state.section_collection.planes:
+            if section_plane_node_id(plane.id) in node_ids and plane.visible != visible:
+                plane.visible = visible
+                changed_count += 1
+        for result in self.app_state.section_collection.results:
+            if section_result_node_id(result.id) in node_ids and result.visible != visible:
+                result.visible = visible
+                changed_count += 1
+        for curve in self.app_state.curve_collection.curves:
+            if curve_node_id(curve.id) in node_ids and curve.visible != visible:
+                curve.visible = visible
+                changed_count += 1
+        for surface in self.app_state.surface_collection.surfaces:
+            if surface_node_id(surface.id) in node_ids and surface.visible != visible:
+                surface.visible = visible
+                changed_count += 1
+        return changed_count
+
+    def _sync_after_scene_visibility_change(self) -> None:
+        active_result = self._active_section_result()
+        self.app_state.section_result = (
+            active_result.result
+            if active_result is not None and active_result.visible
+            else None
+        )
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is not None:
+            self.show_section_plane.set(bool(active_plane.visible))
+        self._sync_visible_curve_results()
+        self._sync_section_result_context_from_active_result()
+        self._sync_curve_context_from_active_curve()
+        self._sync_surface_context_from_active_surface()
+        self._refresh_viewport(reset_camera=False)
+
     def _on_section_axis_changed(self, _event: object | None = None) -> None:
         self._sync_active_section_plane_from_controls()
         self._configure_offset_range(reset=False)
@@ -2408,14 +2742,24 @@ class OpenRetopWindow:
         if mark_dirty:
             self._set_project_dirty(True)
 
-    def _configure_offset_range(self, *, reset: bool) -> None:
+    def _configure_offset_range(
+        self,
+        *,
+        reset: bool,
+        clear_section: bool = True,
+    ) -> None:
         minimum, maximum = self._update_section_offset_range()
 
         current = self.section_offset.get()
         if reset:
             current = 0.0 if minimum <= 0.0 <= maximum else (minimum + maximum) * 0.5
 
-        self._set_section_offset(current, clamp=True, refresh=False)
+        self._set_section_offset(
+            current,
+            clamp=True,
+            refresh=False,
+            clear_section=clear_section,
+        )
 
     def _update_section_offset_range(self) -> tuple[float, float]:
         if self.app_state.mesh_object is None:
@@ -2469,6 +2813,18 @@ class OpenRetopWindow:
             clear_results_for_plane(self.app_state.section_collection, active_plane.id)
         self._set_display_section_result(self._latest_stored_section_result())
 
+    def _has_generated_geometry(self) -> bool:
+        return bool(
+            self.app_state.section_collection.results
+            or self.app_state.curve_collection.curves
+            or self.app_state.surface_collection.surfaces
+        )
+
+    def _model_transform_status(self, default_status: str) -> str:
+        if self._has_generated_geometry():
+            return GENERATED_GEOMETRY_TRANSFORM_WARNING
+        return default_status
+
     def _on_object_transform_changed(self, _event: object | None = None) -> None:
         if self.app_state.selected_item != SELECT_MODEL or self.app_state.mesh_object is None:
             return
@@ -2482,7 +2838,7 @@ class OpenRetopWindow:
         self.app_state.mesh_object.rotation = rotation
         self.app_state.mesh_object.scale = scale
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set("Transforms update live")
+        self.status_text.set(self._model_transform_status("Transforms update live"))
         self._set_project_dirty(True)
 
     def _parse_object_transform(
@@ -2538,8 +2894,7 @@ class OpenRetopWindow:
             file_path=self.app_state.mesh_object.file_path,
         )
         self._update_stats()
-        self._configure_offset_range(reset=False)
-        self._clear_section_for_plane_change()
+        self._configure_offset_range(reset=False, clear_section=False)
         self._refresh_viewport(reset_camera=reset_camera)
 
     def _apply_display_mesh_result(self, display_result: DisplayMeshResult) -> None:
@@ -2569,7 +2924,7 @@ class OpenRetopWindow:
             current_center,
         )
         self._change_origin_keep_geometry(new_origin)
-        self.status_text.set("Origin set to geometry")
+        self.status_text.set(self._model_transform_status("Origin set to geometry"))
         self._set_project_dirty(True)
 
     def move_origin_to_world_origin(self) -> None:
@@ -2587,7 +2942,7 @@ class OpenRetopWindow:
         self.app_state.mesh_object.location = new_location
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set("Origin moved to world origin")
+        self.status_text.set(self._model_transform_status("Origin moved to world origin"))
         self._set_project_dirty(True)
 
     def center_geometry_on_origin(self) -> None:
@@ -2609,7 +2964,7 @@ class OpenRetopWindow:
             dtype=float,
         ) + delta
         self._apply_object_transform(reset_camera=False)
-        self.status_text.set("Geometry centered on origin")
+        self.status_text.set(self._model_transform_status("Geometry centered on origin"))
         self._set_project_dirty(True)
 
     def reset_object_transform(self) -> None:
@@ -2622,7 +2977,9 @@ class OpenRetopWindow:
         self.app_state.mesh_object.scale = 1.0
         self._set_transform_inputs_from_object()
         self._apply_object_transform(reset_camera=True)
-        self.status_text.set("Selected: " + self.app_state.mesh_object.name)
+        self.status_text.set(
+            self._model_transform_status("Selected: " + self.app_state.mesh_object.name)
+        )
         self._set_project_dirty(True)
 
     def _change_origin_keep_geometry(self, new_origin: np.ndarray) -> None:
@@ -2923,6 +3280,8 @@ class OpenRetopWindow:
         self._last_transform_readout = None
         self._active_transform_angle_delta = None
         self._refresh_viewport(reset_camera=False)
+        if commit and state.selected_item == SELECT_MODEL:
+            status = self._model_transform_status(status)
         self.status_text.set(status)
         if commit:
             self._set_project_dirty(True)
@@ -3044,6 +3403,7 @@ class OpenRetopWindow:
         self.app_state.surface_collection.surfaces = []
         self.app_state.surface_collection.active_surface_id = None
         self.app_state.section_collection.results = []
+        self.app_state.section_collection.active_result_id = None
         self.section_result_text.set("Section result: none")
         self._update_stats()
         self._set_selection_buttons_enabled(False)

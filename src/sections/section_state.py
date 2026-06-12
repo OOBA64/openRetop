@@ -26,6 +26,8 @@ class StoredSectionResult:
     axis: str
     offset: float
     result: SectionResult
+    visible: bool = True
+    selected: bool = False
 
 
 @dataclass
@@ -33,6 +35,7 @@ class SectionCollection:
     planes: list[SectionPlaneState] = field(default_factory=list)
     results: list[StoredSectionResult] = field(default_factory=list)
     active_plane_id: str | None = None
+    active_result_id: str | None = None
 
 
 def create_default_section_plane(axis: str = "Z", offset: float = 0.0) -> SectionPlaneState:
@@ -111,7 +114,33 @@ def add_result(
 
     result.axis = normalize_axis(result.axis)
     result.offset = float(result.offset)
+    result.visible = bool(result.visible)
     collection.results.append(result)
+    if collection.active_result_id is None or result.selected:
+        set_active_result(collection, result.id)
+    return collection
+
+
+def get_active_result(collection: SectionCollection) -> StoredSectionResult | None:
+    _require_collection(collection)
+    if collection.active_result_id is None:
+        return None
+
+    return _find_result(collection, collection.active_result_id)
+
+
+def set_active_result(
+    collection: SectionCollection,
+    result_id: str,
+) -> SectionCollection:
+    _require_collection(collection)
+    result = _find_result(collection, result_id)
+    if result is None:
+        raise ValueError(f"Section result not found: {result_id}")
+
+    collection.active_result_id = result.id
+    for candidate in collection.results:
+        candidate.selected = candidate.id == result.id
     return collection
 
 
@@ -120,9 +149,18 @@ def clear_results_for_plane(
     plane_id: str,
 ) -> SectionCollection:
     _require_collection(collection)
+    removed_active = any(
+        result.id == collection.active_result_id
+        for result in collection.results
+        if result.plane_id == plane_id
+    )
     collection.results = [
         result for result in collection.results if result.plane_id != plane_id
     ]
+    if removed_active:
+        collection.active_result_id = None
+        if collection.results:
+            set_active_result(collection, collection.results[-1].id)
     return collection
 
 
@@ -147,4 +185,14 @@ def _find_plane(
     for plane in collection.planes:
         if plane.id == plane_id:
             return plane
+    return None
+
+
+def _find_result(
+    collection: SectionCollection,
+    result_id: str,
+) -> StoredSectionResult | None:
+    for result in collection.results:
+        if result.id == result_id:
+            return result
     return None

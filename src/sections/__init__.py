@@ -9,8 +9,10 @@ from sections.section_state import (
     clear_results_for_plane,
     create_default_section_plane,
     get_active_plane,
+    get_active_result,
     remove_plane,
     set_active_plane,
+    set_active_result,
 )
 
 __all__ = [
@@ -22,6 +24,8 @@ __all__ = [
     "clear_results_for_plane",
     "create_default_section_plane",
     "get_active_plane",
+    "get_active_result",
     "remove_plane",
     "set_active_plane",
+    "set_active_result",
 ]
