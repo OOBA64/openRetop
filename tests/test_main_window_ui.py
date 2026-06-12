@@ -250,6 +250,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.tools_menu.entrycget(5, "label"), "Clear All Section Results")
             self.assertEqual(window.tools_menu.entrycget(6, "label"), "Delete Active Section Plane")
             self.assertEqual(window.tools_menu.entrycget(7, "label"), "Delete Selected Curve")
+            self.assertEqual(window.tools_menu.entrycget(8, "label"), "Create Surface From Curves")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -1721,6 +1722,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "All section results cleared")
             window.tools_menu.invoke(6)
             self.assertEqual(window.status_text.get(), "No selection")
+            window.tools_menu.invoke(8)
+            self.assertEqual(window.status_text.get(), "No curves available")
         finally:
             window.root.destroy()
 
@@ -2032,6 +2035,180 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(tree.exists(NODE_SURFACES))
             self.assertEqual(window.app_state.selected_item, None)
             self.assertEqual(window.status_text.get(), "Deleted: Patch A")
+        finally:
+            window.root.destroy()
+
+    def test_create_surface_from_selected_curve_adds_placeholder_surface(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            source_curve = window.app_state.curve_collection.curves[0]
+            window.select_curve(source_curve.id)
+            window._set_project_dirty(False)
+
+            window.tools_menu.invoke(8)
+
+            surfaces = window.app_state.surface_collection.surfaces
+            self.assertEqual(len(surfaces), 1)
+            surface = surfaces[0]
+            self.assertEqual(surface.name, "Surface 1")
+            self.assertEqual(surface.surface_type, "placeholder")
+            self.assertEqual(surface.source_curve_ids, [source_curve.id])
+            self.assertTrue(surface.visible)
+            self.assertTrue(surface.selected)
+            self.assertEqual(surface.metadata["curve_count"], 1)
+            self.assertEqual(surface.metadata["source"], "selected_curve")
+            self.assertEqual(
+                surface.metadata["note"],
+                "Placeholder surface; no geometry generated yet",
+            )
+            self.assertEqual(window.app_state.selected_item, "surface")
+            self.assertEqual(window.app_state.surface_collection.active_surface_id, surface.id)
+            self.assertEqual(window.status_text.get(), "Created: Surface 1")
+            self.assertTrue(window.project_dirty)
+            self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.surface_name_text.get(), "Surface 1")
+            self.assertEqual(window.surface_type_text.get(), "placeholder")
+            self.assertEqual(window.surface_source_curve_count_text.get(), "1")
+            self.assertIn("curve_count=1", window.surface_metadata_text.get())
+            self.assertIn("source=selected_curve", window.surface_metadata_text.get())
+
+            tree = window.scene_browser.tree
+            surface_node = surface_node_id(surface.id)
+            self.assertEqual(tree.get_children(NODE_SURFACES), (surface_node,))
+            self.assertEqual(tree.item(surface_node, "text"), "Surface 1")
+            self.assertEqual(tree.selection(), (surface_node,))
+        finally:
+            window.root.destroy()
+
+    def test_create_surface_from_visible_curves_uses_visible_curves_and_unique_names(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            first_curve = window.app_state.curve_collection.curves[0]
+            window.add_section_plane()
+            window.section_axis.set("X")
+            window._on_section_axis_changed()
+            window._set_section_offset(0.5, clamp=True, refresh=True)
+            window.compute_section()
+            second_curve = window.app_state.curve_collection.curves[1]
+
+            window.clear_selection()
+            window.tools_menu.invoke(8)
+            first_surface = window.app_state.surface_collection.surfaces[0]
+            self.assertEqual(first_surface.name, "Surface 1")
+            self.assertEqual(
+                first_surface.source_curve_ids,
+                [first_curve.id, second_curve.id],
+            )
+            self.assertEqual(first_surface.metadata["curve_count"], 2)
+            self.assertEqual(first_surface.metadata["source"], "visible_curves")
+
+            first_curve.visible = False
+            window._sync_visible_curve_results()
+            window.clear_selection()
+            window.tools_menu.invoke(8)
+
+            surfaces = window.app_state.surface_collection.surfaces
+            self.assertEqual([surface.name for surface in surfaces], ["Surface 1", "Surface 2"])
+            second_surface = surfaces[1]
+            self.assertEqual(second_surface.source_curve_ids, [second_curve.id])
+            self.assertEqual(second_surface.metadata["curve_count"], 1)
+            self.assertEqual(second_surface.metadata["source"], "visible_curves")
+
+            second_curve.visible = False
+            window._sync_visible_curve_results()
+            window.clear_selection()
+            window.tools_menu.invoke(8)
+            self.assertEqual(window.status_text.get(), "No visible curves available")
+            self.assertEqual(len(window.app_state.surface_collection.surfaces), 2)
+        finally:
+            window.root.destroy()
+
+    def test_deleting_source_curve_removes_dependent_placeholder_surface(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            stored_result = window.app_state.section_collection.results[0]
+            source_curve = window.app_state.curve_collection.curves[0]
+            source_plane = window.app_state.section_collection.planes[0]
+            window.select_curve(source_curve.id)
+            window.tools_menu.invoke(8)
+            self.assertEqual(len(window.app_state.surface_collection.surfaces), 1)
+
+            window.select_curve(source_curve.id)
+            window.delete_selected_curve()
+
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+            self.assertIsNone(window.app_state.surface_collection.active_surface_id)
+            self.assertEqual(window.app_state.section_collection.results, [stored_result])
+            self.assertEqual(window.app_state.section_collection.planes, [source_plane])
+            self.assertFalse(window.scene_browser.tree.exists(NODE_SURFACES))
+            self.assertEqual(window.status_text.get(), "Deleted: Section 1 Curve 1")
         finally:
             window.root.destroy()
 

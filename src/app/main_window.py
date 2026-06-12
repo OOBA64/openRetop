@@ -84,6 +84,8 @@ from sections.section_state import (
 )
 from surfaces.surface_state import (
     SurfacePatch,
+    add_surface,
+    clear_surfaces_for_curve,
     get_active_surface,
     remove_surface,
     set_active_surface,
@@ -333,6 +335,10 @@ class OpenRetopWindow:
         self.tools_menu.add_command(
             label="Delete Selected Curve",
             command=self.delete_selected_curve,
+        )
+        self.tools_menu.add_command(
+            label="Create Surface From Curves",
+            command=self.create_surface_from_curves,
         )
         self.menu_bar.add_cascade(label="Tools", menu=self.tools_menu)
 
@@ -585,6 +591,7 @@ class OpenRetopWindow:
                 section_collection=self.app_state.section_collection,
                 curve_collection=self.app_state.curve_collection,
             )
+            # TODO: Persist surface_collection when project files support surfaces.
             save_project(project, project_path)
         except (OSError, ValueError, RuntimeError) as exc:
             self.status_text.set("Project save failed")
@@ -1606,6 +1613,8 @@ class OpenRetopWindow:
         self.app_state.section_collection.results = []
         self.app_state.curve_collection.curves = []
         self.app_state.curve_collection.active_curve_id = None
+        self.app_state.surface_collection.surfaces = []
+        self.app_state.surface_collection.active_surface_id = None
         self._set_display_section_result(None)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("All section results cleared")
@@ -1623,6 +1632,12 @@ class OpenRetopWindow:
             return
 
         removed_name = active_plane.name or "Section Plane"
+        curve_ids = [
+            curve.id
+            for curve in self.app_state.curve_collection.curves
+            if curve.plane_id == active_plane.id
+        ]
+        self._clear_surfaces_for_curve_ids(curve_ids)
         clear_curves_for_plane(self.app_state.curve_collection, active_plane.id)
         remove_plane(self.app_state.section_collection, active_plane.id)
         self._ensure_default_section_plane()
@@ -1785,6 +1800,48 @@ class OpenRetopWindow:
         self.status_text.set(f"Selected: {active_curve.name}")
         self._set_project_dirty(True)
 
+    def create_surface_from_curves(self) -> None:
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+
+        active_curve = self._active_curve()
+        if self.app_state.selected_item == SELECT_CURVE and active_curve is not None:
+            source_curves = [active_curve]
+            source = "selected_curve"
+        else:
+            source_curves = get_visible_curves(self.app_state.curve_collection)
+            source = "visible_curves"
+
+        if not source_curves:
+            self.status_text.set("No visible curves available")
+            return
+
+        surface = SurfacePatch(
+            id=f"surface-{uuid4().hex}",
+            name=self._next_surface_name(),
+            source_curve_ids=[curve.id for curve in source_curves],
+            surface_type="placeholder",
+            metadata={
+                "curve_count": len(source_curves),
+                "source": source,
+                "note": "Placeholder surface; no geometry generated yet",
+            },
+        )
+        add_surface(self.app_state.surface_collection, surface)
+        self._sync_surface_context_from_active_surface()
+        self._set_selected_item(SELECT_SURFACE, status=f"Created: {surface.name}")
+        self._set_project_dirty(True)
+
+    def _next_surface_name(self) -> str:
+        existing_names = {
+            surface.name for surface in self.app_state.surface_collection.surfaces
+        }
+        index = 1
+        while f"Surface {index}" in existing_names:
+            index += 1
+        return f"Surface {index}"
+
     def delete_selected_curve(self) -> None:
         active_curve = self._active_curve()
         if active_curve is None:
@@ -1792,6 +1849,7 @@ class OpenRetopWindow:
             return
 
         removed_name = active_curve.name or "Curve"
+        self._clear_surfaces_for_curve_ids([active_curve.id])
         remove_curve(self.app_state.curve_collection, active_curve.id)
         self._sync_visible_curve_results()
         if self._active_curve() is not None:
@@ -1804,6 +1862,10 @@ class OpenRetopWindow:
 
     def _active_surface(self) -> SurfacePatch | None:
         return get_active_surface(self.app_state.surface_collection)
+
+    def _clear_surfaces_for_curve_ids(self, curve_ids: list[str]) -> None:
+        for curve_id in curve_ids:
+            clear_surfaces_for_curve(self.app_state.surface_collection, curve_id)
 
     def _sync_surface_context_from_active_surface(self) -> None:
         active_surface = self._active_surface()
@@ -1881,6 +1943,12 @@ class OpenRetopWindow:
                 for result in self.app_state.section_collection.results
                 if result.plane_id == active_plane.id
             ]
+            curve_ids = [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if curve.section_result_id in result_ids
+            ]
+            self._clear_surfaces_for_curve_ids(curve_ids)
             for result_id in result_ids:
                 clear_curves_for_section_result(
                     self.app_state.curve_collection,
@@ -2143,6 +2211,12 @@ class OpenRetopWindow:
             return
 
         if active_plane is not None:
+            curve_ids = [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if curve.plane_id == active_plane.id
+            ]
+            self._clear_surfaces_for_curve_ids(curve_ids)
             clear_curves_for_plane(self.app_state.curve_collection, active_plane.id)
             clear_results_for_plane(self.app_state.section_collection, active_plane.id)
         self._set_display_section_result(self._latest_stored_section_result())
