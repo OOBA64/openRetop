@@ -18,6 +18,7 @@ from sections.section_state import (
     add_plane,
     set_active_plane,
 )
+from surfaces.surface_state import SurfaceCollection, SurfacePatch, add_surface
 
 
 class ProjectStateTests(unittest.TestCase):
@@ -50,6 +51,7 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
         self.assertEqual(project.curves, [])
+        self.assertEqual(project.surfaces, [])
 
     def test_project_from_app_state_uses_fake_mesh_transform_and_path(self) -> None:
         mesh_path = Path("models") / "scan.stl"
@@ -189,6 +191,55 @@ class ProjectStateTests(unittest.TestCase):
         self.assertTrue(project.curves[0].visible)
         self.assertEqual(project.curves[1].id, "curve-b")
         self.assertFalse(project.curves[1].visible)
+
+    def test_project_from_app_state_exports_all_stored_surfaces(self) -> None:
+        surface_collection = SurfaceCollection()
+        add_surface(
+            surface_collection,
+            SurfacePatch(
+                id="surface-a",
+                name="Surface 1",
+                source_curve_ids=["curve-a", "curve-b"],
+                surface_type="placeholder",
+                visible=True,
+                metadata={
+                    "curve_count": 2,
+                    "source": "visible_curves",
+                    "note": "Placeholder surface; no geometry generated yet",
+                },
+            ),
+        )
+        add_surface(
+            surface_collection,
+            SurfacePatch(
+                id="surface-b",
+                name="Hidden Surface",
+                source_curve_ids=["curve-b"],
+                surface_type="placeholder",
+                visible=False,
+                metadata={"curve_count": 1, "source": "selected_curve"},
+            ),
+        )
+
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            surface_collection=surface_collection,
+        )
+
+        self.assertEqual(len(project.surfaces), 2)
+        self.assertEqual(project.surfaces[0].id, "surface-a")
+        self.assertEqual(project.surfaces[0].source_curve_ids, ["curve-a", "curve-b"])
+        self.assertTrue(project.surfaces[0].visible)
+        self.assertEqual(project.surfaces[0].metadata["curve_count"], 2)
+        self.assertEqual(project.surfaces[1].id, "surface-b")
+        self.assertFalse(project.surfaces[1].visible)
 
     def test_project_from_app_state_handles_mesh_without_file_path(self) -> None:
         mesh_object = SimpleNamespace(

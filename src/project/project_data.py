@@ -55,6 +55,16 @@ class ProjectCurve:
 
 
 @dataclass
+class ProjectSurface:
+    id: str
+    name: str
+    source_curve_ids: list[str]
+    surface_type: str
+    visible: bool
+    metadata: dict[str, object]
+
+
+@dataclass
 class ProjectData:
     version: int
     name: str
@@ -65,6 +75,7 @@ class ProjectData:
     section_planes: list[ProjectSectionPlane] = field(default_factory=list)
     active_section_plane_id: str | None = None
     curves: list[ProjectCurve] = field(default_factory=list)
+    surfaces: list[ProjectSurface] = field(default_factory=list)
 
 
 def default_project_data() -> ProjectData:

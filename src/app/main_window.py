@@ -83,6 +83,7 @@ from sections.section_state import (
     set_active_plane,
 )
 from surfaces.surface_state import (
+    SurfaceCollection,
     SurfacePatch,
     add_surface,
     clear_surfaces_for_curve,
@@ -434,6 +435,7 @@ class OpenRetopWindow:
         self.show_normals.set(project.display.show_normals)
         self._restore_project_section_collection(project)
         self._restore_project_curve_collection(project)
+        self._restore_project_surface_collection(project)
         self._refresh_scene_browser()
 
     def _restore_project_transform(self, project: ProjectData) -> None:
@@ -515,6 +517,36 @@ class OpenRetopWindow:
         self._sync_visible_curve_results()
         self._sync_curve_context_from_active_curve()
 
+    def _restore_project_surface_collection(self, project: ProjectData) -> None:
+        curve_ids = {curve.id for curve in self.app_state.curve_collection.curves}
+        surfaces: list[SurfacePatch] = []
+        for project_surface in project.surfaces:
+            metadata = dict(project_surface.metadata)
+            missing_curve_ids = [
+                curve_id
+                for curve_id in project_surface.source_curve_ids
+                if curve_id not in curve_ids
+            ]
+            if missing_curve_ids:
+                metadata["missing_curve_ids"] = missing_curve_ids
+            surfaces.append(
+                SurfacePatch(
+                    id=project_surface.id,
+                    name=project_surface.name,
+                    source_curve_ids=list(project_surface.source_curve_ids),
+                    surface_type=project_surface.surface_type,
+                    visible=project_surface.visible,
+                    selected=False,
+                    metadata=metadata,
+                )
+            )
+
+        self.app_state.surface_collection = SurfaceCollection(
+            surfaces=surfaces,
+            active_surface_id=None,
+        )
+        self._sync_surface_context_from_active_surface()
+
     def _set_restored_active_section_plane(
         self,
         collection: SectionCollection,
@@ -590,8 +622,8 @@ class OpenRetopWindow:
                 show_section_plane=self.show_section_plane.get(),
                 section_collection=self.app_state.section_collection,
                 curve_collection=self.app_state.curve_collection,
+                surface_collection=self.app_state.surface_collection,
             )
-            # TODO: Persist surface_collection when project files support surfaces.
             save_project(project, project_path)
         except (OSError, ValueError, RuntimeError) as exc:
             self.status_text.set("Project save failed")

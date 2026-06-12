@@ -34,7 +34,12 @@ from app.scene_browser import (
     surface_node_id,
 )
 from mesh.loader import LoadedMesh, MeshMetadata
-from project.project_data import ProjectCurve, ProjectSectionPlane, default_project_data
+from project.project_data import (
+    ProjectCurve,
+    ProjectSectionPlane,
+    ProjectSurface,
+    default_project_data,
+)
 from project.project_io import load_project, save_project
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
@@ -1232,6 +1237,24 @@ class MainWindowUiTests(unittest.TestCase):
                         visible=False,
                     ),
                 ]
+                project.surfaces = [
+                    ProjectSurface(
+                        id="surface-a",
+                        name="Surface 1",
+                        source_curve_ids=["curve-a", "curve-b"],
+                        surface_type="placeholder",
+                        visible=True,
+                        metadata={"curve_count": 2, "source": "visible_curves"},
+                    ),
+                    ProjectSurface(
+                        id="surface-b",
+                        name="Missing Curve Surface",
+                        source_curve_ids=["missing-curve"],
+                        surface_type="placeholder",
+                        visible=False,
+                        metadata={"curve_count": 1, "source": "selected_curve"},
+                    ),
+                ]
                 save_project(project, project_path)
 
                 with (
@@ -1255,6 +1278,12 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertIsNone(window.app_state.curve_collection.active_curve_id)
                 self.assertEqual(window.app_state.curve_results, [curves[0]])
                 self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [curves[0]])
+                surfaces = window.app_state.surface_collection.surfaces
+                self.assertEqual([surface.id for surface in surfaces], ["surface-a", "surface-b"])
+                self.assertEqual([surface.visible for surface in surfaces], [True, False])
+                self.assertIsNone(window.app_state.surface_collection.active_surface_id)
+                self.assertEqual(surfaces[0].metadata["curve_count"], 2)
+                self.assertEqual(surfaces[1].metadata["missing_curve_ids"], ["missing-curve"])
 
                 tree = window.scene_browser.tree
                 first_curve_node = curve_node_id("curve-a")
@@ -1263,6 +1292,14 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(tree.item(first_curve_node, "text"), "Section 1 Curve 1")
                 self.assertEqual(tree.item(second_curve_node, "text"), "Section 2 Curve 1")
                 self.assertEqual(tree.selection(), ())
+                first_surface_node = surface_node_id("surface-a")
+                second_surface_node = surface_node_id("surface-b")
+                self.assertEqual(
+                    tree.get_children(NODE_SURFACES),
+                    (first_surface_node, second_surface_node),
+                )
+                self.assertEqual(tree.item(first_surface_node, "text"), "Surface 1")
+                self.assertEqual(tree.item(second_surface_node, "text"), "Missing Curve Surface")
 
                 tree.selection_set(second_curve_node)
                 tree.event_generate("<<TreeviewSelect>>")
@@ -1273,6 +1310,16 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(curves[1].visible)
                 self.assertEqual(window.app_state.curve_results, curves)
                 self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], curves)
+
+                tree.selection_set(second_surface_node)
+                tree.event_generate("<<TreeviewSelect>>")
+                window.root.update()
+                self.assertEqual(window.app_state.selected_item, "surface")
+                self.assertEqual(window.surface_name_text.get(), "Missing Curve Surface")
+                self.assertEqual(window.surface_type_text.get(), "placeholder")
+                self.assertEqual(window.surface_source_curve_count_text.get(), "1")
+                self.assertFalse(window.surface_visible.get())
+                self.assertIn("missing_curve_ids=['missing-curve']", window.surface_metadata_text.get())
         finally:
             window.root.destroy()
 
@@ -1551,6 +1598,64 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual([curve.visible for curve in project.curves], [True, False])
                 self.assertEqual(project.curves[0].section_result_id, first_curve.section_result_id)
                 self.assertEqual(project.curves[1].plane_id, second_curve.plane_id)
+        finally:
+            window.root.destroy()
+
+    def test_save_project_preserves_surface_records(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            source_curve = window.app_state.curve_collection.curves[0]
+            window.select_curve(source_curve.id)
+            window.create_surface_from_curves()
+            surface = window.app_state.surface_collection.surfaces[0]
+            window.surface_visible.set(False)
+            window._on_surface_visibility_changed()
+
+            with TemporaryDirectory() as tmpdir:
+                project_path = Path(tmpdir) / "surfaces.openretop"
+
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(project_path),
+                    ),
+                    patch("app.main_window.messagebox.showerror") as show_error,
+                ):
+                    window.file_menu.invoke(3)
+
+                show_error.assert_not_called()
+                project = load_project(project_path)
+                self.assertEqual(len(project.surfaces), 1)
+                project_surface = project.surfaces[0]
+                self.assertEqual(project_surface.id, surface.id)
+                self.assertEqual(project_surface.name, "Surface 1")
+                self.assertEqual(project_surface.source_curve_ids, [source_curve.id])
+                self.assertEqual(project_surface.surface_type, "placeholder")
+                self.assertFalse(project_surface.visible)
+                self.assertEqual(project_surface.metadata["curve_count"], 1)
+                self.assertEqual(project_surface.metadata["source"], "selected_curve")
         finally:
             window.root.destroy()
 

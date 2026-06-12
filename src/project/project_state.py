@@ -12,10 +12,12 @@ from project.project_data import (
     ProjectDisplaySettings,
     ProjectSectionPlane,
     ProjectSectionSettings,
+    ProjectSurface,
     ProjectTransform,
     default_project_data,
 )
 from sections.section_state import SectionCollection
+from surfaces.surface_state import SurfaceCollection
 
 
 def project_from_app_state(
@@ -30,6 +32,7 @@ def project_from_app_state(
     show_section_plane: bool,
     section_collection: SectionCollection | None = None,
     curve_collection: CurveCollection | None = None,
+    surface_collection: SurfaceCollection | None = None,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
@@ -45,6 +48,7 @@ def project_from_app_state(
         section_planes,
     )
     curves = _curves_from_collection(curve_collection)
+    surfaces = _surfaces_from_collection(surface_collection)
 
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
@@ -83,6 +87,7 @@ def project_from_app_state(
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
         curves=curves,
+        surfaces=surfaces,
     )
 
 
@@ -170,6 +175,55 @@ def _curves_from_collection(
         )
         for curve in curve_collection.curves
     ]
+
+
+def _surfaces_from_collection(
+    surface_collection: SurfaceCollection | None,
+) -> list[ProjectSurface]:
+    if surface_collection is None:
+        return []
+
+    return [
+        ProjectSurface(
+            id=str(surface.id),
+            name=str(surface.name),
+            source_curve_ids=[
+                str(curve_id) for curve_id in surface.source_curve_ids
+            ],
+            surface_type=str(surface.surface_type),
+            visible=bool(surface.visible),
+            metadata=_metadata_from_value(
+                surface.metadata,
+                "surface_collection.surface.metadata",
+            ),
+        )
+        for surface in surface_collection.surfaces
+    ]
+
+
+def _metadata_from_value(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a dictionary.")
+
+    metadata: dict[str, object] = {}
+    for key, raw_item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{field_name} keys must be strings.")
+        metadata[key] = _json_safe_value(raw_item, f"{field_name}.{key}")
+    return metadata
+
+
+def _json_safe_value(value: object, field_name: str) -> object:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        return [
+            _json_safe_value(item, f"{field_name}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        return _metadata_from_value(value, field_name)
+    raise ValueError(f"{field_name} must be JSON-safe.")
 
 
 def _points_from_value(value: object, field_name: str) -> list[list[float]]:

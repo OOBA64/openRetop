@@ -14,6 +14,7 @@ from project.project_data import (
     ProjectDisplaySettings,
     ProjectSectionPlane,
     ProjectSectionSettings,
+    ProjectSurface,
     ProjectTransform,
     default_project_data,
 )
@@ -96,6 +97,20 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             }
             for index, curve in enumerate(project.curves)
         ],
+        "surfaces": [
+            {
+                "id": surface.id,
+                "name": surface.name,
+                "source_curve_ids": list(surface.source_curve_ids),
+                "surface_type": surface.surface_type,
+                "visible": bool(surface.visible),
+                "metadata": _metadata_dict_value(
+                    surface.metadata,
+                    f"surfaces[{index}].metadata",
+                ),
+            }
+            for index, surface in enumerate(project.surfaces)
+        ],
     }
 
 
@@ -173,6 +188,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         "active_section_plane_id",
     )
     curves = _curves_value(data.get("curves", defaults.curves))
+    surfaces = _surfaces_value(data.get("surfaces", defaults.surfaces))
     return ProjectData(
         version=version,
         name=name,
@@ -183,6 +199,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
         curves=curves,
+        surfaces=surfaces,
     )
 
 
@@ -378,6 +395,91 @@ def _curves_value(value: object) -> list[ProjectCurve]:
         )
 
     return curves
+
+
+def _surfaces_value(value: object) -> list[ProjectSurface]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("surfaces must be a list.")
+
+    surfaces: list[ProjectSurface] = []
+    seen_ids: set[str] = set()
+    for index, raw_surface in enumerate(value):
+        field_prefix = f"surfaces[{index}]"
+        surface_data = _mapping_value(raw_surface, field_prefix)
+        surface_id = _string_value(
+            _nested_value(surface_data, "id", ""),
+            f"{field_prefix}.id",
+        )
+        if not surface_id:
+            raise ValueError(f"{field_prefix}.id must not be empty.")
+        if surface_id in seen_ids:
+            raise ValueError(f"{field_prefix}.id must be unique.")
+        seen_ids.add(surface_id)
+
+        surfaces.append(
+            ProjectSurface(
+                id=surface_id,
+                name=_string_value(
+                    _nested_value(surface_data, "name", f"Surface {index + 1}"),
+                    f"{field_prefix}.name",
+                ),
+                source_curve_ids=_string_list_value(
+                    _nested_value(surface_data, "source_curve_ids", []),
+                    f"{field_prefix}.source_curve_ids",
+                ),
+                surface_type=_string_value(
+                    _nested_value(surface_data, "surface_type", "placeholder"),
+                    f"{field_prefix}.surface_type",
+                ),
+                visible=_bool_value(
+                    _nested_value(surface_data, "visible", True),
+                    f"{field_prefix}.visible",
+                ),
+                metadata=_metadata_dict_value(
+                    _nested_value(surface_data, "metadata", {}),
+                    f"{field_prefix}.metadata",
+                ),
+            )
+        )
+
+    return surfaces
+
+
+def _string_list_value(value: object, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of strings.")
+
+    return [
+        _string_value(item, f"{field_name}[{index}]")
+        for index, item in enumerate(value)
+    ]
+
+
+def _metadata_dict_value(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a dictionary.")
+
+    metadata: dict[str, object] = {}
+    for key, raw_item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{field_name} keys must be strings.")
+        metadata[key] = _json_safe_value(raw_item, f"{field_name}.{key}")
+    return metadata
+
+
+def _json_safe_value(value: object, field_name: str) -> object:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        return [
+            _json_safe_value(item, f"{field_name}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, Mapping):
+        return _metadata_dict_value(value, field_name)
+    raise ValueError(f"{field_name} must be JSON-safe.")
 
 
 def _points_value(value: object, field_name: str) -> list[list[float]]:

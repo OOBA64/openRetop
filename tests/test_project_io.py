@@ -17,6 +17,7 @@ from project.project_data import (
     ProjectDisplaySettings,
     ProjectSectionPlane,
     ProjectSectionSettings,
+    ProjectSurface,
     ProjectTransform,
     default_project_data,
 )
@@ -93,6 +94,28 @@ def _sample_project() -> ProjectData:
                 visible=False,
             ),
         ],
+        surfaces=[
+            ProjectSurface(
+                id="surface-a",
+                name="Surface 1",
+                source_curve_ids=["curve-a", "curve-b"],
+                surface_type="placeholder",
+                visible=True,
+                metadata={
+                    "curve_count": 2,
+                    "source": "visible_curves",
+                    "note": "Placeholder surface; no geometry generated yet",
+                },
+            ),
+            ProjectSurface(
+                id="surface-b",
+                name="Hidden Surface",
+                source_curve_ids=["curve-b"],
+                surface_type="placeholder",
+                visible=False,
+                metadata={"curve_count": 1, "source": "selected_curve"},
+            ),
+        ],
     )
 
 
@@ -117,6 +140,7 @@ class ProjectDataTests(unittest.TestCase):
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
         self.assertEqual(project.curves, [])
+        self.assertEqual(project.surfaces, [])
 
     def test_default_project_data_uses_fresh_mutable_values(self) -> None:
         project = default_project_data()
@@ -205,6 +229,31 @@ class ProjectIOTests(unittest.TestCase):
                         "visible": False,
                     },
                 ],
+                "surfaces": [
+                    {
+                        "id": "surface-a",
+                        "name": "Surface 1",
+                        "source_curve_ids": ["curve-a", "curve-b"],
+                        "surface_type": "placeholder",
+                        "visible": True,
+                        "metadata": {
+                            "curve_count": 2,
+                            "source": "visible_curves",
+                            "note": "Placeholder surface; no geometry generated yet",
+                        },
+                    },
+                    {
+                        "id": "surface-b",
+                        "name": "Hidden Surface",
+                        "source_curve_ids": ["curve-b"],
+                        "surface_type": "placeholder",
+                        "visible": False,
+                        "metadata": {
+                            "curve_count": 1,
+                            "source": "selected_curve",
+                        },
+                    },
+                ],
             },
         )
 
@@ -280,6 +329,7 @@ class ProjectIOTests(unittest.TestCase):
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
         self.assertEqual(project.curves, [])
+        self.assertEqual(project.surfaces, [])
 
     def test_project_from_dict_loads_legacy_single_section_without_new_fields(self) -> None:
         project = project_from_dict(
@@ -301,6 +351,7 @@ class ProjectIOTests(unittest.TestCase):
         self.assertEqual(project.section_planes, [])
         self.assertIsNone(project.active_section_plane_id)
         self.assertEqual(project.curves, [])
+        self.assertEqual(project.surfaces, [])
 
     def test_project_from_dict_parses_curves(self) -> None:
         project = project_from_dict(
@@ -368,6 +419,65 @@ class ProjectIOTests(unittest.TestCase):
             )
 
         self.assertIn("curves[0].original_points[0]", str(context.exception))
+
+    def test_project_from_dict_parses_surfaces(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "surfaces": [
+                    {
+                        "id": "surface-a",
+                        "name": "Surface 1",
+                        "source_curve_ids": ["curve-a", "curve-b"],
+                        "surface_type": "placeholder",
+                        "visible": False,
+                        "metadata": {
+                            "curve_count": 2,
+                            "source": "visible_curves",
+                            "tags": ["draft", "runtime"],
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(
+            project.surfaces,
+            [
+                ProjectSurface(
+                    id="surface-a",
+                    name="Surface 1",
+                    source_curve_ids=["curve-a", "curve-b"],
+                    surface_type="placeholder",
+                    visible=False,
+                    metadata={
+                        "curve_count": 2,
+                        "source": "visible_curves",
+                        "tags": ["draft", "runtime"],
+                    },
+                ),
+            ],
+        )
+
+    def test_project_from_dict_rejects_invalid_surface_shape_clearly(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            project_from_dict(
+                {
+                    "version": PROJECT_VERSION,
+                    "surfaces": [
+                        {
+                            "id": "surface-a",
+                            "name": "Surface 1",
+                            "source_curve_ids": [12],
+                            "surface_type": "placeholder",
+                            "visible": True,
+                            "metadata": {},
+                        },
+                    ],
+                }
+            )
+
+        self.assertIn("surfaces[0].source_curve_ids[0]", str(context.exception))
 
     def test_project_from_dict_parses_section_planes_with_defaults(self) -> None:
         project = project_from_dict(
@@ -502,6 +612,17 @@ class ProjectIOTests(unittest.TestCase):
             {"curves": [{"id": "curve-a", "is_closed": "no"}]},
             {"curves": [{"id": "curve-a", "visible": "yes"}]},
             {"curves": [{"id": "curve-a"}, {"id": "curve-a"}]},
+            {"surfaces": {}},
+            {"surfaces": [12]},
+            {"surfaces": [{"id": ""}]},
+            {"surfaces": [{"id": "surface-a", "name": 12}]},
+            {"surfaces": [{"id": "surface-a", "source_curve_ids": {}}]},
+            {"surfaces": [{"id": "surface-a", "source_curve_ids": [12]}]},
+            {"surfaces": [{"id": "surface-a", "surface_type": 12}]},
+            {"surfaces": [{"id": "surface-a", "visible": "yes"}]},
+            {"surfaces": [{"id": "surface-a", "metadata": []}]},
+            {"surfaces": [{"id": "surface-a", "metadata": {"bad": object()}}]},
+            {"surfaces": [{"id": "surface-a"}, {"id": "surface-a"}]},
         ]
 
         for shape in invalid_shapes:
