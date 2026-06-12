@@ -13,6 +13,7 @@ from curves.curve_state import StoredCurve
 from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from sections.section_state import SectionPlaneState
+from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.embedded_viewport import (
     EmbeddedVTKViewport,
     SELECTION_BOUNDING_BOX_LINE_WIDTH,
@@ -68,6 +69,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             "active_transform_angle_delta": None,
             "section_result": None,
             "curve_results": [],
+            "surface_previews": [],
+            "active_surface_id": None,
             "reset_camera": False,
         }
         scene_kwargs.update(kwargs)
@@ -604,6 +607,62 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             viewport._actor_groups["selected_curve_result"][0].GetProperty().GetLineWidth(),
             4.0,
         )
+
+    def test_surface_previews_render_and_clear_with_selected_styling(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        first_preview = SurfacePreviewMesh(
+            vertices=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=float,
+            ),
+            faces=np.asarray([[0, 1, 2]], dtype=int),
+            source_surface_id="surface-1",
+        )
+        second_preview = SurfacePreviewMesh(
+            vertices=np.asarray(
+                [
+                    [0.0, 0.0, 0.1],
+                    [1.0, 0.0, 0.1],
+                    [0.0, 1.0, 0.1],
+                ],
+                dtype=float,
+            ),
+            faces=np.asarray([[0, 1, 2]], dtype=int),
+            source_surface_id="surface-2",
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            surface_previews=[first_preview, second_preview],
+            active_surface_id="surface-2",
+        )
+
+        self.assertIn("surface_previews", viewport._actor_groups)
+        surface_actors = viewport._actor_groups["surface_previews"]
+        self.assertEqual(len(surface_actors), 2)
+        self.assertLess(surface_actors[0].GetProperty().GetOpacity(), 1.0)
+        self.assertGreater(
+            surface_actors[1].GetProperty().GetOpacity(),
+            surface_actors[0].GetProperty().GetOpacity(),
+        )
+        self.assertEqual(surface_actors[1].GetProperty().GetEdgeVisibility(), 1)
+        count_with_previews = self._actor_count(viewport)
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            surface_previews=[],
+            active_surface_id=None,
+        )
+
+        self.assertNotIn("surface_previews", viewport._actor_groups)
+        self.assertEqual(self._actor_count(viewport), count_with_previews - 2)
 
     def test_clearing_mesh_preserves_view_metrics_and_reference_actors(self) -> None:
         viewport = self._viewport()

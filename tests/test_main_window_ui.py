@@ -33,6 +33,7 @@ from app.scene_browser import (
     surface_id_from_node,
     surface_node_id,
 )
+from curves.curve_state import StoredCurve, add_curve
 from mesh.loader import LoadedMesh, MeshMetadata
 from project.project_data import (
     ProjectCurve,
@@ -2250,6 +2251,7 @@ class MainWindowUiTests(unittest.TestCase):
             )
             self.assertEqual(first_surface.metadata["curve_count"], 2)
             self.assertEqual(first_surface.metadata["source"], "visible_curves")
+            self.assertEqual(first_surface.metadata["surface_type"], "preview_loft")
 
             first_curve.visible = False
             window._sync_visible_curve_results()
@@ -2269,6 +2271,57 @@ class MainWindowUiTests(unittest.TestCase):
             window.tools_menu.invoke(8)
             self.assertEqual(window.status_text.get(), "No visible curves available")
             self.assertEqual(len(window.app_state.surface_collection.surfaces), 2)
+        finally:
+            window.root.destroy()
+
+    def test_visible_surface_preview_ignores_source_curve_visibility(self) -> None:
+        closed_points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            curve = StoredCurve(
+                id="curve-1",
+                name="Curve 1",
+                section_result_id="section-result-1",
+                plane_id="plane-1",
+                original_points=closed_points.copy(),
+                fitted_points=closed_points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+                visible=False,
+            )
+            add_curve(window.app_state.curve_collection, curve)
+            surface = SurfacePatch(
+                id="surface-1",
+                name="Surface 1",
+                source_curve_ids=[curve.id],
+                surface_type="placeholder",
+                visible=True,
+            )
+            add_surface(window.app_state.surface_collection, surface)
+
+            window._refresh_viewport(reset_camera=False)
+
+            previews = window.viewport.scene_calls[-1]["surface_previews"]
+            self.assertEqual(len(previews), 1)
+            self.assertEqual(previews[0].source_surface_id, surface.id)
+
+            surface.visible = False
+            window._refresh_viewport(reset_camera=False)
+
+            self.assertEqual(window.viewport.scene_calls[-1]["surface_previews"], [])
         finally:
             window.root.destroy()
 

@@ -12,6 +12,7 @@ from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from sections.section_state import SectionPlaneState
+from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.overlays import (
     LineGeometry,
     build_active_axis_indicator,
@@ -215,6 +216,8 @@ class EmbeddedVTKViewport:
         active_transform_angle_delta: float | None = None,
         section_result: SectionResult | None = None,
         curve_results: Sequence[CurveFitResult] | None = None,
+        surface_previews: Sequence[SurfacePreviewMesh] | None = None,
+        active_surface_id: str | None = None,
         reset_camera: bool = False,
     ) -> None:
         if not self._is_started:
@@ -252,6 +255,7 @@ class EmbeddedVTKViewport:
             active_transform_angle_delta=active_transform_angle_delta,
             section_result=section_result,
             curve_results=curve_results,
+            surface_previews=surface_previews,
         ):
             return
 
@@ -277,6 +281,10 @@ class EmbeddedVTKViewport:
             selected_item=selected_item,
         )
         self._update_section_result_actor(section_result)
+        self._update_surface_preview_actors(
+            surface_previews,
+            active_surface_id=active_surface_id,
+        )
         self._update_curve_result_actor(curve_results)
 
         if reset_camera:
@@ -323,6 +331,7 @@ class EmbeddedVTKViewport:
         active_transform_angle_delta: float | None,
         section_result: SectionResult | None,
         curve_results: Sequence[CurveFitResult] | None,
+        surface_previews: Sequence[SurfacePreviewMesh] | None = None,
     ) -> bool:
         if (
             transform_key is None
@@ -331,6 +340,7 @@ class EmbeddedVTKViewport:
             or show_normals
             or section_result is not None
             or curve_results
+            or surface_previews
             or mesh is None
             or self._mesh_actor is None
             or self._mesh_actor_mesh_id != id(mesh)
@@ -699,6 +709,54 @@ class EmbeddedVTKViewport:
             _tube_actor(section_lines, radius=max(self._view_extent * 0.002, 0.002)),
             key=key,
         )
+
+    def _update_surface_preview_actors(
+        self,
+        surface_previews: Sequence[SurfacePreviewMesh] | None,
+        *,
+        active_surface_id: str | None,
+    ) -> None:
+        if not surface_previews:
+            self._clear_overlay_group("surface_previews")
+            return
+
+        renderable_previews = [
+            preview
+            for preview in surface_previews
+            if len(preview.vertices) > 0 and len(preview.faces) > 0
+        ]
+        if not renderable_previews:
+            self._clear_overlay_group("surface_previews")
+            return
+
+        key = (
+            "surface_previews",
+            tuple(
+                (
+                    preview.source_surface_id,
+                    preview.vertices.shape,
+                    preview.faces.shape,
+                    _array_key(np.min(preview.vertices, axis=0)),
+                    _array_key(np.max(preview.vertices, axis=0)),
+                    bool(preview.source_surface_id == active_surface_id),
+                )
+                for preview in renderable_previews
+            ),
+        )
+        if (
+            self._group_keys.get("surface_previews") == key
+            and "surface_previews" in self._actor_groups
+        ):
+            return
+
+        actors = [
+            _surface_preview_actor(
+                preview,
+                selected=preview.source_surface_id == active_surface_id,
+            )
+            for preview in renderable_previews
+        ]
+        self._replace_overlay_group("surface_previews", actors, key=key)
 
     def _update_curve_result_actor(
         self,
@@ -1306,6 +1364,37 @@ def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
     return actor
 
 
+def _surface_preview_actor(
+    preview: SurfacePreviewMesh,
+    *,
+    selected: bool,
+) -> vtkActor:
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(_surface_preview_polydata(preview))
+    mapper.ScalarVisibilityOff()
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    property_ = actor.GetProperty()
+    if selected:
+        property_.SetColor(0.08, 0.9, 0.95)
+        property_.SetOpacity(0.48)
+        property_.SetEdgeColor(0.85, 1.0, 1.0)
+        property_.SetLineWidth(1.8)
+    else:
+        property_.SetColor(0.16, 0.56, 0.9)
+        property_.SetOpacity(0.28)
+        property_.SetEdgeColor(0.36, 0.78, 1.0)
+        property_.SetLineWidth(1.1)
+    property_.SetRepresentationToSurface()
+    property_.EdgeVisibilityOn()
+    property_.SetAmbient(0.35)
+    property_.SetDiffuse(0.65)
+    property_.SetSpecular(0.05)
+    property_.SetInterpolationToPhong()
+    return actor
+
+
 def _array_key(values: Sequence[float] | np.ndarray | None) -> tuple[float, ...] | None:
     if values is None:
         return None
@@ -1390,6 +1479,29 @@ def _mesh_polydata(mesh: TriangleMeshData) -> vtkPolyData:
         triangle_normals = numpy_to_vtk(np.asarray(mesh.triangle_normals, dtype=float), deep=True)
         triangle_normals.SetName("Normals")
         polydata.GetCellData().SetNormals(triangle_normals)
+    return polydata
+
+
+def _surface_preview_polydata(preview: SurfacePreviewMesh) -> vtkPolyData:
+    polydata = vtkPolyData()
+    points = numpy_to_vtk(np.asarray(preview.vertices, dtype=float), deep=True)
+    vtk_points = polydata.GetPoints()
+    if vtk_points is None:
+        from vtkmodules.vtkCommonCore import vtkPoints
+
+        vtk_points = vtkPoints()
+        polydata.SetPoints(vtk_points)
+    vtk_points.SetData(points)
+
+    faces = np.asarray(preview.faces, dtype=np.int64)
+    face_offsets = np.arange(0, (len(faces) * 3) + 1, 3, dtype=np.int64)
+    face_connectivity = faces.ravel()
+    cells = vtkCellArray()
+    cells.SetData(
+        numpy_to_vtkIdTypeArray(face_offsets, deep=True),
+        numpy_to_vtkIdTypeArray(face_connectivity, deep=True),
+    )
+    polydata.SetPolys(cells)
     return polydata
 
 

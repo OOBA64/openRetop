@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from curves.curve_state import StoredCurve
+from surfaces.surface_preview import SurfacePreviewMesh, build_surface_preview_mesh
+from surfaces.surface_state import SurfacePatch
+
+
+def _curve(
+    curve_id: str,
+    points: list[tuple[float, float, float]],
+    *,
+    is_closed: bool,
+) -> StoredCurve:
+    point_array = np.asarray(points, dtype=float)
+    return StoredCurve(
+        id=curve_id,
+        name=curve_id,
+        section_result_id="section-result",
+        plane_id="plane",
+        original_points=point_array.copy(),
+        fitted_points=point_array.copy(),
+        mean_error=0.0,
+        max_error=0.0,
+        is_closed=is_closed,
+    )
+
+
+def _surface(
+    source_curve_ids: list[str],
+    *,
+    surface_id: str = "surface-1",
+) -> SurfacePatch:
+    return SurfacePatch(
+        id=surface_id,
+        name="Surface 1",
+        source_curve_ids=source_curve_ids,
+        surface_type="placeholder",
+    )
+
+
+class SurfacePreviewTests(unittest.TestCase):
+    def test_one_closed_curve_creates_fan_mesh(self) -> None:
+        curve = _curve(
+            "curve-1",
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+            ],
+            is_closed=True,
+        )
+
+        preview = build_surface_preview_mesh(_surface([curve.id]), [curve])
+
+        self.assertIsInstance(preview, SurfacePreviewMesh)
+        assert preview is not None
+        self.assertEqual(preview.source_surface_id, "surface-1")
+        self.assertEqual(preview.vertices.shape, (5, 3))
+        self.assertEqual(preview.faces.shape, (4, 3))
+        self.assertTrue(np.allclose(preview.vertices[0], [0.5, 0.5, 0.0]))
+
+    def test_repeated_closing_point_is_removed_for_fan_mesh(self) -> None:
+        curve = _curve(
+            "curve-1",
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 0.0),
+            ],
+            is_closed=True,
+        )
+
+        preview = build_surface_preview_mesh(_surface([curve.id]), [curve])
+
+        assert preview is not None
+        self.assertEqual(preview.vertices.shape, (5, 3))
+        self.assertEqual(preview.faces.shape, (4, 3))
+
+    def test_two_curves_create_loft_mesh(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+            is_closed=False,
+        )
+        second_curve = _curve(
+            "curve-2",
+            [(0.0, 1.0, 0.0), (1.0, 1.0, 0.0), (2.0, 1.0, 0.0)],
+            is_closed=False,
+        )
+
+        preview = build_surface_preview_mesh(
+            _surface([first_curve.id, second_curve.id]),
+            [first_curve, second_curve],
+        )
+
+        assert preview is not None
+        self.assertEqual(preview.vertices.shape, (6, 3))
+        self.assertEqual(preview.faces.shape, (4, 3))
+        self.assertTrue(np.all(preview.faces < len(preview.vertices)))
+
+    def test_two_curves_resample_by_index_for_loft_mesh(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0)],
+            is_closed=False,
+        )
+        second_curve = _curve(
+            "curve-2",
+            [
+                (0.0, 1.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (2.0, 1.0, 0.0),
+                (3.0, 1.0, 0.0),
+            ],
+            is_closed=False,
+        )
+
+        preview = build_surface_preview_mesh(
+            _surface([first_curve.id, second_curve.id]),
+            [first_curve, second_curve],
+        )
+
+        assert preview is not None
+        self.assertEqual(preview.vertices.shape, (8, 3))
+        self.assertEqual(preview.faces.shape, (6, 3))
+        self.assertTrue(np.allclose(preview.vertices[1], [1.0, 0.0, 0.0]))
+
+    def test_invalid_or_missing_curves_return_none(self) -> None:
+        open_curve = _curve(
+            "curve-1",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+            is_closed=False,
+        )
+        short_curve = _curve(
+            "curve-2",
+            [(0.0, 0.0, 0.0)],
+            is_closed=True,
+        )
+        malformed_curve = _curve(
+            "curve-3",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)],
+            is_closed=True,
+        )
+        malformed_curve.fitted_points = np.asarray([0.0, 1.0, 2.0], dtype=float)
+
+        self.assertIsNone(build_surface_preview_mesh(_surface([]), [open_curve]))
+        self.assertIsNone(build_surface_preview_mesh(_surface(["missing"]), [open_curve]))
+        self.assertIsNone(build_surface_preview_mesh(_surface([open_curve.id]), [open_curve]))
+        self.assertIsNone(build_surface_preview_mesh(_surface([short_curve.id]), [short_curve]))
+        self.assertIsNone(
+            build_surface_preview_mesh(_surface([malformed_curve.id]), [malformed_curve])
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

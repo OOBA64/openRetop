@@ -91,6 +91,7 @@ from surfaces.surface_state import (
     remove_surface,
     set_active_surface,
 )
+from surfaces.surface_preview import SurfacePreviewMesh, build_surface_preview_mesh
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -1849,16 +1850,20 @@ class OpenRetopWindow:
             self.status_text.set("No visible curves available")
             return
 
+        metadata: dict[str, object] = {
+            "curve_count": len(source_curves),
+            "source": source,
+            "note": "Placeholder surface; no geometry generated yet",
+        }
+        if len(source_curves) == 2:
+            metadata["surface_type"] = "preview_loft"
+
         surface = SurfacePatch(
             id=f"surface-{uuid4().hex}",
             name=self._next_surface_name(),
             source_curve_ids=[curve.id for curve in source_curves],
             surface_type="placeholder",
-            metadata={
-                "curve_count": len(source_curves),
-                "source": source,
-                "note": "Placeholder surface; no geometry generated yet",
-            },
+            metadata=metadata,
         )
         add_surface(self.app_state.surface_collection, surface)
         self._sync_surface_context_from_active_surface()
@@ -1894,6 +1899,18 @@ class OpenRetopWindow:
 
     def _active_surface(self) -> SurfacePatch | None:
         return get_active_surface(self.app_state.surface_collection)
+
+    def _build_visible_surface_previews(self) -> list[SurfacePreviewMesh]:
+        previews: list[SurfacePreviewMesh] = []
+        curves = self.app_state.curve_collection.curves
+        for surface in self.app_state.surface_collection.surfaces:
+            if not surface.visible:
+                continue
+
+            preview = build_surface_preview_mesh(surface, curves)
+            if preview is not None:
+                previews.append(preview)
+        return previews
 
     def _clear_surfaces_for_curve_ids(self, curve_ids: list[str]) -> None:
         for curve_id in curve_ids:
@@ -2023,6 +2040,7 @@ class OpenRetopWindow:
         visible_curves = [] if hide_expensive_overlays else get_visible_curves(
             self.app_state.curve_collection
         )
+        surface_previews = [] if hide_expensive_overlays else self._build_visible_surface_previews()
         self.viewport.set_scene(
             display_mesh,
             transform_matrix=transform_matrix,
@@ -2051,6 +2069,8 @@ class OpenRetopWindow:
             active_transform_angle_delta=self._active_transform_angle_delta,
             section_result=None if hide_expensive_overlays else self.app_state.section_result,
             curve_results=visible_curves,
+            surface_previews=surface_previews,
+            active_surface_id=self.app_state.surface_collection.active_surface_id,
             reset_camera=reset_camera,
         )
         self._refresh_scene_browser()
