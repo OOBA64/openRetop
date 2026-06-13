@@ -43,6 +43,10 @@ def build_preferences_dialog(
         ),
         "show_grid": BooleanVar(master=dialog, value=settings.display.show_grid),
         "show_axes": BooleanVar(master=dialog, value=settings.display.show_axes),
+        "show_axis_gizmo": BooleanVar(
+            master=dialog,
+            value=settings.display.show_axis_gizmo,
+        ),
         "default_proxy_quality": StringVar(
             master=dialog,
             value=settings.import_settings.default_proxy_quality,
@@ -141,11 +145,16 @@ def _build_viewport_tab(
         text="Startup Show Axes",
         variable=variables["show_axes"],
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-    _add_placeholder_row(tab, 2, "Surface preview opacity", variables["surface_preview_opacity"])
-    _add_placeholder_row(tab, 3, "Curve display thickness", variables["curve_display_thickness"])
+    ttk.Checkbutton(
+        tab,
+        text="Show Axis Gizmo",
+        variable=variables["show_axis_gizmo"],
+    ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    _add_placeholder_row(tab, 3, "Surface preview opacity", variables["surface_preview_opacity"])
+    _add_placeholder_row(tab, 4, "Curve display thickness", variables["curve_display_thickness"])
     _add_placeholder_row(
         tab,
-        4,
+        5,
         "Selected object highlight thickness",
         variables["selected_highlight_thickness"],
     )

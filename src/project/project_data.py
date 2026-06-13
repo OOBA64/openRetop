@@ -38,6 +38,17 @@ class ProjectSectionPlane:
     axis: str
     offset: float
     visible: bool
+    origin: list[float] | None = None
+    normal: list[float] | None = None
+
+    def __post_init__(self) -> None:
+        axis = self.axis.upper()
+        self.origin = _vector3_list(
+            self.origin if self.origin is not None else _axis_origin(axis, self.offset)
+        )
+        self.normal = _vector3_list(
+            self.normal if self.normal is not None else _axis_normal(axis)
+        )
 
 
 @dataclass
@@ -118,3 +129,22 @@ def default_project_data() -> ProjectData:
             show_plane=False,
         ),
     )
+
+
+def _axis_origin(axis: str, offset: float) -> list[float]:
+    origin = [0.0, 0.0, 0.0]
+    origin[{"X": 0, "Y": 1, "Z": 2}.get(axis.upper(), 2)] = float(offset)
+    return origin
+
+
+def _axis_normal(axis: str) -> list[float]:
+    normal = [0.0, 0.0, 0.0]
+    normal[{"X": 0, "Y": 1, "Z": 2}.get(axis.upper(), 2)] = 1.0
+    return normal
+
+
+def _vector3_list(value: list[float] | tuple[float, float, float]) -> list[float]:
+    values = list(value)
+    if len(values) != 3:
+        raise ValueError("Section plane orientation values must contain three numbers.")
+    return [float(component) for component in values]

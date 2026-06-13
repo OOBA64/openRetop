@@ -137,11 +137,15 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.section_planes[0].axis, "Z")
         self.assertEqual(project.section_planes[0].offset, 0.25)
         self.assertTrue(project.section_planes[0].visible)
+        self.assertEqual(project.section_planes[0].origin, [0.0, 0.0, 0.25])
+        self.assertEqual(project.section_planes[0].normal, [0.0, 0.0, 1.0])
         self.assertEqual(project.section_planes[1].id, "plane-b")
         self.assertEqual(project.section_planes[1].name, "Side Section")
         self.assertEqual(project.section_planes[1].axis, "X")
         self.assertEqual(project.section_planes[1].offset, -0.5)
         self.assertFalse(project.section_planes[1].visible)
+        self.assertEqual(project.section_planes[1].origin, [-0.5, 0.0, 0.0])
+        self.assertEqual(project.section_planes[1].normal, [1.0, 0.0, 0.0])
         self.assertEqual(project.active_section_plane_id, "plane-b")
 
     def test_project_from_app_state_exports_section_results(self) -> None:

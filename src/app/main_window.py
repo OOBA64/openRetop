@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, DoubleVar, StringVar, Tk, Toplevel, filedialog
+from tkinter import BooleanVar, Canvas, DoubleVar, StringVar, TclError, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
 from uuid import uuid4
 
@@ -50,7 +50,7 @@ from app.transforms import (
     calculate_origin_to_world_origin,
     camera_relative_move_delta,
     mesh_rotate_delta,
-    section_offset_delta,
+    rotation_matrix,
     transform_bounds,
     transform_point,
     world_axis_vector,
@@ -110,8 +110,12 @@ from sections.section_state import (
     create_default_section_plane,
     get_active_plane,
     get_active_result,
+    plane_normal,
+    plane_origin,
     remove_plane,
     set_active_plane,
+    set_plane_axis_offset,
+    set_plane_origin_normal,
     set_active_result,
     set_selected_planes,
     set_selected_results,
@@ -293,6 +297,7 @@ class OpenRetopWindow:
 
         self.show_grid = BooleanVar(value=self.settings.display.show_grid)
         self.show_axes = BooleanVar(value=self.settings.display.show_axes)
+        self.show_axis_gizmo = BooleanVar(value=self.settings.display.show_axis_gizmo)
         self.show_normals = BooleanVar(value=False)
         self.show_section_plane = BooleanVar(value=False)
         self.proxy_quality = StringVar(
@@ -530,6 +535,12 @@ class OpenRetopWindow:
                         axis=project_plane.axis,
                         offset=project_plane.offset,
                         visible=project_plane.visible,
+                        origin=np.asarray(project_plane.origin, dtype=float)
+                        if project_plane.origin is not None
+                        else None,
+                        normal=np.asarray(project_plane.normal, dtype=float)
+                        if project_plane.normal is not None
+                        else None,
                     ),
                 )
 
@@ -772,6 +783,7 @@ class OpenRetopWindow:
 
         show_grid = bool(self.preferences_vars["show_grid"].get())
         show_axes = bool(self.preferences_vars["show_axes"].get())
+        show_axis_gizmo = bool(self.preferences_vars["show_axis_gizmo"].get())
         window_mode = str(self.preferences_vars["window_mode"].get())
         remember_window_size = bool(self.preferences_vars["remember_window_size"].get())
         proxy_quality = normalize_proxy_quality(
@@ -794,6 +806,7 @@ class OpenRetopWindow:
                 show_grid=show_grid,
                 show_axes=show_axes,
                 show_normals=False,
+                show_axis_gizmo=show_axis_gizmo,
             ),
             import_settings=AppImportSettings(
                 default_proxy_quality=proxy_quality,
@@ -1009,6 +1022,14 @@ class OpenRetopWindow:
             command=self._on_view_option_changed,
         )
         self.show_axes_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        self.show_axis_gizmo_check = ttk.Checkbutton(
+            parent,
+            text="Show Axis Gizmo",
+            variable=self.show_axis_gizmo,
+            command=self._on_view_option_changed,
+        )
+        self.show_axis_gizmo_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
         ttk.Button(parent, text="Frame All", command=self.frame_all).grid(
             row=row,
@@ -2165,7 +2186,23 @@ class OpenRetopWindow:
         offset = self._parse_offset()
         if offset is None:
             return
-        self._set_section_offset(offset, clamp=True, refresh=False, clear_section=False)
+        active_plane = get_active_plane(self.app_state.section_collection)
+        sync_plane_from_controls = (
+            active_plane is not None
+            and active_plane.axis == normalize_axis(self.section_axis.get())
+            and np.allclose(
+                plane_normal(active_plane),
+                world_axis_vector(self.section_axis.get()),
+                atol=1e-6,
+            )
+        )
+        self._set_section_offset(
+            offset,
+            clamp=True,
+            refresh=False,
+            clear_section=False,
+            sync_plane=sync_plane_from_controls,
+        )
 
         active_plane = get_active_plane(self.app_state.section_collection)
         if active_plane is None:
@@ -2186,6 +2223,8 @@ class OpenRetopWindow:
                 section_mesh,
                 axis=active_plane.axis,
                 offset=active_plane.offset,
+                origin=plane_origin(active_plane),
+                normal=plane_normal(active_plane),
             )
             stored_result = StoredSectionResult(
                 id=f"section-result-{uuid4().hex}",
@@ -2828,6 +2867,7 @@ class OpenRetopWindow:
             transform_matrix=transform_matrix,
             show_grid=self.show_grid.get(),
             show_axes=self.show_axes.get(),
+            show_axis_gizmo=self.show_axis_gizmo.get(),
             show_normals=False,
             show_section_plane=self._should_show_section_plane(),
             section_axis=self.section_axis.get(),
@@ -2897,7 +2937,11 @@ class OpenRetopWindow:
             return
 
         active_plane.axis = normalize_axis(self.section_axis.get())
-        active_plane.offset = float(self.section_offset.get())
+        set_plane_axis_offset(
+            active_plane,
+            self.section_axis.get(),
+            float(self.section_offset.get()),
+        )
         active_plane.visible = bool(self.show_section_plane.get())
 
     def _sync_section_controls_from_active_plane(self, *, clamp_offset: bool = True) -> None:
@@ -2910,12 +2954,39 @@ class OpenRetopWindow:
         self.section_axis.set(normalize_axis(active_plane.axis))
         self.show_section_plane.set(bool(active_plane.visible))
         self._update_section_offset_range()
+        clamp_display_offset = clamp_offset and np.allclose(
+            plane_normal(active_plane),
+            world_axis_vector(self.section_axis.get()),
+            atol=1e-6,
+        )
         self._set_section_offset(
             desired_offset,
-            clamp=clamp_offset,
+            clamp=clamp_display_offset,
             refresh=False,
             clear_section=False,
+            sync_plane=False,
         )
+        self._update_section_plane_label(set_status=False)
+
+    def _sync_section_controls_from_plane_orientation(
+        self,
+        active_plane: SectionPlaneState,
+    ) -> None:
+        offset = float(active_plane.offset)
+        minimum, maximum = self._section_offset_bounds
+        if offset < minimum or offset > maximum:
+            minimum = min(minimum, offset)
+            maximum = max(maximum, offset)
+            self._section_offset_bounds = (minimum, maximum)
+            self.offset_slider.configure(from_=minimum, to=maximum)
+
+        self.section_axis.set(normalize_axis(active_plane.axis))
+        self._updating_offset = True
+        try:
+            self.section_offset.set(offset)
+            self.section_offset_text.set(f"{offset:.3f}")
+        finally:
+            self._updating_offset = False
         self._update_section_plane_label(set_status=False)
 
     def _on_view_option_changed(self) -> None:
@@ -3357,6 +3428,7 @@ class OpenRetopWindow:
         refresh: bool,
         mark_dirty: bool = False,
         clear_section: bool = True,
+        sync_plane: bool = True,
     ) -> None:
         minimum, maximum = self._section_offset_bounds
         next_offset = min(max(float(offset), minimum), maximum) if clamp else float(offset)
@@ -3367,7 +3439,8 @@ class OpenRetopWindow:
         finally:
             self._updating_offset = False
 
-        self._sync_active_section_plane_from_controls()
+        if sync_plane:
+            self._sync_active_section_plane_from_controls()
         self._update_section_plane_label(set_status=True)
         if clear_section:
             self._clear_section_for_plane_change()
@@ -3416,9 +3489,20 @@ class OpenRetopWindow:
     def _update_section_plane_label(self, *, set_status: bool) -> None:
         axis = self.section_axis.get()
         offset = self.section_offset.get()
-        self.section_plane_text.set(f"Section: {axis} = {offset:.3f}")
+        active_plane = get_active_plane(self.app_state.section_collection)
+        label = f"Section: {axis} = {offset:.3f}"
+        if active_plane is not None:
+            normal = plane_normal(active_plane)
+            axis_vector = world_axis_vector(axis)
+            if not np.allclose(normal, axis_vector, atol=1e-6):
+                label = (
+                    "Section: "
+                    f"n=({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f}) "
+                    f"d={active_plane.offset:.3f}"
+                )
+        self.section_plane_text.set(label)
         if set_status and self.app_state.selected_item == SELECT_SECTION_PLANE:
-            self.status_text.set(f"Section plane: {axis} = {offset:.3f}")
+            self.status_text.set(label.replace("Section:", "Section plane:", 1))
 
     def _clear_section_for_plane_change(self) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
@@ -3756,9 +3840,19 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        if self.app_state.selected_item == SELECT_SECTION_PLANE and mode == "rotate":
-            self._cycle_section_axis_for_rotation()
-            return
+        section_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
+        section_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
+        section_axis = self.section_axis.get()
+        section_offset = float(self.section_offset.get())
+        if self.app_state.selected_item == SELECT_SECTION_PLANE:
+            active_plane = get_active_plane(self.app_state.section_collection)
+            if active_plane is None:
+                self.status_text.set("No section plane")
+                return
+            section_origin = plane_origin(active_plane)
+            section_normal = plane_normal(active_plane)
+            section_axis = active_plane.axis
+            section_offset = active_plane.offset
 
         self.app_state.transform_state = ActiveTransformState(
             selected_item=self.app_state.selected_item,
@@ -3767,8 +3861,10 @@ class OpenRetopWindow:
             axis_constraint=None,
             location=self.app_state.mesh_object.location.copy(),
             rotation=self.app_state.mesh_object.rotation.copy(),
-            section_axis=self.section_axis.get(),
-            section_offset=self.section_offset.get(),
+            section_axis=section_axis,
+            section_offset=section_offset,
+            section_origin=section_origin,
+            section_normal=section_normal,
         )
         self.app_state.active_transform_mode = mode
         self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
@@ -3790,14 +3886,6 @@ class OpenRetopWindow:
         self._active_transform_angle_delta = (
             0.0 if self.app_state.transform_state.mode == "rotate" else None
         )
-        if self.app_state.transform_state.selected_item == SELECT_SECTION_PLANE and next_axis is not None:
-            self.section_axis.set(axis)
-            self._configure_offset_range(reset=False)
-            self.app_state.transform_state.section_axis = axis
-            self.app_state.transform_state.section_offset = self.section_offset.get()
-            self.app_state.transform_state.mouse_start = self._last_viewport_mouse
-            self._update_section_plane_label(set_status=False)
-
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._active_transform_status())
 
@@ -3816,8 +3904,11 @@ class OpenRetopWindow:
                 self._update_mesh_move_transform(state, mouse_position, fine=fine)
             elif state.mode == "rotate":
                 self._update_mesh_rotate_transform(state, mouse_position, fine=fine)
-        elif state.selected_item == SELECT_SECTION_PLANE and state.mode == "move":
-            self._update_section_plane_move_transform(state, mouse_position, fine=fine)
+        elif state.selected_item == SELECT_SECTION_PLANE:
+            if state.mode == "move":
+                self._update_section_plane_move_transform(state, mouse_position, fine=fine)
+            elif state.mode == "rotate":
+                self._update_section_plane_rotate_transform(state, mouse_position, fine=fine)
 
     def _update_mesh_move_transform(
         self,
@@ -3894,20 +3985,73 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        offset_delta = section_offset_delta(
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            return
+
+        minimum_bound, maximum_bound = self._transformed_source_bounds()
+        model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
+        camera_vectors = self.viewport.get_camera_vectors()
+        if state.axis_constraint is None:
+            movement, amount = axis_constrained_camera_move_delta(
+                state.mouse_start,
+                mouse_position,
+                state.section_normal,
+                camera_vectors.right,
+                camera_vectors.up,
+                model_diagonal,
+                fine=fine,
+            )
+            readout = f"Delta normal: {amount:.2f}"
+        else:
+            movement, amount = axis_constrained_camera_move_delta(
+                state.mouse_start,
+                mouse_position,
+                world_axis_vector(state.axis_constraint),
+                camera_vectors.right,
+                camera_vectors.up,
+                model_diagonal,
+                fine=fine,
+            )
+            readout = f"Delta {state.axis_constraint}: {amount:.2f}"
+
+        set_plane_origin_normal(
+            active_plane,
+            state.section_origin + movement,
+            state.section_normal,
+        )
+        self._sync_section_controls_from_plane_orientation(active_plane)
+        self._last_transform_readout = readout
+        self._active_transform_angle_delta = None
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(self._active_transform_status())
+
+    def _update_section_plane_rotate_transform(
+        self,
+        state: ActiveTransformState,
+        mouse_position: tuple[int, int],
+        *,
+        fine: bool,
+    ) -> None:
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            return
+
+        axis = self._display_transform_axis(state) or "Z"
+        rotation_delta, angle_delta = mesh_rotate_delta(
             state.mouse_start,
             mouse_position,
-            self._section_offset_bounds,
+            np.asarray([0.0, 0.0, 0.0], dtype=float),
+            axis,
             fine=fine,
         )
-        self._set_section_offset(
-            state.section_offset + offset_delta,
-            clamp=True,
-            refresh=True,
-        )
-        self._last_transform_readout = (
-            f"Offset {self.section_axis.get()}: {self.section_offset.get():.3f}"
-        )
+        normal = rotation_matrix(rotation_delta) @ state.section_normal
+        set_plane_origin_normal(active_plane, state.section_origin, normal)
+        self._sync_section_controls_from_plane_orientation(active_plane)
+        self.app_state.active_transform_axis = axis
+        self._last_transform_readout = f"{angle_delta:.1f} deg"
+        self._active_transform_angle_delta = angle_delta
+        self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._active_transform_status())
 
     def _end_active_transform(self, *, commit: bool, status: str) -> None:
@@ -3923,6 +4067,12 @@ class OpenRetopWindow:
         self.app_state.active_transform_axis = None
         self._last_transform_readout = None
         self._active_transform_angle_delta = None
+        if commit and state.selected_item == SELECT_SECTION_PLANE:
+            if self._section_transform_changed(state):
+                self._clear_section_for_plane_change()
+            active_plane = get_active_plane(self.app_state.section_collection)
+            if active_plane is not None:
+                self._sync_section_controls_from_plane_orientation(active_plane)
         self._refresh_viewport(reset_camera=False)
         if commit and state.selected_item == SELECT_MODEL:
             status = self._model_transform_status(status)
@@ -3939,9 +4089,27 @@ class OpenRetopWindow:
             return
 
         if state.selected_item == SELECT_SECTION_PLANE:
-            self.section_axis.set(state.section_axis)
-            self._configure_offset_range(reset=False)
-            self._set_section_offset(state.section_offset, clamp=True, refresh=True)
+            active_plane = get_active_plane(self.app_state.section_collection)
+            if active_plane is None:
+                return
+            active_plane.axis = normalize_axis(state.section_axis)
+            set_plane_origin_normal(
+                active_plane,
+                state.section_origin.copy(),
+                state.section_normal.copy(),
+            )
+            active_plane.offset = float(state.section_offset)
+            self._sync_section_controls_from_plane_orientation(active_plane)
+
+    def _section_transform_changed(self, state: ActiveTransformState) -> bool:
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            return False
+
+        return not (
+            np.allclose(plane_origin(active_plane), state.section_origin, atol=1e-8)
+            and np.allclose(plane_normal(active_plane), state.section_normal, atol=1e-8)
+        )
 
     def _cycle_section_axis_for_rotation(self) -> None:
         current_index = SECTION_AXES.index(self.section_axis.get())
@@ -3977,7 +4145,7 @@ class OpenRetopWindow:
         if state.mode == "rotate":
             return state.axis_constraint or "Z"
         if state.selected_item == SELECT_SECTION_PLANE:
-            return state.axis_constraint or self.section_axis.get()
+            return state.axis_constraint
         return state.axis_constraint
 
     def rename_selected(self) -> None:
@@ -4287,6 +4455,7 @@ class OpenRetopWindow:
                 show_grid=self.settings.display.show_grid,
                 show_axes=self.settings.display.show_axes,
                 show_normals=False,
+                show_axis_gizmo=self.settings.display.show_axis_gizmo,
             ),
             import_settings=AppImportSettings(
                 default_proxy_quality=normalize_proxy_quality(

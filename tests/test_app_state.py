@@ -22,7 +22,7 @@ from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.display_proxy import DEFAULT_PROXY_QUALITY
 from mesh.triangle_mesh import TriangleMeshData
-from sections.section_state import SectionCollection, StoredSectionResult
+from sections.section_state import SectionCollection, StoredSectionResult, plane_normal, plane_origin
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -112,6 +112,8 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(active_plane.name, "Section Plane 1")
         self.assertEqual(active_plane.axis, "Z")
         self.assertEqual(active_plane.offset, 0.0)
+        self.assertTrue(np.allclose(plane_origin(active_plane), [0.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(plane_normal(active_plane), [0.0, 0.0, 1.0]))
         self.assertTrue(active_plane.visible)
         self.assertTrue(active_plane.selected)
 
@@ -234,6 +236,8 @@ class AppStateTests(unittest.TestCase):
         self.assertTrue(np.allclose(transform_state.rotation, [4.0, 5.0, 6.0]))
         self.assertEqual(transform_state.section_axis, "Y")
         self.assertEqual(transform_state.section_offset, 1.25)
+        self.assertTrue(np.allclose(transform_state.section_origin, [0.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(transform_state.section_normal, [0.0, 0.0, 1.0]))
 
     def test_selection_constants_import_correctly(self) -> None:
         self.assertEqual(SELECT_MODEL, "model")

@@ -62,6 +62,23 @@ class SectionExtractionTests(unittest.TestCase):
         self.assertEqual(result.point_count, 0)
         self.assertEqual(result.polylines, tuple())
 
+    def test_arbitrary_plane_section_uses_origin_and_normal(self) -> None:
+        normal = np.asarray([1.0, 1.0, 0.0], dtype=float)
+        normal = normal / np.linalg.norm(normal)
+
+        result = extract_section(
+            build_cube_mesh(),
+            axis="Z",
+            offset=0.0,
+            origin=[0.0, 0.0, 0.0],
+            normal=normal,
+        )
+
+        self.assertGreater(result.segment_count, 0)
+        for polyline in result.polylines:
+            distances = polyline.points @ normal
+            self.assertTrue(np.allclose(distances, 0.0, atol=1e-7))
+
     def test_invalid_axis_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             extract_section(build_cube_mesh(), axis="A", offset=0.0)

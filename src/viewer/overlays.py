@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, cos, floor, log10, pi, sin
+from math import atan2, ceil, cos, floor, log10, pi, sin
 from typing import Sequence
 
 import numpy as np
@@ -245,35 +245,42 @@ def build_section_plane_preview(
     max_bound: Sequence[float],
     *,
     selected: bool = False,
+    origin: Sequence[float] | None = None,
+    normal: Sequence[float] | None = None,
 ) -> LineGeometry:
     """Build a visible, non-occluding section plane preview."""
 
-    axis_key = axis.upper()
-    axis_index = AXIS_TO_INDEX.get(axis_key, AXIS_TO_INDEX["Z"])
-    other_indices = [index for index in range(3) if index != axis_index]
     minimum = np.asarray(min_bound, dtype=float)
     maximum = np.asarray(max_bound, dtype=float)
     extent = np.maximum(maximum - minimum, 1e-6)
     margin = max(float(np.max(extent)) * 0.08, 0.1)
+    expanded_minimum = minimum - margin
+    expanded_maximum = maximum + margin
+    plane_origin, plane_normal = _plane_preview_origin_normal(
+        axis,
+        offset,
+        origin=origin,
+        normal=normal,
+    )
+    corners = _section_plane_polygon(
+        expanded_minimum,
+        expanded_maximum,
+        plane_origin,
+        plane_normal,
+        fallback_size=max(float(np.max(extent)) + margin * 2.0, 1.0),
+    )
 
-    ranges: list[tuple[float, float]] = []
-    for index in other_indices:
-        start = float(minimum[index] - margin)
-        end = float(maximum[index] + margin)
-        if abs(end - start) <= 1e-6:
-            center = (start + end) * 0.5
-            start = center - 0.5
-            end = center + 0.5
-        ranges.append((start, end))
-
-    start_a, end_a = ranges[0]
-    start_b, end_b = ranges[1]
-    corners = [
-        _plane_point(axis_index, other_indices, float(offset), start_a, start_b),
-        _plane_point(axis_index, other_indices, float(offset), end_a, start_b),
-        _plane_point(axis_index, other_indices, float(offset), end_a, end_b),
-        _plane_point(axis_index, other_indices, float(offset), start_a, end_b),
-    ]
+    u_axis, v_axis = _plane_basis(plane_normal)
+    center = np.mean(corners, axis=0)
+    local = corners - center
+    order = sorted(
+        range(len(corners)),
+        key=lambda index: atan2(
+            float(np.dot(local[index], v_axis)),
+            float(np.dot(local[index], u_axis)),
+        ),
+    )
+    corners = corners[order]
 
     points: list[list[float]] = []
     lines: list[tuple[int, int]] = []
@@ -289,25 +296,157 @@ def build_section_plane_preview(
     inner_color = [0.0, 0.42, 0.48]
     center_color = [1.0, 0.95, 0.35] if selected else [0.58, 1.0, 1.0]
 
-    for index in range(4):
-        add_line(corners[index], corners[(index + 1) % 4], border_color)
+    for index in range(len(corners)):
+        add_line(corners[index], corners[(index + 1) % len(corners)], border_color)
 
+    local_u = np.asarray([float(np.dot(point - center, u_axis)) for point in corners])
+    local_v = np.asarray([float(np.dot(point - center, v_axis)) for point in corners])
+    start_u, end_u = float(np.min(local_u)), float(np.max(local_u))
+    start_v, end_v = float(np.min(local_v)), float(np.max(local_v))
     for fraction in (0.25, 0.5, 0.75):
-        value_a = start_a + (end_a - start_a) * fraction
-        value_b = start_b + (end_b - start_b) * fraction
         color = center_color if abs(fraction - 0.5) <= 1e-9 else inner_color
+        value_u = start_u + (end_u - start_u) * fraction
+        value_v = start_v + (end_v - start_v) * fraction
         add_line(
-            _plane_point(axis_index, other_indices, float(offset), value_a, start_b),
-            _plane_point(axis_index, other_indices, float(offset), value_a, end_b),
+            center + u_axis * value_u + v_axis * start_v,
+            center + u_axis * value_u + v_axis * end_v,
             color,
         )
         add_line(
-            _plane_point(axis_index, other_indices, float(offset), start_a, value_b),
-            _plane_point(axis_index, other_indices, float(offset), end_a, value_b),
+            center + u_axis * start_u + v_axis * value_v,
+            center + u_axis * end_u + v_axis * value_v,
             color,
         )
 
     return _line_geometry(points, lines, colors)
+
+
+def _plane_preview_origin_normal(
+    axis: str,
+    offset: float,
+    *,
+    origin: Sequence[float] | None,
+    normal: Sequence[float] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    axis_key = axis.upper()
+    axis_index = AXIS_TO_INDEX.get(axis_key, AXIS_TO_INDEX["Z"])
+    axis_normal = np.zeros(3, dtype=float)
+    axis_normal[axis_index] = 1.0
+    if normal is None:
+        plane_normal = axis_normal
+    else:
+        plane_normal = _normalized_vector(normal, fallback=axis_normal)
+
+    if origin is None:
+        plane_origin = axis_normal * float(offset)
+    else:
+        plane_origin = np.asarray(origin, dtype=float).reshape(3)
+    return (plane_origin, plane_normal)
+
+
+def _section_plane_polygon(
+    minimum: np.ndarray,
+    maximum: np.ndarray,
+    origin: np.ndarray,
+    normal: np.ndarray,
+    *,
+    fallback_size: float,
+) -> np.ndarray:
+    corners = _box_corners(minimum, maximum)
+    edges = (
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    )
+    distances = (corners - origin) @ normal
+    hits: list[np.ndarray] = []
+    tolerance = max(float(fallback_size) * 1e-8, 1e-8)
+    for start_index, end_index in edges:
+        start_point = corners[start_index]
+        end_point = corners[end_index]
+        start_distance = float(distances[start_index])
+        end_distance = float(distances[end_index])
+        if abs(start_distance) <= tolerance:
+            hits.append(start_point)
+        if abs(end_distance) <= tolerance:
+            hits.append(end_point)
+        if start_distance * end_distance < 0.0:
+            ratio = -start_distance / (end_distance - start_distance)
+            hits.append(start_point + ratio * (end_point - start_point))
+
+    unique_hits = _unique_plane_points(hits, tolerance)
+    if len(unique_hits) >= 3:
+        return np.asarray(unique_hits, dtype=float)
+
+    u_axis, v_axis = _plane_basis(normal)
+    half_size = max(float(fallback_size) * 0.5, 0.5)
+    return np.asarray(
+        [
+            origin - u_axis * half_size - v_axis * half_size,
+            origin + u_axis * half_size - v_axis * half_size,
+            origin + u_axis * half_size + v_axis * half_size,
+            origin - u_axis * half_size + v_axis * half_size,
+        ],
+        dtype=float,
+    )
+
+
+def _box_corners(minimum: np.ndarray, maximum: np.ndarray) -> np.ndarray:
+    return np.asarray(
+        [
+            [minimum[0], minimum[1], minimum[2]],
+            [maximum[0], minimum[1], minimum[2]],
+            [maximum[0], maximum[1], minimum[2]],
+            [minimum[0], maximum[1], minimum[2]],
+            [minimum[0], minimum[1], maximum[2]],
+            [maximum[0], minimum[1], maximum[2]],
+            [maximum[0], maximum[1], maximum[2]],
+            [minimum[0], maximum[1], maximum[2]],
+        ],
+        dtype=float,
+    )
+
+
+def _plane_basis(normal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    plane_normal = _normalized_vector(normal, fallback=np.asarray([0.0, 0.0, 1.0], dtype=float))
+    reference = (
+        np.asarray([0.0, 0.0, 1.0], dtype=float)
+        if abs(float(plane_normal[2])) < 0.92
+        else np.asarray([0.0, 1.0, 0.0], dtype=float)
+    )
+    u_axis = _normalized_vector(np.cross(reference, plane_normal), fallback=np.asarray([1.0, 0.0, 0.0], dtype=float))
+    v_axis = _normalized_vector(np.cross(plane_normal, u_axis), fallback=np.asarray([0.0, 1.0, 0.0], dtype=float))
+    return (u_axis, v_axis)
+
+
+def _unique_plane_points(points: Sequence[np.ndarray], tolerance: float) -> list[np.ndarray]:
+    unique: list[np.ndarray] = []
+    for point in points:
+        point_array = np.asarray(point, dtype=float)
+        if not any(np.linalg.norm(point_array - existing) <= tolerance for existing in unique):
+            unique.append(point_array)
+    return unique
+
+
+def _normalized_vector(
+    vector: Sequence[float] | np.ndarray,
+    *,
+    fallback: np.ndarray,
+) -> np.ndarray:
+    values = np.asarray(vector, dtype=float)
+    length = float(np.linalg.norm(values))
+    if length <= 1e-12:
+        return np.asarray(fallback, dtype=float).copy()
+    return values / length
 
 
 def grid_size_and_step(

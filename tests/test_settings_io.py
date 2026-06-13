@@ -32,6 +32,7 @@ def _sample_settings() -> AppSettings:
             show_grid=False,
             show_axes=True,
             show_normals=True,
+            show_axis_gizmo=False,
         ),
         import_settings=AppImportSettings(
             default_proxy_quality="High",
@@ -66,6 +67,7 @@ class SettingsDataTests(unittest.TestCase):
         self.assertTrue(settings.display.show_grid)
         self.assertTrue(settings.display.show_axes)
         self.assertFalse(settings.display.show_normals)
+        self.assertTrue(settings.display.show_axis_gizmo)
         self.assertEqual(settings.import_settings.default_proxy_quality, "Medium")
         self.assertEqual(settings.ui.window_width, 1280)
         self.assertEqual(settings.ui.window_height, 800)
@@ -104,6 +106,7 @@ class SettingsIOTests(unittest.TestCase):
                     "show_grid": False,
                     "show_axes": True,
                     "show_normals": True,
+                    "show_axis_gizmo": False,
                 },
                 "import": {
                     "default_proxy_quality": "High",
@@ -153,6 +156,7 @@ class SettingsIOTests(unittest.TestCase):
         self.assertFalse(settings.display.show_grid)
         self.assertTrue(settings.display.show_axes)
         self.assertFalse(settings.display.show_normals)
+        self.assertTrue(settings.display.show_axis_gizmo)
         self.assertEqual(settings.import_settings.default_proxy_quality, "Medium")
         self.assertEqual(settings.ui.window_width, 1600)
         self.assertEqual(settings.ui.window_height, 800)
@@ -228,6 +232,7 @@ class SettingsIOTests(unittest.TestCase):
             {"version": SETTINGS_VERSION + 1},
             {"display": []},
             {"display": {"show_grid": 1}},
+            {"display": {"show_axis_gizmo": 1}},
             {"import": []},
             {"import": {"default_proxy_quality": "Ultra"}},
             {"ui": []},

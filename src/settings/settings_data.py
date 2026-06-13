@@ -15,6 +15,7 @@ class AppDisplaySettings:
     show_grid: bool
     show_axes: bool
     show_normals: bool
+    show_axis_gizmo: bool = True
 
 
 @dataclass
@@ -61,6 +62,7 @@ def default_app_settings() -> AppSettings:
             show_grid=True,
             show_axes=True,
             show_normals=False,
+            show_axis_gizmo=True,
         ),
         import_settings=AppImportSettings(
             default_proxy_quality=DEFAULT_PROXY_QUALITY,

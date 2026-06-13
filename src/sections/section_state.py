@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+import numpy as np
+
 from geometry.sections import SectionResult, normalize_axis
+
+
+AXIS_NORMALS = {
+    "X": np.asarray([1.0, 0.0, 0.0], dtype=float),
+    "Y": np.asarray([0.0, 1.0, 0.0], dtype=float),
+    "Z": np.asarray([0.0, 0.0, 1.0], dtype=float),
+}
 
 
 @dataclass
@@ -16,6 +25,8 @@ class SectionPlaneState:
     offset: float
     visible: bool = True
     selected: bool = False
+    origin: np.ndarray | None = field(default=None, compare=False)
+    normal: np.ndarray | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -41,13 +52,17 @@ class SectionCollection:
 
 
 def create_default_section_plane(axis: str = "Z", offset: float = 0.0) -> SectionPlaneState:
+    axis_key = normalize_axis(axis)
+    offset_value = float(offset)
     return SectionPlaneState(
         id=_new_id("section-plane"),
         name="Section Plane 1",
-        axis=normalize_axis(axis),
-        offset=float(offset),
+        axis=axis_key,
+        offset=offset_value,
         visible=True,
         selected=False,
+        origin=plane_origin_from_axis_offset(axis_key, offset_value),
+        normal=axis_normal(axis_key),
     )
 
 
@@ -57,14 +72,99 @@ def add_plane(
 ) -> SectionCollection:
     _require_collection(collection)
     _require_unique_plane_id(collection, plane.id)
-    plane.axis = normalize_axis(plane.axis)
-    plane.offset = float(plane.offset)
+    normalize_plane_state(plane)
     collection.planes.append(plane)
     if collection.active_plane_id is None or plane.selected:
         set_active_plane(collection, plane.id)
     else:
         _sync_plane_selection_flags(collection)
     return collection
+
+
+def axis_normal(axis: str) -> np.ndarray:
+    return AXIS_NORMALS[normalize_axis(axis)].copy()
+
+
+def plane_origin_from_axis_offset(axis: str, offset: float) -> np.ndarray:
+    return axis_normal(axis) * float(offset)
+
+
+def normalize_plane_state(plane: SectionPlaneState) -> SectionPlaneState:
+    plane.axis = normalize_axis(plane.axis)
+    plane.offset = float(plane.offset)
+    if plane.origin is None or plane.normal is None:
+        set_plane_axis_offset(plane, plane.axis, plane.offset)
+        return plane
+
+    plane.origin = _vector3(plane.origin, "section_plane.origin")
+    plane.normal = _normalized_vector(
+        plane.normal,
+        field_name="section_plane.normal",
+        fallback=axis_normal(plane.axis),
+    )
+    plane.offset = float(np.dot(plane.origin, plane.normal))
+    return plane
+
+
+def set_plane_axis_offset(
+    plane: SectionPlaneState,
+    axis: str,
+    offset: float,
+) -> SectionPlaneState:
+    axis_key = normalize_axis(axis)
+    offset_value = float(offset)
+    plane.axis = axis_key
+    plane.offset = offset_value
+    plane.normal = axis_normal(axis_key)
+    plane.origin = plane_origin_from_axis_offset(axis_key, offset_value)
+    return plane
+
+
+def set_plane_origin_normal(
+    plane: SectionPlaneState,
+    origin: object,
+    normal: object,
+) -> SectionPlaneState:
+    plane.origin = _vector3(origin, "section_plane.origin")
+    plane.normal = _normalized_vector(
+        normal,
+        field_name="section_plane.normal",
+        fallback=axis_normal(plane.axis),
+    )
+    plane.offset = float(np.dot(plane.origin, plane.normal))
+    return plane
+
+
+def plane_origin(plane: SectionPlaneState) -> np.ndarray:
+    normalize_plane_state(plane)
+    assert plane.origin is not None
+    return plane.origin.copy()
+
+
+def plane_normal(plane: SectionPlaneState) -> np.ndarray:
+    normalize_plane_state(plane)
+    assert plane.normal is not None
+    return plane.normal.copy()
+
+
+def _vector3(value: object, field_name: str) -> np.ndarray:
+    values = np.asarray(value, dtype=float).reshape(-1)
+    if values.shape != (3,) or not np.all(np.isfinite(values)):
+        raise ValueError(f"{field_name} must contain exactly three finite numbers.")
+    return values.copy()
+
+
+def _normalized_vector(
+    value: object,
+    *,
+    field_name: str,
+    fallback: np.ndarray,
+) -> np.ndarray:
+    values = _vector3(value, field_name)
+    length = float(np.linalg.norm(values))
+    if length <= 1e-12:
+        return np.asarray(fallback, dtype=float).copy()
+    return values / length
 
 
 def get_active_plane(collection: SectionCollection) -> SectionPlaneState | None:

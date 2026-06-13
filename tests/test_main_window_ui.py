@@ -50,7 +50,14 @@ from project.project_data import (
 from project.project_io import load_project, save_project
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
-from sections.section_state import SectionPlaneState, StoredSectionResult, add_plane, set_active_plane
+from sections.section_state import (
+    SectionPlaneState,
+    StoredSectionResult,
+    add_plane,
+    plane_normal,
+    plane_origin,
+    set_active_plane,
+)
 from surfaces.surface_state import SurfacePatch, add_surface
 
 
@@ -385,6 +392,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
+            self.assertTrue(window.show_axis_gizmo.get())
             self.assertFalse(window.show_normals.get())
             self.assertFalse(window.show_section_plane.get())
             self.assertEqual(window.proxy_quality.get(), "Medium")
@@ -439,6 +447,7 @@ class MainWindowUiTests(unittest.TestCase):
         settings.display.show_grid = False
         settings.display.show_axes = False
         settings.display.show_normals = True
+        settings.display.show_axis_gizmo = False
         settings.import_settings.default_proxy_quality = "High"
 
         with TemporaryDirectory() as tmpdir:
@@ -474,12 +483,14 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.preferences_vars["remember_window_size"].get())
             self.assertFalse(window.preferences_vars["show_grid"].get())
             self.assertFalse(window.preferences_vars["show_axes"].get())
+            self.assertFalse(window.preferences_vars["show_axis_gizmo"].get())
             self.assertNotIn("show_normals", window.preferences_vars)
             self.assertEqual(window.preferences_vars["default_proxy_quality"].get(), "High")
             self.assertTrue(_widgets_with_text(dialog, "Startup window mode"))
             self.assertTrue(_widgets_with_text(dialog, "Remember last window size"))
             self.assertTrue(_widgets_with_text(dialog, "Startup Show Grid"))
             self.assertTrue(_widgets_with_text(dialog, "Startup Show Axes"))
+            self.assertTrue(_widgets_with_text(dialog, "Show Axis Gizmo"))
             self.assertTrue(_widgets_with_text(dialog, "Surface preview opacity"))
             self.assertTrue(_widgets_with_text(dialog, "Curve display thickness"))
             self.assertTrue(_widgets_with_text(dialog, "Rename Selected"))
@@ -527,6 +538,7 @@ class MainWindowUiTests(unittest.TestCase):
                 scene_call_count = len(window.viewport.scene_calls)
                 window.preferences_vars["show_grid"].set(False)
                 window.preferences_vars["show_axes"].set(False)
+                window.preferences_vars["show_axis_gizmo"].set(False)
                 window.preferences_vars["window_mode"].set("remembered_size")
                 window.preferences_vars["remember_window_size"].set(False)
                 window.preferences_vars["keybind.toggle_visibility"].set("V")
@@ -536,6 +548,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertIsNotNone(window.preferences_dialog)
                 self.assertTrue(window.show_grid.get())
                 self.assertTrue(window.show_axes.get())
+                self.assertTrue(window.show_axis_gizmo.get())
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "Medium")
                 self.assertEqual(window.status_text.get(), "Preferences applied")
@@ -543,6 +556,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(window.settings.display.show_grid)
                 self.assertFalse(window.settings.display.show_axes)
                 self.assertFalse(window.settings.display.show_normals)
+                self.assertFalse(window.settings.display.show_axis_gizmo)
                 self.assertEqual(
                     window.settings.import_settings.default_proxy_quality,
                     "Low",
@@ -555,6 +569,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(saved_settings.display.show_grid)
                 self.assertFalse(saved_settings.display.show_axes)
                 self.assertFalse(saved_settings.display.show_normals)
+                self.assertFalse(saved_settings.display.show_axis_gizmo)
                 self.assertEqual(
                     saved_settings.import_settings.default_proxy_quality,
                     "Low",
@@ -573,6 +588,7 @@ class MainWindowUiTests(unittest.TestCase):
             try:
                 self.assertFalse(restored_window.show_grid.get())
                 self.assertFalse(restored_window.show_axes.get())
+                self.assertFalse(restored_window.show_axis_gizmo.get())
                 self.assertFalse(restored_window.show_normals.get())
                 self.assertEqual(restored_window.proxy_quality.get(), "Low")
             finally:
@@ -660,6 +676,7 @@ class MainWindowUiTests(unittest.TestCase):
         settings.display.show_grid = False
         settings.display.show_axes = False
         settings.display.show_normals = True
+        settings.display.show_axis_gizmo = False
         settings.import_settings.default_proxy_quality = "High"
         settings.ui.window_width = 1120
         settings.ui.window_height = 720
@@ -674,6 +691,7 @@ class MainWindowUiTests(unittest.TestCase):
             try:
                 self.assertFalse(window.show_grid.get())
                 self.assertFalse(window.show_axes.get())
+                self.assertFalse(window.show_axis_gizmo.get())
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "High")
                 _assert_startup_size_or_zoomed(self, window, "1120x720")
@@ -692,6 +710,7 @@ class MainWindowUiTests(unittest.TestCase):
             try:
                 self.assertTrue(window.show_grid.get())
                 self.assertTrue(window.show_axes.get())
+                self.assertTrue(window.show_axis_gizmo.get())
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "Medium")
                 _assert_startup_size_or_zoomed(self, window, "1280x800")
@@ -707,6 +726,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.show_grid.set(False)
             window.show_axes.set(False)
+            window.show_axis_gizmo.set(False)
             window.show_normals.set(True)
             window.proxy_quality.set("Low")
             if _window_is_zoomed(window):
@@ -719,6 +739,7 @@ class MainWindowUiTests(unittest.TestCase):
             saved_settings = load_settings(settings_path)
             self.assertTrue(saved_settings.display.show_grid)
             self.assertTrue(saved_settings.display.show_axes)
+            self.assertTrue(saved_settings.display.show_axis_gizmo)
             self.assertFalse(saved_settings.display.show_normals)
             self.assertEqual(saved_settings.import_settings.default_proxy_quality, "Medium")
             self.assertEqual(saved_settings.ui.window_width, 1180)
@@ -730,6 +751,7 @@ class MainWindowUiTests(unittest.TestCase):
             try:
                 self.assertTrue(restored_window.show_grid.get())
                 self.assertTrue(restored_window.show_axes.get())
+                self.assertTrue(restored_window.show_axis_gizmo.get())
                 self.assertFalse(restored_window.show_normals.get())
                 self.assertEqual(restored_window.proxy_quality.get(), "Medium")
                 _assert_startup_size_or_zoomed(self, restored_window, "1180x740")
@@ -4797,7 +4819,7 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_section_plane_hotkey_move_cancel_confirm_and_rotate_cycle(self) -> None:
+    def test_section_plane_hotkey_move_cancel_confirm_and_rotate(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
             file_path=Path("sample.stl"),
@@ -4822,43 +4844,66 @@ class MainWindowUiTests(unittest.TestCase):
                 window.load_model(Path("sample.stl"))
 
             window.select_section_plane()
+            active_plane = window.app_state.section_collection.planes[0]
+            mesh_location = window.app_state.mesh_object.location.copy()
+            mesh_rotation = window.app_state.mesh_object.rotation.copy()
             start_offset = window.section_offset.get()
+            start_origin = plane_origin(active_plane)
+            start_normal = plane_normal(active_plane)
             window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("G")
-            self.assertEqual(window.status_text.get(), "Move mode - Z axis")
+            self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
             window._on_viewport_pointer_event("motion", 50, 0)
             moved_offset = window.section_offset.get()
-            active_plane = window.app_state.section_collection.planes[0]
             self.assertGreater(moved_offset, start_offset)
             self.assertEqual(window.section_offset_text.get(), f"{moved_offset:.3f}")
             self.assertAlmostEqual(active_plane.offset, moved_offset)
-            self.assertIn("Offset Z:", window.status_text.get())
+            self.assertIn("Delta normal:", window.status_text.get())
 
             handled = window._on_viewport_pointer_event("right_release", 50, 0)
             self.assertTrue(handled)
             self.assertEqual(window.status_text.get(), "Transform cancelled")
             self.assertAlmostEqual(window.section_offset.get(), start_offset)
             self.assertAlmostEqual(active_plane.offset, start_offset)
+            self.assertTrue(np.allclose(plane_origin(active_plane), start_origin))
+            self.assertTrue(np.allclose(plane_normal(active_plane), start_normal))
 
             window._handle_shortcut("G")
             window._handle_shortcut("X")
-            self.assertEqual(window.section_axis.get(), "X")
-            self.assertEqual(active_plane.axis, "X")
             self.assertEqual(window.status_text.get(), "Move mode - X axis")
             window._on_viewport_pointer_event("motion", 100, 0)
-            confirmed_offset = window.section_offset.get()
+            moved_origin = plane_origin(active_plane)
+            self.assertGreater(moved_origin[0], start_origin[0])
+            self.assertAlmostEqual(active_plane.offset, start_offset)
             handled = window._on_viewport_pointer_event("left_release", 100, 0)
             self.assertTrue(handled)
             self.assertEqual(window.status_text.get(), "Transform confirmed")
-            self.assertAlmostEqual(window.section_offset.get(), confirmed_offset)
-            self.assertAlmostEqual(active_plane.offset, confirmed_offset)
-            self.assertGreater(confirmed_offset, start_offset)
+            self.assertTrue(np.allclose(plane_origin(active_plane), moved_origin))
 
-            self.assertEqual(window.section_axis.get(), "X")
             window._handle_shortcut("R")
-            self.assertEqual(window.section_axis.get(), "Y")
-            self.assertEqual(active_plane.axis, "Y")
-            self.assertEqual(window.status_text.get(), "Section plane axis cycled to Y")
+            self.assertEqual(window.status_text.get(), "Rotate mode - Z axis - move mouse horizontally")
+            window._handle_shortcut("X")
+            self.assertEqual(window.status_text.get(), "Rotate mode - X axis - move mouse horizontally")
+            window._on_viewport_pointer_event("motion", 40, 0)
+            rotated_normal = plane_normal(active_plane)
+            self.assertFalse(np.allclose(rotated_normal, start_normal))
+            self.assertIn("20.0 deg", window.status_text.get())
+            self.assertTrue(np.allclose(window.app_state.mesh_object.location, mesh_location))
+            self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, mesh_rotation))
+
+            window._handle_shortcut("Esc")
+            self.assertEqual(window.status_text.get(), "Transform cancelled")
+            self.assertTrue(np.allclose(plane_normal(active_plane), start_normal))
+
+            window._handle_shortcut("R")
+            window._handle_shortcut("X")
+            window._on_viewport_pointer_event("motion", 40, 0)
+            confirmed_normal = plane_normal(active_plane)
+            handled = window._on_viewport_pointer_event("left_release", 40, 0)
+            self.assertTrue(handled)
+            self.assertEqual(window.status_text.get(), "Transform confirmed")
+            self.assertTrue(np.allclose(plane_normal(active_plane), confirmed_normal))
+            self.assertFalse(np.allclose(confirmed_normal, start_normal))
         finally:
             window.root.destroy()
 

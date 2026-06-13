@@ -75,8 +75,10 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
                 "axis": plane.axis,
                 "offset": float(plane.offset),
                 "visible": bool(plane.visible),
+                "origin": _vector3_value(plane.origin, f"section_planes[{index}].origin"),
+                "normal": _vector3_value(plane.normal, f"section_planes[{index}].normal"),
             }
-            for plane in project.section_planes
+            for index, plane in enumerate(project.section_planes)
         ],
         "active_section_plane_id": project.active_section_plane_id,
         "section_results": [
@@ -342,6 +344,8 @@ def _section_planes_value(
             raise ValueError(f"{field_prefix}.id must be unique.")
         seen_ids.add(plane_id)
 
+        origin_value = _nested_value(plane_data, "origin", None)
+        normal_value = _nested_value(plane_data, "normal", None)
         planes.append(
             ProjectSectionPlane(
                 id=plane_id,
@@ -360,6 +364,16 @@ def _section_planes_value(
                 visible=_bool_value(
                     _nested_value(plane_data, "visible", fallback_section.show_plane),
                     f"{field_prefix}.visible",
+                ),
+                origin=(
+                    None
+                    if origin_value is None
+                    else _vector3_value(origin_value, f"{field_prefix}.origin")
+                ),
+                normal=(
+                    None
+                    if normal_value is None
+                    else _vector3_value(normal_value, f"{field_prefix}.normal")
                 ),
             )
         )

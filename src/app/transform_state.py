@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -19,3 +19,9 @@ class ActiveTransformState:
     rotation: np.ndarray
     section_axis: str
     section_offset: float
+    section_origin: np.ndarray = field(
+        default_factory=lambda: np.asarray([0.0, 0.0, 0.0], dtype=float)
+    )
+    section_normal: np.ndarray = field(
+        default_factory=lambda: np.asarray([0.0, 0.0, 1.0], dtype=float)
+    )

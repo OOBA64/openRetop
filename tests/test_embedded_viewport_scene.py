@@ -495,6 +495,20 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(set(viewport._actor_groups), {"section_planes"})
         self.assertEqual(len(viewport._actor_groups["section_planes"]), 1)
 
+    def test_axis_gizmo_toggle_tracks_state_without_scene_actor(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+
+        self._set_basic_scene(viewport, mesh, show_axis_gizmo=False)
+
+        self.assertFalse(viewport._axis_gizmo_visible)
+        self.assertEqual(self._actor_count(viewport), 4)
+
+        self._set_basic_scene(viewport, mesh, show_axis_gizmo=True)
+
+        self.assertTrue(viewport._axis_gizmo_visible)
+        self.assertEqual(self._actor_count(viewport), 4)
+
     def test_multiple_section_planes_render_visible_planes_with_selected_styling(self) -> None:
         viewport = self._viewport()
         mesh = self._triangle_mesh()
@@ -561,6 +575,32 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(viewport._section_plane_actors, [])
         self.assertEqual(viewport._section_plane_pick_geometries, [])
         self.assertNotIn("section_planes", viewport._actor_groups)
+
+    def test_rotated_section_plane_preview_uses_origin_and_normal(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        normal = np.asarray([1.0, 0.0, 1.0], dtype=float)
+        normal = normal / np.linalg.norm(normal)
+        plane = SectionPlaneState(
+            id="plane-1",
+            name="Rotated Plane",
+            axis="Z",
+            offset=0.0,
+            visible=True,
+            selected=True,
+            origin=np.asarray([0.0, 0.0, 0.0], dtype=float),
+            normal=normal,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            section_planes=(plane,),
+            active_section_plane_id=plane.id,
+        )
+
+        points = self._actor_points(viewport._section_plane_actors[0])
+        self.assertTrue(np.allclose(points @ normal, 0.0, atol=1e-7))
 
     def test_selected_curve_renders_with_selected_overlay(self) -> None:
         viewport = self._viewport()

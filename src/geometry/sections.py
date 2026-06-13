@@ -54,13 +54,20 @@ def extract_section(
     *,
     axis: str = "Z",
     offset: float = 0.0,
+    origin: object | None = None,
+    normal: object | None = None,
     tolerance: float = 1e-8,
     weld_tolerance: float | None = None,
 ) -> SectionResult:
-    """Intersect a triangle mesh with an axis-aligned plane."""
+    """Intersect a triangle mesh with an axis-aligned or arbitrary plane."""
 
     axis_key = normalize_axis(axis)
-    axis_index = AXIS_TO_INDEX[axis_key]
+    plane_origin, plane_normal = _plane_origin_normal(
+        axis_key,
+        float(offset),
+        origin=origin,
+        normal=normal,
+    )
 
     vertices = np.asarray(mesh.vertices, dtype=float)
     triangles = np.asarray(mesh.triangles, dtype=int)
@@ -81,8 +88,8 @@ def extract_section(
         triangle_points = vertices[triangle_indices]
         segment = _intersect_triangle_plane(
             triangle_points,
-            axis_index=axis_index,
-            offset=float(offset),
+            plane_origin=plane_origin,
+            plane_normal=plane_normal,
             tolerance=intersection_tolerance,
         )
         if segment is not None:
@@ -100,11 +107,11 @@ def extract_section(
 def _intersect_triangle_plane(
     triangle_points: np.ndarray,
     *,
-    axis_index: int,
-    offset: float,
+    plane_origin: np.ndarray,
+    plane_normal: np.ndarray,
     tolerance: float,
 ) -> np.ndarray | None:
-    distances = triangle_points[:, axis_index] - offset
+    distances = (triangle_points - plane_origin) @ plane_normal
 
     if np.all(np.abs(distances) <= tolerance):
         return None
@@ -141,6 +148,36 @@ def _intersect_triangle_plane(
         return None
 
     return np.vstack((start_point, end_point))
+
+
+def _plane_origin_normal(
+    axis: str,
+    offset: float,
+    *,
+    origin: object | None,
+    normal: object | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    axis_index = AXIS_TO_INDEX[axis]
+    axis_normal = np.zeros(3, dtype=float)
+    axis_normal[axis_index] = 1.0
+    if normal is None:
+        plane_normal = axis_normal
+    else:
+        plane_normal = _normalized_vector(normal, fallback=axis_normal)
+
+    if origin is None:
+        plane_origin = plane_normal * float(offset)
+    else:
+        plane_origin = np.asarray(origin, dtype=float).reshape(3)
+    return (plane_origin, plane_normal)
+
+
+def _normalized_vector(value: object, *, fallback: np.ndarray) -> np.ndarray:
+    vector = np.asarray(value, dtype=float).reshape(3)
+    length = float(np.linalg.norm(vector))
+    if length <= 1e-12:
+        return np.asarray(fallback, dtype=float).copy()
+    return vector / length
 
 
 def _unique_points(points: Iterable[np.ndarray], tolerance: float) -> list[np.ndarray]:

@@ -17,7 +17,7 @@ from project.project_data import (
     ProjectTransform,
     default_project_data,
 )
-from sections.section_state import SectionCollection
+from sections.section_state import SectionCollection, plane_normal, plane_origin
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -147,6 +147,14 @@ def _section_planes_from_collection(
             axis=str(plane.axis).upper(),
             offset=_float_from_value(plane.offset, "section_collection.plane.offset"),
             visible=bool(plane.visible),
+            origin=_vector3_from_value(
+                plane_origin(plane),
+                "section_collection.plane.origin",
+            ),
+            normal=_vector3_from_value(
+                plane_normal(plane),
+                "section_collection.plane.normal",
+            ),
         )
         for plane in section_collection.planes
     ]

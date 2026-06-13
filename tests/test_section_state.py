@@ -4,6 +4,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from geometry.sections import SectionResult
@@ -16,8 +18,12 @@ from sections.section_state import (
     clear_results_for_plane,
     create_default_section_plane,
     get_active_plane,
+    plane_normal,
+    plane_origin,
     remove_plane,
     set_active_plane,
+    set_plane_axis_offset,
+    set_plane_origin_normal,
 )
 
 
@@ -33,8 +39,35 @@ class SectionStateTests(unittest.TestCase):
         self.assertEqual(plane.name, "Section Plane 1")
         self.assertEqual(plane.axis, "Y")
         self.assertEqual(plane.offset, 1.25)
+        self.assertTrue(np.allclose(plane_origin(plane), [0.0, 1.25, 0.0]))
+        self.assertTrue(np.allclose(plane_normal(plane), [0.0, 1.0, 0.0]))
         self.assertTrue(plane.visible)
         self.assertFalse(plane.selected)
+
+    def test_old_axis_offset_plane_derives_orientation_when_added(self) -> None:
+        collection = SectionCollection()
+        plane = SectionPlaneState(
+            id="legacy-plane",
+            name="Legacy",
+            axis="X",
+            offset=2.0,
+        )
+
+        add_plane(collection, plane)
+
+        self.assertTrue(np.allclose(plane_origin(plane), [2.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(plane_normal(plane), [1.0, 0.0, 0.0]))
+
+    def test_axis_offset_controls_reset_plane_to_axis_aligned_orientation(self) -> None:
+        plane = create_default_section_plane(axis="Z", offset=0.0)
+        set_plane_origin_normal(plane, [0.25, 0.0, 0.0], [1.0, 1.0, 0.0])
+
+        set_plane_axis_offset(plane, "Y", 1.5)
+
+        self.assertEqual(plane.axis, "Y")
+        self.assertEqual(plane.offset, 1.5)
+        self.assertTrue(np.allclose(plane_origin(plane), [0.0, 1.5, 0.0]))
+        self.assertTrue(np.allclose(plane_normal(plane), [0.0, 1.0, 0.0]))
 
     def test_default_section_plane_ids_are_unique(self) -> None:
         first_plane = create_default_section_plane()

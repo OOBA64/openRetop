@@ -12,6 +12,7 @@ from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from sections.section_state import SectionPlaneState
+from sections.section_state import plane_normal, plane_origin
 from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.overlays import (
     LineGeometry,
@@ -34,6 +35,8 @@ try:
     from vtkmodules.vtkCommonMath import vtkMatrix4x4
     from vtkmodules.vtkFiltersCore import vtkPolyDataNormals, vtkTubeFilter
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
+    from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
+    from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
         vtkPolyDataMapper,
@@ -85,6 +88,8 @@ class ViewportSectionPlane:
     offset: float
     visible: bool
     selected: bool
+    origin: np.ndarray
+    normal: np.ndarray
 
 
 class EmbeddedVTKViewport:
@@ -119,6 +124,9 @@ class EmbeddedVTKViewport:
         self._section_plane_actors: list[vtkActor] = []
         self._section_plane_pick_geometry: LineGeometry | None = None
         self._section_plane_pick_geometries: list[LineGeometry] = []
+        self._axis_gizmo_actor: vtkAxesActor | None = None
+        self._orientation_marker_widget: vtkOrientationMarkerWidget | None = None
+        self._axis_gizmo_visible = True
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
@@ -151,6 +159,10 @@ class EmbeddedVTKViewport:
 
     def close(self) -> None:
         self._is_closed = True
+        if self._orientation_marker_widget is not None:
+            self._orientation_marker_widget.SetEnabled(0)
+            self._orientation_marker_widget = None
+        self._axis_gizmo_actor = None
         if self.interactor is not None:
             self.interactor.Disable()
             self.interactor.TerminateApp()
@@ -224,6 +236,7 @@ class EmbeddedVTKViewport:
         curve_results: Sequence[CurveFitResult] | None = None,
         surface_previews: Sequence[SurfacePreviewMesh] | None = None,
         active_surface_id: str | None = None,
+        show_axis_gizmo: bool = True,
         reset_camera: bool = False,
     ) -> None:
         if not self._is_started:
@@ -263,6 +276,7 @@ class EmbeddedVTKViewport:
             section_result=section_result,
             curve_results=curve_results,
             surface_previews=surface_previews,
+            show_axis_gizmo=show_axis_gizmo,
         ):
             return
 
@@ -277,6 +291,7 @@ class EmbeddedVTKViewport:
         )
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
+        self._update_axis_gizmo(show_axis_gizmo)
         self._update_normal_actor(mesh, matrix, show_normals)
         self._update_section_plane_actors(
             mesh,
@@ -286,6 +301,16 @@ class EmbeddedVTKViewport:
             section_planes=section_planes,
             active_section_plane_id=active_section_plane_id,
             selected_item=selected_item,
+        )
+        self._update_section_transform_overlay(
+            section_axis=section_axis,
+            section_offset=section_offset,
+            section_planes=section_planes,
+            active_section_plane_id=active_section_plane_id,
+            selected_item=selected_item,
+            active_transform_mode=active_transform_mode,
+            active_transform_axis=active_transform_axis,
+            active_transform_angle_delta=active_transform_angle_delta,
         )
         self._update_section_result_actor(section_result)
         self._update_surface_preview_actors(
@@ -338,6 +363,7 @@ class EmbeddedVTKViewport:
         active_transform_angle_delta: float | None,
         section_result: SectionResult | None,
         curve_results: Sequence[CurveFitResult] | None,
+        show_axis_gizmo: bool = True,
         surface_previews: Sequence[SurfacePreviewMesh] | None = None,
     ) -> bool:
         if (
@@ -365,6 +391,7 @@ class EmbeddedVTKViewport:
         )
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
+        self._update_axis_gizmo(show_axis_gizmo)
         self._update_section_plane_actors(
             mesh,
             show_section_plane=show_section_plane,
@@ -545,6 +572,32 @@ class EmbeddedVTKViewport:
             key=key,
         )
 
+    def _update_axis_gizmo(self, show_axis_gizmo: bool) -> None:
+        self._axis_gizmo_visible = bool(show_axis_gizmo)
+        if self.interactor is None:
+            return
+
+        if not show_axis_gizmo:
+            if self._orientation_marker_widget is not None:
+                self._orientation_marker_widget.SetEnabled(0)
+            return
+
+        if self._orientation_marker_widget is None:
+            self._axis_gizmo_actor = vtkAxesActor()
+            self._axis_gizmo_actor.SetTotalLength(0.85, 0.85, 0.85)
+            self._axis_gizmo_actor.SetShaftTypeToCylinder()
+            self._axis_gizmo_actor.SetCylinderRadius(0.045)
+            self._axis_gizmo_actor.SetConeRadius(0.16)
+            self._axis_gizmo_actor.SetSphereRadius(0.08)
+            self._orientation_marker_widget = vtkOrientationMarkerWidget()
+            self._orientation_marker_widget.SetOrientationMarker(self._axis_gizmo_actor)
+            self._orientation_marker_widget.SetInteractor(self.interactor)
+            self._orientation_marker_widget.SetViewport(0.82, 0.78, 0.98, 0.98)
+            self._orientation_marker_widget.InteractiveOff()
+
+        self._orientation_marker_widget.SetEnabled(1)
+        self._orientation_marker_widget.InteractiveOff()
+
     def _update_normal_actor(
         self,
         mesh: TriangleMeshData | None,
@@ -608,6 +661,8 @@ class EmbeddedVTKViewport:
                     round(float(plane.offset), 9),
                     bool(plane.visible),
                     bool(plane.selected),
+                    _array_key(plane.origin),
+                    _array_key(plane.normal),
                 )
                 for plane in planes_to_render
             ),
@@ -630,6 +685,8 @@ class EmbeddedVTKViewport:
                 self._mesh_min_bound,
                 self._mesh_max_bound,
                 selected=plane.selected,
+                origin=plane.origin,
+                normal=plane.normal,
             )
             section_geometries.append(section_geometry)
             section_actors.append(
@@ -666,6 +723,8 @@ class EmbeddedVTKViewport:
                     offset=float(section_offset),
                     visible=True,
                     selected=(selected_item == "section_plane"),
+                    origin=_axis_plane_origin(section_axis, section_offset),
+                    normal=_axis_plane_normal(section_axis),
                 ),
             )
 
@@ -684,6 +743,8 @@ class EmbeddedVTKViewport:
                     offset=float(plane.offset),
                     visible=True,
                     selected=selected,
+                    origin=plane_origin(plane),
+                    normal=plane_normal(plane),
                 )
             )
         return tuple(planes)
@@ -694,6 +755,114 @@ class EmbeddedVTKViewport:
         self._section_plane_actors = []
         self._section_plane_pick_geometry = None
         self._section_plane_pick_geometries = []
+
+    def _update_section_transform_overlay(
+        self,
+        *,
+        section_axis: str,
+        section_offset: float,
+        section_planes: Sequence[SectionPlaneState] | None,
+        active_section_plane_id: str | None,
+        selected_item: str | None,
+        active_transform_mode: str | None,
+        active_transform_axis: str | None,
+        active_transform_angle_delta: float | None,
+    ) -> None:
+        if (
+            selected_item != "section_plane"
+            or active_transform_mode not in {"move", "rotate"}
+        ):
+            return
+
+        origin = self._active_section_plane_origin(
+            section_axis=section_axis,
+            section_offset=section_offset,
+            section_planes=section_planes,
+            active_section_plane_id=active_section_plane_id,
+        )
+        active_axis = _active_axis_for_gizmo(active_transform_mode, active_transform_axis)
+        if origin is None or (active_axis is None and active_transform_mode != "rotate"):
+            self._clear_overlay_group("active_transform_gizmo")
+            return
+
+        key = (
+            "section_transform_gizmo",
+            _array_key(origin),
+            active_transform_mode,
+            active_axis,
+            None if active_transform_angle_delta is None else round(float(active_transform_angle_delta), 6),
+            round(float(self._view_extent), 9),
+            self._bounds_key(),
+        )
+        if self._group_keys.get("active_transform_gizmo") == key:
+            return
+
+        gizmo_actors: list[vtkActor] = []
+        if active_axis is not None:
+            gizmo_actors.append(
+                _line_actor(
+                    build_active_axis_indicator(
+                        origin,
+                        active_axis,
+                        self._view_extent,
+                    ),
+                    line_width=2.8,
+                )
+            )
+        if active_transform_mode == "rotate":
+            axis = active_axis or "Z"
+            ring_radius = rotation_ring_radius_for_axis(
+                self._mesh_min_bound if self._mesh_min_bound is not None else origin - 1.0,
+                self._mesh_max_bound if self._mesh_max_bound is not None else origin + 1.0,
+                axis,
+            )
+            gizmo_actors.append(
+                _line_actor(
+                    build_rotation_ring(
+                        origin,
+                        axis,
+                        self._view_extent,
+                        radius=ring_radius,
+                    ),
+                    line_width=2.4,
+                )
+            )
+            if active_transform_angle_delta is not None:
+                angle_indicator = build_rotation_angle_indicator(
+                    origin,
+                    axis,
+                    ring_radius,
+                    active_transform_angle_delta,
+                )
+                if len(angle_indicator.lines) > 0:
+                    gizmo_actors.append(
+                        _line_actor(
+                            angle_indicator,
+                            line_width=2.0,
+                        )
+                    )
+
+        self._replace_overlay_group(
+            "active_transform_gizmo",
+            gizmo_actors,
+            key=key,
+        )
+
+    def _active_section_plane_origin(
+        self,
+        *,
+        section_axis: str,
+        section_offset: float,
+        section_planes: Sequence[SectionPlaneState] | None,
+        active_section_plane_id: str | None,
+    ) -> np.ndarray | None:
+        if section_planes is None:
+            return _axis_plane_origin(section_axis, section_offset)
+
+        for plane in section_planes:
+            if plane.id == active_section_plane_id:
+                return plane_origin(plane)
+        return None
 
     def _update_section_result_actor(self, section_result: SectionResult | None) -> None:
         if section_result is None:
@@ -1409,6 +1578,16 @@ def _array_key(values: Sequence[float] | np.ndarray | None) -> tuple[float, ...]
         return None
 
     return tuple(round(float(value), 9) for value in np.asarray(values, dtype=float).ravel())
+
+
+def _axis_plane_origin(axis: str, offset: float) -> np.ndarray:
+    return _axis_plane_normal(axis) * float(offset)
+
+
+def _axis_plane_normal(axis: str) -> np.ndarray:
+    normal = np.zeros(3, dtype=float)
+    normal[{"X": 0, "Y": 1, "Z": 2}.get(axis.upper(), 2)] = 1.0
+    return normal
 
 
 def _normalized_vector(vector: np.ndarray, *, fallback: np.ndarray) -> np.ndarray:

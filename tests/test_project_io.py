@@ -206,6 +206,8 @@ class ProjectIOTests(unittest.TestCase):
                         "axis": "Y",
                         "offset": 0.75,
                         "visible": True,
+                        "origin": [0.0, 0.75, 0.0],
+                        "normal": [0.0, 1.0, 0.0],
                     },
                     {
                         "id": "plane-b",
@@ -213,6 +215,8 @@ class ProjectIOTests(unittest.TestCase):
                         "axis": "X",
                         "offset": -0.25,
                         "visible": False,
+                        "origin": [-0.25, 0.0, 0.0],
+                        "normal": [1.0, 0.0, 0.0],
                     },
                 ],
                 "active_section_plane_id": "plane-b",
@@ -547,6 +551,8 @@ class ProjectIOTests(unittest.TestCase):
                     axis="X",
                     offset=0.25,
                     visible=True,
+                    origin=[0.25, 0.0, 0.0],
+                    normal=[1.0, 0.0, 0.0],
                 ),
                 ProjectSectionPlane(
                     id="plane-b",
@@ -554,10 +560,34 @@ class ProjectIOTests(unittest.TestCase):
                     axis="Z",
                     offset=-0.5,
                     visible=False,
+                    origin=[0.0, 0.0, -0.5],
+                    normal=[0.0, 0.0, 1.0],
                 ),
             ],
         )
         self.assertEqual(project.active_section_plane_id, "plane-b")
+
+    def test_project_from_dict_round_trips_rotated_section_plane_orientation(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "section_planes": [
+                    {
+                        "id": "plane-a",
+                        "name": "Rotated Plane",
+                        "axis": "Z",
+                        "offset": 0.5,
+                        "visible": True,
+                        "origin": [0.5, 0.0, 0.0],
+                        "normal": [0.70710678, 0.0, 0.70710678],
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(project.section_planes[0].origin, [0.5, 0.0, 0.0])
+        self.assertEqual(project.section_planes[0].normal, [0.70710678, 0.0, 0.70710678])
+        self.assertEqual(project_from_dict(project_to_dict(project)), project)
 
     def test_save_and_load_project_round_trips_json(self) -> None:
         project = _sample_project()
@@ -631,6 +661,8 @@ class ProjectIOTests(unittest.TestCase):
             {"section_planes": [{"id": "plane-a", "axis": "A"}]},
             {"section_planes": [{"id": "plane-a", "offset": False}]},
             {"section_planes": [{"id": "plane-a", "visible": "yes"}]},
+            {"section_planes": [{"id": "plane-a", "origin": [1.0, 2.0]}]},
+            {"section_planes": [{"id": "plane-a", "normal": [1.0, "bad", 0.0]}]},
             {"section_planes": [{"id": "plane-a"}, {"id": "plane-a"}]},
             {"active_section_plane_id": 12},
             {"curves": {}},

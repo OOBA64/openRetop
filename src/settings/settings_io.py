@@ -59,6 +59,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, object]:
             "show_grid": bool(settings.display.show_grid),
             "show_axes": bool(settings.display.show_axes),
             "show_normals": bool(settings.display.show_normals),
+            "show_axis_gizmo": bool(settings.display.show_axis_gizmo),
         },
         "import": {
             "default_proxy_quality": normalize_proxy_quality(
@@ -134,6 +135,14 @@ def settings_from_dict(data: object) -> AppSettings:
             show_normals=_bool_value(
                 _nested_value(display_data, "show_normals", defaults.display.show_normals),
                 "display.show_normals",
+            ),
+            show_axis_gizmo=_bool_value(
+                _nested_value(
+                    display_data,
+                    "show_axis_gizmo",
+                    defaults.display.show_axis_gizmo,
+                ),
+                "display.show_axis_gizmo",
             ),
         ),
         import_settings=AppImportSettings(
