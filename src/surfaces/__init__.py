@@ -10,13 +10,20 @@ from surfaces.surface_state import (
     remove_surface,
     set_active_surface,
 )
-from surfaces.surface_preview import SurfacePreviewMesh, build_surface_preview_mesh
+from surfaces.surface_preview import (
+    SurfacePreviewBuildResult,
+    SurfacePreviewMesh,
+    build_surface_preview,
+    build_surface_preview_mesh,
+)
 
 __all__ = [
     "SurfaceCollection",
+    "SurfacePreviewBuildResult",
     "SurfacePatch",
     "SurfacePreviewMesh",
     "add_surface",
+    "build_surface_preview",
     "build_surface_preview_mesh",
     "clear_surfaces_for_curve",
     "get_active_surface",

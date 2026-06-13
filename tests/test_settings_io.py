@@ -12,6 +12,7 @@ from settings.settings_data import (
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
+    AppKeybindSettings,
     AppSettings,
     AppUiSettings,
     default_app_settings,
@@ -38,6 +39,20 @@ def _sample_settings() -> AppSettings:
         ui=AppUiSettings(
             window_width=1440,
             window_height=900,
+            window_mode="remembered_size",
+            remember_window_size=False,
+        ),
+        keybinds=AppKeybindSettings(
+            rename_selected="Ctrl+R",
+            toggle_visibility="V",
+            isolate_selected="Shift+V",
+            show_all="Alt+V",
+            frame_selected="F",
+            move="G",
+            rotate="R",
+            confirm_transform="Enter",
+            cancel_transform="Esc",
+            delete_selected="Delete",
         ),
         future={"reserved": "ok"},
     )
@@ -54,6 +69,18 @@ class SettingsDataTests(unittest.TestCase):
         self.assertEqual(settings.import_settings.default_proxy_quality, "Medium")
         self.assertEqual(settings.ui.window_width, 1280)
         self.assertEqual(settings.ui.window_height, 800)
+        self.assertEqual(settings.ui.window_mode, "maximized")
+        self.assertTrue(settings.ui.remember_window_size)
+        self.assertEqual(settings.keybinds.rename_selected, "F2")
+        self.assertEqual(settings.keybinds.toggle_visibility, "H")
+        self.assertEqual(settings.keybinds.isolate_selected, "Shift+H")
+        self.assertEqual(settings.keybinds.show_all, "Alt+H")
+        self.assertEqual(settings.keybinds.frame_selected, "F")
+        self.assertEqual(settings.keybinds.move, "G")
+        self.assertEqual(settings.keybinds.rotate, "R")
+        self.assertEqual(settings.keybinds.confirm_transform, "Enter")
+        self.assertEqual(settings.keybinds.cancel_transform, "Esc")
+        self.assertEqual(settings.keybinds.delete_selected, "Delete")
         self.assertEqual(settings.future, {})
 
     def test_default_app_settings_uses_fresh_future_dict(self) -> None:
@@ -84,6 +111,20 @@ class SettingsIOTests(unittest.TestCase):
                 "ui": {
                     "window_width": 1440,
                     "window_height": 900,
+                    "window_mode": "remembered_size",
+                    "remember_window_size": False,
+                },
+                "keybinds": {
+                    "rename_selected": "Ctrl+R",
+                    "toggle_visibility": "V",
+                    "isolate_selected": "Shift+V",
+                    "show_all": "Alt+V",
+                    "frame_selected": "F",
+                    "move": "G",
+                    "rotate": "R",
+                    "confirm_transform": "Enter",
+                    "cancel_transform": "Esc",
+                    "delete_selected": "Delete",
                 },
                 "future": {
                     "reserved": "ok",
@@ -115,7 +156,40 @@ class SettingsIOTests(unittest.TestCase):
         self.assertEqual(settings.import_settings.default_proxy_quality, "Medium")
         self.assertEqual(settings.ui.window_width, 1600)
         self.assertEqual(settings.ui.window_height, 800)
+        self.assertEqual(settings.ui.window_mode, "maximized")
+        self.assertTrue(settings.ui.remember_window_size)
+        self.assertEqual(settings.keybinds.toggle_visibility, "H")
         self.assertEqual(settings.future, {})
+
+    def test_settings_from_dict_preserves_keybinds(self) -> None:
+        settings = settings_from_dict(
+            {
+                "version": SETTINGS_VERSION,
+                "keybinds": {
+                    "rename_selected": "F4",
+                    "toggle_visibility": "V",
+                    "isolate_selected": "Shift+V",
+                    "show_all": "Alt+V",
+                    "frame_selected": "A",
+                    "move": "M",
+                    "rotate": "T",
+                    "confirm_transform": "Return",
+                    "cancel_transform": "Escape",
+                    "delete_selected": "BackSpace",
+                },
+            }
+        )
+
+        self.assertEqual(settings.keybinds.rename_selected, "F4")
+        self.assertEqual(settings.keybinds.toggle_visibility, "V")
+        self.assertEqual(settings.keybinds.isolate_selected, "Shift+V")
+        self.assertEqual(settings.keybinds.show_all, "Alt+V")
+        self.assertEqual(settings.keybinds.frame_selected, "A")
+        self.assertEqual(settings.keybinds.move, "M")
+        self.assertEqual(settings.keybinds.rotate, "T")
+        self.assertEqual(settings.keybinds.confirm_transform, "Return")
+        self.assertEqual(settings.keybinds.cancel_transform, "Escape")
+        self.assertEqual(settings.keybinds.delete_selected, "BackSpace")
 
     def test_save_and_load_settings_round_trips_json_and_creates_file(self) -> None:
         settings = _sample_settings()
@@ -131,6 +205,7 @@ class SettingsIOTests(unittest.TestCase):
             self.assertTrue(text.startswith("{\n"))
             self.assertIn('\n  "version": 1,', text)
             self.assertEqual(raw_data["import"]["default_proxy_quality"], "High")
+            self.assertEqual(raw_data["keybinds"]["toggle_visibility"], "V")
             self.assertEqual(load_settings(settings_path), settings)
 
     def test_load_settings_missing_file_returns_defaults(self) -> None:
@@ -158,6 +233,10 @@ class SettingsIOTests(unittest.TestCase):
             {"ui": []},
             {"ui": {"window_width": 0}},
             {"ui": {"window_height": "800"}},
+            {"ui": {"window_mode": "fullscreen"}},
+            {"ui": {"remember_window_size": "yes"}},
+            {"keybinds": []},
+            {"keybinds": {"toggle_visibility": ""}},
             {"future": []},
         ]
 

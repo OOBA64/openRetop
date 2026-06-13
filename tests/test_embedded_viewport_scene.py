@@ -17,6 +17,9 @@ from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.embedded_viewport import (
     EmbeddedVTKViewport,
     SELECTION_BOUNDING_BOX_LINE_WIDTH,
+    SECTION_RESULT_LINE_WIDTH,
+    SELECTED_CURVE_LINE_WIDTH,
+    UNSELECTED_CURVE_LINE_WIDTH,
     _bounds_corners,
     _line_polydata,
     _mesh_actor,
@@ -603,9 +606,15 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertIn("curve_result", viewport._actors_by_role)
         self.assertIn("selected_curve_result", viewport._actor_groups)
         self.assertEqual(len(viewport._actor_groups["selected_curve_result"]), 1)
-        self.assertEqual(
+        self.assertAlmostEqual(
             viewport._actor_groups["selected_curve_result"][0].GetProperty().GetLineWidth(),
-            4.0,
+            SELECTED_CURVE_LINE_WIDTH,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            viewport._actors_by_role["curve_result"].GetProperty().GetLineWidth(),
+            UNSELECTED_CURVE_LINE_WIDTH,
+            places=5,
         )
 
     def test_surface_previews_render_and_clear_with_selected_styling(self) -> None:
@@ -740,6 +749,12 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self._set_basic_scene(viewport, mesh, section_result=section_result)
         section_count = self._actor_count(viewport)
         section_actor = viewport._actors_by_role["section_result"]
+        self.assertAlmostEqual(
+            section_actor.GetProperty().GetLineWidth(),
+            SECTION_RESULT_LINE_WIDTH,
+            places=5,
+        )
+        self.assertLess(SECTION_RESULT_LINE_WIDTH, SELECTED_CURVE_LINE_WIDTH)
 
         self._set_basic_scene(viewport, mesh, section_result=None)
 

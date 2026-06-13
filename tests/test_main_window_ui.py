@@ -14,8 +14,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from app.main_window import (
+    COMPUTE_SECTION_PROGRESS_STAGES,
     GENERATED_GEOMETRY_TRANSFORM_WARNING,
     LOAD_PROGRESS_STAGES,
+    SURFACE_PREVIEW_PROGRESS_STAGES,
     LoadProgressDialog,
     OPEN_MODEL_MENU_INDEX,
     OpenRetopWindow,
@@ -223,6 +225,23 @@ def _widgets_with_text(widget: object, text: str) -> list[object]:
     return matches
 
 
+def _window_is_zoomed(window: OpenRetopWindow) -> bool:
+    try:
+        return str(window.root.state()) == "zoomed"
+    except TclError:
+        return False
+
+
+def _assert_startup_size_or_zoomed(
+    test_case: unittest.TestCase,
+    window: OpenRetopWindow,
+    expected_size: str,
+) -> None:
+    if _window_is_zoomed(window):
+        return
+    test_case.assertTrue(window.root.geometry().startswith(expected_size))
+
+
 def _make_curve_closed(curve: StoredCurve) -> None:
     closed_points = np.asarray(
         [
@@ -248,42 +267,46 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.menu_bar.entrycget(0, "label"), "File")
             self.assertEqual(window.menu_bar.entrycget(1, "label"), "Edit")
             self.assertEqual(window.menu_bar.entrycget(2, "label"), "View")
-            self.assertEqual(window.menu_bar.entrycget(3, "label"), "Tools")
-            self.assertEqual(window.menu_bar.entrycget(4, "label"), "Help")
+            self.assertEqual(window.menu_bar.entrycget(3, "label"), "Scene")
+            self.assertEqual(window.menu_bar.entrycget(4, "label"), "Sections")
+            self.assertEqual(window.menu_bar.entrycget(5, "label"), "Curves")
+            self.assertEqual(window.menu_bar.entrycget(6, "label"), "Surfaces")
+            self.assertEqual(window.menu_bar.entrycget(7, "label"), "Tools")
+            self.assertEqual(window.menu_bar.entrycget(8, "label"), "Help")
             self.assertEqual(window.file_menu.entrycget(0, "label"), "New Project")
-            self.assertEqual(window.file_menu.entrycget(1, "label"), "Open Model")
-            self.assertEqual(window.file_menu.entrycget(2, "label"), "Open Project")
-            self.assertEqual(window.file_menu.entrycget(3, "label"), "Save Project")
-            self.assertEqual(window.file_menu.entrycget(4, "label"), "Save Project As")
-            self.assertEqual(window.file_menu.entrycget(5, "label"), "Exit")
+            self.assertEqual(window.file_menu.entrycget(1, "label"), "Open Project")
+            self.assertEqual(window.file_menu.entrycget(2, "label"), "Save Project")
+            self.assertEqual(window.file_menu.entrycget(3, "label"), "Save Project As")
+            self.assertEqual(window.file_menu.entrycget(4, "label"), "Open Model")
+            self.assertEqual(window.file_menu.entrycget(5, "label"), "Recent Files")
+            self.assertEqual(window.file_menu.entrycget(6, "label"), "Exit")
             self.assertEqual(window.edit_menu.entrycget(0, "label"), "Undo")
             self.assertEqual(window.edit_menu.entrycget(1, "label"), "Redo")
-            self.assertEqual(window.edit_menu.entrycget(2, "label"), "Preferences")
+            self.assertEqual(window.edit_menu.entrycget(2, "label"), "Rename Selected")
+            self.assertEqual(window.edit_menu.entrycget(3, "label"), "Delete Selected")
+            self.assertEqual(window.edit_menu.entrycget(4, "label"), "Preferences")
             self.assertEqual(window.view_menu.entrycget(0, "label"), "Frame All")
             self.assertEqual(window.view_menu.entrycget(1, "label"), "Frame Selected")
             self.assertEqual(window.view_menu.entrycget(2, "label"), "Reset View")
             self.assertEqual(window.view_menu.entrycget(3, "label"), "Show Grid")
             self.assertEqual(window.view_menu.entrycget(4, "label"), "Show Axes")
-            self.assertEqual(window.view_menu.entrycget(5, "label"), "Show Normals")
+            self.assertEqual(window.view_menu.entrycget(5, "label"), "Show All Objects")
+            self.assertEqual(window.view_menu.entrycget(6, "label"), "Isolate Selected")
+            self.assertEqual(window.view_menu.entrycget(7, "label"), "Toggle Selected Visibility")
+            self.assertEqual(window.view_menu.index("end"), 7)
             self.assertEqual(window.view_menu.type(3), "checkbutton")
             self.assertEqual(window.view_menu.type(4), "checkbutton")
-            self.assertEqual(window.view_menu.type(5), "checkbutton")
+            self.assertEqual(window.scene_menu.entrycget(0, "label"), "Rename Selected")
+            self.assertEqual(window.scene_menu.entrycget(1, "label"), "Delete Selected")
+            self.assertEqual(window.scene_menu.entrycget(2, "label"), "Toggle Visibility")
+            self.assertEqual(window.sections_menu.entrycget(0, "label"), "Add Section Plane")
+            self.assertEqual(window.sections_menu.entrycget(2, "label"), "Compute Section")
+            self.assertEqual(window.curves_menu.entrycget(0, "label"), "Create Surface From Selected Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Create Surface From Selected Curves")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
-            self.assertEqual(window.tools_menu.entrycget(2, "label"), "Add Section Plane")
-            self.assertEqual(window.tools_menu.entrycget(3, "label"), "Compute Section")
-            self.assertEqual(window.tools_menu.entrycget(4, "label"), "Clear Active Section Result")
-            self.assertEqual(window.tools_menu.entrycget(5, "label"), "Clear All Section Results")
-            self.assertEqual(window.tools_menu.entrycget(6, "label"), "Delete Active Section Plane")
-            self.assertEqual(window.tools_menu.entrycget(7, "label"), "Delete Selected Curve")
-            self.assertEqual(window.tools_menu.entrycget(8, "label"), "Hide Selected Curves")
-            self.assertEqual(window.tools_menu.entrycget(9, "label"), "Hide Unselected Curves")
-            self.assertEqual(window.tools_menu.entrycget(10, "label"), "Show All Curves")
-            self.assertEqual(window.tools_menu.entrycget(11, "label"), "Create Surface From Curves")
-            self.assertEqual(window.tools_menu.entrycget(12, "label"), "Rename Selected")
-            self.assertEqual(window.tools_menu.entrycget(13, "label"), "Hide Selected")
-            self.assertEqual(window.tools_menu.entrycget(14, "label"), "Hide Unselected")
-            self.assertEqual(window.tools_menu.entrycget(15, "label"), "Show All")
+            self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
+            self.assertEqual(window.tools_menu.entrycget(3, "label"), "Rotate")
             self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
@@ -297,6 +320,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window.project_dirty)
             self.assertEqual(window.root.title(), "openRetop - Untitled Project")
             self.assertIsNone(window.app_state.selected_item)
+            self.assertEqual(
+                [window.sidebar_notebook.tab(index, "text") for index in range(window.sidebar_notebook.index("end"))],
+                ["Object", "Transform", "Sections", "Curves", "Surfaces", "Info"],
+            )
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "")
@@ -353,22 +380,41 @@ class MainWindowUiTests(unittest.TestCase):
             window.show_normals.set(False)
             window.proxy_quality.set("Medium")
 
-            window.edit_menu.invoke(2)
+            window.edit_menu.invoke(4)
             window.root.update()
             dialog = window.preferences_dialog
             self.assertIsNotNone(dialog)
             assert dialog is not None
 
             self.assertEqual(dialog.title(), "Preferences")
+            self.assertIsNotNone(window.preferences_notebook)
+            assert window.preferences_notebook is not None
+            self.assertEqual(
+                [
+                    window.preferences_notebook.tab(index, "text")
+                    for index in range(window.preferences_notebook.index("end"))
+                ],
+                ["General", "Viewport", "Keybinds", "Advanced"],
+            )
+            self.assertEqual(window.preferences_vars["window_mode"].get(), "maximized")
+            self.assertTrue(window.preferences_vars["remember_window_size"].get())
             self.assertFalse(window.preferences_vars["show_grid"].get())
             self.assertFalse(window.preferences_vars["show_axes"].get())
-            self.assertTrue(window.preferences_vars["show_normals"].get())
+            self.assertNotIn("show_normals", window.preferences_vars)
             self.assertEqual(window.preferences_vars["default_proxy_quality"].get(), "High")
-            self.assertTrue(_widgets_with_text(dialog, "Display"))
-            self.assertTrue(_widgets_with_text(dialog, "Import"))
+            self.assertTrue(_widgets_with_text(dialog, "Startup window mode"))
+            self.assertTrue(_widgets_with_text(dialog, "Remember last window size"))
             self.assertTrue(_widgets_with_text(dialog, "Startup Show Grid"))
             self.assertTrue(_widgets_with_text(dialog, "Startup Show Axes"))
-            self.assertTrue(_widgets_with_text(dialog, "Startup Show Normals"))
+            self.assertTrue(_widgets_with_text(dialog, "Surface preview opacity"))
+            self.assertTrue(_widgets_with_text(dialog, "Curve display thickness"))
+            self.assertTrue(_widgets_with_text(dialog, "Rename Selected"))
+            self.assertTrue(_widgets_with_text(dialog, "Toggle Visibility"))
+            self.assertTrue(_widgets_with_text(dialog, "Delete Selected"))
+            self.assertEqual(window.preferences_vars["keybind.rename_selected"].get(), "F2")
+            self.assertEqual(window.preferences_vars["keybind.toggle_visibility"].get(), "H")
+            self.assertEqual(window.preferences_vars["keybind.isolate_selected"].get(), "Shift+H")
+            self.assertFalse(_widgets_with_text(dialog, "Startup Show Normals"))
             self.assertFalse(_widgets_with_text(dialog, "Show Grid"))
             self.assertFalse(_widgets_with_text(dialog, "Show Axes"))
             self.assertFalse(_widgets_with_text(dialog, "Show Normals"))
@@ -381,11 +427,11 @@ class MainWindowUiTests(unittest.TestCase):
                 for widget in _widget_descendants(dialog)
                 if widget.winfo_class() == "TCombobox"
             ]
-            self.assertEqual(len(comboboxes), 1)
-            self.assertEqual(tuple(comboboxes[0].cget("values")), ("Low", "Medium", "High"))
+            self.assertEqual(len(comboboxes), 2)
+            self.assertIn(("Low", "Medium", "High"), [tuple(box.cget("values")) for box in comboboxes])
 
             existing_dialog = window.preferences_dialog
-            window.edit_menu.invoke(2)
+            window.edit_menu.invoke(4)
             self.assertIs(window.preferences_dialog, existing_dialog)
         finally:
             if window.preferences_dialog is not None:
@@ -399,7 +445,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window = _create_window(settings_path=settings_path)
 
             try:
-                window.edit_menu.invoke(2)
+                window.edit_menu.invoke(4)
                 dialog = window.preferences_dialog
                 self.assertIsNotNone(dialog)
                 assert dialog is not None
@@ -407,7 +453,9 @@ class MainWindowUiTests(unittest.TestCase):
                 scene_call_count = len(window.viewport.scene_calls)
                 window.preferences_vars["show_grid"].set(False)
                 window.preferences_vars["show_axes"].set(False)
-                window.preferences_vars["show_normals"].set(True)
+                window.preferences_vars["window_mode"].set("remembered_size")
+                window.preferences_vars["remember_window_size"].set(False)
+                window.preferences_vars["keybind.toggle_visibility"].set("V")
                 window.preferences_vars["default_proxy_quality"].set("Low")
                 _button_by_text(dialog, "Apply").invoke()
 
@@ -420,20 +468,26 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
                 self.assertFalse(window.settings.display.show_grid)
                 self.assertFalse(window.settings.display.show_axes)
-                self.assertTrue(window.settings.display.show_normals)
+                self.assertFalse(window.settings.display.show_normals)
                 self.assertEqual(
                     window.settings.import_settings.default_proxy_quality,
                     "Low",
                 )
+                self.assertEqual(window.settings.ui.window_mode, "remembered_size")
+                self.assertFalse(window.settings.ui.remember_window_size)
+                self.assertEqual(window.settings.keybinds.toggle_visibility, "V")
 
                 saved_settings = load_settings(settings_path)
                 self.assertFalse(saved_settings.display.show_grid)
                 self.assertFalse(saved_settings.display.show_axes)
-                self.assertTrue(saved_settings.display.show_normals)
+                self.assertFalse(saved_settings.display.show_normals)
                 self.assertEqual(
                     saved_settings.import_settings.default_proxy_quality,
                     "Low",
                 )
+                self.assertEqual(saved_settings.ui.window_mode, "remembered_size")
+                self.assertFalse(saved_settings.ui.remember_window_size)
+                self.assertEqual(saved_settings.keybinds.toggle_visibility, "V")
             finally:
                 if window.preferences_dialog is not None:
                     window._close_preferences_dialog()
@@ -445,10 +499,39 @@ class MainWindowUiTests(unittest.TestCase):
             try:
                 self.assertFalse(restored_window.show_grid.get())
                 self.assertFalse(restored_window.show_axes.get())
-                self.assertTrue(restored_window.show_normals.get())
+                self.assertFalse(restored_window.show_normals.get())
                 self.assertEqual(restored_window.proxy_quality.get(), "Low")
             finally:
                 restored_window.root.destroy()
+
+    def test_preferences_rejects_empty_keybinds(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            try:
+                window.edit_menu.invoke(4)
+                dialog = window.preferences_dialog
+                self.assertIsNotNone(dialog)
+                assert dialog is not None
+
+                window.preferences_vars["keybind.toggle_visibility"].set(" ")
+                _button_by_text(dialog, "Apply").invoke()
+
+                self.assertEqual(
+                    window.status_text.get(),
+                    "Toggle Visibility keybind cannot be empty",
+                )
+                self.assertEqual(window.settings.keybinds.toggle_visibility, "H")
+                self.assertEqual(load_settings(settings_path).keybinds.toggle_visibility, "H")
+
+                _button_by_text(dialog, "OK").invoke()
+                self.assertIsNotNone(window.preferences_dialog)
+            finally:
+                if window.preferences_dialog is not None:
+                    window._close_preferences_dialog()
+                window.root.destroy()
 
     def test_preferences_ok_applies_and_closes_dialog(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -457,7 +540,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window = _create_window(settings_path=settings_path)
 
             try:
-                window.edit_menu.invoke(2)
+                window.edit_menu.invoke(4)
                 dialog = window.preferences_dialog
                 self.assertIsNotNone(dialog)
                 assert dialog is not None
@@ -481,7 +564,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window = _create_window(settings_path=settings_path)
 
             try:
-                window.edit_menu.invoke(2)
+                window.edit_menu.invoke(4)
                 dialog = window.preferences_dialog
                 self.assertIsNotNone(dialog)
                 assert dialog is not None
@@ -517,9 +600,9 @@ class MainWindowUiTests(unittest.TestCase):
             try:
                 self.assertFalse(window.show_grid.get())
                 self.assertFalse(window.show_axes.get())
-                self.assertTrue(window.show_normals.get())
+                self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "High")
-                self.assertTrue(window.root.geometry().startswith("1120x720"))
+                _assert_startup_size_or_zoomed(self, window, "1120x720")
                 self.assertEqual(window.display_proxy_text.get(), "Disabled (High)")
             finally:
                 window.root.destroy()
@@ -537,7 +620,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(window.show_axes.get())
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "Medium")
-                self.assertTrue(window.root.geometry().startswith("1280x800"))
+                _assert_startup_size_or_zoomed(self, window, "1280x800")
             finally:
                 window.root.destroy()
 
@@ -552,6 +635,8 @@ class MainWindowUiTests(unittest.TestCase):
             window.show_axes.set(False)
             window.show_normals.set(True)
             window.proxy_quality.set("Low")
+            if _window_is_zoomed(window):
+                window.root.state("normal")
             window.root.geometry("1180x740")
             window.root.update_idletasks()
             window._on_exit()
@@ -573,7 +658,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(restored_window.show_axes.get())
                 self.assertFalse(restored_window.show_normals.get())
                 self.assertEqual(restored_window.proxy_quality.get(), "Medium")
-                self.assertTrue(restored_window.root.geometry().startswith("1180x740"))
+                _assert_startup_size_or_zoomed(self, restored_window, "1180x740")
             finally:
                 restored_window.root.destroy()
 
@@ -671,7 +756,7 @@ class MainWindowUiTests(unittest.TestCase):
                     patch("app.main_window.load_mesh") as load_mesh,
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 ask_open.assert_called_once()
                 load_mesh.assert_not_called()
@@ -687,7 +772,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
                 self.assertFalse(window.show_grid.get())
                 self.assertFalse(window.show_axes.get())
-                self.assertTrue(window.show_normals.get())
+                self.assertFalse(window.show_normals.get())
                 self.assertTrue(window.show_section_plane.get())
                 self.assertEqual(window.section_axis.get(), "X")
                 self.assertEqual(window.section_offset.get(), 2.0)
@@ -760,7 +845,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ) as load_mesh,
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 load_mesh.assert_called_once_with(mesh_path)
                 show_error.assert_not_called()
@@ -789,7 +874,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(window.proxy_quality.get(), "High")
                 self.assertFalse(window.show_grid.get())
                 self.assertFalse(window.show_axes.get())
-                self.assertTrue(window.show_normals.get())
+                self.assertFalse(window.show_normals.get())
                 self.assertTrue(window.show_section_plane.get())
                 self.assertEqual(window.section_axis.get(), "X")
                 self.assertEqual(window.section_offset.get(), 0.5)
@@ -798,7 +883,7 @@ class MainWindowUiTests(unittest.TestCase):
                 scene = window.viewport.scene_calls[-1]
                 self.assertEqual(scene["show_grid"], False)
                 self.assertEqual(scene["show_axes"], False)
-                self.assertEqual(scene["show_normals"], True)
+                self.assertEqual(scene["show_normals"], False)
                 self.assertEqual(scene["show_section_plane"], True)
                 self.assertEqual(scene["section_axis"], "X")
                 self.assertEqual(scene["section_offset"], 0.5)
@@ -866,7 +951,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_not_called()
                 planes = window.app_state.section_collection.planes
@@ -947,7 +1032,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_not_called()
                 planes = window.app_state.section_collection.planes
@@ -1044,7 +1129,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_not_called()
                 planes = window.app_state.section_collection.planes
@@ -1147,7 +1232,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_not_called()
                 planes = window.app_state.section_collection.planes
@@ -1297,7 +1382,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_not_called()
                 curves = window.app_state.curve_collection.curves
@@ -1399,7 +1484,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_called_once_with(
                     "Could not open project",
@@ -1437,7 +1522,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(2)
+                    window.file_menu.invoke(1)
 
                 show_error.assert_called_once()
                 self.assertEqual(show_error.call_args.args[0], "Could not open project")
@@ -1463,7 +1548,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ) as ask_save,
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(3)
+                    window.file_menu.invoke(2)
 
                 ask_save.assert_called_once()
                 show_error.assert_not_called()
@@ -1512,7 +1597,7 @@ class MainWindowUiTests(unittest.TestCase):
                     patch("app.main_window.filedialog.asksaveasfilename") as ask_save,
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(3)
+                    window.file_menu.invoke(2)
 
                 ask_save.assert_not_called()
                 show_error.assert_not_called()
@@ -1555,7 +1640,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(3)
+                    window.file_menu.invoke(2)
 
                 show_error.assert_not_called()
                 project = load_project(project_path)
@@ -1624,7 +1709,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(3)
+                    window.file_menu.invoke(2)
 
                 show_error.assert_not_called()
                 project = load_project(project_path)
@@ -1679,7 +1764,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(3)
+                    window.file_menu.invoke(2)
 
                 show_error.assert_not_called()
                 project = load_project(project_path)
@@ -1691,10 +1776,20 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(project_surface.surface_type, "preview_fill")
                 self.assertFalse(project_surface.visible)
                 self.assertEqual(project_surface.metadata["curve_count"], 1)
+                self.assertEqual(project_surface.metadata["source_curve_count"], 1)
                 self.assertEqual(project_surface.metadata["source"], "selected_curve")
                 self.assertEqual(
                     project_surface.metadata["preview_mode"],
                     "closed_curve_fill",
+                )
+                self.assertTrue(project_surface.metadata["preview_available"])
+                self.assertEqual(
+                    project_surface.metadata["preview_reason"],
+                    "fan fill preview generated",
+                )
+                self.assertEqual(
+                    project_surface.metadata["preview_warning"],
+                    "Fan fill preview may be inaccurate for concave curves",
                 )
         finally:
             window.root.destroy()
@@ -1757,7 +1852,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ),
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(3)
+                    window.file_menu.invoke(2)
 
                 show_error.assert_not_called()
                 project = load_project(project_path)
@@ -1804,7 +1899,7 @@ class MainWindowUiTests(unittest.TestCase):
                     ) as ask_save,
                     patch("app.main_window.messagebox.showerror") as show_error,
                 ):
-                    window.file_menu.invoke(4)
+                    window.file_menu.invoke(3)
 
                 ask_save.assert_called_once()
                 show_error.assert_not_called()
@@ -1822,7 +1917,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(project.display.proxy_quality, "High")
                 self.assertFalse(project.display.show_grid)
                 self.assertFalse(project.display.show_axes)
-                self.assertTrue(project.display.show_normals)
+                self.assertFalse(project.display.show_normals)
                 self.assertEqual(project.section.axis, "X")
                 self.assertEqual(project.section.offset, 0.5)
                 self.assertTrue(project.section.show_plane)
@@ -1847,7 +1942,7 @@ class MainWindowUiTests(unittest.TestCase):
                 patch("app.main_window.save_project", side_effect=OSError("disk full")),
                 patch("app.main_window.messagebox.showerror") as show_error,
             ):
-                window.file_menu.invoke(3)
+                window.file_menu.invoke(2)
 
             show_error.assert_called_once_with("Could not save project", "disk full")
             self.assertEqual(window.status_text.get(), "Project save failed")
@@ -1935,19 +2030,25 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(3)
             self.assertEqual(window.status_text.get(), "No selection")
-            window.tools_menu.invoke(4)
-            self.assertEqual(window.status_text.get(), "Section cleared")
-            window.tools_menu.invoke(5)
-            self.assertEqual(window.status_text.get(), "All section results cleared")
-            window.tools_menu.invoke(6)
+            window.sections_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No selection")
-            window.tools_menu.invoke(8)
+            window.sections_menu.invoke(2)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.sections_menu.invoke(3)
+            self.assertEqual(window.status_text.get(), "Section cleared")
+            window.sections_menu.invoke(4)
+            self.assertEqual(window.status_text.get(), "All section results cleared")
+            window.sections_menu.invoke(1)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.curves_menu.invoke(1)
             self.assertEqual(window.status_text.get(), "No selected curves")
-            window.tools_menu.invoke(9)
+            window.curves_menu.invoke(2)
             self.assertEqual(window.status_text.get(), "No selected curves")
-            window.tools_menu.invoke(10)
+            window.curves_menu.invoke(3)
             self.assertEqual(window.status_text.get(), "No curves available")
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
+            self.assertEqual(window.status_text.get(), "No curves available")
+            window.surfaces_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No curves available")
         finally:
             window.root.destroy()
@@ -1960,6 +2061,8 @@ class MainWindowUiTests(unittest.TestCase):
 
         dialog: LoadProgressDialog | None = None
         try:
+            root.geometry("800x600+120+80")
+            root.update_idletasks()
             dialog = LoadProgressDialog(root, "sample.stl")
             progress_bars = [
                 widget
@@ -1976,10 +2079,67 @@ class MainWindowUiTests(unittest.TestCase):
             dialog.update_stage(LOAD_PROGRESS_STAGES[0])
             self.assertEqual(dialog.stage_text.get(), LOAD_PROGRESS_STAGES[0])
             self.assertNotEqual(float(progress_bars[0].cget("value")), initial_value)
+            expected_x = root.winfo_rootx() + (root.winfo_width() - dialog.window.winfo_width()) // 2
+            expected_y = root.winfo_rooty() + (root.winfo_height() - dialog.window.winfo_height()) // 2
+            self.assertLessEqual(abs(dialog.window.winfo_rootx() - expected_x), 32)
+            self.assertLessEqual(abs(dialog.window.winfo_rooty() - expected_y), 32)
         finally:
             if dialog is not None:
                 dialog.close()
             root.destroy()
+
+    def test_compute_section_shows_progress_dialog_stages(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        progress_dialogs: list[object] = []
+
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, title: str, summary: str | None = None) -> None:
+                self.title = title
+                self.summary = summary
+                self.stages: list[str] = []
+                self.closed = False
+                progress_dialogs.append(self)
+
+            def update_stage(self, stage: str) -> None:
+                self.stages.append(stage)
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            with patch("app.main_window.ComputationProgressDialog", RecordingProgressDialog):
+                window.compute_section()
+
+            self.assertEqual(len(progress_dialogs), 1)
+            progress = progress_dialogs[0]
+            self.assertEqual(progress.title, "Computing Section")
+            self.assertEqual(progress.stages, list(COMPUTE_SECTION_PROGRESS_STAGES))
+            self.assertTrue(progress.closed)
+            self.assertTrue(window.app_state.section_collection.results)
+            self.assertEqual(window.status_text.get(), "Section computed: Section 1 - 1 segments")
+        finally:
+            window.root.destroy()
 
     def test_loading_mesh_starts_with_scene_context_and_keeps_normals_off(self) -> None:
         mesh = FakeMesh()
@@ -2249,6 +2409,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.surface_name_text.get(), "Patch A")
             self.assertEqual(window.surface_type_text.get(), "loft")
             self.assertEqual(window.surface_source_curve_count_text.get(), "1")
+            self.assertEqual(window.surface_preview_available_text.get(), "(unknown)")
+            self.assertEqual(window.surface_preview_reason_text.get(), "(none)")
+            self.assertEqual(window.surface_preview_warning_text.get(), "(none)")
             self.assertEqual(window.surface_metadata_text.get(), "degree=3, quality=draft")
             self.assertTrue(window.surface_visible.get())
 
@@ -2270,6 +2433,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(second_surface.selected)
             self.assertFalse(window.surface_visible.get())
             self.assertEqual(window.surface_source_curve_count_text.get(), "2")
+            self.assertEqual(window.surface_preview_available_text.get(), "(unknown)")
+            self.assertEqual(window.surface_preview_reason_text.get(), "(none)")
+            self.assertEqual(window.surface_preview_warning_text.get(), "(none)")
             self.assertEqual(window.surface_metadata_text.get(), "(none)")
 
             window.delete_selected_surface()
@@ -2557,7 +2723,7 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
-    def test_mesh_visibility_hotkeys_hide_isolate_and_show_all(self) -> None:
+    def test_mesh_visibility_hotkeys_toggle_isolate_and_show_all(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
             file_path=Path("sample.stl"),
@@ -2589,12 +2755,65 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
             self.assertEqual(window.scene_browser.tree.item(NODE_MESH, "text"), "[H] sample.stl")
 
-            window._handle_shortcut("Alt+H")
+            window._handle_shortcut("H")
 
             self.assertTrue(window.app_state.mesh_object.visible)
             self.assertTrue(window.mesh_visible.get())
             self.assertIs(window.viewport.scene_calls[-1]["mesh"], window.app_state.mesh_object.display_mesh)
             self.assertEqual(window.scene_browser.tree.item(NODE_MESH, "text"), "[V] sample.stl")
+
+            active_plane = window.app_state.section_collection.planes[0]
+            active_plane.visible = True
+            window.show_section_plane.set(True)
+            window.select_model()
+            window._handle_shortcut("Shift+H")
+
+            self.assertTrue(window.app_state.mesh_object.visible)
+            self.assertFalse(active_plane.visible)
+
+            window._handle_shortcut("Alt+H")
+
+            self.assertTrue(window.app_state.mesh_object.visible)
+            self.assertTrue(active_plane.visible)
+        finally:
+            window.root.destroy()
+
+    def test_visibility_keybind_uses_settings_and_ignores_text_entry_focus(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.select_model()
+            window.settings.keybinds.toggle_visibility = "V"
+            window._on_tk_keypress(SimpleNamespace(keysym="h", state=0))
+            self.assertTrue(window.app_state.mesh_object.visible)
+
+            window._on_tk_keypress(SimpleNamespace(keysym="v", state=0))
+            self.assertFalse(window.app_state.mesh_object.visible)
+
+            window.mesh_name_entry.focus_set()
+            window.root.update()
+            window._on_tk_keypress(SimpleNamespace(keysym="v", state=0))
+            self.assertFalse(window.app_state.mesh_object.visible)
         finally:
             window.root.destroy()
 
@@ -2628,7 +2847,24 @@ class MainWindowUiTests(unittest.TestCase):
             window.select_curve(source_curve.id)
             window._set_project_dirty(False)
 
-            window.tools_menu.invoke(11)
+            progress_dialogs: list[object] = []
+
+            class RecordingProgressDialog:
+                def __init__(self, _parent: object, title: str, summary: str | None = None) -> None:
+                    self.title = title
+                    self.summary = summary
+                    self.stages: list[str] = []
+                    self.closed = False
+                    progress_dialogs.append(self)
+
+                def update_stage(self, stage: str) -> None:
+                    self.stages.append(stage)
+
+                def close(self) -> None:
+                    self.closed = True
+
+            with patch("app.main_window.ComputationProgressDialog", RecordingProgressDialog):
+                window.curves_menu.invoke(0)
 
             surfaces = window.app_state.surface_collection.surfaces
             self.assertEqual(len(surfaces), 1)
@@ -2639,20 +2875,36 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(surface.visible)
             self.assertTrue(surface.selected)
             self.assertEqual(surface.metadata["curve_count"], 1)
+            self.assertEqual(surface.metadata["source_curve_count"], 1)
             self.assertEqual(surface.metadata["source"], "selected_curve")
             self.assertEqual(
                 surface.metadata["preview_mode"],
                 "closed_curve_fill",
             )
             self.assertTrue(surface.metadata["preview_available"])
+            self.assertEqual(surface.metadata["preview_reason"], "fan fill preview generated")
+            self.assertEqual(
+                surface.metadata["preview_warning"],
+                "Fan fill preview may be inaccurate for concave curves",
+            )
             self.assertEqual(window.app_state.selected_item, "surface")
             self.assertEqual(window.app_state.surface_collection.active_surface_id, surface.id)
             self.assertEqual(window.status_text.get(), "Created Surface 1 preview from 1 curve")
+            self.assertEqual(len(progress_dialogs), 1)
+            self.assertEqual(progress_dialogs[0].title, "Building Surface Preview")
+            self.assertEqual(progress_dialogs[0].stages, list(SURFACE_PREVIEW_PROGRESS_STAGES))
+            self.assertTrue(progress_dialogs[0].closed)
             self.assertTrue(window.project_dirty)
             self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
             self.assertEqual(window.surface_name_text.get(), "Surface 1")
             self.assertEqual(window.surface_type_text.get(), "preview_fill")
             self.assertEqual(window.surface_source_curve_count_text.get(), "1")
+            self.assertEqual(window.surface_preview_available_text.get(), "Yes")
+            self.assertEqual(window.surface_preview_reason_text.get(), "fan fill preview generated")
+            self.assertEqual(
+                window.surface_preview_warning_text.get(),
+                "Fan fill preview may be inaccurate for concave curves",
+            )
             self.assertIn("curve_count=1", window.surface_metadata_text.get())
             self.assertIn("source=selected_curve", window.surface_metadata_text.get())
 
@@ -2701,7 +2953,7 @@ class MainWindowUiTests(unittest.TestCase):
                 [first_curve.id, second_curve.id],
                 active_curve_id=second_curve.id,
             )
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
             first_surface = window.app_state.surface_collection.surfaces[0]
             self.assertEqual(first_surface.name, "Surface 1")
             self.assertEqual(
@@ -2710,9 +2962,11 @@ class MainWindowUiTests(unittest.TestCase):
             )
             self.assertEqual(first_surface.surface_type, "preview_loft")
             self.assertEqual(first_surface.metadata["curve_count"], 2)
+            self.assertEqual(first_surface.metadata["source_curve_count"], 2)
             self.assertEqual(first_surface.metadata["source"], "selected_curves")
             self.assertEqual(first_surface.metadata["preview_mode"], "two_curve_loft")
             self.assertTrue(first_surface.metadata["preview_available"])
+            self.assertIn("loft generated", str(first_surface.metadata["preview_reason"]))
             self.assertEqual(
                 window.status_text.get(),
                 "Created Surface 1 preview from 2 curves",
@@ -2722,7 +2976,7 @@ class MainWindowUiTests(unittest.TestCase):
                 [first_curve.id, second_curve.id],
                 active_curve_id=first_curve.id,
             )
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
 
             surfaces = window.app_state.surface_collection.surfaces
             self.assertEqual([surface.name for surface in surfaces], ["Surface 1", "Surface 2"])
@@ -2731,7 +2985,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(second_surface.surface_type, "preview_loft")
 
             window.clear_selection()
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
             self.assertEqual(
                 window.status_text.get(),
                 "Select one closed curve for fill or two curves for loft.",
@@ -2784,21 +3038,33 @@ class MainWindowUiTests(unittest.TestCase):
                 [first_curve.id, short_curve.id],
                 active_curve_id=short_curve.id,
             )
-            window.create_surface_from_curves()
+            progress_dialogs: list[object] = []
+
+            class RecordingProgressDialog:
+                def __init__(self, _parent: object, title: str, summary: str | None = None) -> None:
+                    self.title = title
+                    self.summary = summary
+                    self.stages: list[str] = []
+                    self.closed = False
+                    progress_dialogs.append(self)
+
+                def update_stage(self, stage: str) -> None:
+                    self.stages.append(stage)
+
+                def close(self) -> None:
+                    self.closed = True
+
+            with patch("app.main_window.ComputationProgressDialog", RecordingProgressDialog):
+                window.create_surface_from_curves()
 
             surfaces = window.app_state.surface_collection.surfaces
-            self.assertEqual(len(surfaces), 1)
-            surface = surfaces[0]
-            self.assertEqual(surface.surface_type, "preview_loft")
-            self.assertFalse(surface.metadata["preview_available"])
-            self.assertEqual(
-                surface.metadata["preview_reason"],
-                "Each selected curve needs at least 2 fitted points.",
-            )
+            self.assertEqual(surfaces, [])
             self.assertEqual(
                 window.status_text.get(),
-                "Surface created, but preview unavailable for selected curves",
+                "Surface preview unavailable: curve has too few points",
             )
+            self.assertEqual(progress_dialogs[0].stages, list(SURFACE_PREVIEW_PROGRESS_STAGES))
+            self.assertTrue(progress_dialogs[0].closed)
             self.assertEqual(window.viewport.scene_calls[-1]["surface_previews"], [])
         finally:
             window.root.destroy()
@@ -2914,7 +3180,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.app_state.curve_results, [first_curve])
             self.assertEqual(window.status_text.get(), "Hidden 1 unselected curves")
 
-            window.tools_menu.invoke(10)
+            window.curves_menu.invoke(3)
             self.assertTrue(first_curve.visible)
             self.assertTrue(second_curve.visible)
             self.assertEqual(window.status_text.get(), "All curves visible")
@@ -2948,11 +3214,11 @@ class MainWindowUiTests(unittest.TestCase):
             window.compute_section()
             first_curve = window.app_state.curve_collection.curves[0]
             window.select_curve(first_curve.id)
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
 
             self.assertEqual(
                 window.status_text.get(),
-                "Single-curve surface requires a closed curve.",
+                "Surface preview unavailable: single curve is not closed",
             )
             self.assertEqual(window.app_state.surface_collection.surfaces, [])
 
@@ -2991,11 +3257,11 @@ class MainWindowUiTests(unittest.TestCase):
                 [first_curve.id, second_curve.id, third_curve.id],
                 active_curve_id=third_curve.id,
             )
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
 
             self.assertEqual(
                 window.status_text.get(),
-                "Select one closed curve for fill or exactly two curves for loft.",
+                "Surface preview unavailable: unsupported curve count",
             )
             self.assertEqual(window.app_state.surface_collection.surfaces, [])
         finally:
@@ -3139,7 +3405,7 @@ class MainWindowUiTests(unittest.TestCase):
             source_plane = window.app_state.section_collection.planes[0]
             _make_curve_closed(source_curve)
             window.select_curve(source_curve.id)
-            window.tools_menu.invoke(11)
+            window.curves_menu.invoke(0)
             self.assertEqual(len(window.app_state.surface_collection.surfaces), 1)
 
             window.select_curve(source_curve.id)
@@ -3184,7 +3450,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.section_axis.set("X")
             window._on_section_axis_changed()
 
-            window.tools_menu.invoke(2)
+            window.sections_menu.invoke(0)
 
             planes = window.app_state.section_collection.planes
             self.assertEqual(len(planes), 2)
@@ -3456,7 +3722,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.curve_visible.set(False)
             window._on_curve_visibility_changed()
 
-            window.tools_menu.invoke(7)
+            window.curves_menu.invoke(4)
 
             self.assertEqual(window.app_state.section_collection.results, [first_result, second_result])
             self.assertEqual(window.app_state.section_collection.planes, [first_plane, second_plane])
@@ -3509,7 +3775,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.scene_browser.tree.exists(NODE_SECTION_RESULTS))
             self.assertTrue(window.scene_browser.tree.exists(NODE_CURVES))
 
-            window.tools_menu.invoke(5)
+            window.sections_menu.invoke(4)
 
             self.assertEqual(window.app_state.section_collection.results, [])
             self.assertIsNone(window.app_state.section_result)
@@ -3563,7 +3829,7 @@ class MainWindowUiTests(unittest.TestCase):
             second_result = window.app_state.section_collection.results[1]
             second_curve = window.app_state.curve_collection.curves[1]
 
-            window.tools_menu.invoke(6)
+            window.sections_menu.invoke(1)
 
             self.assertEqual(window.app_state.section_collection.planes, [first_plane])
             self.assertEqual(window.app_state.section_collection.active_plane_id, first_plane.id)
@@ -3591,7 +3857,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.get_children(first_curve_group), (first_curve_node,))
             self.assertEqual(tree.selection(), (first_plane_node,))
 
-            window.tools_menu.invoke(6)
+            window.sections_menu.invoke(1)
 
             restored_plane = window.app_state.section_collection.planes[0]
             restored_node = section_plane_node_id(restored_plane.id)
@@ -3613,7 +3879,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.selection(), (restored_node,))
 
             window.clear_selection()
-            window.tools_menu.invoke(6)
+            window.sections_menu.invoke(1)
 
             next_restored_plane = window.app_state.section_collection.planes[0]
             self.assertEqual(len(window.app_state.section_collection.planes), 1)

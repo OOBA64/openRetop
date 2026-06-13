@@ -26,6 +26,22 @@ class AppImportSettings:
 class AppUiSettings:
     window_width: int
     window_height: int
+    window_mode: str = "maximized"
+    remember_window_size: bool = True
+
+
+@dataclass
+class AppKeybindSettings:
+    rename_selected: str
+    toggle_visibility: str
+    isolate_selected: str
+    show_all: str
+    frame_selected: str
+    move: str
+    rotate: str
+    confirm_transform: str
+    cancel_transform: str
+    delete_selected: str
 
 
 @dataclass
@@ -34,6 +50,7 @@ class AppSettings:
     display: AppDisplaySettings
     import_settings: AppImportSettings
     ui: AppUiSettings
+    keybinds: AppKeybindSettings
     future: dict[str, object] = field(default_factory=dict)
 
 
@@ -51,5 +68,19 @@ def default_app_settings() -> AppSettings:
         ui=AppUiSettings(
             window_width=1280,
             window_height=800,
+            window_mode="maximized",
+            remember_window_size=True,
+        ),
+        keybinds=AppKeybindSettings(
+            rename_selected="F2",
+            toggle_visibility="H",
+            isolate_selected="Shift+H",
+            show_all="Alt+H",
+            frame_selected="F",
+            move="G",
+            rotate="R",
+            confirm_transform="Enter",
+            cancel_transform="Esc",
+            delete_selected="Delete",
         ),
     )

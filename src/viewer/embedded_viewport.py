@@ -61,6 +61,12 @@ APP_SHORTCUT_KEYSYMS = {
     "z",
 }
 SELECTION_BOUNDING_BOX_LINE_WIDTH = 1.0
+SECTION_RESULT_COLOR = (0.58, 0.50, 0.40)
+SECTION_RESULT_LINE_WIDTH = 1.25
+UNSELECTED_CURVE_COLOR = (0.08, 0.72, 0.38)
+UNSELECTED_CURVE_LINE_WIDTH = 2.2
+SELECTED_CURVE_COLOR = (0.0, 0.95, 1.0)
+SELECTED_CURVE_LINE_WIDTH = 4.6
 
 
 @dataclass(frozen=True)
@@ -223,6 +229,7 @@ class EmbeddedVTKViewport:
         if not self._is_started:
             self.start()
 
+        show_normals = False
         matrix = (
             np.identity(4, dtype=float)
             if transform_matrix is None
@@ -702,11 +709,11 @@ class EmbeddedVTKViewport:
 
         section_lines = _polyline_geometry(
             [polyline.points for polyline in section_result.polylines],
-            color=(1.0, 0.88, 0.05),
+            color=SECTION_RESULT_COLOR,
         )
         self._replace_actor(
             "section_result",
-            _tube_actor(section_lines, radius=max(self._view_extent * 0.002, 0.002)),
+            _line_actor(section_lines, line_width=SECTION_RESULT_LINE_WIDTH),
             key=key,
         )
 
@@ -816,11 +823,11 @@ class EmbeddedVTKViewport:
         if unselected_results:
             fitted_lines = _polyline_geometry(
                 [result.fitted_points for result in unselected_results],
-                color=(0.1, 0.78, 0.28),
+                color=UNSELECTED_CURVE_COLOR,
             )
             self._replace_actor(
                 "curve_result",
-                _line_actor(fitted_lines, line_width=2.5),
+                _line_actor(fitted_lines, line_width=UNSELECTED_CURVE_LINE_WIDTH),
                 key=key,
             )
         else:
@@ -830,11 +837,11 @@ class EmbeddedVTKViewport:
         if selected_results:
             selected_lines = _polyline_geometry(
                 [result.fitted_points for result in selected_results],
-                color=(0.05, 0.95, 0.95),
+                color=SELECTED_CURVE_COLOR,
             )
             self._replace_overlay_group(
                 "selected_curve_result",
-                [_line_actor(selected_lines, line_width=4.0)],
+                [_line_actor(selected_lines, line_width=SELECTED_CURVE_LINE_WIDTH)],
                 key=selected_key,
             )
         else:

@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, Tk, Toplevel, filedialog
+from tkinter import BooleanVar, Canvas, DoubleVar, StringVar, Tk, Toplevel, filedialog
 from tkinter import messagebox, ttk
 from uuid import uuid4
 
 import numpy as np
 
 from app.app_state import AppState
+from app.keybinds import KEYBIND_DISPLAY_ORDER, action_for_shortcut, shortcut_from_tk_event
+from app.menus import build_menu_bar
 from app.object_state import MeshObjectState
+from app.preferences_dialog import build_preferences_dialog
 from app.scene_browser import (
     NODE_CURVES,
     NODE_CURVE_GROUP_UNASSIGNED,
@@ -90,6 +93,7 @@ from settings.settings_data import (
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
+    AppKeybindSettings,
     AppSettings,
     AppUiSettings,
 )
@@ -117,7 +121,11 @@ from surfaces.surface_state import (
     remove_surface,
     set_active_surface,
 )
-from surfaces.surface_preview import SurfacePreviewMesh, build_surface_preview_mesh
+from surfaces.surface_preview import (
+    SurfacePreviewMesh,
+    build_surface_preview,
+    build_surface_preview_mesh,
+)
 from viewer.embedded_viewport import EmbeddedVTKViewport
 
 
@@ -133,7 +141,7 @@ PROJECT_FILE_TYPES = (
     ("JSON files", "*.json"),
     ("All files", "*.*"),
 )
-OPEN_MODEL_MENU_INDEX = 1
+OPEN_MODEL_MENU_INDEX = 4
 LOAD_PROGRESS_STAGES = (
     "Loading mesh",
     "Computing bounds",
@@ -141,18 +149,29 @@ LOAD_PROGRESS_STAGES = (
     "Creating viewport actors",
     "Finalizing scene",
 )
+COMPUTE_SECTION_PROGRESS_STAGES = (
+    "Preparing section",
+    "Extracting section geometry",
+    "Fitting section curves",
+    "Updating viewport",
+)
+SURFACE_PREVIEW_PROGRESS_STAGES = (
+    "Preparing surface preview",
+    "Building preview geometry",
+    "Updating viewport",
+)
 GENERATED_GEOMETRY_TRANSFORM_WARNING = (
     "Generated sections/curves/surfaces will not follow mesh transform. "
     "Recompute after moving."
 )
 
 
-class LoadProgressDialog:
-    """Small stage-based progress window for synchronous mesh loading."""
+class StageProgressDialog:
+    """Small stage-based progress window for synchronous operations."""
 
-    def __init__(self, parent: Tk, file_name: str) -> None:
+    def __init__(self, parent: Tk, *, title: str, summary: str) -> None:
         self.window = Toplevel(parent)
-        self.window.title("Opening Model")
+        self.window.title(title)
         self.window.resizable(False, False)
         self.window.transient(parent)
         self.window.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -162,7 +181,7 @@ class LoadProgressDialog:
         frame = ttk.Frame(self.window, padding=16)
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        ttk.Label(frame, text=f"Opening {file_name}").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text=summary).grid(row=0, column=0, sticky="w")
         ttk.Label(frame, textvariable=self.stage_text).grid(
             row=1,
             column=0,
@@ -177,6 +196,7 @@ class LoadProgressDialog:
         self.progress_bar.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         self.progress_bar.start(12)
 
+        _center_toplevel_over_parent(self.window, parent)
         self.render_now()
         self.window.lift()
 
@@ -195,6 +215,48 @@ class LoadProgressDialog:
         self.window.destroy()
 
 
+class LoadProgressDialog(StageProgressDialog):
+    def __init__(self, parent: Tk, file_name: str) -> None:
+        self.file_name = file_name
+        super().__init__(
+            parent,
+            title="Opening Model",
+            summary=f"Opening {file_name}",
+        )
+
+
+class ComputationProgressDialog(StageProgressDialog):
+    def __init__(self, parent: Tk, title: str, summary: str | None = None) -> None:
+        self.title_text = title
+        super().__init__(
+            parent,
+            title=title,
+            summary=summary or title,
+        )
+
+
+def _center_toplevel_over_parent(window: Toplevel, parent: Tk) -> None:
+    try:
+        window.update_idletasks()
+        parent.update_idletasks()
+        width = max(int(window.winfo_width()), int(window.winfo_reqwidth()))
+        height = max(int(window.winfo_height()), int(window.winfo_reqheight()))
+        parent_width = int(parent.winfo_width())
+        parent_height = int(parent.winfo_height())
+        parent_x = int(parent.winfo_rootx())
+        parent_y = int(parent.winfo_rooty())
+        if parent_width <= 1 or parent_height <= 1:
+            parent_width = int(parent.winfo_screenwidth())
+            parent_height = int(parent.winfo_screenheight())
+            parent_x = 0
+            parent_y = 0
+        x = max(parent_x + (parent_width - width) // 2, 0)
+        y = max(parent_y + (parent_height - height) // 2, 0)
+        window.geometry(f"+{x}+{y}")
+    except TclError:
+        return
+
+
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
 
@@ -207,6 +269,7 @@ class OpenRetopWindow:
             f"{self.settings.ui.window_width}x{self.settings.ui.window_height}"
         )
         self.root.minsize(980, 620)
+        self._maximize_startup_window()
 
         self.mesh_state = MeshState()
         self.app_state = AppState()
@@ -218,12 +281,13 @@ class OpenRetopWindow:
         self.current_project_path: Path | None = None
         self.project_dirty = False
         self.preferences_dialog: Toplevel | None = None
+        self.preferences_notebook: ttk.Notebook | None = None
         self.preferences_vars: dict[str, BooleanVar | StringVar] = {}
         self._update_window_title()
 
         self.show_grid = BooleanVar(value=self.settings.display.show_grid)
         self.show_axes = BooleanVar(value=self.settings.display.show_axes)
-        self.show_normals = BooleanVar(value=self.settings.display.show_normals)
+        self.show_normals = BooleanVar(value=False)
         self.show_section_plane = BooleanVar(value=False)
         self.proxy_quality = StringVar(
             value=normalize_proxy_quality(
@@ -289,6 +353,9 @@ class OpenRetopWindow:
         self.surface_name_text = StringVar(value="(none)")
         self.surface_type_text = StringVar(value="(none)")
         self.surface_source_curve_count_text = StringVar(value="0")
+        self.surface_preview_available_text = StringVar(value="(none)")
+        self.surface_preview_reason_text = StringVar(value="(none)")
+        self.surface_preview_warning_text = StringVar(value="(none)")
         self.surface_metadata_text = StringVar(value="(none)")
         self.selection_buttons: list[ttk.Button] = []
         self._sync_active_section_plane_from_controls()
@@ -309,6 +376,14 @@ class OpenRetopWindow:
     def run(self) -> None:
         self.root.mainloop()
 
+    def _maximize_startup_window(self) -> None:
+        if self.settings.ui.window_mode != "maximized":
+            return
+        try:
+            self.root.state("zoomed")
+        except TclError:
+            return
+
     def _start_viewport(self) -> None:
         self._start_viewport_after_id = None
         try:
@@ -319,103 +394,7 @@ class OpenRetopWindow:
             messagebox.showerror("Viewport failed to start", str(exc))
 
     def _build_menu_bar(self) -> None:
-        self.menu_bar = Menu(self.root, tearoff=False)
-
-        self.file_menu = Menu(self.menu_bar, tearoff=False)
-        self.file_menu.add_command(label="New Project", command=self.new_project)
-        self.file_menu.add_command(label="Open Model", command=self.open_model)
-        self.file_menu.add_command(label="Open Project", command=self.open_project)
-        self.file_menu.add_command(label="Save Project", command=self.save_project)
-        self.file_menu.add_command(label="Save Project As", command=self.save_project_as)
-        self.file_menu.add_command(label="Exit", command=self._on_exit)
-        self.menu_bar.add_cascade(label="File", menu=self.file_menu)
-
-        self.edit_menu = Menu(self.menu_bar, tearoff=False)
-        self.edit_menu.add_command(label="Undo", command=self._undo_placeholder)
-        self.edit_menu.add_command(label="Redo", command=self._redo_placeholder)
-        self.edit_menu.add_command(label="Preferences", command=self.open_preferences)
-        self.menu_bar.add_cascade(label="Edit", menu=self.edit_menu)
-
-        self.view_menu = Menu(self.menu_bar, tearoff=False)
-        self.view_menu.add_command(label="Frame All", command=self.frame_all)
-        self.view_menu.add_command(label="Frame Selected", command=self.frame_selected)
-        self.view_menu.add_command(label="Reset View", command=self.reset_view)
-        self.view_menu.add_checkbutton(
-            label="Show Grid",
-            variable=self.show_grid,
-            command=self._on_view_option_changed,
-        )
-        self.view_menu.add_checkbutton(
-            label="Show Axes",
-            variable=self.show_axes,
-            command=self._on_view_option_changed,
-        )
-        self.view_menu.add_checkbutton(
-            label="Show Normals",
-            variable=self.show_normals,
-            command=self._on_view_option_changed,
-        )
-        self.menu_bar.add_cascade(label="View", menu=self.view_menu)
-
-        self.tools_menu = Menu(self.menu_bar, tearoff=False)
-        self.tools_menu.add_command(label="Select Model", command=self.select_model)
-        self.tools_menu.add_command(label="Select Section Plane", command=self.select_section_plane)
-        self.tools_menu.add_command(label="Add Section Plane", command=self.add_section_plane)
-        self.tools_menu.add_command(label="Compute Section", command=self.compute_section)
-        self.tools_menu.add_command(
-            label="Clear Active Section Result",
-            command=self.clear_active_section_result,
-        )
-        self.tools_menu.add_command(
-            label="Clear All Section Results",
-            command=self.clear_all_section_results,
-        )
-        self.tools_menu.add_command(
-            label="Delete Active Section Plane",
-            command=self.delete_active_section_plane,
-        )
-        self.tools_menu.add_command(
-            label="Delete Selected Curve",
-            command=self.delete_selected_curve,
-        )
-        self.tools_menu.add_command(
-            label="Hide Selected Curves",
-            command=self.hide_selected_curves,
-        )
-        self.tools_menu.add_command(
-            label="Hide Unselected Curves",
-            command=self.hide_unselected_curves,
-        )
-        self.tools_menu.add_command(
-            label="Show All Curves",
-            command=self.show_all_curves,
-        )
-        self.tools_menu.add_command(
-            label="Create Surface From Curves",
-            command=self.create_surface_from_curves,
-        )
-        self.tools_menu.add_command(
-            label="Rename Selected",
-            command=self.rename_selected,
-        )
-        self.tools_menu.add_command(
-            label="Hide Selected",
-            command=self.hide_selected_scene_objects,
-        )
-        self.tools_menu.add_command(
-            label="Hide Unselected",
-            command=self.hide_unselected_scene_objects,
-        )
-        self.tools_menu.add_command(
-            label="Show All",
-            command=self.show_all_scene_objects,
-        )
-        self.menu_bar.add_cascade(label="Tools", menu=self.tools_menu)
-
-        self.help_menu = Menu(self.menu_bar, tearoff=False)
-        self.help_menu.add_command(label="About", command=self._about_placeholder)
-        self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
-        self.root.configure(menu=self.menu_bar)
+        self.menu_bar = build_menu_bar(self)
 
     def _not_implemented(self, feature_name: str) -> None:
         self.status_text.set(f"{feature_name}: Not implemented yet")
@@ -501,7 +480,7 @@ class OpenRetopWindow:
         self.proxy_quality.set(normalize_proxy_quality(project.display.proxy_quality))
         self.show_grid.set(project.display.show_grid)
         self.show_axes.set(project.display.show_axes)
-        self.show_normals.set(project.display.show_normals)
+        self.show_normals.set(False)
         self._restore_project_mesh_display(project)
         self._restore_project_section_collection(project)
         self._restore_project_curve_collection(project)
@@ -733,7 +712,7 @@ class OpenRetopWindow:
                 proxy_quality=self.proxy_quality.get(),
                 show_grid=self.show_grid.get(),
                 show_axes=self.show_axes.get(),
-                show_normals=self.show_normals.get(),
+                show_normals=False,
                 section_axis=self.section_axis.get(),
                 section_offset=self.section_offset.get(),
                 show_section_plane=self.show_section_plane.get(),
@@ -764,112 +743,51 @@ class OpenRetopWindow:
             self.preferences_dialog.focus_set()
             return
 
-        dialog = Toplevel(self.root)
-        dialog.title("Preferences")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        dialog.protocol("WM_DELETE_WINDOW", self._close_preferences_dialog)
-        dialog.columnconfigure(0, weight=1)
-        self.preferences_dialog = dialog
-        self.preferences_vars = {
-            "show_grid": BooleanVar(
-                master=dialog,
-                value=self.settings.display.show_grid,
-            ),
-            "show_axes": BooleanVar(
-                master=dialog,
-                value=self.settings.display.show_axes,
-            ),
-            "show_normals": BooleanVar(
-                master=dialog,
-                value=self.settings.display.show_normals,
-            ),
-            "default_proxy_quality": StringVar(
-                master=dialog,
-                value=normalize_proxy_quality(
-                    self.settings.import_settings.default_proxy_quality
-                ),
-            ),
-        }
-
-        content = ttk.Frame(dialog, padding=12)
-        content.grid(row=0, column=0, sticky="nsew")
-        content.columnconfigure(0, weight=1)
-
-        display_frame = ttk.LabelFrame(content, text="Display", padding=8)
-        display_frame.grid(row=0, column=0, sticky="ew")
-        display_frame.columnconfigure(0, weight=1)
-        ttk.Checkbutton(
-            display_frame,
-            text="Startup Show Grid",
-            variable=self.preferences_vars["show_grid"],
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(
-            display_frame,
-            text="Startup Show Axes",
-            variable=self.preferences_vars["show_axes"],
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Checkbutton(
-            display_frame,
-            text="Startup Show Normals",
-            variable=self.preferences_vars["show_normals"],
-        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
-
-        import_frame = ttk.LabelFrame(content, text="Import", padding=8)
-        import_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        import_frame.columnconfigure(1, weight=1)
-        ttk.Label(import_frame, text="Default Proxy Quality").grid(
-            row=0,
-            column=0,
-            sticky="w",
+        handle = build_preferences_dialog(
+            self.root,
+            settings=self.settings,
+            proxy_quality_labels=PROXY_QUALITY_LABELS,
+            apply_callback=self._apply_preferences_dialog,
+            ok_callback=self._confirm_preferences_dialog,
+            close_callback=self._close_preferences_dialog,
+            placeholder_callback=self._not_implemented,
         )
-        ttk.Combobox(
-            import_frame,
-            textvariable=self.preferences_vars["default_proxy_quality"],
-            values=PROXY_QUALITY_LABELS,
-            width=10,
-            state="readonly",
-        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
-
-        buttons = ttk.Frame(content)
-        buttons.grid(row=2, column=0, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="OK", command=self._confirm_preferences_dialog).grid(
-            row=0,
-            column=0,
-        )
-        ttk.Button(buttons, text="Cancel", command=self._close_preferences_dialog).grid(
-            row=0,
-            column=1,
-            padx=(6, 0),
-        )
-        ttk.Button(buttons, text="Apply", command=self._apply_preferences_dialog).grid(
-            row=0,
-            column=2,
-            padx=(6, 0),
-        )
+        self.preferences_dialog = handle.dialog
+        self.preferences_notebook = handle.notebook
+        self.preferences_vars = handle.variables
 
     def _confirm_preferences_dialog(self) -> None:
-        self._apply_preferences_dialog()
-        self._close_preferences_dialog()
+        if self._apply_preferences_dialog():
+            self._close_preferences_dialog()
 
-    def _apply_preferences_dialog(self) -> None:
+    def _apply_preferences_dialog(self) -> bool:
         if not self.preferences_vars:
-            return
+            return False
 
         show_grid = bool(self.preferences_vars["show_grid"].get())
         show_axes = bool(self.preferences_vars["show_axes"].get())
-        show_normals = bool(self.preferences_vars["show_normals"].get())
+        window_mode = str(self.preferences_vars["window_mode"].get())
+        remember_window_size = bool(self.preferences_vars["remember_window_size"].get())
         proxy_quality = normalize_proxy_quality(
             str(self.preferences_vars["default_proxy_quality"].get())
         )
+        try:
+            keybinds = self._keybind_settings_from_preferences()
+        except ValueError as exc:
+            self.status_text.set(str(exc))
+            return False
 
-        width, height = self._current_window_size()
+        width, height = (
+            self._current_window_size()
+            if remember_window_size
+            else (self.settings.ui.window_width, self.settings.ui.window_height)
+        )
         self.settings = AppSettings(
             version=SETTINGS_VERSION,
             display=AppDisplaySettings(
                 show_grid=show_grid,
                 show_axes=show_axes,
-                show_normals=show_normals,
+                show_normals=False,
             ),
             import_settings=AppImportSettings(
                 default_proxy_quality=proxy_quality,
@@ -877,15 +795,30 @@ class OpenRetopWindow:
             ui=AppUiSettings(
                 window_width=width,
                 window_height=height,
+                window_mode=window_mode,
+                remember_window_size=remember_window_size,
             ),
+            keybinds=keybinds,
             future=dict(self.settings.future),
         )
         self._save_app_settings()
         self.status_text.set("Preferences applied")
+        return True
+
+    def _keybind_settings_from_preferences(self) -> AppKeybindSettings:
+        values: dict[str, str] = {}
+        for field_name, label in KEYBIND_DISPLAY_ORDER:
+            value = str(self.preferences_vars[f"keybind.{field_name}"].get()).strip()
+            if not value:
+                raise ValueError(f"{label} keybind cannot be empty")
+            values[field_name] = value
+
+        return AppKeybindSettings(**values)
 
     def _close_preferences_dialog(self) -> None:
         dialog = self.preferences_dialog
         self.preferences_dialog = None
+        self.preferences_notebook = None
         self.preferences_vars = {}
         if dialog is not None and dialog.winfo_exists():
             dialog.destroy()
@@ -945,40 +878,71 @@ class OpenRetopWindow:
         )
         self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_mousewheel)
 
-        row = 0
-        self.file_frame = ttk.Frame(self.sidebar)
-        self.file_frame.grid(row=row, column=0, sticky="ew")
+        self.sidebar_notebook = ttk.Notebook(self.sidebar)
+        self.sidebar_notebook.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.rowconfigure(0, weight=1)
+
+        self.object_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.transform_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.sections_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.curves_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.surfaces_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.info_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        for tab in (
+            self.object_tab,
+            self.transform_tab,
+            self.sections_tab,
+            self.curves_tab,
+            self.surfaces_tab,
+            self.info_tab,
+        ):
+            tab.columnconfigure(0, weight=1)
+
+        self.sidebar_notebook.add(self.object_tab, text="Object")
+        self.sidebar_notebook.add(self.transform_tab, text="Transform")
+        self.sidebar_notebook.add(self.sections_tab, text="Sections")
+        self.sidebar_notebook.add(self.curves_tab, text="Curves")
+        self.sidebar_notebook.add(self.surfaces_tab, text="Surfaces")
+        self.sidebar_notebook.add(self.info_tab, text="Info")
+
+        ttk.Label(
+            self.transform_tab,
+            text="Transform controls appear in the Object tab for the selected model.",
+            wraplength=250,
+        ).grid(row=0, column=0, sticky="ew")
+
+        self.file_frame = ttk.Frame(self.info_tab)
+        self.file_frame.grid(row=0, column=0, sticky="ew")
         self.file_frame.columnconfigure(1, weight=1)
         self._build_file_section(self.file_frame)
-        row += 1
 
-        self.no_selection_frame = ttk.Frame(self.sidebar)
-        self.no_selection_frame.grid(row=row, column=0, sticky="ew")
+        self.no_selection_frame = ttk.Frame(self.object_tab)
+        self.no_selection_frame.grid(row=0, column=0, sticky="ew")
         self.no_selection_frame.columnconfigure(0, weight=1)
         self._build_no_selection_context(self.no_selection_frame)
 
-        self.model_context_frame = ttk.Frame(self.sidebar)
-        self.model_context_frame.grid(row=row, column=0, sticky="ew")
+        self.model_context_frame = ttk.Frame(self.object_tab)
+        self.model_context_frame.grid(row=0, column=0, sticky="ew")
         self.model_context_frame.columnconfigure(0, weight=1)
         self._build_model_context(self.model_context_frame)
 
-        self.section_context_frame = ttk.Frame(self.sidebar)
-        self.section_context_frame.grid(row=row, column=0, sticky="ew")
+        self.section_context_frame = ttk.Frame(self.sections_tab)
+        self.section_context_frame.grid(row=0, column=0, sticky="ew")
         self.section_context_frame.columnconfigure(0, weight=1)
         self._build_section_context(self.section_context_frame)
 
-        self.section_result_context_frame = ttk.Frame(self.sidebar)
-        self.section_result_context_frame.grid(row=row, column=0, sticky="ew")
+        self.section_result_context_frame = ttk.Frame(self.sections_tab)
+        self.section_result_context_frame.grid(row=0, column=0, sticky="ew")
         self.section_result_context_frame.columnconfigure(0, weight=1)
         self._build_section_result_context(self.section_result_context_frame)
 
-        self.curve_context_frame = ttk.Frame(self.sidebar)
-        self.curve_context_frame.grid(row=row, column=0, sticky="ew")
+        self.curve_context_frame = ttk.Frame(self.curves_tab)
+        self.curve_context_frame.grid(row=0, column=0, sticky="ew")
         self.curve_context_frame.columnconfigure(0, weight=1)
         self._build_curve_context(self.curve_context_frame)
 
-        self.surface_context_frame = ttk.Frame(self.sidebar)
-        self.surface_context_frame.grid(row=row, column=0, sticky="ew")
+        self.surface_context_frame = ttk.Frame(self.surfaces_tab)
+        self.surface_context_frame.grid(row=0, column=0, sticky="ew")
         self.surface_context_frame.columnconfigure(0, weight=1)
         self._build_surface_context(self.surface_context_frame)
 
@@ -1039,14 +1003,6 @@ class OpenRetopWindow:
             command=self._on_view_option_changed,
         )
         self.show_axes_check.grid(row=row, column=0, columnspan=2, sticky="w")
-        row += 1
-        self.show_normals_check = ttk.Checkbutton(
-            parent,
-            text="Show Normals",
-            variable=self.show_normals,
-            command=self._on_view_option_changed,
-        )
-        self.show_normals_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
         ttk.Button(parent, text="Frame All", command=self.frame_all).grid(
             row=row,
@@ -1434,6 +1390,19 @@ class OpenRetopWindow:
             "Source curves",
             self.surface_source_curve_count_text,
         )
+        row = self._add_info_row(
+            parent,
+            row,
+            "Preview available",
+            self.surface_preview_available_text,
+        )
+        row = self._add_info_row(parent, row, "Preview reason", self.surface_preview_reason_text)
+        row = self._add_info_row(
+            parent,
+            row,
+            "Preview warning",
+            self.surface_preview_warning_text,
+        )
         row = self._add_info_row(parent, row, "Metadata", self.surface_metadata_text)
         self.delete_surface_button = ttk.Button(
             parent,
@@ -1541,16 +1510,22 @@ class OpenRetopWindow:
 
         if selected_item == SELECT_MODEL and self.app_state.mesh_object is not None:
             self.model_context_frame.grid()
+            self.sidebar_notebook.select(self.object_tab)
         elif selected_item == SELECT_SECTION_PLANE and self.app_state.mesh_object is not None:
             self.section_context_frame.grid()
+            self.sidebar_notebook.select(self.sections_tab)
         elif selected_item == SELECT_SECTION_RESULT and self.app_state.mesh_object is not None:
             self.section_result_context_frame.grid()
+            self.sidebar_notebook.select(self.sections_tab)
         elif selected_item == SELECT_CURVE and self.app_state.mesh_object is not None:
             self.curve_context_frame.grid()
+            self.sidebar_notebook.select(self.curves_tab)
         elif selected_item == SELECT_SURFACE and self.app_state.mesh_object is not None:
             self.surface_context_frame.grid()
+            self.sidebar_notebook.select(self.surfaces_tab)
         else:
             self.no_selection_frame.grid()
+            self.sidebar_notebook.select(self.object_tab)
 
     def _on_sidebar_mousewheel(self, event: object) -> None:
         delta = getattr(event, "delta", 0)
@@ -1565,31 +1540,17 @@ class OpenRetopWindow:
         if isinstance(focused, (ttk.Entry, ttk.Combobox)):
             return
 
-        key = getattr(event, "keysym", "")
-        state = int(getattr(event, "state", 0) or 0)
-        if key in {"h", "H"}:
-            if state & 0x0008:
-                self._handle_shortcut("Alt+H")
-            elif state & 0x0001:
-                self._handle_shortcut("Shift+H")
-            else:
-                self._handle_shortcut("H")
+        shortcut = shortcut_from_tk_event(event)
+        if shortcut is None:
             return
 
-        key_map = {
-            "g": "G",
-            "r": "R",
-            "x": "X",
-            "y": "Y",
-            "z": "Z",
-            "f": "F",
-            "Escape": "Escape",
-            "Return": "Enter",
-            "Delete": "Delete",
-            "F2": "F2",
-        }
-        if key in key_map:
-            self._handle_shortcut(key_map[key])
+        action = action_for_shortcut(self.settings.keybinds, shortcut)
+        if action is not None:
+            self._handle_keybind_action(action)
+            return
+
+        if shortcut in {"X", "Y", "Z"}:
+            self._handle_shortcut(shortcut)
 
     def open_model(self) -> None:
         if self._is_loading_model:
@@ -1684,6 +1645,13 @@ class OpenRetopWindow:
     def _set_load_progress_stage(
         self,
         progress: LoadProgressDialog,
+        stage: str,
+    ) -> None:
+        self._set_progress_stage(progress, stage)
+
+    def _set_progress_stage(
+        self,
+        progress: StageProgressDialog,
         stage: str,
     ) -> None:
         self.status_text.set(stage)
@@ -2014,26 +1982,40 @@ class OpenRetopWindow:
             self.status_text.set("No section plane")
             return
 
-        section_mesh = self._transformed_source_mesh()
-        section_result = extract_section(
-            section_mesh,
-            axis=active_plane.axis,
-            offset=active_plane.offset,
-        )
-        stored_result = StoredSectionResult(
-            id=f"section-result-{uuid4().hex}",
-            name=self._next_section_result_name(),
-            plane_id=active_plane.id,
-            axis=active_plane.axis,
-            offset=active_plane.offset,
-            result=section_result,
-        )
-        add_result(self.app_state.section_collection, stored_result)
-        self._store_curves_for_section_result(stored_result)
-        self._set_display_section_result(stored_result)
-        self._update_section_plane_label(set_status=False)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._section_result_status(stored_result))
+        progress: ComputationProgressDialog | None = None
+        try:
+            progress = ComputationProgressDialog(
+                self.root,
+                "Computing Section",
+                "Computing section geometry",
+            )
+            self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[0])
+            section_mesh = self._transformed_source_mesh()
+            self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[1])
+            section_result = extract_section(
+                section_mesh,
+                axis=active_plane.axis,
+                offset=active_plane.offset,
+            )
+            stored_result = StoredSectionResult(
+                id=f"section-result-{uuid4().hex}",
+                name=self._next_section_result_name(),
+                plane_id=active_plane.id,
+                axis=active_plane.axis,
+                offset=active_plane.offset,
+                result=section_result,
+            )
+            add_result(self.app_state.section_collection, stored_result)
+            self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[2])
+            self._store_curves_for_section_result(stored_result)
+            self._set_display_section_result(stored_result)
+            self._update_section_plane_label(set_status=False)
+            self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[3])
+            self._refresh_viewport(reset_camera=False)
+            self.status_text.set(self._section_result_status(stored_result))
+        finally:
+            if progress is not None:
+                progress.close()
 
     def clear_section(self) -> None:
         self.clear_active_section_result()
@@ -2313,31 +2295,27 @@ class OpenRetopWindow:
             self.status_text.set("Select one closed curve for fill or two curves for loft.")
             return
         if len(source_curves) > 2:
-            self.status_text.set("Select one closed curve for fill or exactly two curves for loft.")
+            self.status_text.set("Surface preview unavailable: unsupported curve count")
             return
 
         if len(source_curves) == 1:
-            if not self._curve_is_closed(source_curves[0]):
-                self.status_text.set("Single-curve surface requires a closed curve.")
-                return
             surface_type = "preview_fill"
+            preview_mode = "closed_curve_fill"
             metadata: dict[str, object] = {
                 "curve_count": 1,
+                "source_curve_count": 1,
                 "source": "selected_curve",
-                "preview_mode": "closed_curve_fill",
+                "preview_mode": preview_mode,
             }
         else:
             surface_type = "preview_loft"
+            preview_mode = "two_curve_loft"
             metadata = {
                 "curve_count": 2,
+                "source_curve_count": 2,
                 "source": "selected_curves",
-                "preview_mode": "two_curve_loft",
+                "preview_mode": preview_mode,
             }
-            if any(
-                not self._curve_has_min_fitted_points(curve, 2)
-                for curve in source_curves
-            ):
-                metadata["preview_reason"] = "Each selected curve needs at least 2 fitted points."
 
         surface = SurfacePatch(
             id=f"surface-{uuid4().hex}",
@@ -2346,24 +2324,36 @@ class OpenRetopWindow:
             surface_type=surface_type,
             metadata=metadata,
         )
-        preview = build_surface_preview_mesh(
-            surface,
-            self.app_state.curve_collection.curves,
-        )
-        surface.metadata["preview_available"] = preview is not None
-        if preview is None:
-            surface.metadata.setdefault(
-                "preview_reason",
-                self._surface_preview_unavailable_reason(source_curves),
+        progress: ComputationProgressDialog | None = None
+        try:
+            progress = ComputationProgressDialog(
+                self.root,
+                "Building Surface Preview",
+                "Building surface preview",
             )
+            self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[0])
+            self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[1])
+            preview_result = build_surface_preview(
+                surface,
+                self.app_state.curve_collection.curves,
+            )
+            self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[2])
+        finally:
+            if progress is not None:
+                progress.close()
+
+        surface.metadata["preview_available"] = bool(preview_result.preview_available)
+        surface.metadata["preview_reason"] = preview_result.reason
+        if preview_result.warning:
+            surface.metadata["preview_warning"] = preview_result.warning
+        if preview_result.mesh is None:
+            self.status_text.set(f"Surface preview unavailable: {preview_result.reason}")
+            return
+
         add_surface(self.app_state.surface_collection, surface)
         self._sync_surface_context_from_active_surface()
         curve_label = "curve" if len(source_curves) == 1 else "curves"
-        status = (
-            f"Created {surface.name} preview from {len(source_curves)} {curve_label}"
-            if surface.metadata["preview_available"]
-            else "Surface created, but preview unavailable for selected curves"
-        )
+        status = f"Created {surface.name} preview from {len(source_curves)} {curve_label}"
         self._set_selected_item(SELECT_SURFACE, status=status)
         self._set_project_dirty(True)
 
@@ -2374,39 +2364,6 @@ class OpenRetopWindow:
 
         active_curve = self._active_curve()
         return [] if active_curve is None else [active_curve]
-
-    @staticmethod
-    def _curve_is_closed(curve: StoredCurve) -> bool:
-        if bool(curve.is_closed):
-            return True
-
-        points = np.asarray(curve.fitted_points, dtype=float)
-        if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
-            return False
-
-        return bool(np.linalg.norm(points[0] - points[-1]) <= 1e-8)
-
-    @staticmethod
-    def _curve_has_min_fitted_points(curve: StoredCurve, minimum_count: int) -> bool:
-        try:
-            points = np.asarray(curve.fitted_points, dtype=float)
-        except (TypeError, ValueError):
-            return False
-        return bool(
-            points.ndim == 2
-            and points.shape[1] == 3
-            and len(points) >= minimum_count
-        )
-
-    def _surface_preview_unavailable_reason(self, curves: list[StoredCurve]) -> str:
-        if len(curves) == 1:
-            return "Closed curve needs at least 3 fitted points."
-        if len(curves) == 2 and any(
-            not self._curve_has_min_fitted_points(curve, 2)
-            for curve in curves
-        ):
-            return "Each selected curve needs at least 2 fitted points."
-        return "Preview unavailable for selected curves."
 
     def _next_surface_name(self) -> str:
         existing_names = {
@@ -2513,6 +2470,9 @@ class OpenRetopWindow:
             self.surface_name_text.set("(none)")
             self.surface_type_text.set("(none)")
             self.surface_source_curve_count_text.set("0")
+            self.surface_preview_available_text.set("(none)")
+            self.surface_preview_reason_text.set("(none)")
+            self.surface_preview_warning_text.set("(none)")
             self.surface_metadata_text.set("(none)")
             return
 
@@ -2520,6 +2480,15 @@ class OpenRetopWindow:
         self.surface_name_text.set(active_surface.name)
         self.surface_type_text.set(active_surface.surface_type)
         self.surface_source_curve_count_text.set(str(len(active_surface.source_curve_ids)))
+        self.surface_preview_available_text.set(
+            self._surface_preview_available_summary(active_surface.metadata)
+        )
+        self.surface_preview_reason_text.set(
+            str(active_surface.metadata.get("preview_reason") or "(none)")
+        )
+        self.surface_preview_warning_text.set(
+            str(active_surface.metadata.get("preview_warning") or "(none)")
+        )
         self.surface_metadata_text.set(self._surface_metadata_summary(active_surface.metadata))
 
     def _on_surface_name_changed(self, event: object | None = None) -> None:
@@ -2540,6 +2509,12 @@ class OpenRetopWindow:
         self._refresh_scene_browser()
         self.status_text.set(f"Selected: {active_surface.name}")
         self._set_project_dirty(True)
+
+    @staticmethod
+    def _surface_preview_available_summary(metadata: dict[str, object]) -> str:
+        if "preview_available" not in metadata:
+            return "(unknown)"
+        return "Yes" if bool(metadata["preview_available"]) else "No"
 
     @staticmethod
     def _surface_metadata_summary(metadata: dict[str, object]) -> str:
@@ -2663,11 +2638,7 @@ class OpenRetopWindow:
             transform_matrix=transform_matrix,
             show_grid=self.show_grid.get(),
             show_axes=self.show_axes.get(),
-            show_normals=self.show_normals.get()
-            and not hide_expensive_overlays
-            and not (
-                self.app_state.mesh_object is not None and self.app_state.mesh_object.display_proxy_enabled
-            ),
+            show_normals=False,
             show_section_plane=self._should_show_section_plane(),
             section_axis=self.section_axis.get(),
             section_offset=self.section_offset.get(),
@@ -2972,6 +2943,29 @@ class OpenRetopWindow:
             node_ids.add(NODE_MESH)
         return node_ids
 
+    def _toggle_scene_visibility(self, node_ids: set[str]) -> int:
+        changed_count = 0
+        if self.app_state.mesh_object is not None and NODE_MESH in node_ids:
+            self.app_state.mesh_object.visible = not self.app_state.mesh_object.visible
+            changed_count += 1
+        for plane in self.app_state.section_collection.planes:
+            if section_plane_node_id(plane.id) in node_ids:
+                plane.visible = not plane.visible
+                changed_count += 1
+        for result in self.app_state.section_collection.results:
+            if section_result_node_id(result.id) in node_ids:
+                result.visible = not result.visible
+                changed_count += 1
+        for curve in self.app_state.curve_collection.curves:
+            if curve_node_id(curve.id) in node_ids:
+                curve.visible = not curve.visible
+                changed_count += 1
+        for surface in self.app_state.surface_collection.surfaces:
+            if surface_node_id(surface.id) in node_ids:
+                surface.visible = not surface.visible
+                changed_count += 1
+        return changed_count
+
     def _set_scene_visibility(self, node_ids: set[str], visible: bool) -> int:
         changed_count = 0
         if (
@@ -3035,6 +3029,40 @@ class OpenRetopWindow:
 
     def show_all_scene_objects(self) -> None:
         self._on_scene_browser_visibility("show_all", ())
+
+    def toggle_selected_scene_objects(self) -> None:
+        node_ids = self._scene_visibility_target_node_ids()
+        if not node_ids:
+            self.status_text.set("No selection")
+            return
+
+        changed_count = self._toggle_scene_visibility(
+            self._expanded_visibility_node_ids(node_ids)
+        )
+        self._sync_after_scene_visibility_change()
+        self.status_text.set(
+            self._visibility_status("Toggled", changed_count, "selected item")
+        )
+        if changed_count:
+            self._set_project_dirty(True)
+
+    def toggle_active_surface_visibility(self) -> None:
+        active_surface = self._active_surface()
+        if active_surface is None:
+            self.status_text.set("No selection")
+            return
+
+        active_surface.visible = not active_surface.visible
+        self.surface_visible.set(active_surface.visible)
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Selected: {active_surface.name}")
+        self._set_project_dirty(True)
+
+    def start_move_transform(self) -> None:
+        self._start_active_transform("move")
+
+    def start_rotate_transform(self) -> None:
+        self._start_active_transform("rotate")
 
     def _scene_visibility_target_node_ids(self) -> tuple[str, ...]:
         browser_selection = self.scene_browser.selected_node_ids()
@@ -3762,6 +3790,23 @@ class OpenRetopWindow:
             return self.surface_name_entry
         return None
 
+    def _handle_keybind_action(self, action: str) -> None:
+        action_map = {
+            "rename_selected": lambda: self._handle_shortcut("F2"),
+            "toggle_visibility": lambda: self._handle_shortcut("H"),
+            "isolate_selected": lambda: self._handle_shortcut("Shift+H"),
+            "show_all": lambda: self._handle_shortcut("Alt+H"),
+            "frame_selected": lambda: self._handle_shortcut("F"),
+            "move": lambda: self._handle_shortcut("G"),
+            "rotate": lambda: self._handle_shortcut("R"),
+            "confirm_transform": lambda: self._handle_shortcut("Enter"),
+            "cancel_transform": lambda: self._handle_shortcut("Esc"),
+            "delete_selected": lambda: self._handle_shortcut("Delete"),
+        }
+        handler = action_map.get(action)
+        if handler is not None:
+            handler()
+
     def _handle_shortcut(self, key: str) -> None:
         if key == "F":
             self.frame_selected()
@@ -3772,7 +3817,7 @@ class OpenRetopWindow:
             return
 
         if key == "H":
-            self.hide_selected_scene_objects()
+            self.toggle_selected_scene_objects()
             return
 
         if key == "Shift+H":
@@ -3787,7 +3832,7 @@ class OpenRetopWindow:
             self._delete_selected_if_safe()
             return
 
-        if key == "Escape":
+        if key in {"Escape", "Esc"}:
             if self.app_state.transform_state is None:
                 self.app_state.active_transform_mode = None
                 self.app_state.active_transform_axis = None
@@ -3858,13 +3903,17 @@ class OpenRetopWindow:
             button.configure(state=state)
 
     def _settings_from_ui(self) -> AppSettings:
-        width, height = self._current_window_size()
+        if self.settings.ui.remember_window_size:
+            width, height = self._current_window_size()
+        else:
+            width = int(self.settings.ui.window_width)
+            height = int(self.settings.ui.window_height)
         return AppSettings(
             version=SETTINGS_VERSION,
             display=AppDisplaySettings(
                 show_grid=self.settings.display.show_grid,
                 show_axes=self.settings.display.show_axes,
-                show_normals=self.settings.display.show_normals,
+                show_normals=False,
             ),
             import_settings=AppImportSettings(
                 default_proxy_quality=normalize_proxy_quality(
@@ -3874,11 +3923,23 @@ class OpenRetopWindow:
             ui=AppUiSettings(
                 window_width=width,
                 window_height=height,
+                window_mode=self.settings.ui.window_mode,
+                remember_window_size=self.settings.ui.remember_window_size,
             ),
+            keybinds=copy.deepcopy(self.settings.keybinds),
             future=dict(self.settings.future),
         )
 
     def _current_window_size(self) -> tuple[int, int]:
+        try:
+            if str(self.root.state()) == "zoomed":
+                return (
+                    int(self.settings.ui.window_width),
+                    int(self.settings.ui.window_height),
+                )
+        except TclError:
+            pass
+
         width = int(self.root.winfo_width())
         height = int(self.root.winfo_height())
         if width > 1 and height > 1:
