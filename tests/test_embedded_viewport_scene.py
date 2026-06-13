@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from curves.curve_state import StoredCurve
 from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
-from sections.section_state import SectionPlaneState
+from sections.section_state import SectionPlaneState, set_plane_axis_offset
 from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.embedded_viewport import (
     EmbeddedVTKViewport,
@@ -266,6 +266,70 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertIs(actor, viewport._mesh_actor)
         self.assertAlmostEqual(actor.GetUserMatrix().GetElement(0, 3), 4.0)
 
+    def test_interactive_mesh_fast_path_skips_axis_gizmo_when_visibility_is_unchanged(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        mesh = self._triangle_mesh()
+        viewport._ensure_mesh_actor(mesh)
+        transform_key = viewport._active_mesh_transform_key(mesh, "move", "X", "model")
+        viewport._interactive_transform_key = transform_key
+        viewport._axis_gizmo_requested_visible = True
+        viewport._axis_gizmo_visible = True
+        axis_gizmo_calls: list[bool] = []
+        viewport._update_axis_gizmo = axis_gizmo_calls.append  # type: ignore[method-assign]
+        viewport._render = lambda: None  # type: ignore[method-assign]
+
+        handled = viewport._try_update_interactive_mesh_transform(
+            mesh,
+            np.identity(4),
+            transform_key=transform_key,
+            reset_camera=False,
+            show_grid=False,
+            show_axes=False,
+            show_normals=False,
+            show_section_plane=False,
+            section_axis="Z",
+            section_offset=0.0,
+            section_planes=None,
+            active_section_plane_id=None,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="move",
+            active_transform_axis="X",
+            active_transform_angle_delta=None,
+            section_result=None,
+            curve_results=[],
+            show_axis_gizmo=True,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(axis_gizmo_calls, [])
+
+        handled = viewport._try_update_interactive_mesh_transform(
+            mesh,
+            np.identity(4),
+            transform_key=transform_key,
+            reset_camera=False,
+            show_grid=False,
+            show_axes=False,
+            show_normals=False,
+            show_section_plane=False,
+            section_axis="Z",
+            section_offset=0.0,
+            section_planes=None,
+            active_section_plane_id=None,
+            selected_item="model",
+            object_origin=(0.0, 0.0, 0.0),
+            active_transform_mode="move",
+            active_transform_axis="X",
+            active_transform_angle_delta=None,
+            section_result=None,
+            curve_results=[],
+            show_axis_gizmo=False,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(axis_gizmo_calls, [False])
+
     def test_interactive_move_updates_selection_overlays_without_duplicate_actors(self) -> None:
         viewport = self._viewport()
         mesh = self._triangle_mesh()
@@ -279,6 +343,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         )
         first_actor = viewport._mesh_actor
         first_count = self._actor_count(viewport)
+        first_selection_actors = list(viewport._actor_groups["selection_overlays"])
+        first_gizmo_actors = list(viewport._actor_groups["active_transform_gizmo"])
         first_selection_key = viewport._group_keys["selection_overlays"]
         first_gizmo_key = viewport._group_keys["active_transform_gizmo"]
         translated = np.identity(4)
@@ -296,6 +362,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertIs(viewport._mesh_actor, first_actor)
         self.assertEqual(self._actor_count(viewport), first_count)
+        self.assertEqual(viewport._actor_groups["selection_overlays"], first_selection_actors)
+        self.assertEqual(viewport._actor_groups["active_transform_gizmo"], first_gizmo_actors)
         self.assertNotEqual(viewport._group_keys["selection_overlays"], first_selection_key)
         self.assertNotEqual(viewport._group_keys["active_transform_gizmo"], first_gizmo_key)
         self.assertIn((2.0, 0.0, 0.0), viewport._group_keys["selection_overlays"])
@@ -680,6 +748,45 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         points = self._actor_points(viewport._section_plane_actors[0])
         self.assertTrue(np.allclose(points @ normal, 0.0, atol=1e-7))
+
+    def test_section_plane_preview_updates_existing_actor_during_offset_changes(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        plane = SectionPlaneState(
+            id="plane-1",
+            name="Section Plane 1",
+            axis="Z",
+            offset=0.0,
+            visible=True,
+            selected=True,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            section_planes=(plane,),
+            active_section_plane_id=plane.id,
+        )
+        first_actor = viewport._section_plane_actors[0]
+        first_actor_count = self._actor_count(viewport)
+        first_key = viewport._group_keys["section_planes"]
+
+        set_plane_axis_offset(plane, "Z", 0.25)
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            section_planes=(plane,),
+            active_section_plane_id=plane.id,
+        )
+
+        self.assertIs(viewport._section_plane_actors[0], first_actor)
+        self.assertEqual(self._actor_count(viewport), first_actor_count)
+        self.assertNotEqual(viewport._group_keys["section_planes"], first_key)
+        updated_points = self._actor_points(first_actor)
+        self.assertTrue(np.allclose(updated_points[:, 2], 0.25))
+        self.assertTrue(
+            np.allclose(viewport._section_plane_pick_geometries[0].points[:, 2], 0.25)
+        )
 
     def test_selected_curve_renders_with_selected_overlay(self) -> None:
         viewport = self._viewport()

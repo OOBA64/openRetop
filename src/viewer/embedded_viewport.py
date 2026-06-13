@@ -393,7 +393,8 @@ class EmbeddedVTKViewport:
         )
         self._update_grid_actor(show_grid)
         self._update_axes_actor(show_axes)
-        self._update_axis_gizmo(show_axis_gizmo)
+        if self._axis_gizmo_requested_visible != bool(show_axis_gizmo):
+            self._update_axis_gizmo(show_axis_gizmo)
         self._update_section_plane_actors(
             mesh,
             show_section_plane=show_section_plane,
@@ -446,24 +447,30 @@ class EmbeddedVTKViewport:
         origin_key = _array_key(object_origin) if object_origin is not None else None
         selection_key = ("selection", bounds_key, origin_key, round(float(self._view_extent), 9))
         if self._group_keys.get("selection_overlays") != selection_key:
-            selection_actors = [
-                _line_actor(
-                    build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound),
-                    line_width=SELECTION_BOUNDING_BOX_LINE_WIDTH,
-                )
+            selection_geometries = [
+                build_bounding_box_outline(self._mesh_min_bound, self._mesh_max_bound)
             ]
+            selection_line_widths = [SELECTION_BOUNDING_BOX_LINE_WIDTH]
             if object_origin is not None:
-                selection_actors.append(
-                    _line_actor(
-                        build_origin_marker(object_origin, self._view_extent),
-                        line_width=2.2,
-                    )
-                )
-            self._replace_overlay_group(
+                selection_geometries.append(build_origin_marker(object_origin, self._view_extent))
+                selection_line_widths.append(2.2)
+            if not self._try_update_line_overlay_group(
                 "selection_overlays",
-                selection_actors,
+                selection_geometries,
+                selection_line_widths,
                 key=selection_key,
-            )
+            ):
+                self._replace_overlay_group(
+                    "selection_overlays",
+                    [
+                        _line_actor(geometry, line_width=line_width)
+                        for geometry, line_width in zip(
+                            selection_geometries,
+                            selection_line_widths,
+                        )
+                    ],
+                    key=selection_key,
+                )
 
         active_axis = _active_axis_for_gizmo(active_transform_mode, active_transform_axis)
         if active_transform_mode != "rotate":
@@ -486,18 +493,17 @@ class EmbeddedVTKViewport:
         if self._group_keys.get("active_transform_gizmo") == gizmo_key:
             return
 
-        gizmo_actors: list[vtkActor] = []
+        gizmo_geometries: list[LineGeometry] = []
+        gizmo_line_widths: list[float] = []
         if active_axis is not None:
-            gizmo_actors.append(
-                _line_actor(
-                    build_active_axis_indicator(
-                        object_origin,
-                        active_axis,
-                        self._view_extent,
-                    ),
-                    line_width=2.8,
+            gizmo_geometries.append(
+                build_active_axis_indicator(
+                    object_origin,
+                    active_axis,
+                    self._view_extent,
                 )
             )
+            gizmo_line_widths.append(2.8)
         if active_transform_mode == "rotate":
             rotation_bounds = self._rotation_overlay_bounds(mesh)
             assert rotation_bounds is not None
@@ -507,17 +513,15 @@ class EmbeddedVTKViewport:
                 ring_max_bound,
                 active_axis or "Z",
             )
-            gizmo_actors.append(
-                _line_actor(
-                    build_rotation_ring(
-                        object_origin,
-                        active_axis or "Z",
-                        self._view_extent,
-                        radius=ring_radius,
-                    ),
-                    line_width=2.4,
+            gizmo_geometries.append(
+                build_rotation_ring(
+                    object_origin,
+                    active_axis or "Z",
+                    self._view_extent,
+                    radius=ring_radius,
                 )
             )
+            gizmo_line_widths.append(2.4)
             if active_transform_angle_delta is not None:
                 angle_indicator = build_rotation_angle_indicator(
                     object_origin,
@@ -526,15 +530,21 @@ class EmbeddedVTKViewport:
                     active_transform_angle_delta,
                 )
                 if len(angle_indicator.lines) > 0:
-                    gizmo_actors.append(
-                        _line_actor(
-                            angle_indicator,
-                            line_width=2.0,
-                        )
-                    )
+                    gizmo_geometries.append(angle_indicator)
+                    gizmo_line_widths.append(2.0)
+        if self._try_update_line_overlay_group(
+            "active_transform_gizmo",
+            gizmo_geometries,
+            gizmo_line_widths,
+            key=gizmo_key,
+        ):
+            return
         self._replace_overlay_group(
             "active_transform_gizmo",
-            gizmo_actors,
+            [
+                _line_actor(geometry, line_width=line_width)
+                for geometry, line_width in zip(gizmo_geometries, gizmo_line_widths)
+            ],
             key=gizmo_key,
         )
 
@@ -750,8 +760,8 @@ class EmbeddedVTKViewport:
             self._section_plane_actors = self._actor_groups["section_planes"]
             return
 
-        section_actors: list[vtkActor] = []
         section_geometries: list[LineGeometry] = []
+        section_line_widths: list[float] = []
         for plane in planes_to_render:
             section_geometry = build_section_plane_preview(
                 plane.axis,
@@ -763,17 +773,28 @@ class EmbeddedVTKViewport:
                 normal=plane.normal,
             )
             section_geometries.append(section_geometry)
-            section_actors.append(
-                _line_actor(
-                    section_geometry,
-                    line_width=3.0 if plane.selected else 2.0,
-                )
-            )
+            section_line_widths.append(3.0 if plane.selected else 2.0)
+
+        self._remove_actor("section_plane")
+        if self._try_update_line_overlay_group(
+            "section_planes",
+            section_geometries,
+            section_line_widths,
+            key=key,
+        ):
+            self._section_plane_actors = self._actor_groups["section_planes"]
+            self._section_plane_pick_geometries = section_geometries
+            self._section_plane_pick_geometry = section_geometries[0]
+            return
+
+        section_actors = [
+            _line_actor(geometry, line_width=line_width)
+            for geometry, line_width in zip(section_geometries, section_line_widths)
+        ]
 
         self._section_plane_actors = section_actors
         self._section_plane_pick_geometries = section_geometries
         self._section_plane_pick_geometry = section_geometries[0]
-        self._remove_actor("section_plane")
         self._replace_overlay_group("section_planes", section_actors, key=key)
 
     def _section_planes_for_viewport(
@@ -871,18 +892,17 @@ class EmbeddedVTKViewport:
         if self._group_keys.get("active_transform_gizmo") == key:
             return
 
-        gizmo_actors: list[vtkActor] = []
+        gizmo_geometries: list[LineGeometry] = []
+        gizmo_line_widths: list[float] = []
         if active_axis is not None:
-            gizmo_actors.append(
-                _line_actor(
-                    build_active_axis_indicator(
-                        origin,
-                        active_axis,
-                        self._view_extent,
-                    ),
-                    line_width=2.8,
+            gizmo_geometries.append(
+                build_active_axis_indicator(
+                    origin,
+                    active_axis,
+                    self._view_extent,
                 )
             )
+            gizmo_line_widths.append(2.8)
         if active_transform_mode == "rotate":
             axis = active_axis or "Z"
             ring_radius = rotation_ring_radius_for_axis(
@@ -890,17 +910,15 @@ class EmbeddedVTKViewport:
                 self._mesh_max_bound if self._mesh_max_bound is not None else origin + 1.0,
                 axis,
             )
-            gizmo_actors.append(
-                _line_actor(
-                    build_rotation_ring(
-                        origin,
-                        axis,
-                        self._view_extent,
-                        radius=ring_radius,
-                    ),
-                    line_width=2.4,
+            gizmo_geometries.append(
+                build_rotation_ring(
+                    origin,
+                    axis,
+                    self._view_extent,
+                    radius=ring_radius,
                 )
             )
+            gizmo_line_widths.append(2.4)
             if active_transform_angle_delta is not None:
                 angle_indicator = build_rotation_angle_indicator(
                     origin,
@@ -909,16 +927,22 @@ class EmbeddedVTKViewport:
                     active_transform_angle_delta,
                 )
                 if len(angle_indicator.lines) > 0:
-                    gizmo_actors.append(
-                        _line_actor(
-                            angle_indicator,
-                            line_width=2.0,
-                        )
-                    )
+                    gizmo_geometries.append(angle_indicator)
+                    gizmo_line_widths.append(2.0)
 
+        if self._try_update_line_overlay_group(
+            "active_transform_gizmo",
+            gizmo_geometries,
+            gizmo_line_widths,
+            key=key,
+        ):
+            return
         self._replace_overlay_group(
             "active_transform_gizmo",
-            gizmo_actors,
+            [
+                _line_actor(geometry, line_width=line_width)
+                for geometry, line_width in zip(gizmo_geometries, gizmo_line_widths)
+            ],
             key=key,
         )
 
@@ -1110,6 +1134,37 @@ class EmbeddedVTKViewport:
         self._actor_keys.pop(role, None)
         if actor is not None:
             self.renderer.RemoveActor(actor)
+
+    def _try_update_line_overlay_group(
+        self,
+        group_name: str,
+        geometries: Sequence[LineGeometry],
+        line_widths: Sequence[float],
+        *,
+        key: object | None = None,
+    ) -> bool:
+        actors = self._actor_groups.get(group_name)
+        if (
+            actors is None
+            or len(actors) != len(geometries)
+            or len(line_widths) != len(geometries)
+        ):
+            return False
+
+        updates: list[tuple[vtkActor, vtkPolyDataMapper, LineGeometry, float]] = []
+        for actor, geometry, line_width in zip(actors, geometries, line_widths):
+            mapper = actor.GetMapper()
+            if mapper is None or not hasattr(mapper, "SetInputData"):
+                return False
+            updates.append((actor, mapper, geometry, float(line_width)))
+
+        for actor, mapper, geometry, line_width in updates:
+            mapper.SetInputData(_line_polydata(geometry))
+            mapper.Update()
+            actor.GetProperty().SetLineWidth(line_width)
+
+        self._group_keys[group_name] = key
+        return True
 
     def _replace_overlay_group(
         self,
