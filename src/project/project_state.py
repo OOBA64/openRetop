@@ -209,6 +209,10 @@ def _curves_from_collection(
             is_tiny_fragment=bool(curve.is_tiny_fragment),
             source_section_result_id=str(curve.section_result_id),
             source_plane_id=str(curve.plane_id),
+            metadata=_metadata_from_value(
+                curve.metadata,
+                "curve_collection.curve.metadata",
+            ),
         )
         for curve in curve_collection.curves
     ]

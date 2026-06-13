@@ -10,14 +10,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from curves.curve_state import (
     CurveCollection,
+    CurveRepairError,
     StoredCurve,
     add_curve,
+    auto_close_curve,
     clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
     get_tiny_curves,
     get_selected_curves,
     get_visible_curves,
+    join_curves,
     remove_curve,
     set_active_curve,
     set_selected_curves,
@@ -30,14 +33,16 @@ def _curve(
     section_result_id: str = "section-result-1",
     plane_id: str = "plane-1",
     visible: bool = True,
+    points: np.ndarray | None = None,
 ) -> StoredCurve:
-    points = np.asarray(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-        ],
-        dtype=float,
-    )
+    if points is None:
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
     return StoredCurve(
         id=curve_id,
         name=f"Curve {curve_id}",
@@ -162,6 +167,139 @@ class CurveStateTests(unittest.TestCase):
         self.assertTrue(tiny_curve.is_tiny_fragment)
         self.assertFalse(regular_curve.is_tiny_fragment)
         self.assertEqual(get_tiny_curves(collection), [tiny_curve])
+
+    def test_join_curves_orders_two_open_curves_by_nearest_endpoints(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        )
+        second_curve = _curve(
+            "curve-2",
+            points=np.asarray([[2.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        )
+
+        joined = join_curves(
+            [first_curve, second_curve],
+            curve_id="curve-joined",
+            name="Joined Curve 1",
+            tolerance=0.01,
+        )
+
+        self.assertEqual(joined.name, "Joined Curve 1")
+        self.assertEqual(joined.metadata["repair_type"], "join")
+        self.assertEqual(joined.metadata["source_curve_ids"], ["curve-1", "curve-2"])
+        self.assertEqual(joined.metadata["tolerance_used"], 0.01)
+        self.assertEqual(joined.metadata["original_endpoint_gap"], 0.0)
+        self.assertTrue(
+            np.allclose(
+                joined.fitted_points,
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            )
+        )
+        self.assertTrue(np.allclose(first_curve.fitted_points[-1], [1.0, 0.0, 0.0]))
+        self.assertTrue(np.allclose(second_curve.fitted_points[0], [2.0, 0.0, 0.0]))
+
+    def test_join_curves_orders_multiple_fragments(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            points=np.asarray([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
+        )
+        second_curve = _curve(
+            "curve-2",
+            points=np.asarray([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
+        )
+        third_curve = _curve(
+            "curve-3",
+            points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        )
+
+        joined = join_curves(
+            [first_curve, second_curve, third_curve],
+            curve_id="curve-joined",
+            name="Joined Curve 1",
+            tolerance=0.01,
+        )
+
+        self.assertEqual(
+            joined.metadata["source_curve_ids"],
+            ["curve-3", "curve-2", "curve-1"],
+        )
+        self.assertTrue(
+            np.allclose(
+                joined.fitted_points,
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [3.0, 0.0, 0.0],
+                ],
+            )
+        )
+
+    def test_join_curves_rejects_gaps_above_tolerance(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        )
+        second_curve = _curve(
+            "curve-2",
+            points=np.asarray([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
+        )
+
+        with self.assertRaises(CurveRepairError):
+            join_curves(
+                [first_curve, second_curve],
+                curve_id="curve-joined",
+                name="Joined Curve 1",
+                tolerance=0.01,
+            )
+
+    def test_auto_close_curve_below_tolerance_creates_closed_repair(self) -> None:
+        curve = _curve(
+            "curve-1",
+            points=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.001, 0.0, 0.0],
+                ],
+            ),
+        )
+
+        repaired = auto_close_curve(
+            curve,
+            curve_id="curve-closed",
+            name="Auto-Closed Curve 1",
+            tolerance=0.01,
+        )
+
+        self.assertTrue(repaired.is_closed)
+        self.assertEqual(repaired.metadata["repair_type"], "auto_close")
+        self.assertEqual(repaired.metadata["source_curve_ids"], ["curve-1"])
+        self.assertEqual(repaired.metadata["tolerance_used"], 0.01)
+        self.assertAlmostEqual(repaired.metadata["original_endpoint_gap"], 0.001)
+        self.assertTrue(np.allclose(repaired.fitted_points[0], repaired.fitted_points[-1]))
+        self.assertFalse(curve.is_closed)
+
+    def test_auto_close_curve_rejects_gap_above_tolerance(self) -> None:
+        curve = _curve(
+            "curve-1",
+            points=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.5, 0.0, 0.0],
+                ],
+            ),
+        )
+
+        with self.assertRaises(CurveRepairError):
+            auto_close_curve(
+                curve,
+                curve_id="curve-closed",
+                name="Auto-Closed Curve 1",
+                tolerance=0.01,
+            )
 
     def test_clear_curves_for_section_result_leaves_other_results(self) -> None:
         collection = CurveCollection()

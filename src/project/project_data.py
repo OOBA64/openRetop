@@ -103,6 +103,7 @@ class ProjectCurve:
     is_tiny_fragment: bool | None = None
     source_section_result_id: str | None = None
     source_plane_id: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.point_count is None:
@@ -144,6 +145,7 @@ class ProjectCurve:
             if self.source_plane_id is not None
             else self.plane_id
         )
+        self.metadata = dict(self.metadata)
 
 
 @dataclass

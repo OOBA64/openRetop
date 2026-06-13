@@ -283,6 +283,7 @@ class ProjectStateTests(unittest.TestCase):
                 max_error=0.1,
                 is_closed=False,
                 visible=True,
+                metadata={"repair_type": "join", "source_curve_ids": ["old-a"]},
             ),
         )
         add_curve(
@@ -327,6 +328,10 @@ class ProjectStateTests(unittest.TestCase):
         self.assertFalse(project.curves[0].is_tiny_fragment)
         self.assertEqual(project.curves[0].source_section_result_id, "section-a")
         self.assertEqual(project.curves[0].source_plane_id, "plane-a")
+        self.assertEqual(
+            project.curves[0].metadata,
+            {"repair_type": "join", "source_curve_ids": ["old-a"]},
+        )
         self.assertTrue(project.curves[0].visible)
         self.assertEqual(project.curves[1].id, "curve-b")
         self.assertFalse(project.curves[1].visible)

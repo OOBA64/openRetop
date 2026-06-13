@@ -25,6 +25,7 @@ from app.main_window import (
 from app.scene_browser import (
     NODE_CURVES,
     NODE_CURVE_GROUP_UNASSIGNED,
+    NODE_CURVE_GROUP_REPAIRED,
     NODE_MESH,
     NODE_SCENE,
     NODE_SECTION_PLANES,
@@ -384,9 +385,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.sections_menu.entrycget(0, "label"), "Add Section Plane")
             self.assertEqual(window.sections_menu.entrycget(2, "label"), "Compute Section")
             self.assertEqual(window.curves_menu.entrycget(0, "label"), "Create Surface From Selected Curves")
-            self.assertEqual(window.curves_menu.entrycget(5, "label"), "Select Tiny Curves")
-            self.assertEqual(window.curves_menu.entrycget(6, "label"), "Hide Tiny Curves")
-            self.assertEqual(window.curves_menu.entrycget(7, "label"), "Delete Tiny Curves")
+            self.assertEqual(window.curves_menu.entrycget(1, "label"), "Join Selected Curves")
+            self.assertEqual(window.curves_menu.entrycget(2, "label"), "Auto-Close Selected Curve")
+            self.assertEqual(window.curves_menu.entrycget(7, "label"), "Select Tiny Curves")
+            self.assertEqual(window.curves_menu.entrycget(8, "label"), "Hide Tiny Curves")
+            self.assertEqual(window.curves_menu.entrycget(9, "label"), "Delete Tiny Curves")
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Create Surface From Selected Curves")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
@@ -2141,10 +2144,14 @@ class MainWindowUiTests(unittest.TestCase):
             window.sections_menu.invoke(1)
             self.assertEqual(window.status_text.get(), "No selection")
             window.curves_menu.invoke(1)
-            self.assertEqual(window.status_text.get(), "No selected curves")
+            self.assertEqual(window.status_text.get(), "Select at least two curves to join")
             window.curves_menu.invoke(2)
-            self.assertEqual(window.status_text.get(), "No selected curves")
+            self.assertEqual(window.status_text.get(), "Select exactly one open curve to auto-close")
             window.curves_menu.invoke(3)
+            self.assertEqual(window.status_text.get(), "No selected curves")
+            window.curves_menu.invoke(4)
+            self.assertEqual(window.status_text.get(), "No selected curves")
+            window.curves_menu.invoke(5)
             self.assertEqual(window.status_text.get(), "No curves available")
             window.curves_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No curves available")
@@ -3630,7 +3637,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.app_state.curve_results, [first_curve])
             self.assertEqual(window.status_text.get(), "Hidden 1 unselected curves")
 
-            window.curves_menu.invoke(3)
+            window.curves_menu.invoke(5)
             self.assertTrue(first_curve.visible)
             self.assertTrue(second_curve.visible)
             self.assertEqual(window.status_text.get(), "All curves visible")
@@ -3714,6 +3721,133 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.app_state.surface_collection.surfaces, [])
             self.assertFalse(tree.exists(tiny_curve_node))
             self.assertEqual(window.status_text.get(), "Deleted tiny curve")
+        finally:
+            window.root.destroy()
+
+    def test_join_selected_curves_creates_repaired_curve_group_and_keeps_originals(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            first_points = np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+            second_points = np.asarray([[2.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+            first_curve = StoredCurve(
+                id="curve-a",
+                name="Fragment A",
+                section_result_id="section-a",
+                plane_id="plane-a",
+                original_points=first_points.copy(),
+                fitted_points=first_points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            second_curve = StoredCurve(
+                id="curve-b",
+                name="Fragment B",
+                section_result_id="section-a",
+                plane_id="plane-a",
+                original_points=second_points.copy(),
+                fitted_points=second_points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, first_curve)
+            add_curve(window.app_state.curve_collection, second_curve)
+            window.select_curves([first_curve.id, second_curve.id], active_curve_id=first_curve.id)
+
+            window.join_selected_curves()
+
+            curves = window.app_state.curve_collection.curves
+            joined_curve = curves[-1]
+            self.assertEqual(curves[:2], [first_curve, second_curve])
+            self.assertTrue(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(joined_curve.name, "Joined Curve 1")
+            self.assertEqual(joined_curve.metadata["repair_type"], "join")
+            self.assertEqual(joined_curve.metadata["source_curve_ids"], ["curve-a", "curve-b"])
+            self.assertEqual(joined_curve.metadata["tolerance_used"], 0.01)
+            self.assertTrue(
+                np.allclose(
+                    joined_curve.fitted_points,
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+                )
+            )
+            self.assertEqual(window.app_state.curve_collection.selected_curve_ids, {joined_curve.id})
+            self.assertEqual(
+                window.status_text.get(),
+                "Created joined curve from 2 curves (tolerance 0.010)",
+            )
+
+            tree = window.scene_browser.tree
+            joined_node = curve_node_id(joined_curve.id)
+            self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "Repaired Curves")
+            self.assertEqual(tree.get_children(NODE_CURVE_GROUP_REPAIRED), (joined_node,))
+            self.assertEqual(tree.item(joined_node, "text"), "[V] Joined Curve 1")
+        finally:
+            window.root.destroy()
+
+    def test_auto_close_selected_curve_creates_repaired_surface_source(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            points = np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.5, 1.0, 0.0],
+                    [0.001, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            source_curve = StoredCurve(
+                id="curve-open",
+                name="Open Curve",
+                section_result_id="section-a",
+                plane_id="plane-a",
+                original_points=points.copy(),
+                fitted_points=points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, source_curve)
+            window.select_curve(source_curve.id)
+
+            window.auto_close_selected_curve()
+
+            repaired_curve = window.app_state.curve_collection.curves[-1]
+            self.assertEqual(window.app_state.curve_collection.curves[0], source_curve)
+            self.assertFalse(source_curve.is_closed)
+            self.assertTrue(repaired_curve.is_closed)
+            self.assertEqual(repaired_curve.name, "Auto-Closed Curve 1")
+            self.assertEqual(repaired_curve.metadata["repair_type"], "auto_close")
+            self.assertEqual(repaired_curve.metadata["source_curve_ids"], ["curve-open"])
+            self.assertAlmostEqual(repaired_curve.metadata["original_endpoint_gap"], 0.001)
+            self.assertEqual(window.app_state.curve_collection.selected_curve_ids, {repaired_curve.id})
+            self.assertEqual(
+                window.status_text.get(),
+                "Created auto-closed curve (gap 0.001, tolerance 0.010)",
+            )
+            self.assertEqual(
+                window.scene_browser.tree.get_children(NODE_CURVE_GROUP_REPAIRED),
+                (curve_node_id(repaired_curve.id),),
+            )
+
+            window.create_surface_from_curves()
+
+            surface = window.app_state.surface_collection.surfaces[0]
+            self.assertEqual(surface.source_curve_ids, [repaired_curve.id])
+            self.assertEqual(surface.surface_type, "preview_fill")
+            self.assertTrue(surface.metadata["preview_available"])
+            self.assertEqual(
+                window.status_text.get(),
+                "Created Surface 1 preview from 1 curve",
+            )
         finally:
             window.root.destroy()
 
@@ -4309,7 +4443,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.curve_visible.set(False)
             window._on_curve_visibility_changed()
 
-            window.curves_menu.invoke(4)
+            window.curves_menu.invoke(6)
 
             self.assertEqual(window.app_state.section_collection.results, [first_result, second_result])
             self.assertEqual(window.app_state.section_collection.planes, [first_plane, second_plane])

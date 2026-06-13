@@ -83,6 +83,11 @@ def build_menu_bar(app: object) -> Menu:
         label="Create Surface From Selected Curves",
         command=app.create_surface_from_curves,
     )
+    app.curves_menu.add_command(label="Join Selected Curves", command=app.join_selected_curves)
+    app.curves_menu.add_command(
+        label="Auto-Close Selected Curve",
+        command=app.auto_close_selected_curve,
+    )
     app.curves_menu.add_command(label="Hide Selected Curves", command=app.hide_selected_curves)
     app.curves_menu.add_command(label="Hide Unselected Curves", command=app.hide_unselected_curves)
     app.curves_menu.add_command(label="Show All Curves", command=app.show_all_curves)

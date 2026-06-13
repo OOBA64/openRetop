@@ -13,6 +13,7 @@ from app.selection_types import (
     SELECT_SURFACE,
 )
 from curves.curve_state import StoredCurve
+from curves.curve_state import is_repaired_curve
 from sections.section_state import SectionPlaneState, StoredSectionResult
 from surfaces.surface_state import SurfacePatch
 
@@ -27,6 +28,8 @@ NODE_CURVES = "curves"
 NODE_CURVE = "curve"
 NODE_CURVE_GROUP = "curve_group"
 NODE_CURVE_GROUP_UNASSIGNED = f"{NODE_CURVE_GROUP}:unassigned"
+NODE_CURVE_GROUP_REPAIRED = f"{NODE_CURVE_GROUP}:repaired"
+CURVE_GROUP_REPAIRED_ID = "__repaired_curves__"
 NODE_SURFACES = "surfaces"
 NODE_SURFACE = "surface"
 
@@ -74,6 +77,8 @@ def curve_group_id_from_node(node_id: str | None) -> str | None:
         return None
     if node_id == NODE_CURVE_GROUP_UNASSIGNED:
         return ""
+    if node_id == NODE_CURVE_GROUP_REPAIRED:
+        return CURVE_GROUP_REPAIRED_ID
 
     prefix = f"{NODE_CURVE_GROUP}:"
     if not node_id.startswith(prefix):
@@ -415,7 +420,11 @@ class SceneBrowser:
 
         result_by_id = {result.id: result for result in section_results}
         curves_by_result_id: dict[str | None, list[StoredCurve]] = {}
+        repaired_curves: list[StoredCurve] = []
         for curve in curves:
+            if is_repaired_curve(curve):
+                repaired_curves.append(curve)
+                continue
             group_key = curve.section_result_id if curve.section_result_id in result_by_id else None
             curves_by_result_id.setdefault(group_key, []).append(curve)
 
@@ -435,6 +444,20 @@ class SceneBrowser:
                 open_node=True,
             )
             self._sync_curve_group_nodes(group_id, grouped_curves, current_node_ids)
+
+        if repaired_curves:
+            current_group_ids.append(NODE_CURVE_GROUP_REPAIRED)
+            self._ensure_node(
+                NODE_CURVE_GROUP_REPAIRED,
+                "Repaired Curves",
+                parent=NODE_CURVES,
+                open_node=True,
+            )
+            self._sync_curve_group_nodes(
+                NODE_CURVE_GROUP_REPAIRED,
+                repaired_curves,
+                current_node_ids,
+            )
 
         unassigned_curves = curves_by_result_id.get(None, [])
         if unassigned_curves:

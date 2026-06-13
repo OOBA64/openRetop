@@ -260,6 +260,7 @@ class ProjectIOTests(unittest.TestCase):
                         "is_tiny_fragment": False,
                         "source_section_result_id": "section-a",
                         "source_plane_id": "plane-a",
+                        "metadata": {},
                     },
                     {
                         "id": "curve-b",
@@ -279,6 +280,7 @@ class ProjectIOTests(unittest.TestCase):
                         "is_tiny_fragment": False,
                         "source_section_result_id": "section-b",
                         "source_plane_id": "plane-b",
+                        "metadata": {},
                     },
                 ],
                 "surfaces": [
@@ -349,6 +351,7 @@ class ProjectIOTests(unittest.TestCase):
                     "is_tiny_fragment": False,
                     "source_section_result_id": "section-a",
                     "source_plane_id": "plane-a",
+                    "metadata": {},
                 },
             ],
         )
@@ -493,6 +496,50 @@ class ProjectIOTests(unittest.TestCase):
                     visible=False,
                 ),
             ],
+        )
+
+    def test_project_from_dict_preserves_repaired_curve_metadata(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "curves": [
+                    {
+                        "id": "curve-joined",
+                        "name": "Joined Curve 1",
+                        "section_result_id": "section-a",
+                        "plane_id": "plane-a",
+                        "original_points": [[0, 0, 0], [1, 0, 0]],
+                        "fitted_points": [[0, 0, 0], [1, 0, 0]],
+                        "mean_error": 0.0,
+                        "max_error": 0.0,
+                        "is_closed": False,
+                        "visible": True,
+                        "metadata": {
+                            "source_curve_ids": ["curve-a", "curve-b"],
+                            "repair_type": "join",
+                            "tolerance_used": 0.01,
+                            "original_endpoint_gap": 0.001,
+                        },
+                    },
+                ],
+            }
+        )
+
+        curve = project.curves[0]
+
+        self.assertEqual(curve.metadata["repair_type"], "join")
+        self.assertEqual(curve.metadata["source_curve_ids"], ["curve-a", "curve-b"])
+
+        data = project_to_dict(project)
+
+        self.assertEqual(
+            data["curves"][0]["metadata"],
+            {
+                "source_curve_ids": ["curve-a", "curve-b"],
+                "repair_type": "join",
+                "tolerance_used": 0.01,
+                "original_endpoint_gap": 0.001,
+            },
         )
 
     def test_project_from_dict_rejects_invalid_curve_points_clearly(self) -> None:

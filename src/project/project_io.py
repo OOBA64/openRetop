@@ -134,6 +134,10 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
                 "is_tiny_fragment": bool(curve.is_tiny_fragment),
                 "source_section_result_id": curve.source_section_result_id,
                 "source_plane_id": curve.source_plane_id,
+                "metadata": _metadata_dict_value(
+                    curve.metadata,
+                    f"curves[{index}].metadata",
+                ),
             }
             for index, curve in enumerate(project.curves)
         ],
@@ -512,6 +516,10 @@ def _curves_value(value: object) -> list[ProjectCurve]:
                         _nested_value(curve_data, "source_plane_id", None),
                         f"{field_prefix}.source_plane_id",
                     )
+                ),
+                metadata=_metadata_dict_value(
+                    _nested_value(curve_data, "metadata", {}),
+                    f"{field_prefix}.metadata",
                 ),
             )
         )

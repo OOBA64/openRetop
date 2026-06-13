@@ -16,8 +16,10 @@ from app.menus import build_menu_bar
 from app.object_state import MeshObjectState
 from app.preferences_dialog import build_preferences_dialog
 from app.scene_browser import (
+    CURVE_GROUP_REPAIRED_ID,
     NODE_CURVES,
     NODE_CURVE_GROUP_UNASSIGNED,
+    NODE_CURVE_GROUP_REPAIRED,
     NODE_MESH,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
@@ -59,14 +61,18 @@ from app.transforms import (
 )
 from curves.curve_state import (
     CurveCollection,
+    CurveRepairError,
+    DEFAULT_CURVE_REPAIR_TOLERANCE,
     StoredCurve,
     add_curve,
+    auto_close_curve,
     clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
     get_selected_curves,
     get_tiny_curves,
     get_visible_curves,
+    join_curves,
     refresh_curve_diagnostics,
     remove_curve,
     set_active_curve,
@@ -634,6 +640,7 @@ class OpenRetopWindow:
                 is_closed=project_curve.is_closed,
                 visible=project_curve.visible,
                 selected=False,
+                metadata=dict(project_curve.metadata),
             )
             for project_curve in project.curves
         ]
@@ -1361,6 +1368,28 @@ class OpenRetopWindow:
         )
         self.delete_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.selection_buttons.append(self.delete_curve_button)
+        row += 1
+        self.join_curves_button = ttk.Button(
+            parent,
+            text="Join Selected Curves",
+            command=self.join_selected_curves,
+        )
+        self.join_curves_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.join_curves_button)
+        row += 1
+        self.auto_close_curve_button = ttk.Button(
+            parent,
+            text="Auto-Close Selected Curve",
+            command=self.auto_close_selected_curve,
+        )
+        self.auto_close_curve_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.auto_close_curve_button)
         row += 1
         self.hide_selected_curves_button = ttk.Button(
             parent,
@@ -2203,6 +2232,12 @@ class OpenRetopWindow:
         result_ids = {
             result.id for result in self.app_state.section_collection.results
         }
+        if section_result_id == CURVE_GROUP_REPAIRED_ID:
+            return [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if str(curve.metadata.get("repair_type", "")) in {"join", "auto_close"}
+            ]
         if section_result_id == "":
             return [
                 curve.id
@@ -2607,6 +2642,73 @@ class OpenRetopWindow:
         self.status_text.set(f"Selected: {active_curve.name}")
         self._set_project_dirty(True)
 
+    def join_selected_curves(self) -> None:
+        selected_curves = get_selected_curves(self.app_state.curve_collection)
+        if len(selected_curves) < 2:
+            self.status_text.set("Select at least two curves to join")
+            return
+
+        tolerance = self._curve_repair_tolerance()
+        try:
+            repaired_curve = join_curves(
+                selected_curves,
+                curve_id=f"curve-{uuid4().hex}",
+                name=self._next_repaired_curve_name("Joined Curve"),
+                tolerance=tolerance,
+            )
+        except CurveRepairError as exc:
+            self.status_text.set(f"{exc} Tolerance: {tolerance:.3f}")
+            return
+
+        add_curve(self.app_state.curve_collection, repaired_curve)
+        self._sync_visible_curve_results()
+        self.select_curve(repaired_curve.id)
+        source_count = len(selected_curves)
+        self.status_text.set(
+            f"Created joined curve from {source_count} curves "
+            f"(tolerance {tolerance:.3f})"
+        )
+        self._set_project_dirty(True)
+
+    def auto_close_selected_curve(self) -> None:
+        selected_curves = get_selected_curves(self.app_state.curve_collection)
+        if len(selected_curves) != 1:
+            self.status_text.set("Select exactly one open curve to auto-close")
+            return
+
+        selected_curve = selected_curves[0]
+        refresh_curve_diagnostics(selected_curve)
+        tolerance = self._curve_repair_tolerance()
+        endpoint_gap = selected_curve.endpoint_distance
+        if selected_curve.is_closed:
+            self.status_text.set("Selected curve is already closed")
+            return
+        if endpoint_gap > tolerance:
+            self.status_text.set(
+                f"Endpoint gap {endpoint_gap:.3f} exceeds tolerance {tolerance:.3f}"
+            )
+            return
+
+        try:
+            repaired_curve = auto_close_curve(
+                selected_curve,
+                curve_id=f"curve-{uuid4().hex}",
+                name=self._next_repaired_curve_name("Auto-Closed Curve"),
+                tolerance=tolerance,
+            )
+        except CurveRepairError as exc:
+            self.status_text.set(f"{exc} Tolerance: {tolerance:.3f}")
+            return
+
+        add_curve(self.app_state.curve_collection, repaired_curve)
+        self._sync_visible_curve_results()
+        self.select_curve(repaired_curve.id)
+        self.status_text.set(
+            f"Created auto-closed curve "
+            f"(gap {endpoint_gap:.3f}, tolerance {tolerance:.3f})"
+        )
+        self._set_project_dirty(True)
+
     def create_surface_from_curves(self) -> None:
         if not self.app_state.curve_collection.curves:
             self.status_text.set("No curves available")
@@ -2695,6 +2797,31 @@ class OpenRetopWindow:
         while f"Surface {index}" in existing_names:
             index += 1
         return f"Surface {index}"
+
+    def _next_repaired_curve_name(self, prefix: str) -> str:
+        existing_names = {
+            curve.name for curve in self.app_state.curve_collection.curves
+        }
+        index = 1
+        while f"{prefix} {index}" in existing_names:
+            index += 1
+        return f"{prefix} {index}"
+
+    def _curve_repair_tolerance(self) -> float:
+        mesh_object = self.app_state.mesh_object
+        if (
+            mesh_object is None
+            or mesh_object.source_bounds_min is None
+            or mesh_object.source_bounds_max is None
+        ):
+            return DEFAULT_CURVE_REPAIR_TOLERANCE
+
+        bounds_min = np.asarray(mesh_object.source_bounds_min, dtype=float)
+        bounds_max = np.asarray(mesh_object.source_bounds_max, dtype=float)
+        extent = float(np.max(bounds_max - bounds_min))
+        if extent <= 0.0 or not np.isfinite(extent):
+            return DEFAULT_CURVE_REPAIR_TOLERANCE
+        return max(DEFAULT_CURVE_REPAIR_TOLERANCE, extent * 0.002)
 
     def delete_selected_curve(self) -> None:
         active_curve = self._active_curve()
@@ -3386,6 +3513,13 @@ class OpenRetopWindow:
                     curve_node_id(curve.id)
                     for curve in self.app_state.curve_collection.curves
                     if curve.section_result_id not in section_result_ids
+                    and str(curve.metadata.get("repair_type", "")) not in {"join", "auto_close"}
+                )
+            elif node_id == NODE_CURVE_GROUP_REPAIRED:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                    if str(curve.metadata.get("repair_type", "")) in {"join", "auto_close"}
                 )
             else:
                 for result in self.app_state.section_collection.results:
