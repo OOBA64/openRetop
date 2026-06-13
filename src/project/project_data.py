@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import dist
 
 
 PROJECT_VERSION = 1
+CURVE_TINY_MIN_POINT_COUNT = 2
+CURVE_TINY_MIN_LENGTH = 0.01
+CURVE_TINY_MIN_BOUNDING_BOX_SIZE = 0.01
 
 
 @dataclass
@@ -61,6 +65,23 @@ class ProjectSectionResult:
     visible: bool
     polylines: list[list[list[float]]]
     segment_count: int
+    plane_origin: list[float] | None = None
+    plane_normal: list[float] | None = None
+    is_arbitrary_plane: bool = False
+
+    def __post_init__(self) -> None:
+        axis = self.axis.upper()
+        self.plane_origin = _vector3_list(
+            self.plane_origin
+            if self.plane_origin is not None
+            else _axis_origin(axis, self.offset)
+        )
+        self.plane_normal = _vector3_list(
+            self.plane_normal
+            if self.plane_normal is not None
+            else _axis_normal(axis)
+        )
+        self.is_arbitrary_plane = bool(self.is_arbitrary_plane)
 
 
 @dataclass
@@ -75,6 +96,54 @@ class ProjectCurve:
     max_error: float
     is_closed: bool
     visible: bool
+    point_count: int | None = None
+    length: float | None = None
+    endpoint_distance: float | None = None
+    bounding_box_size: float | None = None
+    is_tiny_fragment: bool | None = None
+    source_section_result_id: str | None = None
+    source_plane_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.point_count is None:
+            self.point_count = len(self.fitted_points)
+        else:
+            self.point_count = int(self.point_count)
+
+        if self.length is None:
+            self.length = _polyline_length(self.fitted_points)
+        else:
+            self.length = float(self.length)
+
+        if self.endpoint_distance is None:
+            self.endpoint_distance = _endpoint_distance(self.fitted_points)
+        else:
+            self.endpoint_distance = float(self.endpoint_distance)
+
+        if self.bounding_box_size is None:
+            self.bounding_box_size = _bounding_box_size(self.fitted_points)
+        else:
+            self.bounding_box_size = float(self.bounding_box_size)
+
+        if self.is_tiny_fragment is None:
+            self.is_tiny_fragment = (
+                self.point_count < CURVE_TINY_MIN_POINT_COUNT
+                or self.length < CURVE_TINY_MIN_LENGTH
+                or self.bounding_box_size < CURVE_TINY_MIN_BOUNDING_BOX_SIZE
+            )
+        else:
+            self.is_tiny_fragment = bool(self.is_tiny_fragment)
+
+        self.source_section_result_id = (
+            str(self.source_section_result_id)
+            if self.source_section_result_id is not None
+            else self.section_result_id
+        )
+        self.source_plane_id = (
+            str(self.source_plane_id)
+            if self.source_plane_id is not None
+            else self.plane_id
+        )
 
 
 @dataclass
@@ -148,3 +217,25 @@ def _vector3_list(value: list[float] | tuple[float, float, float]) -> list[float
     if len(values) != 3:
         raise ValueError("Section plane orientation values must contain three numbers.")
     return [float(component) for component in values]
+
+
+def _polyline_length(points: list[list[float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    return float(sum(dist(start, end) for start, end in zip(points[:-1], points[1:])))
+
+
+def _endpoint_distance(points: list[list[float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    return float(dist(points[0], points[-1]))
+
+
+def _bounding_box_size(points: list[list[float]]) -> float:
+    if len(points) == 0:
+        return 0.0
+
+    columns = list(zip(*points, strict=False))
+    return float(max(max(column) - min(column) for column in columns))

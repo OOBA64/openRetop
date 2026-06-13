@@ -87,6 +87,9 @@ def build_menu_bar(app: object) -> Menu:
     app.curves_menu.add_command(label="Hide Unselected Curves", command=app.hide_unselected_curves)
     app.curves_menu.add_command(label="Show All Curves", command=app.show_all_curves)
     app.curves_menu.add_command(label="Delete Selected Curve", command=app.delete_selected_curve)
+    app.curves_menu.add_command(label="Select Tiny Curves", command=app.select_tiny_curves)
+    app.curves_menu.add_command(label="Hide Tiny Curves", command=app.hide_tiny_curves)
+    app.curves_menu.add_command(label="Delete Tiny Curves", command=app.delete_tiny_curves)
     menu_bar.add_cascade(label="Curves", menu=app.curves_menu)
 
     app.surfaces_menu = Menu(menu_bar, tearoff=False)

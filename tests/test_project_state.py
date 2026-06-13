@@ -205,8 +205,66 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(result.axis, "Z")
         self.assertEqual(result.offset, 0.25)
         self.assertFalse(result.visible)
+        self.assertEqual(result.plane_origin, [0.0, 0.0, 0.25])
+        self.assertEqual(result.plane_normal, [0.0, 0.0, 1.0])
+        self.assertFalse(result.is_arbitrary_plane)
         self.assertEqual(result.polylines, [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]])
         self.assertEqual(result.segment_count, 1)
+
+    def test_project_from_app_state_exports_arbitrary_section_result_metadata(self) -> None:
+        collection = SectionCollection()
+        plane = SectionPlaneState(
+            id="plane-a",
+            name="Rotated Plane",
+            axis="Z",
+            offset=0.0,
+            visible=True,
+            origin=np.asarray([0.0, 0.0, 0.0], dtype=float),
+            normal=np.asarray([1.0, 0.0, 1.0], dtype=float),
+        )
+        add_plane(collection, plane)
+        normal = np.asarray([1.0, 0.0, 1.0], dtype=float)
+        normal = normal / np.linalg.norm(normal)
+        add_result(
+            collection,
+            StoredSectionResult(
+                id="section-a",
+                name="Rotated Section",
+                plane_id="plane-a",
+                axis="Z",
+                offset=0.0,
+                visible=True,
+                result=SectionResult(
+                    axis="Z",
+                    offset=0.0,
+                    polylines=tuple(),
+                    segment_count=0,
+                    plane_origin=np.asarray([0.0, 0.0, 0.0], dtype=float),
+                    plane_normal=normal,
+                    is_arbitrary_plane=True,
+                ),
+                plane_origin=np.asarray([0.0, 0.0, 0.0], dtype=float),
+                plane_normal=normal,
+                is_arbitrary_plane=True,
+            ),
+        )
+
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            section_collection=collection,
+        )
+
+        result = project.section_results[0]
+        self.assertEqual(result.plane_origin, [0.0, 0.0, 0.0])
+        self.assertTrue(np.allclose(result.plane_normal, normal))
+        self.assertTrue(result.is_arbitrary_plane)
 
     def test_project_from_app_state_exports_all_stored_curves(self) -> None:
         curve_collection = CurveCollection()
@@ -262,6 +320,13 @@ class ProjectStateTests(unittest.TestCase):
             project.curves[0].fitted_points,
             [[0.0, 0.0, 0.0], [0.5, 0.25, 0.0], [1.0, 0.0, 0.0]],
         )
+        self.assertEqual(project.curves[0].point_count, 3)
+        self.assertAlmostEqual(project.curves[0].length, 1.118033988749895)
+        self.assertEqual(project.curves[0].endpoint_distance, 1.0)
+        self.assertEqual(project.curves[0].bounding_box_size, 1.0)
+        self.assertFalse(project.curves[0].is_tiny_fragment)
+        self.assertEqual(project.curves[0].source_section_result_id, "section-a")
+        self.assertEqual(project.curves[0].source_plane_id, "plane-a")
         self.assertTrue(project.curves[0].visible)
         self.assertEqual(project.curves[1].id, "curve-b")
         self.assertFalse(project.curves[1].visible)

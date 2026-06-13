@@ -65,7 +65,9 @@ from curves.curve_state import (
     clear_curves_for_plane,
     clear_curves_for_section_result,
     get_selected_curves,
+    get_tiny_curves,
     get_visible_curves,
+    refresh_curve_diagnostics,
     remove_curve,
     set_active_curve,
     set_selected_curves,
@@ -77,6 +79,7 @@ from geometry.sections import (
     SectionPolyline,
     SectionResult,
     extract_section,
+    extract_section_by_plane,
     normalize_axis,
 )
 from mesh.display_proxy import (
@@ -359,9 +362,12 @@ class OpenRetopWindow:
         self.curve_section_text = StringVar(value="(none)")
         self.curve_plane_text = StringVar(value="(none)")
         self.curve_point_count_text = StringVar(value="0")
+        self.curve_length_text = StringVar(value="0.000")
+        self.curve_endpoint_gap_text = StringVar(value="0.000")
         self.curve_mean_error_text = StringVar(value="0.000")
         self.curve_max_error_text = StringVar(value="0.000")
         self.curve_closed_text = StringVar(value="Open")
+        self.curve_tiny_text = StringVar(value="No")
         self.surface_visible = BooleanVar(value=True)
         self.surface_name_text = StringVar(value="(none)")
         self.surface_type_text = StringVar(value="(none)")
@@ -590,6 +596,9 @@ class OpenRetopWindow:
                 offset=float(project_result.offset),
                 polylines=polylines,
                 segment_count=int(project_result.segment_count),
+                plane_origin=np.asarray(project_result.plane_origin, dtype=float),
+                plane_normal=np.asarray(project_result.plane_normal, dtype=float),
+                is_arbitrary_plane=bool(project_result.is_arbitrary_plane),
             )
             try:
                 add_result(
@@ -603,6 +612,9 @@ class OpenRetopWindow:
                         offset=project_result.offset,
                         result=result,
                         visible=project_result.visible,
+                        plane_origin=np.asarray(project_result.plane_origin, dtype=float),
+                        plane_normal=np.asarray(project_result.plane_normal, dtype=float),
+                        is_arbitrary_plane=bool(project_result.is_arbitrary_plane),
                     ),
                 )
             except ValueError:
@@ -625,6 +637,8 @@ class OpenRetopWindow:
             )
             for project_curve in project.curves
         ]
+        for curve in curves:
+            refresh_curve_diagnostics(curve)
         self.app_state.curve_collection = CurveCollection(
             curves=curves,
             active_curve_id=None,
@@ -1334,9 +1348,12 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Section", self.curve_section_text)
         row = self._add_info_row(parent, row, "Plane", self.curve_plane_text)
         row = self._add_info_row(parent, row, "Points", self.curve_point_count_text)
+        row = self._add_info_row(parent, row, "Length", self.curve_length_text)
+        row = self._add_info_row(parent, row, "Endpoint gap", self.curve_endpoint_gap_text)
+        row = self._add_info_row(parent, row, "Shape", self.curve_closed_text)
         row = self._add_info_row(parent, row, "Mean error", self.curve_mean_error_text)
         row = self._add_info_row(parent, row, "Max error", self.curve_max_error_text)
-        row = self._add_info_row(parent, row, "Shape", self.curve_closed_text)
+        row = self._add_info_row(parent, row, "Tiny fragment", self.curve_tiny_text)
         self.delete_curve_button = ttk.Button(
             parent,
             text="Delete Selected Curve",
@@ -1386,6 +1403,48 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         self.selection_buttons.append(self.show_all_curves_button)
+        row += 1
+        self.select_tiny_curves_button = ttk.Button(
+            parent,
+            text="Select Tiny Curves",
+            command=self.select_tiny_curves,
+        )
+        self.select_tiny_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.select_tiny_curves_button)
+        row += 1
+        self.hide_tiny_curves_button = ttk.Button(
+            parent,
+            text="Hide Tiny Curves",
+            command=self.hide_tiny_curves,
+        )
+        self.hide_tiny_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.hide_tiny_curves_button)
+        row += 1
+        self.delete_tiny_curves_button = ttk.Button(
+            parent,
+            text="Delete Tiny Curves",
+            command=self.delete_tiny_curves,
+        )
+        self.delete_tiny_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        self.selection_buttons.append(self.delete_tiny_curves_button)
         row += 1
         self.curve_deselect_button = ttk.Button(
             parent,
@@ -2227,13 +2286,23 @@ class OpenRetopWindow:
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[0])
             section_mesh = self._transformed_source_mesh()
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[1])
-            section_result = extract_section(
-                section_mesh,
-                axis=active_plane.axis,
-                offset=active_plane.offset,
-                origin=plane_origin(active_plane),
-                normal=plane_normal(active_plane),
-            )
+            active_plane_origin = plane_origin(active_plane)
+            active_plane_normal = plane_normal(active_plane)
+            is_arbitrary_plane = not self._section_plane_is_axis_aligned(active_plane)
+            if is_arbitrary_plane:
+                section_result = extract_section_by_plane(
+                    section_mesh,
+                    active_plane_origin,
+                    active_plane_normal,
+                    axis=active_plane.axis,
+                    offset=active_plane.offset,
+                )
+            else:
+                section_result = extract_section(
+                    section_mesh,
+                    axis=active_plane.axis,
+                    offset=active_plane.offset,
+                )
             stored_result = StoredSectionResult(
                 id=f"section-result-{uuid4().hex}",
                 name=self._next_section_result_name(),
@@ -2241,6 +2310,9 @@ class OpenRetopWindow:
                 axis=active_plane.axis,
                 offset=active_plane.offset,
                 result=section_result,
+                plane_origin=active_plane_origin,
+                plane_normal=active_plane_normal,
+                is_arbitrary_plane=is_arbitrary_plane,
             )
             add_result(self.app_state.section_collection, stored_result)
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[2])
@@ -2249,7 +2321,11 @@ class OpenRetopWindow:
             self._update_section_plane_label(set_status=False)
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[3])
             self._refresh_viewport(reset_camera=False)
-            self.status_text.set(self._section_result_status(stored_result))
+            self.status_text.set(
+                self._arbitrary_section_status(active_plane)
+                if stored_result.is_arbitrary_plane
+                else self._section_result_status(stored_result)
+            )
         finally:
             if progress is not None:
                 progress.close()
@@ -2384,6 +2460,8 @@ class OpenRetopWindow:
             )
 
     def _sync_visible_curve_results(self) -> None:
+        for curve in self.app_state.curve_collection.curves:
+            refresh_curve_diagnostics(curve)
         self.app_state.curve_results = list(
             get_visible_curves(self.app_state.curve_collection)
         )
@@ -2446,19 +2524,26 @@ class OpenRetopWindow:
             self.curve_section_text.set("(none)")
             self.curve_plane_text.set("(none)")
             self.curve_point_count_text.set("0")
+            self.curve_length_text.set("0.000")
+            self.curve_endpoint_gap_text.set("0.000")
             self.curve_mean_error_text.set("0.000")
             self.curve_max_error_text.set("0.000")
             self.curve_closed_text.set("Open")
+            self.curve_tiny_text.set("No")
             return
 
+        refresh_curve_diagnostics(active_curve)
         self.curve_visible.set(bool(active_curve.visible))
         self.curve_name_text.set(active_curve.name)
         self.curve_section_text.set(self._section_result_name_for_curve(active_curve))
         self.curve_plane_text.set(self._section_plane_summary_for_curve(active_curve))
-        self.curve_point_count_text.set(str(len(active_curve.fitted_points)))
+        self.curve_point_count_text.set(str(active_curve.point_count))
+        self.curve_length_text.set(f"{active_curve.length:.3f}")
+        self.curve_endpoint_gap_text.set(f"{active_curve.endpoint_distance:.3f}")
         self.curve_mean_error_text.set(f"{active_curve.mean_error:.3f}")
         self.curve_max_error_text.set(f"{active_curve.max_error:.3f}")
         self.curve_closed_text.set("Closed" if active_curve.is_closed else "Open")
+        self.curve_tiny_text.set("Yes" if active_curve.is_tiny_fragment else "No")
 
     def _section_result_name_for_curve(self, curve: StoredCurve) -> str:
         for result in self.app_state.section_collection.results:
@@ -2700,6 +2785,84 @@ class OpenRetopWindow:
         self.status_text.set("All curves visible")
         self._set_project_dirty(True)
 
+    def select_tiny_curves(self) -> None:
+        tiny_curves = self._tiny_curves()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        if not tiny_curves:
+            self.status_text.set("No tiny curves found")
+            return
+
+        tiny_curve_ids = [curve.id for curve in tiny_curves]
+        self.select_curves(tiny_curve_ids, active_curve_id=tiny_curve_ids[0])
+        count = len(tiny_curve_ids)
+        self.status_text.set(
+            "Selected tiny curve" if count == 1 else f"Selected {count} tiny curves"
+        )
+
+    def hide_tiny_curves(self) -> None:
+        tiny_curves = self._tiny_curves()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        if not tiny_curves:
+            self.status_text.set("No tiny curves found")
+            return
+
+        hidden_count = 0
+        for curve in tiny_curves:
+            if curve.visible:
+                curve.visible = False
+                hidden_count += 1
+        self._sync_curve_context_from_active_curve()
+        self._sync_visible_curve_results()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(
+            "No visible tiny curves"
+            if hidden_count == 0
+            else (
+                "Hidden tiny curve"
+                if hidden_count == 1
+                else f"Hidden {hidden_count} tiny curves"
+            )
+        )
+        if hidden_count:
+            self._set_project_dirty(True)
+
+    def delete_tiny_curves(self) -> None:
+        tiny_curves = self._tiny_curves()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        if not tiny_curves:
+            self.status_text.set("No tiny curves found")
+            return
+
+        tiny_curve_ids = [curve.id for curve in tiny_curves]
+        self._clear_surfaces_for_curve_ids(tiny_curve_ids)
+        for curve_id in tiny_curve_ids:
+            remove_curve(self.app_state.curve_collection, curve_id)
+
+        self._sync_visible_curve_results()
+        self._sync_surface_context_from_active_surface()
+        count = len(tiny_curve_ids)
+        status = (
+            "Deleted tiny curve" if count == 1 else f"Deleted {count} tiny curves"
+        )
+        if self._active_curve() is not None:
+            self._sync_curve_context_from_active_curve()
+            self._set_selected_item(SELECT_CURVE, status=status)
+        else:
+            self._sync_curve_context_from_active_curve()
+            self._set_selected_item(None, status=status)
+        self._set_project_dirty(True)
+
+    def _tiny_curves(self) -> list[StoredCurve]:
+        for curve in self.app_state.curve_collection.curves:
+            refresh_curve_diagnostics(curve)
+        return get_tiny_curves(self.app_state.curve_collection)
+
     def _sync_surface_context_from_active_surface(self) -> None:
         active_surface = self._active_surface()
         if active_surface is None:
@@ -2805,6 +2968,22 @@ class OpenRetopWindow:
             f"{stored_result.result.segment_count} segments"
         )
 
+    @staticmethod
+    def _arbitrary_section_status(active_plane: SectionPlaneState) -> str:
+        return f"Computed arbitrary section from {active_plane.name}"
+
+    def _section_plane_is_axis_aligned(
+        self,
+        active_plane: SectionPlaneState,
+    ) -> bool:
+        axis = normalize_axis(active_plane.axis)
+        axis_vector = world_axis_vector(axis)
+        origin_offset = float(np.dot(plane_origin(active_plane), axis_vector))
+        return bool(
+            np.allclose(plane_normal(active_plane), axis_vector, atol=1e-6)
+            and abs(origin_offset - active_plane.offset) <= 1e-6
+        )
+
     def _clear_active_section_results(self) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
         if active_plane is not None:
@@ -2902,6 +3081,8 @@ class OpenRetopWindow:
         self._refresh_scene_browser()
 
     def _refresh_scene_browser(self) -> None:
+        for curve in self.app_state.curve_collection.curves:
+            refresh_curve_diagnostics(curve)
         self.scene_browser.update_scene(
             has_mesh=self.app_state.mesh_object is not None,
             mesh_name=(

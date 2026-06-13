@@ -384,6 +384,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.sections_menu.entrycget(0, "label"), "Add Section Plane")
             self.assertEqual(window.sections_menu.entrycget(2, "label"), "Compute Section")
             self.assertEqual(window.curves_menu.entrycget(0, "label"), "Create Surface From Selected Curves")
+            self.assertEqual(window.curves_menu.entrycget(5, "label"), "Select Tiny Curves")
+            self.assertEqual(window.curves_menu.entrycget(6, "label"), "Hide Tiny Curves")
+            self.assertEqual(window.curves_menu.entrycget(7, "label"), "Delete Tiny Curves")
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Create Surface From Selected Curves")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
@@ -3634,6 +3637,86 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_tiny_curve_commands_select_hide_delete_and_remove_surfaces(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            window.compute_section()
+            regular_curve = window.app_state.curve_collection.curves[0]
+            tiny_points = np.asarray([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]])
+            tiny_curve = StoredCurve(
+                id="curve-tiny",
+                name="Tiny Curve",
+                section_result_id=regular_curve.section_result_id,
+                plane_id=regular_curve.plane_id,
+                original_points=tiny_points.copy(),
+                fitted_points=tiny_points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, tiny_curve)
+            surface = SurfacePatch(
+                id="surface-tiny",
+                name="Tiny Surface",
+                source_curve_ids=[tiny_curve.id],
+                surface_type="preview_fill",
+            )
+            add_surface(window.app_state.surface_collection, surface)
+            window._refresh_viewport(reset_camera=False)
+
+            tree = window.scene_browser.tree
+            tiny_curve_node = curve_node_id(tiny_curve.id)
+            self.assertEqual(tree.item(tiny_curve_node, "text"), "[V] Tiny Curve (tiny)")
+            self.assertFalse(regular_curve.is_tiny_fragment)
+            self.assertTrue(tiny_curve.is_tiny_fragment)
+
+            window.select_tiny_curves()
+
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(window.app_state.curve_collection.selected_curve_ids, {tiny_curve.id})
+            self.assertEqual(window.curve_tiny_text.get(), "Yes")
+            self.assertEqual(window.status_text.get(), "Selected tiny curve")
+
+            window.hide_tiny_curves()
+
+            self.assertFalse(tiny_curve.visible)
+            self.assertEqual(window.app_state.curve_results, [regular_curve])
+            self.assertEqual(tree.item(tiny_curve_node, "text"), "[H] Tiny Curve (tiny)")
+            self.assertEqual(window.status_text.get(), "Hidden tiny curve")
+
+            window.show_all_curves()
+            self.assertTrue(tiny_curve.visible)
+
+            window.delete_tiny_curves()
+
+            self.assertEqual(window.app_state.curve_collection.curves, [regular_curve])
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+            self.assertFalse(tree.exists(tiny_curve_node))
+            self.assertEqual(window.status_text.get(), "Deleted tiny curve")
+        finally:
+            window.root.destroy()
+
     def test_create_surface_rejects_open_single_curve_and_more_than_two_curves(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
@@ -4072,6 +4155,60 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_compute_section_uses_rotated_plane_origin_and_normal(self) -> None:
+        mesh = FakeMesh()
+        metadata = MeshMetadata(
+            file_path=Path("sample.stl"),
+            file_name="sample.stl",
+            extension=".stl",
+            vertex_count=3,
+            triangle_count=1,
+            had_vertex_normals=True,
+            had_triangle_normals=True,
+            computed_vertex_normals=False,
+            computed_triangle_normals=False,
+        )
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            with patch(
+                "app.main_window.load_mesh",
+                return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+            ):
+                window.load_model(Path("sample.stl"))
+
+            active_plane = window.app_state.section_collection.planes[0]
+            normal = np.asarray([1.0, 0.0, -1.0], dtype=float)
+            normal = normal / np.linalg.norm(normal)
+            set_plane_origin_normal(
+                active_plane,
+                np.asarray([0.0, 0.0, 0.0], dtype=float),
+                normal,
+            )
+            window._sync_section_controls_from_plane_orientation(active_plane)
+
+            window.compute_section()
+
+            stored_result = window.app_state.section_collection.results[0]
+            self.assertTrue(stored_result.is_arbitrary_plane)
+            self.assertTrue(stored_result.result.is_arbitrary_plane)
+            self.assertTrue(np.allclose(stored_result.plane_origin, [0.0, 0.0, 0.0]))
+            self.assertTrue(np.allclose(stored_result.plane_normal, normal))
+            self.assertEqual(
+                window.status_text.get(),
+                "Computed arbitrary section from Section Plane 1",
+            )
+            self.assertGreater(stored_result.result.segment_count, 0)
+            self.assertEqual(len(window.app_state.curve_collection.curves), 1)
+            self.assertEqual(
+                window.app_state.curve_collection.curves[0].section_result_id,
+                stored_result.id,
+            )
+        finally:
+            window.root.destroy()
+
     def test_curve_selection_visibility_and_delete_preserve_section_results(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
@@ -4130,7 +4267,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.curve_section_text.get(), "Section 1")
             self.assertEqual(window.curve_plane_text.get(), f"{first_plane.name} (Z = 0.000)")
             self.assertEqual(window.curve_point_count_text.get(), "2")
+            self.assertEqual(window.curve_length_text.get(), "1.000")
+            self.assertEqual(window.curve_endpoint_gap_text.get(), "1.000")
             self.assertEqual(window.curve_closed_text.get(), "Open")
+            self.assertEqual(window.curve_tiny_text.get(), "No")
             self.assertTrue(window.curve_visible.get())
             self.assertEqual(window.viewport.scene_calls[-1]["curve_results"], [first_curve, second_curve])
             self.assertTrue(window.viewport.scene_calls[-1]["curve_results"][0].selected)

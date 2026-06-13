@@ -39,6 +39,9 @@ class StoredSectionResult:
     result: SectionResult
     visible: bool = True
     selected: bool = False
+    plane_origin: np.ndarray | None = field(default=None, compare=False)
+    plane_normal: np.ndarray | None = field(default=None, compare=False)
+    is_arbitrary_plane: bool = False
 
 
 @dataclass
@@ -253,12 +256,45 @@ def add_result(
     result: StoredSectionResult,
 ) -> SectionCollection:
     _require_collection(collection)
-    if _find_plane(collection, result.plane_id) is None:
+    plane = _find_plane(collection, result.plane_id)
+    if plane is None:
         raise ValueError(f"Section plane not found: {result.plane_id}")
 
     result.axis = normalize_axis(result.axis)
     result.offset = float(result.offset)
     result.visible = bool(result.visible)
+    if result.plane_origin is None:
+        if result.result.plane_origin is not None:
+            result.plane_origin = _vector3(
+                result.result.plane_origin,
+                "section_result.plane_origin",
+            )
+        else:
+            result.plane_origin = plane_origin(plane)
+    else:
+        result.plane_origin = _vector3(
+            result.plane_origin,
+            "section_result.plane_origin",
+        )
+
+    if result.plane_normal is None:
+        if result.result.plane_normal is not None:
+            result.plane_normal = _normalized_vector(
+                result.result.plane_normal,
+                field_name="section_result.plane_normal",
+                fallback=axis_normal(result.axis),
+            )
+        else:
+            result.plane_normal = plane_normal(plane)
+    else:
+        result.plane_normal = _normalized_vector(
+            result.plane_normal,
+            field_name="section_result.plane_normal",
+            fallback=axis_normal(result.axis),
+        )
+    result.is_arbitrary_plane = bool(
+        result.is_arbitrary_plane or result.result.is_arbitrary_plane
+    )
     collection.results.append(result)
     if collection.active_result_id is None or result.selected:
         set_active_result(collection, result.id)

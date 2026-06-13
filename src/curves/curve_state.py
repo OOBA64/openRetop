@@ -8,6 +8,27 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+@dataclass(frozen=True)
+class TinyCurveThresholds:
+    min_point_count: int = 2
+    min_length: float = 0.01
+    min_bounding_box_size: float = 0.01
+
+
+@dataclass(frozen=True)
+class CurveDiagnostics:
+    point_count: int
+    length: float
+    endpoint_distance: float
+    bounding_box_size: float
+    is_tiny_fragment: bool
+    source_section_result_id: str
+    source_plane_id: str
+
+
+DEFAULT_TINY_CURVE_THRESHOLDS = TinyCurveThresholds()
+
+
 @dataclass
 class StoredCurve:
     id: str
@@ -21,6 +42,27 @@ class StoredCurve:
     is_closed: bool
     visible: bool = True
     selected: bool = False
+    diagnostics: CurveDiagnostics | None = field(default=None, compare=False)
+
+    @property
+    def point_count(self) -> int:
+        return _curve_diagnostics(self).point_count
+
+    @property
+    def length(self) -> float:
+        return _curve_diagnostics(self).length
+
+    @property
+    def endpoint_distance(self) -> float:
+        return _curve_diagnostics(self).endpoint_distance
+
+    @property
+    def bounding_box_size(self) -> float:
+        return _curve_diagnostics(self).bounding_box_size
+
+    @property
+    def is_tiny_fragment(self) -> bool:
+        return _curve_diagnostics(self).is_tiny_fragment
 
 
 @dataclass
@@ -38,6 +80,7 @@ def add_curve(collection: CurveCollection, curve: StoredCurve) -> CurveCollectio
     curve.mean_error = float(curve.mean_error)
     curve.max_error = float(curve.max_error)
     curve.is_closed = bool(curve.is_closed)
+    refresh_curve_diagnostics(curve)
     collection.curves.append(curve)
     if collection.active_curve_id is None or curve.selected:
         set_active_curve(collection, curve.id)
@@ -113,6 +156,48 @@ def get_selected_curves(collection: CurveCollection) -> list[StoredCurve]:
     ]
 
 
+def get_tiny_curves(collection: CurveCollection) -> list[StoredCurve]:
+    _require_collection(collection)
+    return [
+        curve
+        for curve in collection.curves
+        if _curve_diagnostics(curve).is_tiny_fragment
+    ]
+
+
+def refresh_curve_diagnostics(
+    curve: StoredCurve,
+    thresholds: TinyCurveThresholds = DEFAULT_TINY_CURVE_THRESHOLDS,
+) -> StoredCurve:
+    curve.diagnostics = compute_curve_diagnostics(curve, thresholds)
+    return curve
+
+
+def compute_curve_diagnostics(
+    curve: StoredCurve,
+    thresholds: TinyCurveThresholds = DEFAULT_TINY_CURVE_THRESHOLDS,
+) -> CurveDiagnostics:
+    points = np.asarray(curve.fitted_points, dtype=float).reshape((-1, 3))
+    point_count = int(len(points))
+    length = _polyline_length(points)
+    endpoint_distance = _endpoint_distance(points)
+    bounding_box_size = _bounding_box_size(points)
+    is_tiny_fragment = (
+        point_count < int(thresholds.min_point_count)
+        or length < float(thresholds.min_length)
+        or bounding_box_size < float(thresholds.min_bounding_box_size)
+    )
+    return CurveDiagnostics(
+        point_count=point_count,
+        length=length,
+        endpoint_distance=endpoint_distance,
+        bounding_box_size=bounding_box_size,
+        is_tiny_fragment=bool(is_tiny_fragment),
+        source_section_result_id=str(curve.section_result_id),
+        source_plane_id=str(curve.plane_id),
+    )
+
+
 def set_active_curve(
     collection: CurveCollection,
     curve_id: str,
@@ -183,6 +268,35 @@ def _find_curve(
         if curve.id == curve_id:
             return curve
     return None
+
+
+def _curve_diagnostics(curve: StoredCurve) -> CurveDiagnostics:
+    if curve.diagnostics is None:
+        return compute_curve_diagnostics(curve)
+    return curve.diagnostics
+
+
+def _polyline_length(points: np.ndarray) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    deltas = np.diff(points, axis=0)
+    return float(np.sum(np.linalg.norm(deltas, axis=1)))
+
+
+def _endpoint_distance(points: np.ndarray) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    return float(np.linalg.norm(points[0] - points[-1]))
+
+
+def _bounding_box_size(points: np.ndarray) -> float:
+    if len(points) == 0:
+        return 0.0
+
+    extents = np.ptp(points, axis=0)
+    return float(np.max(extents))
 
 
 def _sync_selection_after_removal(

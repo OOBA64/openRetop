@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from curves.curve_state import CurveCollection
+from curves.curve_state import CurveCollection, refresh_curve_diagnostics
 from project.project_data import (
     ProjectCurve,
     ProjectData,
@@ -166,6 +166,9 @@ def _curves_from_collection(
     if curve_collection is None:
         return []
 
+    for curve in curve_collection.curves:
+        refresh_curve_diagnostics(curve)
+
     return [
         ProjectCurve(
             id=str(curve.id),
@@ -190,6 +193,22 @@ def _curves_from_collection(
             ),
             is_closed=bool(curve.is_closed),
             visible=bool(curve.visible),
+            point_count=int(curve.point_count),
+            length=_float_from_value(
+                curve.length,
+                "curve_collection.curve.length",
+            ),
+            endpoint_distance=_float_from_value(
+                curve.endpoint_distance,
+                "curve_collection.curve.endpoint_distance",
+            ),
+            bounding_box_size=_float_from_value(
+                curve.bounding_box_size,
+                "curve_collection.curve.bounding_box_size",
+            ),
+            is_tiny_fragment=bool(curve.is_tiny_fragment),
+            source_section_result_id=str(curve.section_result_id),
+            source_plane_id=str(curve.plane_id),
         )
         for curve in curve_collection.curves
     ]
@@ -212,6 +231,15 @@ def _section_results_from_collection(
                 "section_collection.result.offset",
             ),
             visible=bool(result.visible),
+            plane_origin=_vector3_from_value(
+                result.plane_origin,
+                "section_collection.result.plane_origin",
+            ),
+            plane_normal=_vector3_from_value(
+                result.plane_normal,
+                "section_collection.result.plane_normal",
+            ),
+            is_arbitrary_plane=bool(result.is_arbitrary_plane),
             polylines=[
                 _points_from_value(
                     polyline.points,

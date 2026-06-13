@@ -89,6 +89,15 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
                 "axis": result.axis,
                 "offset": float(result.offset),
                 "visible": bool(result.visible),
+                "plane_origin": _vector3_value(
+                    result.plane_origin,
+                    f"section_results[{index}].plane_origin",
+                ),
+                "plane_normal": _vector3_value(
+                    result.plane_normal,
+                    f"section_results[{index}].plane_normal",
+                ),
+                "is_arbitrary_plane": bool(result.is_arbitrary_plane),
                 "polylines": [
                     _points_to_nested_lists(
                         polyline,
@@ -118,6 +127,13 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
                 "max_error": float(curve.max_error),
                 "is_closed": bool(curve.is_closed),
                 "visible": bool(curve.visible),
+                "point_count": int(curve.point_count),
+                "length": float(curve.length),
+                "endpoint_distance": float(curve.endpoint_distance),
+                "bounding_box_size": float(curve.bounding_box_size),
+                "is_tiny_fragment": bool(curve.is_tiny_fragment),
+                "source_section_result_id": curve.source_section_result_id,
+                "source_plane_id": curve.source_plane_id,
             }
             for index, curve in enumerate(project.curves)
         ],
@@ -441,6 +457,62 @@ def _curves_value(value: object) -> list[ProjectCurve]:
                     _nested_value(curve_data, "visible", True),
                     f"{field_prefix}.visible",
                 ),
+                point_count=(
+                    None
+                    if _nested_value(curve_data, "point_count", None) is None
+                    else _int_value(
+                        _nested_value(curve_data, "point_count", None),
+                        f"{field_prefix}.point_count",
+                    )
+                ),
+                length=(
+                    None
+                    if _nested_value(curve_data, "length", None) is None
+                    else _float_value(
+                        _nested_value(curve_data, "length", None),
+                        f"{field_prefix}.length",
+                    )
+                ),
+                endpoint_distance=(
+                    None
+                    if _nested_value(curve_data, "endpoint_distance", None) is None
+                    else _float_value(
+                        _nested_value(curve_data, "endpoint_distance", None),
+                        f"{field_prefix}.endpoint_distance",
+                    )
+                ),
+                bounding_box_size=(
+                    None
+                    if _nested_value(curve_data, "bounding_box_size", None) is None
+                    else _float_value(
+                        _nested_value(curve_data, "bounding_box_size", None),
+                        f"{field_prefix}.bounding_box_size",
+                    )
+                ),
+                is_tiny_fragment=(
+                    None
+                    if _nested_value(curve_data, "is_tiny_fragment", None) is None
+                    else _bool_value(
+                        _nested_value(curve_data, "is_tiny_fragment", None),
+                        f"{field_prefix}.is_tiny_fragment",
+                    )
+                ),
+                source_section_result_id=(
+                    None
+                    if _nested_value(curve_data, "source_section_result_id", None) is None
+                    else _string_value(
+                        _nested_value(curve_data, "source_section_result_id", None),
+                        f"{field_prefix}.source_section_result_id",
+                    )
+                ),
+                source_plane_id=(
+                    None
+                    if _nested_value(curve_data, "source_plane_id", None) is None
+                    else _string_value(
+                        _nested_value(curve_data, "source_plane_id", None),
+                        f"{field_prefix}.source_plane_id",
+                    )
+                ),
             )
         )
 
@@ -490,6 +562,26 @@ def _section_results_value(value: object) -> list[ProjectSectionResult]:
                 visible=_bool_value(
                     _nested_value(result_data, "visible", True),
                     f"{field_prefix}.visible",
+                ),
+                plane_origin=(
+                    None
+                    if _nested_value(result_data, "plane_origin", None) is None
+                    else _vector3_value(
+                        _nested_value(result_data, "plane_origin", None),
+                        f"{field_prefix}.plane_origin",
+                    )
+                ),
+                plane_normal=(
+                    None
+                    if _nested_value(result_data, "plane_normal", None) is None
+                    else _vector3_value(
+                        _nested_value(result_data, "plane_normal", None),
+                        f"{field_prefix}.plane_normal",
+                    )
+                ),
+                is_arbitrary_plane=_bool_value(
+                    _nested_value(result_data, "is_arbitrary_plane", False),
+                    f"{field_prefix}.is_arbitrary_plane",
                 ),
                 polylines=_polyline_list_value(
                     _nested_value(result_data, "polylines", []),

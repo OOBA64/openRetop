@@ -15,6 +15,7 @@ from curves.curve_state import (
     clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
+    get_tiny_curves,
     get_selected_curves,
     get_visible_curves,
     remove_curve,
@@ -124,6 +125,43 @@ class CurveStateTests(unittest.TestCase):
         add_curve(collection, hidden_curve)
 
         self.assertEqual(get_visible_curves(collection), [visible_curve])
+
+    def test_add_curve_computes_length_endpoint_distance_and_sources(self) -> None:
+        collection = CurveCollection()
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 4.0, 0.0],
+            ],
+            dtype=float,
+        )
+        curve = _curve("curve-1")
+        curve.fitted_points = points
+
+        add_curve(collection, curve)
+
+        self.assertEqual(curve.point_count, 3)
+        self.assertAlmostEqual(curve.length, 7.0)
+        self.assertAlmostEqual(curve.endpoint_distance, 5.0)
+        self.assertAlmostEqual(curve.bounding_box_size, 4.0)
+        self.assertFalse(curve.is_tiny_fragment)
+        self.assertEqual(curve.diagnostics.source_section_result_id, "section-result-1")
+        self.assertEqual(curve.diagnostics.source_plane_id, "plane-1")
+
+    def test_tiny_curve_detection_uses_stored_diagnostics(self) -> None:
+        collection = CurveCollection()
+        tiny_curve = _curve("tiny-curve")
+        tiny_points = np.asarray([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]])
+        tiny_curve.fitted_points = tiny_points
+        regular_curve = _curve("regular-curve")
+
+        add_curve(collection, tiny_curve)
+        add_curve(collection, regular_curve)
+
+        self.assertTrue(tiny_curve.is_tiny_fragment)
+        self.assertFalse(regular_curve.is_tiny_fragment)
+        self.assertEqual(get_tiny_curves(collection), [tiny_curve])
 
     def test_clear_curves_for_section_result_leaves_other_results(self) -> None:
         collection = CurveCollection()

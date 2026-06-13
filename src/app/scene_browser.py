@@ -119,6 +119,15 @@ def _visibility_label(label: str, visible: bool) -> str:
     return f"[V] {label}" if visible else f"[H] {label}"
 
 
+def _curve_display_label(curve: StoredCurve, fallback_label: str) -> str:
+    label = curve.name or fallback_label
+    if curve.is_tiny_fragment:
+        return f"{label} (tiny)"
+    if curve.is_closed:
+        return f"{label} (closed)"
+    return label
+
+
 class SceneBrowser:
     """Owns the right-side scene hierarchy and selection synchronization."""
 
@@ -474,7 +483,10 @@ class SceneBrowser:
         for index, curve in enumerate(curves, start=1):
             node_id = curve_node_id(curve.id)
             current_node_ids.append(node_id)
-            label = _visibility_label(curve.name or f"Curve {index}", bool(curve.visible))
+            label = _visibility_label(
+                _curve_display_label(curve, f"Curve {index}"),
+                bool(curve.visible),
+            )
             self._ensure_node(node_id, label, parent=group_id)
 
     def _remove_stale_curve_nodes(

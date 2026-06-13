@@ -228,6 +228,9 @@ class ProjectIOTests(unittest.TestCase):
                         "axis": "Y",
                         "offset": 0.75,
                         "visible": True,
+                        "plane_origin": [0.0, 0.75, 0.0],
+                        "plane_normal": [0.0, 1.0, 0.0],
+                        "is_arbitrary_plane": False,
                         "polylines": [
                             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
                         ],
@@ -250,6 +253,13 @@ class ProjectIOTests(unittest.TestCase):
                         "max_error": 0.1,
                         "is_closed": False,
                         "visible": True,
+                        "point_count": 3,
+                        "length": 1.118033988749895,
+                        "endpoint_distance": 1.0,
+                        "bounding_box_size": 1.0,
+                        "is_tiny_fragment": False,
+                        "source_section_result_id": "section-a",
+                        "source_plane_id": "plane-a",
                     },
                     {
                         "id": "curve-b",
@@ -262,6 +272,13 @@ class ProjectIOTests(unittest.TestCase):
                         "max_error": 0.0,
                         "is_closed": False,
                         "visible": False,
+                        "point_count": 2,
+                        "length": 1.0,
+                        "endpoint_distance": 1.0,
+                        "bounding_box_size": 1.0,
+                        "is_tiny_fragment": False,
+                        "source_section_result_id": "section-b",
+                        "source_plane_id": "plane-b",
                     },
                 ],
                 "surfaces": [
@@ -325,6 +342,13 @@ class ProjectIOTests(unittest.TestCase):
                     "max_error": 0.0,
                     "is_closed": False,
                     "visible": True,
+                    "point_count": 2,
+                    "length": 1.118033988749895,
+                    "endpoint_distance": 1.118033988749895,
+                    "bounding_box_size": 1.0,
+                    "is_tiny_fragment": False,
+                    "source_section_result_id": "section-a",
+                    "source_plane_id": "plane-a",
                 },
             ],
         )
@@ -368,6 +392,43 @@ class ProjectIOTests(unittest.TestCase):
         self.assertEqual(project.section_results, [])
         self.assertEqual(project.curves, [])
         self.assertEqual(project.surfaces, [])
+
+    def test_project_from_dict_preserves_arbitrary_section_result_metadata(self) -> None:
+        normal = [0.70710678118, 0.0, 0.70710678118]
+
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "section_results": [
+                    {
+                        "id": "section-a",
+                        "name": "Rotated Section",
+                        "plane_id": "plane-a",
+                        "axis": "Z",
+                        "offset": 0.0,
+                        "visible": True,
+                        "plane_origin": [0.0, 0.0, 0.0],
+                        "plane_normal": normal,
+                        "is_arbitrary_plane": True,
+                        "polylines": [
+                            [[0.0, 0.0, 0.0], [1.0, 0.0, -1.0]],
+                        ],
+                        "segment_count": 1,
+                    },
+                ],
+            }
+        )
+
+        result = project.section_results[0]
+        self.assertEqual(result.plane_origin, [0.0, 0.0, 0.0])
+        self.assertEqual(result.plane_normal, normal)
+        self.assertTrue(result.is_arbitrary_plane)
+
+        data = project_to_dict(project)
+
+        self.assertEqual(data["section_results"][0]["plane_origin"], [0.0, 0.0, 0.0])
+        self.assertEqual(data["section_results"][0]["plane_normal"], normal)
+        self.assertTrue(data["section_results"][0]["is_arbitrary_plane"])
 
     def test_project_from_dict_loads_legacy_single_section_without_new_fields(self) -> None:
         project = project_from_dict(
