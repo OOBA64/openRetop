@@ -2,8 +2,11 @@
 
 from curves.curve_state import (
     CurveCollection,
+    CurveProcessingError,
     CurveRepairError,
     DEFAULT_CURVE_REPAIR_TOLERANCE,
+    DEFAULT_CURVE_SIMPLIFY_TOLERANCE,
+    DEFAULT_CURVE_SMOOTH_ITERATIONS,
     StoredCurve,
     add_curve,
     auto_close_curve,
@@ -19,12 +22,17 @@ from curves.curve_state import (
     remove_curve,
     set_active_curve,
     set_selected_curves,
+    simplify_curve,
+    smooth_curve,
 )
 
 __all__ = [
     "CurveCollection",
+    "CurveProcessingError",
     "CurveRepairError",
     "DEFAULT_CURVE_REPAIR_TOLERANCE",
+    "DEFAULT_CURVE_SIMPLIFY_TOLERANCE",
+    "DEFAULT_CURVE_SMOOTH_ITERATIONS",
     "StoredCurve",
     "add_curve",
     "auto_close_curve",
@@ -40,4 +48,6 @@ __all__ = [
     "remove_curve",
     "set_active_curve",
     "set_selected_curves",
+    "simplify_curve",
+    "smooth_curve",
 ]

@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -35,6 +36,8 @@ class FakeRenderWindow:
         self.added_renderers: list[object] = []
         self.removed_renderers: list[object] = []
         self.render_count = 0
+        self.window_info: str | None = None
+        self.size: tuple[int, int] | None = None
 
     def GetNumberOfLayers(self) -> int:
         return self.layer_count
@@ -48,8 +51,109 @@ class FakeRenderWindow:
     def RemoveRenderer(self, renderer: object) -> None:
         self.removed_renderers.append(renderer)
 
+    def SetWindowInfo(self, window_info: str) -> None:
+        self.window_info = window_info
+
+    def SetSize(self, width: int, height: int) -> None:
+        self.size = (int(width), int(height))
+
     def Render(self) -> None:
         self.render_count += 1
+
+
+class FakeViewportWidget:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.after_idle_callbacks: list[object] = []
+        self.after_callbacks: list[tuple[int, object]] = []
+        self.cancelled_ids: list[str] = []
+        self.focus_count = 0
+        self.width = 640
+        self.height = 480
+        self.binds: dict[str, object] = {}
+
+    def after_idle(self, callback: object) -> str:
+        after_id = f"idle-{len(self.after_idle_callbacks) + 1}"
+        self.after_idle_callbacks.append(callback)
+        return after_id
+
+    def after(self, delay_ms: int, callback: object) -> str:
+        after_id = f"after-{len(self.after_callbacks) + 1}"
+        self.after_callbacks.append((int(delay_ms), callback))
+        return after_id
+
+    def after_cancel(self, after_id: str) -> None:
+        self.cancelled_ids.append(after_id)
+
+    def bind(self, sequence: str, callback: object) -> None:
+        self.binds[sequence] = callback
+
+    def destroy(self) -> None:
+        pass
+
+    def focus_set(self) -> None:
+        self.focus_count += 1
+
+    def pack(self, **_kwargs: object) -> None:
+        pass
+
+    def update_idletasks(self) -> None:
+        pass
+
+    def winfo_id(self) -> int:
+        return 1234
+
+    def winfo_width(self) -> int:
+        return self.width
+
+    def winfo_height(self) -> int:
+        return self.height
+
+
+class FakeInteractor:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def SetEventInformationFlipY(self, *_args: object) -> None:
+        self.calls.append("event")
+
+    def SetRenderWindow(self, _render_window: object) -> None:
+        self.calls.append("set_render_window")
+
+    def SetInteractorStyle(self, _style: object) -> None:
+        self.calls.append("set_style")
+
+    def Initialize(self) -> None:
+        self.calls.append("initialize")
+
+    def Enable(self) -> None:
+        self.calls.append("enable")
+
+    def MouseMoveEvent(self) -> None:
+        self.calls.append("mouse_move")
+
+    def LeftButtonPressEvent(self) -> None:
+        self.calls.append("left_press")
+
+    def LeftButtonReleaseEvent(self) -> None:
+        self.calls.append("left_release")
+
+    def MiddleButtonPressEvent(self) -> None:
+        self.calls.append("middle_press")
+
+    def MiddleButtonReleaseEvent(self) -> None:
+        self.calls.append("middle_release")
+
+    def RightButtonPressEvent(self) -> None:
+        self.calls.append("right_press")
+
+    def RightButtonReleaseEvent(self) -> None:
+        self.calls.append("right_release")
+
+    def MouseWheelForwardEvent(self) -> None:
+        self.calls.append("wheel_forward")
+
+    def MouseWheelBackwardEvent(self) -> None:
+        self.calls.append("wheel_backward")
 
 
 class EmbeddedViewportSceneTests(unittest.TestCase):
@@ -168,6 +272,132 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertEqual(interactor.calls, ["event", "key", "char"])
         self.assertEqual(render_calls, [True])
+
+    def test_request_render_coalesces_repeated_requests(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        widget = FakeViewportWidget()
+        render_window = FakeRenderWindow()
+        viewport.widget = widget  # type: ignore[assignment]
+        viewport.render_window = render_window  # type: ignore[assignment]
+        viewport._render_counters_enabled = True
+
+        viewport.request_render(scene_dirty=True)
+        viewport.request_render(camera_dirty=True)
+
+        self.assertEqual(render_window.render_count, 0)
+        self.assertEqual(len(widget.after_idle_callbacks), 1)
+        self.assertEqual(viewport.skipped_render_count, 1)
+        self.assertTrue(viewport.scene_dirty)
+        self.assertTrue(viewport.camera_dirty)
+
+        widget.after_idle_callbacks[0]()  # type: ignore[operator]
+
+        self.assertEqual(render_window.render_count, 1)
+        self.assertEqual(viewport.render_count, 1)
+        self.assertIsNotNone(viewport.last_render_time)
+        self.assertFalse(viewport.scene_dirty)
+        self.assertFalse(viewport.camera_dirty)
+        self.assertIsNone(viewport._render_after_id)
+
+    def test_passive_mouse_motion_does_not_forward_or_render(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        widget = FakeViewportWidget()
+        render_window = FakeRenderWindow()
+        interactor = FakeInteractor()
+        viewport.widget = widget  # type: ignore[assignment]
+        viewport.render_window = render_window  # type: ignore[assignment]
+        viewport.interactor = interactor  # type: ignore[assignment]
+
+        viewport._on_mouse_move(SimpleNamespace(x=40, y=50, state=0))
+
+        self.assertEqual(interactor.calls, [])
+        self.assertEqual(widget.after_idle_callbacks, [])
+        self.assertEqual(render_window.render_count, 0)
+        self.assertEqual(viewport._last_mouse_position, (40, 50))
+
+    def test_mouse_drag_forwards_to_vtk_and_requests_render(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        widget = FakeViewportWidget()
+        render_window = FakeRenderWindow()
+        interactor = FakeInteractor()
+        viewport.widget = widget  # type: ignore[assignment]
+        viewport.render_window = render_window  # type: ignore[assignment]
+        viewport.interactor = interactor  # type: ignore[assignment]
+        viewport._left_button_pressed = True
+        viewport._active_interaction = True
+
+        viewport._on_mouse_move(SimpleNamespace(x=41, y=52, state=0))
+
+        self.assertEqual(interactor.calls, ["event", "mouse_move"])
+        self.assertEqual(len(widget.after_idle_callbacks), 1)
+        self.assertEqual(render_window.render_count, 0)
+        self.assertTrue(viewport.camera_dirty)
+
+        widget.after_idle_callbacks[0]()  # type: ignore[operator]
+
+        self.assertEqual(render_window.render_count, 1)
+        self.assertFalse(viewport.camera_dirty)
+
+    def test_configure_coalesces_render_requests(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        widget = FakeViewportWidget()
+        render_window = FakeRenderWindow()
+        viewport.widget = widget  # type: ignore[assignment]
+        viewport.render_window = render_window  # type: ignore[assignment]
+        viewport._render_counters_enabled = True
+        widget.width = 810
+        widget.height = 456
+
+        viewport._on_configure(SimpleNamespace())
+        viewport._on_configure(SimpleNamespace())
+
+        self.assertEqual(render_window.size, (810, 456))
+        self.assertEqual(render_window.render_count, 0)
+        self.assertEqual(len(widget.after_idle_callbacks), 1)
+        self.assertEqual(viewport.skipped_render_count, 1)
+
+        widget.after_idle_callbacks[0]()  # type: ignore[operator]
+
+        self.assertEqual(render_window.render_count, 1)
+        self.assertFalse(viewport.overlay_dirty)
+
+    def test_axis_gizmo_sync_does_not_run_when_hidden(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        render_window = FakeRenderWindow()
+        viewport.render_window = render_window  # type: ignore[assignment]
+        sync_calls: list[bool] = []
+
+        def sync_gizmo(*, force: bool = False) -> None:
+            sync_calls.append(force)
+
+        viewport._sync_axis_gizmo_camera = sync_gizmo  # type: ignore[method-assign]
+
+        viewport._render()
+
+        self.assertEqual(sync_calls, [])
+        self.assertEqual(render_window.render_count, 1)
+
+    def test_startup_renders_once(self) -> None:
+        render_window = FakeRenderWindow()
+        created_interactors: list[FakeInteractor] = []
+
+        def create_interactor() -> FakeInteractor:
+            interactor = FakeInteractor()
+            created_interactors.append(interactor)
+            return interactor
+
+        with (
+            patch("viewer.embedded_viewport.Canvas", FakeViewportWidget),
+            patch("viewer.embedded_viewport.vtkRenderWindow", lambda: render_window),
+            patch("viewer.embedded_viewport.vtkRenderWindowInteractor", create_interactor),
+        ):
+            viewport = EmbeddedVTKViewport(parent=object())
+            viewport.start()
+
+        self.assertEqual(render_window.render_count, 1)
+        self.assertEqual(render_window.size, (640, 480))
+        self.assertEqual(len(created_interactors), 1)
+        self.assertTrue(viewport._is_started)
 
     def test_get_camera_vectors_returns_screen_basis_without_raw_camera(self) -> None:
         viewport = self._viewport()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -15,6 +15,7 @@ POINT_TOLERANCE = 1e-8
 AREA_TOLERANCE = 1e-10
 MAX_PREVIEW_POINTS = 256
 FAN_FILL_WARNING = "Fan fill preview may be inaccurate for concave curves"
+LOFT_PAIR_DISTANCE_WARNING = "Loft preview has high paired-curve distance; inspect for twisting"
 
 # TODO: add curve repair / auto-close gaps before preview generation.
 # TODO: add fragment joining for section curves split by scan noise.
@@ -49,6 +50,7 @@ class SurfacePreviewBuildResult:
     preview_available: bool
     reason: str
     warning: str | None = None
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 def build_surface_preview(
@@ -139,11 +141,10 @@ def _build_closed_curve_fan_result(
     vertices = np.vstack((center, points))
     faces: list[tuple[int, int, int]] = []
     for index in range(len(points)):
-        face = (0, index + 1, ((index + 1) % len(points)) + 1)
-        if _triangle_area(vertices[face[0]], vertices[face[1]], vertices[face[2]]) > AREA_TOLERANCE:
-            faces.append(face)
+        faces.append((0, index + 1, ((index + 1) % len(points)) + 1))
+    valid_faces = _valid_triangle_faces(vertices, faces)
 
-    if not faces:
+    if not valid_faces:
         return SurfacePreviewBuildResult(
             mesh=None,
             preview_available=False,
@@ -153,7 +154,7 @@ def _build_closed_curve_fan_result(
     return SurfacePreviewBuildResult(
         mesh=SurfacePreviewMesh(
             vertices=vertices,
-            faces=np.asarray(faces, dtype=int),
+            faces=np.asarray(valid_faces, dtype=int),
             source_surface_id=surface.id,
             selected=bool(surface.selected),
         ),
@@ -230,11 +231,7 @@ def _build_two_curve_loft_result(
         faces.append((first_start, first_end, second_end))
         faces.append((first_start, second_end, second_start))
 
-    faces = [
-        face
-        for face in faces
-        if _triangle_area(vertices[face[0]], vertices[face[1]], vertices[face[2]]) > AREA_TOLERANCE
-    ]
+    faces = _valid_triangle_faces(vertices, faces)
     if not faces:
         return SurfacePreviewBuildResult(
             mesh=None,
@@ -248,6 +245,24 @@ def _build_two_curve_loft_result(
         reason = "loft generated with seam-aligned second curve"
     else:
         reason = "loft generated"
+    average_pair_distance, max_pair_distance = _pairing_distance_stats(
+        first_points,
+        second_points,
+    )
+    warning = _loft_pair_distance_warning(
+        first_points,
+        second_points,
+        max_pair_distance=max_pair_distance,
+        closed=closed_loft,
+    )
+    diagnostics = {
+        "reversed_second_curve": bool(reversed_second),
+        "seam_shift_applied": bool(seam_shift != 0),
+        "seam_shift_index": int(seam_shift),
+        "resampled_point_count": int(target_count),
+        "average_pair_distance": average_pair_distance,
+        "max_pair_distance": max_pair_distance,
+    }
 
     return SurfacePreviewBuildResult(
         mesh=SurfacePreviewMesh(
@@ -258,6 +273,8 @@ def _build_two_curve_loft_result(
         ),
         preview_available=True,
         reason=reason,
+        warning=warning,
+        diagnostics=diagnostics,
     )
 
 
@@ -360,14 +377,14 @@ def _align_second_curve_points(
         best_points = second_points
         best_reversed = False
         best_shift = 0
-        best_score = float("inf")
+        best_score = (float("inf"), float("inf"))
         for reversed_candidate, candidate in (
             (False, second_points),
             (True, second_points[::-1]),
         ):
             for shift in range(len(candidate)):
                 shifted = np.roll(candidate, -shift, axis=0)
-                score = _mean_pairing_distance(first_points, shifted)
+                score = _pairing_score(first_points, shifted)
                 if score < best_score:
                     best_score = score
                     best_points = shifted
@@ -375,16 +392,83 @@ def _align_second_curve_points(
                     best_shift = shift
         return best_points.copy(), best_reversed, best_shift
 
-    direct_score = _mean_pairing_distance(first_points, second_points)
+    direct_score = _pairing_score(first_points, second_points)
     reversed_points = second_points[::-1]
-    reversed_score = _mean_pairing_distance(first_points, reversed_points)
+    reversed_score = _pairing_score(first_points, reversed_points)
     if reversed_score < direct_score:
         return reversed_points.copy(), True, 0
     return second_points.copy(), False, 0
 
 
-def _mean_pairing_distance(first_points: np.ndarray, second_points: np.ndarray) -> float:
-    return float(np.mean(np.linalg.norm(first_points - second_points, axis=1)))
+def _pairing_distance_stats(
+    first_points: np.ndarray,
+    second_points: np.ndarray,
+) -> tuple[float, float]:
+    distances = np.linalg.norm(first_points - second_points, axis=1)
+    return (float(np.mean(distances)), float(np.max(distances)))
+
+
+def _pairing_score(
+    first_points: np.ndarray,
+    second_points: np.ndarray,
+) -> tuple[float, float]:
+    return _pairing_distance_stats(first_points, second_points)
+
+
+def _loft_pair_distance_warning(
+    first_points: np.ndarray,
+    second_points: np.ndarray,
+    *,
+    max_pair_distance: float,
+    closed: bool,
+) -> str | None:
+    first_length = _polyline_length(first_points, closed=closed)
+    second_length = _polyline_length(second_points, closed=closed)
+    reference_length = max((first_length + second_length) * 0.5, POINT_TOLERANCE)
+    if max_pair_distance > reference_length:
+        return LOFT_PAIR_DISTANCE_WARNING
+    return None
+
+
+def _polyline_length(points: np.ndarray, *, closed: bool) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    path_points = np.vstack((points, points[0])) if closed else points
+    return float(np.sum(np.linalg.norm(np.diff(path_points, axis=0), axis=1)))
+
+
+def _valid_triangle_faces(
+    vertices: np.ndarray,
+    faces: Sequence[tuple[int, int, int]],
+) -> list[tuple[int, int, int]]:
+    valid_faces: list[tuple[int, int, int]] = []
+    vertex_count = int(len(vertices))
+    for raw_face in faces:
+        if len(raw_face) != 3:
+            continue
+        face = tuple(int(index) for index in raw_face)
+        if any(index < 0 or index >= vertex_count for index in face):
+            continue
+        if len(set(face)) != 3:
+            continue
+        first, second, third = (vertices[index] for index in face)
+        if not (
+            np.all(np.isfinite(first))
+            and np.all(np.isfinite(second))
+            and np.all(np.isfinite(third))
+        ):
+            continue
+        if (
+            np.linalg.norm(first - second) <= POINT_TOLERANCE
+            or np.linalg.norm(second - third) <= POINT_TOLERANCE
+            or np.linalg.norm(third - first) <= POINT_TOLERANCE
+        ):
+            continue
+        if _triangle_area(first, second, third) <= AREA_TOLERANCE:
+            continue
+        valid_faces.append(face)
+    return valid_faces
 
 
 def _closed_area_estimate(points: np.ndarray) -> float:

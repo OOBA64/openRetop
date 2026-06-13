@@ -22,8 +22,8 @@ def build_menu_bar(app: object) -> Menu:
     menu_bar.add_cascade(label="File", menu=app.file_menu)
 
     app.edit_menu = Menu(menu_bar, tearoff=False)
-    app.edit_menu.add_command(label="Undo", command=app._undo_placeholder)
-    app.edit_menu.add_command(label="Redo", command=app._redo_placeholder)
+    app.edit_menu.add_command(label="Undo", command=app.undo)
+    app.edit_menu.add_command(label="Redo", command=app.redo)
     app.edit_menu.add_command(label="Rename Selected", command=app.rename_selected)
     app.edit_menu.add_command(label="Delete Selected", command=app._delete_selected_if_safe)
     app.edit_menu.add_command(label="Preferences", command=app.open_preferences)
@@ -80,8 +80,8 @@ def build_menu_bar(app: object) -> Menu:
 
     app.curves_menu = Menu(menu_bar, tearoff=False)
     app.curves_menu.add_command(
-        label="Create Surface From Selected Curves",
-        command=app.create_surface_from_curves,
+        label="Fill Closed Curve",
+        command=app.fill_closed_curve,
     )
     app.curves_menu.add_command(label="Join Selected Curves", command=app.join_selected_curves)
     app.curves_menu.add_command(
@@ -95,12 +95,28 @@ def build_menu_bar(app: object) -> Menu:
     app.curves_menu.add_command(label="Select Tiny Curves", command=app.select_tiny_curves)
     app.curves_menu.add_command(label="Hide Tiny Curves", command=app.hide_tiny_curves)
     app.curves_menu.add_command(label="Delete Tiny Curves", command=app.delete_tiny_curves)
+    app.curves_menu.add_command(
+        label="Simplify Selected Curve",
+        command=app.simplify_selected_curve,
+    )
+    app.curves_menu.add_command(
+        label="Smooth Selected Curve",
+        command=app.smooth_selected_curve,
+    )
+    app.curves_menu.add_command(
+        label="Loft Between Two Curves",
+        command=app.loft_between_two_curves,
+    )
     menu_bar.add_cascade(label="Curves", menu=app.curves_menu)
 
     app.surfaces_menu = Menu(menu_bar, tearoff=False)
     app.surfaces_menu.add_command(
-        label="Create Surface From Selected Curves",
-        command=app.create_surface_from_curves,
+        label="Fill Closed Curve",
+        command=app.fill_closed_curve,
+    )
+    app.surfaces_menu.add_command(
+        label="Loft Between Two Curves",
+        command=app.loft_between_two_curves,
     )
     app.surfaces_menu.add_command(label="Delete Selected Surface", command=app.delete_selected_surface)
     app.surfaces_menu.add_command(

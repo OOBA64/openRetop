@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from tkinter import Canvas, Event, TclError
 from typing import Callable, Sequence
 
@@ -133,6 +134,19 @@ class EmbeddedVTKViewport:
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
         self._last_mouse_position = (0, 0)
+        self._left_button_pressed = False
+        self._middle_button_pressed = False
+        self._right_button_pressed = False
+        self._active_interaction = False
+        self._render_after_id: str | None = None
+        self.scene_dirty = False
+        self.camera_dirty = False
+        self.overlay_dirty = False
+        self.gizmo_dirty = False
+        self._render_counters_enabled = False
+        self.render_count = 0
+        self.skipped_render_count = 0
+        self.last_render_time: float | None = None
 
     def start(self) -> None:
         if self._is_started:
@@ -158,9 +172,11 @@ class EmbeddedVTKViewport:
         self.interactor.Enable()
         self._bind_widget_events()
         self._is_started = True
+        self._render()
 
     def close(self) -> None:
         self._is_closed = True
+        self._cancel_pending_render()
         if self.render_window is not None and self._axis_gizmo_renderer is not None:
             self.render_window.RemoveRenderer(self._axis_gizmo_renderer)
         self._axis_gizmo_renderer = None
@@ -324,8 +340,8 @@ class EmbeddedVTKViewport:
 
         if reset_camera:
             self.reset_view()
-
-        self._render()
+        else:
+            self.request_render(scene_dirty=True, overlay_dirty=True)
         self._interactive_transform_key = transform_key
 
     def _active_mesh_transform_key(
@@ -405,7 +421,7 @@ class EmbeddedVTKViewport:
             active_section_plane_id=active_section_plane_id,
             selected_item=selected_item,
         )
-        self._render()
+        self.request_render(scene_dirty=True, overlay_dirty=True)
         return True
 
     def _update_mesh_actor(
@@ -596,6 +612,7 @@ class EmbeddedVTKViewport:
 
         self._axis_gizmo_requested_visible = requested_visible
         if self.render_window is None:
+            self.gizmo_dirty = self.gizmo_dirty or self._axis_gizmo_visible != requested_visible
             self._axis_gizmo_visible = requested_visible
             return
 
@@ -637,15 +654,28 @@ class EmbeddedVTKViewport:
         self.render_window.AddRenderer(self._axis_gizmo_renderer)
 
     def _set_axis_gizmo_draw(self, visible: bool) -> None:
-        self._axis_gizmo_visible = bool(visible)
+        desired_visibility = bool(visible)
+        changed = self._axis_gizmo_visible != desired_visibility
+        self._axis_gizmo_visible = desired_visibility
+        target_value = 1 if desired_visibility else 0
         if self._axis_gizmo_actor is not None:
-            self._axis_gizmo_actor.SetVisibility(1 if visible else 0)
+            if int(self._axis_gizmo_actor.GetVisibility()) != target_value:
+                self._axis_gizmo_actor.SetVisibility(target_value)
+                changed = True
         if self._axis_gizmo_renderer is not None:
             try:
-                self._axis_gizmo_renderer.SetDraw(1 if visible else 0)
+                draw_state = int(self._axis_gizmo_renderer.GetDraw())
+            except AttributeError:
+                draw_state = None
+            try:
+                if draw_state is None or draw_state != target_value:
+                    self._axis_gizmo_renderer.SetDraw(target_value)
+                    changed = True
             except AttributeError:
                 pass
-        if not visible:
+        if changed:
+            self.gizmo_dirty = True
+        if not desired_visibility:
             self._axis_gizmo_camera_key = None
 
     def _sync_axis_gizmo_camera(self, *, force: bool = False) -> None:
@@ -1340,6 +1370,87 @@ class EmbeddedVTKViewport:
         self.render_window.SetWindowInfo(str(self.widget.winfo_id()))
         self._resize_render_window()
 
+    def request_render(
+        self,
+        *,
+        scene_dirty: bool = False,
+        camera_dirty: bool = False,
+        overlay_dirty: bool = False,
+        gizmo_dirty: bool = False,
+        delay_ms: int | None = None,
+    ) -> None:
+        self.scene_dirty = self.scene_dirty or bool(scene_dirty)
+        self.camera_dirty = self.camera_dirty or bool(camera_dirty)
+        self.overlay_dirty = self.overlay_dirty or bool(overlay_dirty)
+        self.gizmo_dirty = self.gizmo_dirty or bool(gizmo_dirty)
+
+        if self._is_closed:
+            self._count_skipped_render()
+            self._clear_render_dirty()
+            return
+
+        if self.widget is None:
+            self._render()
+            return
+
+        if self.render_window is None:
+            self._count_skipped_render()
+            self._clear_render_dirty()
+            return
+
+        if self._render_after_id is not None:
+            self._count_skipped_render()
+            return
+
+        try:
+            if delay_ms is not None and delay_ms > 0:
+                self._render_after_id = self.widget.after(
+                    int(delay_ms),
+                    self._flush_requested_render,
+                )
+            else:
+                self._render_after_id = self.widget.after_idle(self._flush_requested_render)
+        except TclError:
+            self._count_skipped_render()
+            self._clear_render_dirty()
+
+    def _flush_requested_render(self) -> None:
+        self._render_after_id = None
+        if self._is_closed:
+            self._count_skipped_render()
+            self._clear_render_dirty()
+            return
+
+        self._render()
+
+    def _cancel_pending_render(self) -> None:
+        if self._render_after_id is None or self.widget is None:
+            self._render_after_id = None
+            return
+
+        try:
+            self.widget.after_cancel(self._render_after_id)
+        except TclError:
+            pass
+        self._render_after_id = None
+
+    def _clear_render_dirty(self) -> None:
+        self.scene_dirty = False
+        self.camera_dirty = False
+        self.overlay_dirty = False
+        self.gizmo_dirty = False
+
+    def _count_render(self) -> None:
+        if not self._render_counters_enabled:
+            return
+
+        self.render_count += 1
+        self.last_render_time = time.perf_counter()
+
+    def _count_skipped_render(self) -> None:
+        if self._render_counters_enabled:
+            self.skipped_render_count += 1
+
     def _bind_widget_events(self) -> None:
         if self.widget is None:
             return
@@ -1357,7 +1468,7 @@ class EmbeddedVTKViewport:
 
     def _on_configure(self, _event: Event[Canvas]) -> None:
         self._resize_render_window()
-        self._render()
+        self.request_render(overlay_dirty=True)
 
     def _resize_render_window(self) -> None:
         if self.widget is None or self.render_window is None:
@@ -1369,14 +1480,18 @@ class EmbeddedVTKViewport:
 
     def _on_left_button_press(self, event: Event[Canvas]) -> None:
         self._left_press_position = (int(event.x), int(event.y))
+        self._set_mouse_button_pressed("left", True)
         if self._dispatch_pointer_event("left_press", event):
+            self.request_render(overlay_dirty=True)
             return
 
         self._forward_mouse_event(event, "LeftButtonPressEvent")
 
     def _on_left_button_release(self, event: Event[Canvas]) -> None:
+        self._set_mouse_button_pressed("left", False)
         if self._dispatch_pointer_event("left_release", event):
             self._left_press_position = None
+            self.request_render(scene_dirty=True, overlay_dirty=True)
             return
 
         self._forward_mouse_event(event, "LeftButtonReleaseEvent")
@@ -1390,31 +1505,44 @@ class EmbeddedVTKViewport:
         self._selection_callback(target)
 
     def _on_middle_button_press(self, event: Event[Canvas]) -> None:
+        self._set_mouse_button_pressed("middle", True)
         if self._dispatch_pointer_event("middle_press", event):
+            self.request_render(overlay_dirty=True)
             return
 
         self._forward_mouse_event(event, "MiddleButtonPressEvent")
 
     def _on_middle_button_release(self, event: Event[Canvas]) -> None:
+        self._set_mouse_button_pressed("middle", False)
         if self._dispatch_pointer_event("middle_release", event):
+            self.request_render(overlay_dirty=True)
             return
 
         self._forward_mouse_event(event, "MiddleButtonReleaseEvent")
 
     def _on_right_button_press(self, event: Event[Canvas]) -> None:
+        self._set_mouse_button_pressed("right", True)
         if self._dispatch_pointer_event("right_press", event):
+            self.request_render(overlay_dirty=True)
             return
 
         self._forward_mouse_event(event, "RightButtonPressEvent")
 
     def _on_right_button_release(self, event: Event[Canvas]) -> None:
+        self._set_mouse_button_pressed("right", False)
         if self._dispatch_pointer_event("right_release", event):
+            self.request_render(scene_dirty=True, overlay_dirty=True)
             return
 
         self._forward_mouse_event(event, "RightButtonReleaseEvent")
 
     def _on_mouse_move(self, event: Event[Canvas]) -> None:
         if self._dispatch_pointer_event("motion", event):
+            self.request_render(scene_dirty=True, overlay_dirty=True)
+            return
+
+        if not self._any_mouse_button_pressed() and not self._active_interaction:
+            self._remember_mouse_position(event)
             return
 
         self._forward_mouse_event(event, "MouseMoveEvent")
@@ -1428,7 +1556,7 @@ class EmbeddedVTKViewport:
             self.interactor.MouseWheelForwardEvent()
         else:
             self.interactor.MouseWheelBackwardEvent()
-        self._render()
+        self.request_render(camera_dirty=True)
 
     def _on_key_press(self, event: Event[Canvas]) -> None:
         if self.interactor is None:
@@ -1450,7 +1578,23 @@ class EmbeddedVTKViewport:
             self.widget.focus_set()
         self._set_interactor_event(event)
         getattr(self.interactor, interactor_event)()
-        self._render()
+        self.request_render(camera_dirty=interactor_event == "MouseMoveEvent")
+
+    def _set_mouse_button_pressed(self, button: str, pressed: bool) -> None:
+        if button == "left":
+            self._left_button_pressed = bool(pressed)
+        elif button == "middle":
+            self._middle_button_pressed = bool(pressed)
+        elif button == "right":
+            self._right_button_pressed = bool(pressed)
+        self._active_interaction = self._any_mouse_button_pressed()
+
+    def _any_mouse_button_pressed(self) -> bool:
+        return bool(
+            self._left_button_pressed
+            or self._middle_button_pressed
+            or self._right_button_pressed
+        )
 
     def _dispatch_pointer_event(self, event_type: str, event: Event[Canvas]) -> bool:
         if self._pointer_callback is None:
@@ -1468,9 +1612,8 @@ class EmbeddedVTKViewport:
         if self.interactor is None:
             return
 
-        x_position = int(getattr(event, "x", self._last_mouse_position[0]))
-        y_position = int(getattr(event, "y", self._last_mouse_position[1]))
-        self._last_mouse_position = (x_position, y_position)
+        self._remember_mouse_position(event)
+        x_position, y_position = self._last_mouse_position
         state = int(getattr(event, "state", 0))
         ctrl = 1 if state & 0x0004 else 0
         shift = 1 if state & 0x0001 else 0
@@ -1485,6 +1628,11 @@ class EmbeddedVTKViewport:
             0,
             key_symbol,
         )
+
+    def _remember_mouse_position(self, event: Event[Canvas]) -> None:
+        x_position = int(getattr(event, "x", self._last_mouse_position[0]))
+        y_position = int(getattr(event, "y", self._last_mouse_position[1]))
+        self._last_mouse_position = (x_position, y_position)
 
     def _is_click_release(self, event: Event[Canvas]) -> bool:
         if self._left_press_position is None:
@@ -1538,12 +1686,30 @@ class EmbeddedVTKViewport:
         return bool(np.all(display_point >= minimum) and np.all(display_point <= maximum))
 
     def _render(self) -> None:
-        if self.render_window is not None and not self._is_closed:
-            try:
+        if self.render_window is None or self._is_closed:
+            self._count_skipped_render()
+            self._clear_render_dirty()
+            return
+
+        try:
+            if self._should_sync_axis_gizmo_for_render():
                 self._sync_axis_gizmo_camera()
-                self.render_window.Render()
-            except TclError:
-                return
+            self.render_window.Render()
+            self._count_render()
+        except TclError:
+            self._count_skipped_render()
+        finally:
+            self._clear_render_dirty()
+
+    def _should_sync_axis_gizmo_for_render(self) -> bool:
+        if not self._axis_gizmo_visible:
+            return False
+
+        return bool(
+            self.camera_dirty
+            or self.gizmo_dirty
+            or not (self.scene_dirty or self.overlay_dirty)
+        )
 
 
 def _screen_point_near_geometry(
@@ -1690,14 +1856,14 @@ def _surface_preview_actor(
     actor.SetMapper(mapper)
     property_ = actor.GetProperty()
     if selected:
-        property_.SetColor(0.08, 0.9, 0.95)
-        property_.SetOpacity(0.48)
+        property_.SetColor(0.0, 0.95, 1.0)
+        property_.SetOpacity(0.58)
         property_.SetEdgeColor(0.85, 1.0, 1.0)
-        property_.SetLineWidth(1.8)
+        property_.SetLineWidth(2.0)
     else:
-        property_.SetColor(0.16, 0.56, 0.9)
-        property_.SetOpacity(0.28)
-        property_.SetEdgeColor(0.36, 0.78, 1.0)
+        property_.SetColor(0.12, 0.34, 0.48)
+        property_.SetOpacity(0.22)
+        property_.SetEdgeColor(0.24, 0.58, 0.78)
         property_.SetLineWidth(1.1)
     property_.SetRepresentationToSurface()
     property_.EdgeVisibilityOn()

@@ -73,6 +73,8 @@ def settings_to_dict(settings: AppSettings) -> dict[str, object]:
             "remember_window_size": bool(settings.ui.remember_window_size),
         },
         "keybinds": {
+            "undo": _keybind_value(settings.keybinds.undo, "keybinds.undo"),
+            "redo": _keybind_value(settings.keybinds.redo, "keybinds.redo"),
             "rename_selected": _keybind_value(
                 settings.keybinds.rename_selected,
                 "keybinds.rename_selected",
@@ -178,6 +180,14 @@ def settings_from_dict(data: object) -> AppSettings:
             ),
         ),
         keybinds=AppKeybindSettings(
+            undo=_keybind_value(
+                _nested_value(keybind_data, "undo", defaults.keybinds.undo),
+                "keybinds.undo",
+            ),
+            redo=_keybind_value(
+                _nested_value(keybind_data, "redo", defaults.keybinds.redo),
+                "keybinds.redo",
+            ),
             rename_selected=_keybind_value(
                 _nested_value(
                     keybind_data,

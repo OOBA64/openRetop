@@ -44,6 +44,8 @@ def _sample_settings() -> AppSettings:
             remember_window_size=False,
         ),
         keybinds=AppKeybindSettings(
+            undo="Ctrl+Alt+Z",
+            redo="Ctrl+Alt+Y",
             rename_selected="Ctrl+R",
             toggle_visibility="V",
             isolate_selected="Shift+V",
@@ -73,6 +75,8 @@ class SettingsDataTests(unittest.TestCase):
         self.assertEqual(settings.ui.window_height, 800)
         self.assertEqual(settings.ui.window_mode, "maximized")
         self.assertTrue(settings.ui.remember_window_size)
+        self.assertEqual(settings.keybinds.undo, "Ctrl+Z")
+        self.assertEqual(settings.keybinds.redo, "Ctrl+Y")
         self.assertEqual(settings.keybinds.rename_selected, "F2")
         self.assertEqual(settings.keybinds.toggle_visibility, "H")
         self.assertEqual(settings.keybinds.isolate_selected, "Shift+H")
@@ -118,6 +122,8 @@ class SettingsIOTests(unittest.TestCase):
                     "remember_window_size": False,
                 },
                 "keybinds": {
+                    "undo": "Ctrl+Alt+Z",
+                    "redo": "Ctrl+Alt+Y",
                     "rename_selected": "Ctrl+R",
                     "toggle_visibility": "V",
                     "isolate_selected": "Shift+V",
@@ -163,6 +169,8 @@ class SettingsIOTests(unittest.TestCase):
         self.assertEqual(settings.ui.window_mode, "maximized")
         self.assertTrue(settings.ui.remember_window_size)
         self.assertEqual(settings.keybinds.toggle_visibility, "H")
+        self.assertEqual(settings.keybinds.undo, "Ctrl+Z")
+        self.assertEqual(settings.keybinds.redo, "Ctrl+Y")
         self.assertEqual(settings.future, {})
 
     def test_settings_from_dict_preserves_keybinds(self) -> None:
@@ -170,6 +178,8 @@ class SettingsIOTests(unittest.TestCase):
             {
                 "version": SETTINGS_VERSION,
                 "keybinds": {
+                    "undo": "Ctrl+U",
+                    "redo": "Ctrl+Shift+U",
                     "rename_selected": "F4",
                     "toggle_visibility": "V",
                     "isolate_selected": "Shift+V",
@@ -184,6 +194,8 @@ class SettingsIOTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(settings.keybinds.undo, "Ctrl+U")
+        self.assertEqual(settings.keybinds.redo, "Ctrl+Shift+U")
         self.assertEqual(settings.keybinds.rename_selected, "F4")
         self.assertEqual(settings.keybinds.toggle_visibility, "V")
         self.assertEqual(settings.keybinds.isolate_selected, "Shift+V")

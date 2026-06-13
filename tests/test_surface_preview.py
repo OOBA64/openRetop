@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from curves.curve_state import StoredCurve
 from surfaces.surface_preview import (
     FAN_FILL_WARNING,
+    LOFT_PAIR_DISTANCE_WARNING,
     SurfacePreviewMesh,
     build_surface_preview,
     build_surface_preview_mesh,
@@ -143,6 +144,13 @@ class SurfacePreviewTests(unittest.TestCase):
         assert preview is not None
         self.assertEqual(preview.vertices.shape, (8, 3))
         self.assertEqual(preview.faces.shape, (6, 3))
+        result = build_surface_preview(
+            _surface([first_curve.id, second_curve.id]),
+            [first_curve, second_curve],
+        )
+        self.assertEqual(result.diagnostics["resampled_point_count"], 4)
+        assert result.mesh is not None
+        self.assertEqual(len(result.mesh.vertices[:4]), len(result.mesh.vertices[4:]))
         self.assertTrue(np.allclose(preview.vertices[0], [0.0, 0.0, 0.0]))
         self.assertTrue(np.allclose(preview.vertices[1], [1.0, 0.0, 0.0]))
         self.assertTrue(np.allclose(preview.vertices[3], [3.0, 0.0, 0.0]))
@@ -166,6 +174,9 @@ class SurfacePreviewTests(unittest.TestCase):
 
         self.assertTrue(result.preview_available)
         self.assertEqual(result.reason, "loft generated with reversed second curve")
+        self.assertTrue(result.diagnostics["reversed_second_curve"])
+        self.assertFalse(result.diagnostics["seam_shift_applied"])
+        self.assertEqual(result.diagnostics["resampled_point_count"], 3)
         assert result.mesh is not None
         first_points = result.mesh.vertices[:3]
         paired_second_points = result.mesh.vertices[3:]
@@ -204,6 +215,9 @@ class SurfacePreviewTests(unittest.TestCase):
 
         self.assertTrue(result.preview_available)
         self.assertEqual(result.reason, "loft generated with seam-aligned second curve")
+        self.assertFalse(result.diagnostics["reversed_second_curve"])
+        self.assertTrue(result.diagnostics["seam_shift_applied"])
+        self.assertEqual(result.diagnostics["seam_shift_index"], 2)
         assert result.mesh is not None
         self.assertTrue(
             np.allclose(
@@ -216,6 +230,81 @@ class SurfacePreviewTests(unittest.TestCase):
                 ],
             )
         )
+
+    def test_degenerate_loft_triangles_are_skipped(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+            is_closed=False,
+        )
+        second_curve = _curve(
+            "curve-2",
+            [(0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (2.0, 1.0, 0.0)],
+            is_closed=False,
+        )
+
+        result = build_surface_preview(
+            _surface([first_curve.id, second_curve.id]),
+            [first_curve, second_curve],
+        )
+
+        self.assertTrue(result.preview_available)
+        assert result.mesh is not None
+        self.assertLess(result.mesh.faces.shape[0], 4)
+        self.assertGreater(result.mesh.faces.shape[0], 0)
+        for face in result.mesh.faces:
+            vertices = result.mesh.vertices[face]
+            area = np.linalg.norm(np.cross(vertices[1] - vertices[0], vertices[2] - vertices[0])) * 0.5
+            self.assertGreater(area, 1e-10)
+
+    def test_loft_diagnostics_include_pair_distances_and_warning(self) -> None:
+        first_curve = _curve(
+            "curve-1",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            is_closed=False,
+        )
+        second_curve = _curve(
+            "curve-2",
+            [(0.0, 10.0, 0.0), (1.0, 10.0, 0.0)],
+            is_closed=False,
+        )
+
+        result = build_surface_preview(
+            _surface([first_curve.id, second_curve.id]),
+            [first_curve, second_curve],
+        )
+
+        self.assertTrue(result.preview_available)
+        self.assertEqual(result.warning, LOFT_PAIR_DISTANCE_WARNING)
+        self.assertEqual(result.diagnostics["average_pair_distance"], 10.0)
+        self.assertEqual(result.diagnostics["max_pair_distance"], 10.0)
+
+    def test_closed_circle_loft_seam_alignment_avoids_obvious_twist(self) -> None:
+        angles = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
+        first_points = [
+            (float(np.cos(angle)), float(np.sin(angle)), 0.0)
+            for angle in angles
+        ]
+        shifted_points = first_points[4:] + first_points[:4]
+        second_points = [
+            (float(point[0]), float(point[1]), 1.0)
+            for point in shifted_points
+        ]
+        first_curve = _curve("curve-1", first_points, is_closed=True)
+        second_curve = _curve("curve-2", second_points, is_closed=True)
+
+        result = build_surface_preview(
+            _surface([first_curve.id, second_curve.id]),
+            [first_curve, second_curve],
+        )
+
+        self.assertTrue(result.preview_available)
+        self.assertTrue(result.diagnostics["seam_shift_applied"])
+        assert result.mesh is not None
+        first_ring = result.mesh.vertices[:12]
+        second_ring = result.mesh.vertices[12:]
+        self.assertTrue(np.allclose(first_ring[:, :2], second_ring[:, :2], atol=1e-8))
+        self.assertTrue(np.allclose(second_ring[:, 2], 1.0))
 
     def test_invalid_or_missing_curves_return_none(self) -> None:
         open_curve = _curve(

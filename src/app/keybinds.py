@@ -8,6 +8,8 @@ from settings.settings_data import AppKeybindSettings
 
 
 KEYBIND_DISPLAY_ORDER: tuple[tuple[str, str], ...] = (
+    ("undo", "Undo"),
+    ("redo", "Redo"),
     ("rename_selected", "Rename Selected"),
     ("toggle_visibility", "Toggle Visibility"),
     ("isolate_selected", "Isolate Selected"),
@@ -35,16 +37,20 @@ def shortcut_from_tk_event(event: object) -> str | None:
         return None
 
     state = int(getattr(event, "state", 0) or 0)
-    prefix = ""
+    modifiers: list[str] = []
+    if state & 0x0004:
+        modifiers.append("Ctrl")
+    if state & 0x0001:
+        modifiers.append("Shift")
     if state & 0x0008:
-        prefix = "Alt+"
-    elif state & 0x0001:
-        prefix = "Shift+"
+        modifiers.append("Alt")
 
     key_label = _key_label(key)
     if key_label is None:
         return None
-    return f"{prefix}{key_label}"
+    if modifiers:
+        return f"{'+'.join(modifiers)}+{key_label}"
+    return key_label
 
 
 def action_for_shortcut(
@@ -55,6 +61,8 @@ def action_for_shortcut(
     for field_name in keybind_field_names():
         if str(getattr(keybinds, field_name)).strip() == normalized:
             return KEYBIND_ACTION_BY_FIELD[field_name]
+    if normalized == "Ctrl+Shift+Z":
+        return "redo"
     return None
 
 

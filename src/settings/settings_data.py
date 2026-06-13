@@ -33,6 +33,8 @@ class AppUiSettings:
 
 @dataclass
 class AppKeybindSettings:
+    undo: str
+    redo: str
     rename_selected: str
     toggle_visibility: str
     isolate_selected: str
@@ -74,6 +76,8 @@ def default_app_settings() -> AppSettings:
             remember_window_size=True,
         ),
         keybinds=AppKeybindSettings(
+            undo="Ctrl+Z",
+            redo="Ctrl+Y",
             rename_selected="F2",
             toggle_visibility="H",
             isolate_selected="Shift+H",

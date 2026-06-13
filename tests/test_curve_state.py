@@ -24,6 +24,8 @@ from curves.curve_state import (
     remove_curve,
     set_active_curve,
     set_selected_curves,
+    simplify_curve,
+    smooth_curve,
 )
 
 
@@ -300,6 +302,143 @@ class CurveStateTests(unittest.TestCase):
                 name="Auto-Closed Curve 1",
                 tolerance=0.01,
             )
+
+    def test_simplify_curve_uses_rdp_to_reduce_point_count(self) -> None:
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.01, 0.0],
+                [2.0, -0.01, 0.0],
+                [3.0, 0.01, 0.0],
+                [4.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+        curve = _curve("curve-1", points=points.copy())
+
+        simplified = simplify_curve(
+            curve,
+            curve_id="curve-simple",
+            name="Simplified Curve 1",
+            tolerance=0.05,
+        )
+
+        self.assertLess(len(simplified.fitted_points), len(points))
+        self.assertEqual(len(simplified.fitted_points), 2)
+        self.assertTrue(np.allclose(simplified.fitted_points[0], points[0]))
+        self.assertTrue(np.allclose(simplified.fitted_points[-1], points[-1]))
+        self.assertTrue(np.allclose(curve.fitted_points, points))
+
+    def test_simplify_curve_preserves_open_curve_endpoints(self) -> None:
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [0.5, 0.2, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+        curve = _curve("curve-1", points=points.copy())
+
+        simplified = simplify_curve(
+            curve,
+            curve_id="curve-simple",
+            name="Simplified Curve 1",
+            tolerance=1.0,
+        )
+
+        self.assertTrue(np.allclose(simplified.fitted_points[0], points[0]))
+        self.assertTrue(np.allclose(simplified.fitted_points[-1], points[-1]))
+        self.assertFalse(simplified.is_closed)
+
+    def test_smooth_curve_preserves_point_count_and_open_endpoints(self) -> None:
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, -1.0, 0.0],
+                [3.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+        curve = _curve("curve-1", points=points.copy())
+
+        smoothed = smooth_curve(
+            curve,
+            curve_id="curve-smooth",
+            name="Smoothed Curve 1",
+            iterations=1,
+        )
+
+        self.assertEqual(len(smoothed.fitted_points), len(points))
+        self.assertTrue(np.allclose(smoothed.fitted_points[0], points[0]))
+        self.assertTrue(np.allclose(smoothed.fitted_points[-1], points[-1]))
+        self.assertFalse(np.allclose(smoothed.fitted_points[1:-1], points[1:-1]))
+
+    def test_smooth_curve_keeps_closed_curve_closed(self) -> None:
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+        curve = _curve("curve-1", points=points.copy())
+        curve.is_closed = True
+
+        smoothed = smooth_curve(
+            curve,
+            curve_id="curve-smooth",
+            name="Smoothed Curve 1",
+            iterations=2,
+        )
+
+        self.assertEqual(len(smoothed.fitted_points), len(points))
+        self.assertTrue(smoothed.is_closed)
+        self.assertTrue(np.allclose(smoothed.fitted_points[0], smoothed.fitted_points[-1]))
+
+    def test_generated_curve_metadata_records_source_operation_and_settings(self) -> None:
+        curve = _curve(
+            "curve-1",
+            points=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.01, 0.0],
+                    [2.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            ),
+        )
+        curve.mean_error = 0.12
+        curve.max_error = 0.34
+
+        simplified = simplify_curve(
+            curve,
+            curve_id="curve-simple",
+            name="Simplified Curve 1",
+            tolerance=0.05,
+        )
+        smoothed = smooth_curve(
+            curve,
+            curve_id="curve-smooth",
+            name="Smoothed Curve 1",
+            iterations=3,
+        )
+
+        self.assertEqual(simplified.metadata["operation"], "simplify")
+        self.assertEqual(simplified.metadata["source_curve_id"], "curve-1")
+        self.assertEqual(simplified.metadata["source_curve_ids"], ["curve-1"])
+        self.assertEqual(simplified.metadata["simplification_tolerance"], 0.05)
+        self.assertEqual(simplified.metadata["error_source"], "inherited_from_source_curve")
+        self.assertEqual(simplified.mean_error, curve.mean_error)
+        self.assertEqual(simplified.max_error, curve.max_error)
+        self.assertEqual(smoothed.metadata["operation"], "smooth")
+        self.assertEqual(smoothed.metadata["source_curve_id"], "curve-1")
+        self.assertEqual(smoothed.metadata["smoothing_method"], "moving_average")
+        self.assertEqual(smoothed.metadata["smoothing_iterations"], 3)
 
     def test_clear_curves_for_section_result_leaves_other_results(self) -> None:
         collection = CurveCollection()

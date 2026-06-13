@@ -29,6 +29,8 @@ class CurveDiagnostics:
 
 DEFAULT_TINY_CURVE_THRESHOLDS = TinyCurveThresholds()
 DEFAULT_CURVE_REPAIR_TOLERANCE = 0.01
+DEFAULT_CURVE_SIMPLIFY_TOLERANCE = 0.001
+DEFAULT_CURVE_SMOOTH_ITERATIONS = 2
 
 
 @dataclass
@@ -77,6 +79,10 @@ class CurveCollection:
 
 class CurveRepairError(ValueError):
     """Raised when selected curves cannot be repaired with the requested tolerance."""
+
+
+class CurveProcessingError(ValueError):
+    """Raised when a selected curve cannot be simplified or smoothed."""
 
 
 def add_curve(collection: CurveCollection, curve: StoredCurve) -> CurveCollection:
@@ -290,6 +296,93 @@ def auto_close_curve(
     )
 
 
+def simplify_curve(
+    curve: StoredCurve,
+    *,
+    curve_id: str,
+    name: str,
+    tolerance: float = DEFAULT_CURVE_SIMPLIFY_TOLERANCE,
+) -> StoredCurve:
+    points = _processing_points(curve)
+    if len(points) < 2:
+        raise CurveProcessingError("Selected curve has too few points to simplify.")
+
+    tolerance_value = _processing_tolerance(tolerance)
+    is_closed = _curve_is_closed(curve, points)
+    has_duplicate_endpoint = bool(is_closed and _endpoint_distance(points) <= 1e-9)
+    source_points = points[:-1].copy() if has_duplicate_endpoint else points.copy()
+    simplified_points = _rdp_simplify(source_points, tolerance_value)
+    if is_closed:
+        if has_duplicate_endpoint:
+            simplified_points = np.vstack((simplified_points, simplified_points[0]))
+        else:
+            simplified_points[-1] = simplified_points[0]
+
+    return StoredCurve(
+        id=curve_id,
+        name=name,
+        section_result_id=curve.section_result_id,
+        plane_id=curve.plane_id,
+        original_points=simplified_points.copy(),
+        fitted_points=simplified_points.copy(),
+        mean_error=float(curve.mean_error),
+        max_error=float(curve.max_error),
+        is_closed=is_closed,
+        visible=bool(curve.visible),
+        metadata={
+            "operation": "simplify",
+            "source_curve_id": curve.id,
+            "source_curve_ids": [curve.id],
+            "simplification_tolerance": tolerance_value,
+            "source_point_count": int(len(points)),
+            "result_point_count": int(len(simplified_points)),
+            "error_source": "inherited_from_source_curve",
+        },
+    )
+
+
+def smooth_curve(
+    curve: StoredCurve,
+    *,
+    curve_id: str,
+    name: str,
+    iterations: int = DEFAULT_CURVE_SMOOTH_ITERATIONS,
+) -> StoredCurve:
+    points = _processing_points(curve)
+    if len(points) < 2:
+        raise CurveProcessingError("Selected curve has too few points to smooth.")
+
+    iteration_count = _processing_iterations(iterations)
+    is_closed = _curve_is_closed(curve, points)
+    smoothed_points = _smooth_polyline_points(
+        points,
+        iterations=iteration_count,
+        is_closed=is_closed,
+    )
+    return StoredCurve(
+        id=curve_id,
+        name=name,
+        section_result_id=curve.section_result_id,
+        plane_id=curve.plane_id,
+        original_points=smoothed_points.copy(),
+        fitted_points=smoothed_points.copy(),
+        mean_error=float(curve.mean_error),
+        max_error=float(curve.max_error),
+        is_closed=is_closed,
+        visible=bool(curve.visible),
+        metadata={
+            "operation": "smooth",
+            "source_curve_id": curve.id,
+            "source_curve_ids": [curve.id],
+            "smoothing_method": "moving_average",
+            "smoothing_iterations": iteration_count,
+            "source_point_count": int(len(points)),
+            "result_point_count": int(len(smoothed_points)),
+            "error_source": "inherited_from_source_curve",
+        },
+    )
+
+
 def set_active_curve(
     collection: CurveCollection,
     curve_id: str,
@@ -380,6 +473,102 @@ def _repair_points(curve: StoredCurve) -> np.ndarray:
     if points.ndim != 2 or points.shape[1] != 3 or not np.all(np.isfinite(points)):
         raise CurveRepairError("Curve points must be finite 3D points.")
     return points.reshape((-1, 3)).copy()
+
+
+def _processing_points(curve: StoredCurve) -> np.ndarray:
+    points = np.asarray(curve.fitted_points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or not np.all(np.isfinite(points)):
+        raise CurveProcessingError("Curve points must be finite 3D points.")
+    return points.reshape((-1, 3)).copy()
+
+
+def _processing_tolerance(tolerance: float) -> float:
+    tolerance_value = float(tolerance)
+    if tolerance_value < 0.0 or not np.isfinite(tolerance_value):
+        raise CurveProcessingError("Simplify tolerance must be a finite non-negative number.")
+    return tolerance_value
+
+
+def _processing_iterations(iterations: int) -> int:
+    iteration_count = int(iterations)
+    if iteration_count < 0:
+        raise CurveProcessingError("Smoothing iterations must not be negative.")
+    return iteration_count
+
+
+def _curve_is_closed(curve: StoredCurve, points: np.ndarray) -> bool:
+    return bool(curve.is_closed or _endpoint_distance(points) <= 1e-9)
+
+
+def _rdp_simplify(points: np.ndarray, tolerance: float) -> np.ndarray:
+    if len(points) <= 2:
+        return points.copy()
+
+    start = points[0]
+    end = points[-1]
+    interior = points[1:-1]
+    distances = _point_to_line_distances(interior, start, end)
+    if len(distances) == 0:
+        return np.vstack((start, end))
+
+    farthest_offset = int(np.argmax(distances))
+    farthest_distance = float(distances[farthest_offset])
+    if farthest_distance <= tolerance:
+        return np.vstack((start, end))
+
+    split_index = farthest_offset + 1
+    left = _rdp_simplify(points[: split_index + 1], tolerance)
+    right = _rdp_simplify(points[split_index:], tolerance)
+    return np.vstack((left[:-1], right))
+
+
+def _point_to_line_distances(
+    points: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+) -> np.ndarray:
+    segment = end - start
+    segment_length = float(np.linalg.norm(segment))
+    if segment_length <= 1e-12:
+        return np.linalg.norm(points - start, axis=1)
+
+    return np.linalg.norm(np.cross(points - start, segment), axis=1) / segment_length
+
+
+def _smooth_polyline_points(
+    points: np.ndarray,
+    *,
+    iterations: int,
+    is_closed: bool,
+) -> np.ndarray:
+    if iterations == 0 or len(points) <= 2:
+        return points.copy()
+
+    has_duplicate_endpoint = bool(is_closed and _endpoint_distance(points) <= 1e-9)
+    if is_closed:
+        ring = points[:-1].copy() if has_duplicate_endpoint else points.copy()
+        if len(ring) <= 2:
+            return points.copy()
+        for _ in range(iterations):
+            previous_points = np.roll(ring, 1, axis=0)
+            next_points = np.roll(ring, -1, axis=0)
+            ring = (previous_points + ring + next_points) / 3.0
+        if has_duplicate_endpoint:
+            return np.vstack((ring, ring[0]))
+        ring[-1] = ring[0]
+        return ring
+
+    smoothed = points.copy()
+    for _ in range(iterations):
+        previous = smoothed[:-2]
+        current = smoothed[1:-1]
+        next_points = smoothed[2:]
+        updated = smoothed.copy()
+        updated[1:-1] = (previous + current + next_points) / 3.0
+        smoothed = updated
+    smoothed[0] = points[0]
+    smoothed[-1] = points[-1]
+    return smoothed
 
 
 def _ordered_join_points(
