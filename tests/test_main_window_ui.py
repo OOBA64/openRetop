@@ -50,7 +50,7 @@ from project.project_data import (
 from project.project_io import load_project, save_project
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
-from sections.section_state import SectionPlaneState, add_plane, set_active_plane
+from sections.section_state import SectionPlaneState, StoredSectionResult, add_plane, set_active_plane
 from surfaces.surface_state import SurfacePatch, add_surface
 
 
@@ -256,6 +256,80 @@ def _make_curve_closed(curve: StoredCurve) -> None:
     curve.original_points = closed_points.copy()
     curve.fitted_points = closed_points.copy()
     curve.is_closed = True
+
+
+def _load_sample_model(window: OpenRetopWindow) -> None:
+    mesh = FakeMesh()
+    metadata = MeshMetadata(
+        file_path=Path("sample.stl"),
+        file_name="sample.stl",
+        extension=".stl",
+        vertex_count=3,
+        triangle_count=1,
+        had_vertex_normals=True,
+        had_triangle_normals=True,
+        computed_vertex_normals=False,
+        computed_triangle_normals=False,
+    )
+    with patch(
+        "app.main_window.load_mesh",
+        return_value=LoadedMesh(mesh=mesh, metadata=metadata),
+    ):
+        window.load_model(Path("sample.stl"))
+
+
+def _build_two_section_scene(
+    window: OpenRetopWindow,
+) -> tuple[
+    SectionPlaneState,
+    SectionPlaneState,
+    StoredSectionResult,
+    StoredSectionResult,
+    StoredCurve,
+    StoredCurve,
+    SurfacePatch,
+    SurfacePatch,
+]:
+    _load_sample_model(window)
+    window.compute_section()
+    first_plane = window.app_state.section_collection.planes[0]
+    first_result = window.app_state.section_collection.results[0]
+    first_curve = window.app_state.curve_collection.curves[0]
+
+    window.add_section_plane()
+    second_plane = window.app_state.section_collection.planes[1]
+    window.section_axis.set("X")
+    window._on_section_axis_changed()
+    window._set_section_offset(0.5, clamp=True, refresh=True)
+    window.compute_section()
+    second_result = window.app_state.section_collection.results[1]
+    second_curve = window.app_state.curve_collection.curves[1]
+
+    first_surface = SurfacePatch(
+        id="surface-1",
+        name="Surface 1",
+        source_curve_ids=[first_curve.id],
+        surface_type="preview_fill",
+    )
+    second_surface = SurfacePatch(
+        id="surface-2",
+        name="Surface 2",
+        source_curve_ids=[second_curve.id],
+        surface_type="preview_fill",
+    )
+    add_surface(window.app_state.surface_collection, first_surface)
+    add_surface(window.app_state.surface_collection, second_surface)
+    window._refresh_viewport(reset_camera=False)
+    return (
+        first_plane,
+        second_plane,
+        first_result,
+        second_result,
+        first_curve,
+        second_curve,
+        first_surface,
+        second_surface,
+    )
 
 
 class MainWindowUiTests(unittest.TestCase):
@@ -2723,6 +2797,356 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_scene_browser_root_selection_selects_all_children_by_family(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                first_plane,
+                second_plane,
+                first_result,
+                second_result,
+                first_curve,
+                second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+            first_plane.visible = True
+            second_plane.visible = True
+            window._refresh_viewport(reset_camera=False)
+
+            tree = window.scene_browser.tree
+            first_plane_node = section_plane_node_id(first_plane.id)
+            second_plane_node = section_plane_node_id(second_plane.id)
+            first_result_node = section_result_node_id(first_result.id)
+            second_result_node = section_result_node_id(second_result.id)
+            first_curve_node = curve_node_id(first_curve.id)
+            second_curve_node = curve_node_id(second_curve.id)
+            first_surface_node = surface_node_id(first_surface.id)
+            second_surface_node = surface_node_id(second_surface.id)
+
+            tree.selection_set(NODE_SECTION_PLANES)
+            tree.focus(NODE_SECTION_PLANES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "section_plane")
+            self.assertEqual(
+                window.app_state.section_collection.selected_plane_ids,
+                {first_plane.id, second_plane.id},
+            )
+            self.assertTrue(first_plane.selected)
+            self.assertTrue(second_plane.selected)
+            self.assertEqual(set(tree.selection()), {first_plane_node, second_plane_node})
+
+            tree.selection_set(NODE_SECTION_RESULTS)
+            tree.focus(NODE_SECTION_RESULTS)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "section_result")
+            self.assertEqual(
+                window.app_state.section_collection.selected_result_ids,
+                {first_result.id, second_result.id},
+            )
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id, second_curve.id},
+            )
+            self.assertTrue(first_result.selected)
+            self.assertTrue(second_result.selected)
+            self.assertTrue(first_curve.selected)
+            self.assertTrue(second_curve.selected)
+            self.assertEqual(
+                set(tree.selection()),
+                {first_result_node, second_result_node},
+            )
+
+            tree.selection_set(NODE_CURVES)
+            tree.focus(NODE_CURVES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id, second_curve.id},
+            )
+            self.assertEqual(set(tree.selection()), {first_curve_node, second_curve_node})
+
+            tree.selection_set(NODE_SURFACES)
+            tree.focus(NODE_SURFACES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "surface")
+            self.assertEqual(
+                window.app_state.surface_collection.selected_surface_ids,
+                {first_surface.id, second_surface.id},
+            )
+            self.assertTrue(first_surface.selected)
+            self.assertTrue(second_surface.selected)
+            self.assertEqual(set(tree.selection()), {first_surface_node, second_surface_node})
+        finally:
+            window.root.destroy()
+
+    def test_scene_browser_multi_selects_planes_results_and_surfaces(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                first_plane,
+                second_plane,
+                first_result,
+                second_result,
+                first_curve,
+                second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+            first_plane.visible = True
+            second_plane.visible = True
+            window._refresh_viewport(reset_camera=False)
+
+            tree = window.scene_browser.tree
+            first_plane_node = section_plane_node_id(first_plane.id)
+            second_plane_node = section_plane_node_id(second_plane.id)
+            tree.selection_set((first_plane_node, second_plane_node))
+            tree.focus(second_plane_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "section_plane")
+            self.assertEqual(window.app_state.section_collection.active_plane_id, second_plane.id)
+            self.assertEqual(
+                window.app_state.section_collection.selected_plane_ids,
+                {first_plane.id, second_plane.id},
+            )
+
+            first_result_node = section_result_node_id(first_result.id)
+            second_result_node = section_result_node_id(second_result.id)
+            tree.selection_set((first_result_node, second_result_node))
+            tree.focus(second_result_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "section_result")
+            self.assertEqual(window.app_state.section_collection.active_result_id, second_result.id)
+            self.assertEqual(
+                window.app_state.section_collection.selected_result_ids,
+                {first_result.id, second_result.id},
+            )
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id, second_curve.id},
+            )
+
+            first_surface_node = surface_node_id(first_surface.id)
+            second_surface_node = surface_node_id(second_surface.id)
+            tree.selection_set((first_surface_node, second_surface_node))
+            tree.focus(second_surface_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            self.assertEqual(window.app_state.selected_item, "surface")
+            self.assertEqual(window.app_state.surface_collection.active_surface_id, second_surface.id)
+            self.assertEqual(
+                window.app_state.surface_collection.selected_surface_ids,
+                {first_surface.id, second_surface.id},
+            )
+            self.assertTrue(first_surface.selected)
+            self.assertTrue(second_surface.selected)
+        finally:
+            window.root.destroy()
+
+    def test_bulk_visibility_actions_apply_to_selected_planes_and_surfaces(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                first_plane,
+                second_plane,
+                _first_result,
+                _second_result,
+                _first_curve,
+                _second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+
+            tree = window.scene_browser.tree
+            first_plane.visible = True
+            second_plane.visible = True
+            window._refresh_viewport(reset_camera=False)
+            tree.selection_set(NODE_SECTION_PLANES)
+            tree.focus(NODE_SECTION_PLANES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.hide_selected_scene_objects()
+
+            self.assertFalse(first_plane.visible)
+            self.assertFalse(second_plane.visible)
+            self.assertEqual(window.status_text.get(), "Hidden 2 selected items")
+
+            window.show_all_scene_objects()
+            self.assertTrue(first_plane.visible)
+            self.assertTrue(second_plane.visible)
+
+            tree.selection_set(NODE_SURFACES)
+            tree.focus(NODE_SURFACES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.hide_selected_scene_objects()
+
+            self.assertFalse(first_surface.visible)
+            self.assertFalse(second_surface.visible)
+            self.assertEqual(window.status_text.get(), "Hidden 2 selected items")
+
+            window.toggle_selected_scene_objects()
+            self.assertTrue(first_surface.visible)
+            self.assertTrue(second_surface.visible)
+            self.assertEqual(window.status_text.get(), "Toggled 2 selected items")
+        finally:
+            window.root.destroy()
+
+    def test_bulk_delete_selected_curves_and_surfaces(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                _first_plane,
+                _second_plane,
+                first_result,
+                second_result,
+                first_curve,
+                second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+
+            tree = window.scene_browser.tree
+            first_surface_node = surface_node_id(first_surface.id)
+            second_surface_node = surface_node_id(second_surface.id)
+            tree.selection_set((first_surface_node, second_surface_node))
+            tree.focus(second_surface_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.delete_selected_scene_objects()
+
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+            self.assertEqual(
+                {curve.id for curve in window.app_state.curve_collection.curves},
+                {first_curve.id, second_curve.id},
+            )
+            self.assertFalse(tree.exists(NODE_SURFACES))
+            self.assertEqual(window.status_text.get(), "Deleted 2 selected objects")
+
+            replacement_surface = SurfacePatch(
+                id="surface-3",
+                name="Surface 3",
+                source_curve_ids=[first_curve.id],
+                surface_type="preview_fill",
+            )
+            add_surface(window.app_state.surface_collection, replacement_surface)
+            window._refresh_viewport(reset_camera=False)
+
+            first_curve_node = curve_node_id(first_curve.id)
+            second_curve_node = curve_node_id(second_curve.id)
+            tree.selection_set((first_curve_node, second_curve_node))
+            tree.focus(second_curve_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.delete_selected_scene_objects()
+
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+            self.assertEqual(
+                {result.id for result in window.app_state.section_collection.results},
+                {first_result.id, second_result.id},
+            )
+            self.assertEqual(window.status_text.get(), "Deleted 3 selected objects")
+        finally:
+            window.root.destroy()
+
+    def test_bulk_delete_section_result_and_plane_remove_dependents(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                first_plane,
+                second_plane,
+                first_result,
+                second_result,
+                first_curve,
+                second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+
+            tree = window.scene_browser.tree
+            tree.selection_set(section_result_node_id(first_result.id))
+            tree.focus(section_result_node_id(first_result.id))
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.delete_selected_scene_objects()
+
+            self.assertNotIn(first_result, window.app_state.section_collection.results)
+            self.assertIn(second_result, window.app_state.section_collection.results)
+            self.assertNotIn(first_curve, window.app_state.curve_collection.curves)
+            self.assertIn(second_curve, window.app_state.curve_collection.curves)
+            self.assertNotIn(first_surface, window.app_state.surface_collection.surfaces)
+            self.assertIn(second_surface, window.app_state.surface_collection.surfaces)
+
+            tree.selection_set(section_plane_node_id(second_plane.id))
+            tree.focus(section_plane_node_id(second_plane.id))
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.delete_selected_scene_objects()
+
+            self.assertIn(first_plane, window.app_state.section_collection.planes)
+            self.assertNotIn(second_plane, window.app_state.section_collection.planes)
+            self.assertEqual(window.app_state.section_collection.results, [])
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertEqual(window.app_state.surface_collection.surfaces, [])
+            self.assertEqual(window.status_text.get(), "Deleted 4 selected objects")
+        finally:
+            window.root.destroy()
+
+    def test_rename_rejected_for_multi_selection(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                _first_plane,
+                _second_plane,
+                _first_result,
+                _second_result,
+                first_curve,
+                second_curve,
+                _first_surface,
+                _second_surface,
+            ) = _build_two_section_scene(window)
+
+            tree = window.scene_browser.tree
+            first_curve_node = curve_node_id(first_curve.id)
+            second_curve_node = curve_node_id(second_curve.id)
+            tree.selection_set((first_curve_node, second_curve_node))
+            tree.focus(second_curve_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+
+            window.rename_selected()
+
+            self.assertEqual(window.status_text.get(), "Select one object to rename.")
+        finally:
+            window.root.destroy()
+
     def test_mesh_visibility_hotkeys_toggle_isolate_and_show_all(self) -> None:
         mesh = FakeMesh()
         metadata = MeshMetadata(
@@ -4100,17 +4524,19 @@ class MainWindowUiTests(unittest.TestCase):
             reset_count = window.viewport.reset_count
             window._handle_shortcut("Delete")
 
-            self.assertIsNone(window.app_state.mesh_object)
-            self.assertEqual(window.status_text.get(), "Selected model removed")
-            self.assertTrue(window.project_dirty)
-            self.assertEqual(window.root.title(), "openRetop - Untitled Project *")
-            self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
-            self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
+            self.assertIsNotNone(window.app_state.mesh_object)
+            self.assertEqual(window.status_text.get(), "Mesh deletion is not implemented yet.")
+            self.assertFalse(window.project_dirty)
+            self.assertEqual(window.root.title(), "openRetop - Untitled Project")
+            self.assertEqual(str(window.select_model_button.cget("state")), "normal")
+            self.assertEqual(str(window.select_section_plane_button.cget("state")), "normal")
             self.assertEqual(window.viewport.reset_count, reset_count)
-            self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
-            self.assertEqual(window.viewport.scene_calls[-1]["reset_camera"], False)
-            self.assertIsNone(window.viewport.scene_calls[-1]["selected_item"])
-            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), ())
+            self.assertIs(window.viewport.scene_calls[-1]["mesh"], window.app_state.mesh_object.display_mesh)
+            self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "model")
+            self.assertEqual(
+                window.scene_browser.tree.get_children(NODE_SCENE),
+                (NODE_MESH, NODE_SECTION_PLANES),
+            )
         finally:
             window.root.destroy()
 

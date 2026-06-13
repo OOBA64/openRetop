@@ -6,13 +6,17 @@ from sections.section_state import (
     StoredSectionResult,
     add_plane,
     add_result,
+    clear_plane_selection,
     clear_results_for_plane,
+    clear_result_selection,
     create_default_section_plane,
     get_active_plane,
     get_active_result,
     remove_plane,
     set_active_plane,
     set_active_result,
+    set_selected_planes,
+    set_selected_results,
 )
 
 __all__ = [
@@ -21,11 +25,15 @@ __all__ = [
     "StoredSectionResult",
     "add_plane",
     "add_result",
+    "clear_plane_selection",
     "clear_results_for_plane",
+    "clear_result_selection",
     "create_default_section_plane",
     "get_active_plane",
     "get_active_result",
     "remove_plane",
     "set_active_plane",
     "set_active_result",
+    "set_selected_planes",
+    "set_selected_results",
 ]

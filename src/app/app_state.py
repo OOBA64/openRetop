@@ -46,12 +46,28 @@ class AppState:
         self.active_transform_mode = None
         self.active_transform_axis = None
         self.transform_state = None
+        self.section_collection.selected_plane_ids.clear()
+        self.section_collection.selected_result_ids.clear()
+        self.curve_collection.selected_curve_ids.clear()
+        self.surface_collection.selected_surface_ids.clear()
+        for plane in self.section_collection.planes:
+            plane.selected = False
+        for result in self.section_collection.results:
+            result.selected = False
+        for curve in self.curve_collection.curves:
+            curve.selected = False
+        for surface in self.surface_collection.surfaces:
+            surface.selected = False
 
     def clear_sections(self) -> None:
         self.section_result = None
         self.curve_results = []
         self.section_collection.results = []
         self.section_collection.active_result_id = None
+        self.section_collection.selected_result_ids.clear()
         self.curve_collection.curves = []
         self.curve_collection.active_curve_id = None
         self.curve_collection.selected_curve_ids.clear()
+        self.surface_collection.surfaces = []
+        self.surface_collection.active_surface_id = None
+        self.surface_collection.selected_surface_ids.clear()

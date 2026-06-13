@@ -4,11 +4,13 @@ from surfaces.surface_state import (
     SurfaceCollection,
     SurfacePatch,
     add_surface,
+    clear_surface_selection,
     clear_surfaces_for_curve,
     get_active_surface,
     get_visible_surfaces,
     remove_surface,
     set_active_surface,
+    set_selected_surfaces,
 )
 from surfaces.surface_preview import (
     SurfacePreviewBuildResult,
@@ -25,9 +27,11 @@ __all__ = [
     "add_surface",
     "build_surface_preview",
     "build_surface_preview_mesh",
+    "clear_surface_selection",
     "clear_surfaces_for_curve",
     "get_active_surface",
     "get_visible_surfaces",
     "remove_surface",
     "set_active_surface",
+    "set_selected_surfaces",
 ]

@@ -28,6 +28,7 @@ class SurfacePreviewMesh:
     vertices: np.ndarray
     faces: np.ndarray
     source_surface_id: str
+    selected: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -154,6 +155,7 @@ def _build_closed_curve_fan_result(
             vertices=vertices,
             faces=np.asarray(faces, dtype=int),
             source_surface_id=surface.id,
+            selected=bool(surface.selected),
         ),
         preview_available=True,
         reason="fan fill preview generated",
@@ -252,6 +254,7 @@ def _build_two_curve_loft_result(
             vertices=vertices,
             faces=np.asarray(faces, dtype=int),
             source_surface_id=surface.id,
+            selected=bool(surface.selected),
         ),
         preview_available=True,
         reason=reason,

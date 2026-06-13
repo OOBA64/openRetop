@@ -674,7 +674,9 @@ class EmbeddedVTKViewport:
             if not plane.visible:
                 continue
 
-            selected = bool(plane.selected) or plane.id == active_section_plane_id
+            selected = bool(plane.selected) or (
+                selected_item == "section_plane" and plane.id == active_section_plane_id
+            )
             planes.append(
                 ViewportSectionPlane(
                     id=plane.id,
@@ -745,7 +747,7 @@ class EmbeddedVTKViewport:
                     preview.faces.shape,
                     _array_key(np.min(preview.vertices, axis=0)),
                     _array_key(np.max(preview.vertices, axis=0)),
-                    bool(preview.source_surface_id == active_surface_id),
+                    bool(preview.selected or preview.source_surface_id == active_surface_id),
                 )
                 for preview in renderable_previews
             ),
@@ -759,7 +761,7 @@ class EmbeddedVTKViewport:
         actors = [
             _surface_preview_actor(
                 preview,
-                selected=preview.source_surface_id == active_surface_id,
+                selected=bool(preview.selected or preview.source_surface_id == active_surface_id),
             )
             for preview in renderable_previews
         ]

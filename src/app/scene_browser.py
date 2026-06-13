@@ -134,14 +134,17 @@ class SceneBrowser:
         self._syncing_selection = False
         self._active_section_plane_node_id: str | None = None
         self._section_plane_node_ids: set[str] = set()
+        self._selected_section_plane_node_ids: set[str] = set()
         self._section_result_node_ids: set[str] = set()
         self._active_section_result_node_id: str | None = None
+        self._selected_section_result_node_ids: set[str] = set()
         self._curve_group_node_ids: set[str] = set()
         self._curve_node_ids: set[str] = set()
         self._active_curve_node_id: str | None = None
         self._selected_curve_node_ids: set[str] = set()
         self._surface_node_ids: set[str] = set()
         self._active_surface_node_id: str | None = None
+        self._selected_surface_node_ids: set[str] = set()
 
         self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
         self.frame.grid_propagate(False)
@@ -164,23 +167,36 @@ class SceneBrowser:
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection)
         self.tree.bind("<Button-3>", self._on_tree_context_menu)
 
-        self._visibility_menu = Menu(self.tree, tearoff=False)
-        self._visibility_menu.add_command(
+        self._context_menu = Menu(self.tree, tearoff=False)
+        self._context_menu.add_command(
+            label="Rename",
+            command=lambda: self._emit_visibility_action("rename"),
+        )
+        self._context_menu.add_separator()
+        self._context_menu.add_command(
+            label="Toggle Visibility",
+            command=lambda: self._emit_visibility_action("toggle_visibility"),
+        )
+        self._context_menu.add_command(
             label="Hide Selected",
             command=lambda: self._emit_visibility_action("hide_selected"),
         )
-        self._visibility_menu.add_command(
-            label="Show Selected",
-            command=lambda: self._emit_visibility_action("show_selected"),
-        )
-        self._visibility_menu.add_command(
-            label="Hide Unselected",
+        self._context_menu.add_command(
+            label="Isolate Selected",
             command=lambda: self._emit_visibility_action("hide_unselected"),
         )
-        self._visibility_menu.add_separator()
-        self._visibility_menu.add_command(
+        self._context_menu.add_command(
             label="Show All",
             command=lambda: self._emit_visibility_action("show_all"),
+        )
+        self._context_menu.add_separator()
+        self._context_menu.add_command(
+            label="Delete Selected",
+            command=lambda: self._emit_visibility_action("delete_selected"),
+        )
+        self._context_menu.add_command(
+            label="Frame Selected",
+            command=lambda: self._emit_visibility_action("frame_selected"),
         )
 
         self.tree.insert("", "end", iid=NODE_SCENE, text="Scene", open=True)
@@ -193,13 +209,16 @@ class SceneBrowser:
         mesh_visible: bool,
         section_planes: Sequence[SectionPlaneState],
         active_section_plane_id: str | None,
+        selected_section_plane_ids: set[str],
         section_results: Sequence[StoredSectionResult],
         active_section_result_id: str | None,
+        selected_section_result_ids: set[str],
         curves: Sequence[StoredCurve],
         active_curve_id: str | None,
         selected_curve_ids: set[str],
         surfaces: Sequence[SurfacePatch],
         active_surface_id: str | None,
+        selected_surface_ids: set[str],
         has_section_result: bool,
         has_curves: bool,
         has_surfaces: bool,
@@ -222,6 +241,7 @@ class SceneBrowser:
                 self._sync_section_plane_nodes(
                     section_planes,
                     active_section_plane_id=active_section_plane_id,
+                    selected_section_plane_ids=selected_section_plane_ids,
                 )
             else:
                 self._remove_node(NODE_MESH)
@@ -231,6 +251,7 @@ class SceneBrowser:
                 self._sync_section_result_nodes(
                     section_results,
                     active_section_result_id=active_section_result_id,
+                    selected_section_result_ids=selected_section_result_ids,
                 )
             else:
                 self._remove_section_result_nodes()
@@ -249,6 +270,7 @@ class SceneBrowser:
                 self._sync_surface_nodes(
                     surfaces,
                     active_surface_id=active_surface_id,
+                    selected_surface_ids=selected_surface_ids,
                 )
             else:
                 self._remove_surface_nodes()
@@ -281,6 +303,7 @@ class SceneBrowser:
         section_planes: Sequence[SectionPlaneState],
         *,
         active_section_plane_id: str | None,
+        selected_section_plane_ids: set[str],
     ) -> None:
         self._ensure_node(NODE_SECTION_PLANES, "Section Planes", open_node=True)
 
@@ -300,6 +323,11 @@ class SceneBrowser:
                 self.tree.delete(child_id)
 
         self._section_plane_node_ids = current_node_id_set
+        self._selected_section_plane_node_ids = {
+            section_plane_node_id(plane_id)
+            for plane_id in selected_section_plane_ids
+            if section_plane_node_id(plane_id) in current_node_id_set
+        }
         active_node_id = (
             section_plane_node_id(active_section_plane_id)
             if active_section_plane_id is not None
@@ -314,6 +342,7 @@ class SceneBrowser:
 
     def _remove_section_plane_nodes(self) -> None:
         self._section_plane_node_ids = set()
+        self._selected_section_plane_node_ids = set()
         self._active_section_plane_node_id = None
         self._remove_node(NODE_SECTION_PLANES)
 
@@ -322,6 +351,7 @@ class SceneBrowser:
         section_results: Sequence[StoredSectionResult],
         *,
         active_section_result_id: str | None,
+        selected_section_result_ids: set[str],
     ) -> None:
         self._ensure_node(NODE_SECTION_RESULTS, "Section Results", open_node=True)
 
@@ -341,6 +371,11 @@ class SceneBrowser:
                 self.tree.delete(child_id)
 
         self._section_result_node_ids = current_node_id_set
+        self._selected_section_result_node_ids = {
+            section_result_node_id(result_id)
+            for result_id in selected_section_result_ids
+            if section_result_node_id(result_id) in current_node_id_set
+        }
         active_node_id = (
             section_result_node_id(active_section_result_id)
             if active_section_result_id is not None
@@ -355,6 +390,7 @@ class SceneBrowser:
 
     def _remove_section_result_nodes(self) -> None:
         self._section_result_node_ids = set()
+        self._selected_section_result_node_ids = set()
         self._active_section_result_node_id = None
         self._remove_node(NODE_SECTION_RESULTS)
 
@@ -469,6 +505,7 @@ class SceneBrowser:
         surfaces: Sequence[SurfacePatch],
         *,
         active_surface_id: str | None,
+        selected_surface_ids: set[str],
     ) -> None:
         self._ensure_node(NODE_SURFACES, "Surfaces", open_node=True)
 
@@ -488,6 +525,11 @@ class SceneBrowser:
                 self.tree.delete(child_id)
 
         self._surface_node_ids = current_node_id_set
+        self._selected_surface_node_ids = {
+            surface_node_id(surface_id)
+            for surface_id in selected_surface_ids
+            if surface_node_id(surface_id) in current_node_id_set
+        }
         active_node_id = (
             surface_node_id(active_surface_id)
             if active_surface_id is not None
@@ -502,6 +544,7 @@ class SceneBrowser:
 
     def _remove_surface_nodes(self) -> None:
         self._surface_node_ids = set()
+        self._selected_surface_node_ids = set()
         self._active_surface_node_id = None
         self._remove_node(NODE_SURFACES)
 
@@ -522,6 +565,22 @@ class SceneBrowser:
                 self.tree.move(node_id, NODE_SCENE, index)
 
     def _sync_tree_selection(self, selected_item: str | None) -> None:
+        selected_node_ids = self._selected_node_ids_for_selection(selected_item)
+        if selected_node_ids:
+            node_ids = tuple(
+                node_id
+                for node_id in self._node_order()
+                if node_id in selected_node_ids and self.tree.exists(node_id)
+            )
+            if node_ids and self.tree.selection() != node_ids:
+                self.tree.selection_set(node_ids)
+            focus_node = self._node_for_selection(selected_item)
+            if focus_node is not None and self.tree.exists(focus_node):
+                self.tree.see(focus_node)
+            elif node_ids:
+                self.tree.see(node_ids[0])
+            return
+
         if selected_item == SELECT_CURVE and self._selected_curve_node_ids:
             node_ids = tuple(
                 node_id
@@ -558,30 +617,12 @@ class SceneBrowser:
             self.selection_callback(None, ())
             return
 
-        curve_selection = tuple(
-            node_id for node_id in selection if node_id in self._curve_node_ids
-        )
-        if curve_selection and len(curve_selection) == len(selection):
-            focused_node = self.tree.focus()
-            node_id = focused_node if focused_node in curve_selection else curve_selection[-1]
-            self.selection_callback(
-                self._selection_for_node(node_id),
-                tuple(self._selection_for_node(item) or item for item in curve_selection),
-            )
-            return
-
         focused_node = self.tree.focus()
         node_id = focused_node if focused_node in selection else selection[0]
-        if len(selection) > 1:
-            self._syncing_selection = True
-            try:
-                self.tree.selection_set(node_id)
-            finally:
-                self._syncing_selection = False
         selected_item = self._selection_for_node(node_id)
         self.selection_callback(
             selected_item,
-            () if selected_item is None else (selected_item,),
+            tuple(self._selection_for_node(item) or item for item in selection),
         )
 
     def _node_for_selection(self, selected_item: str | None) -> str | None:
@@ -622,6 +663,39 @@ class SceneBrowser:
     def selected_node_ids(self) -> tuple[str, ...]:
         return tuple(self.tree.selection())
 
+    def _selected_node_ids_for_selection(self, selected_item: str | None) -> set[str]:
+        if selected_item == SELECT_SECTION_PLANE:
+            return set(self._selected_section_plane_node_ids)
+        if selected_item == SELECT_SECTION_RESULT:
+            return set(self._selected_section_result_node_ids)
+        if selected_item == SELECT_CURVE:
+            return set(self._selected_curve_node_ids)
+        if selected_item == SELECT_SURFACE:
+            return set(self._selected_surface_node_ids)
+        return set()
+
+    def _node_order(self) -> tuple[str, ...]:
+        ordered_node_ids: list[str] = []
+        for root_node_id in (
+            NODE_MESH,
+            NODE_SECTION_PLANES,
+            NODE_SECTION_RESULTS,
+            NODE_CURVES,
+            NODE_SURFACES,
+        ):
+            if not self.tree.exists(root_node_id):
+                continue
+            ordered_node_ids.append(root_node_id)
+            ordered_node_ids.extend(self._descendant_node_ids(root_node_id))
+        return tuple(ordered_node_ids)
+
+    def _descendant_node_ids(self, node_id: str) -> tuple[str, ...]:
+        descendants: list[str] = []
+        for child_id in self.tree.get_children(node_id):
+            descendants.append(child_id)
+            descendants.extend(self._descendant_node_ids(child_id))
+        return tuple(descendants)
+
     def _curve_node_order(self) -> tuple[str, ...]:
         if not self.tree.exists(NODE_CURVES):
             return ()
@@ -646,14 +720,30 @@ class SceneBrowser:
             self.tree.focus(row_id)
 
         if self.visibility_callback is not None:
+            rename_state = (
+                "normal"
+                if len(self.selected_node_ids()) == 1
+                and self._is_renameable_node(self.selected_node_ids()[0])
+                else "disabled"
+            )
+            self._context_menu.entryconfigure(0, state=rename_state)
             try:
-                self._visibility_menu.tk_popup(
+                self._context_menu.tk_popup(
                     getattr(event, "x_root", 0),
                     getattr(event, "y_root", 0),
                 )
             finally:
-                self._visibility_menu.grab_release()
+                self._context_menu.grab_release()
         return "break"
+
+    def _is_renameable_node(self, node_id: str) -> bool:
+        return (
+            node_id == NODE_MESH
+            or node_id in self._section_plane_node_ids
+            or node_id in self._section_result_node_ids
+            or node_id in self._curve_node_ids
+            or node_id in self._surface_node_ids
+        )
 
     def _emit_visibility_action(self, action: str) -> None:
         if self.visibility_callback is None:
