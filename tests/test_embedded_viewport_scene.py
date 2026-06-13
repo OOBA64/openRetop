@@ -29,6 +29,29 @@ from viewer.embedded_viewport import (
 from viewer.overlays import build_bounding_box_outline
 
 
+class FakeRenderWindow:
+    def __init__(self) -> None:
+        self.layer_count = 1
+        self.added_renderers: list[object] = []
+        self.removed_renderers: list[object] = []
+        self.render_count = 0
+
+    def GetNumberOfLayers(self) -> int:
+        return self.layer_count
+
+    def SetNumberOfLayers(self, layer_count: int) -> None:
+        self.layer_count = int(layer_count)
+
+    def AddRenderer(self, renderer: object) -> None:
+        self.added_renderers.append(renderer)
+
+    def RemoveRenderer(self, renderer: object) -> None:
+        self.removed_renderers.append(renderer)
+
+    def Render(self) -> None:
+        self.render_count += 1
+
+
 class EmbeddedViewportSceneTests(unittest.TestCase):
     def _triangle_mesh(self) -> TriangleMeshData:
         return TriangleMeshData(
@@ -508,6 +531,62 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertTrue(viewport._axis_gizmo_visible)
         self.assertEqual(self._actor_count(viewport), 4)
+
+    def test_axis_gizmo_uses_existing_render_window_renderer_layer(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        render_window = FakeRenderWindow()
+        viewport.render_window = render_window  # type: ignore[assignment]
+
+        viewport._update_axis_gizmo(True)
+
+        self.assertEqual(render_window.layer_count, 2)
+        self.assertEqual(len(render_window.added_renderers), 1)
+        self.assertIs(viewport._axis_gizmo_renderer, render_window.added_renderers[0])
+        self.assertIsNotNone(viewport._axis_gizmo_actor)
+        self.assertIsNone(viewport.interactor)
+        self.assertFalse(hasattr(viewport, "_orientation_marker_widget"))
+
+        first_renderer = viewport._axis_gizmo_renderer
+        first_actor = viewport._axis_gizmo_actor
+        viewport._update_axis_gizmo(True)
+
+        self.assertEqual(len(render_window.added_renderers), 1)
+        self.assertIs(viewport._axis_gizmo_renderer, first_renderer)
+        self.assertIs(viewport._axis_gizmo_actor, first_actor)
+
+        viewport._update_axis_gizmo(False)
+
+        self.assertFalse(viewport._axis_gizmo_visible)
+        assert first_actor is not None
+        self.assertEqual(first_actor.GetVisibility(), 0)
+        self.assertEqual(len(render_window.added_renderers), 1)
+
+        viewport._update_axis_gizmo(True)
+
+        self.assertTrue(viewport._axis_gizmo_visible)
+        self.assertEqual(first_actor.GetVisibility(), 1)
+        self.assertEqual(len(render_window.added_renderers), 1)
+
+    def test_axis_gizmo_camera_sync_updates_only_when_camera_orientation_changes(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        render_window = FakeRenderWindow()
+        viewport.render_window = render_window  # type: ignore[assignment]
+        viewport._update_axis_gizmo(True)
+        first_key = viewport._axis_gizmo_camera_key
+
+        viewport._render()
+
+        self.assertEqual(viewport._axis_gizmo_camera_key, first_key)
+        self.assertEqual(render_window.render_count, 1)
+
+        camera = viewport.renderer.GetActiveCamera()
+        camera.SetPosition(0.0, 10.0, 0.0)
+        camera.SetFocalPoint(0.0, 0.0, 0.0)
+        camera.SetViewUp(0.0, 0.0, 1.0)
+        viewport._render()
+
+        self.assertNotEqual(viewport._axis_gizmo_camera_key, first_key)
+        self.assertEqual(render_window.render_count, 2)
 
     def test_multiple_section_planes_render_visible_planes_with_selected_styling(self) -> None:
         viewport = self._viewport()

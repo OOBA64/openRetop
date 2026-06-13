@@ -35,7 +35,6 @@ try:
     from vtkmodules.vtkCommonMath import vtkMatrix4x4
     from vtkmodules.vtkFiltersCore import vtkPolyDataNormals, vtkTubeFilter
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-    from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
     from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
@@ -124,9 +123,11 @@ class EmbeddedVTKViewport:
         self._section_plane_actors: list[vtkActor] = []
         self._section_plane_pick_geometry: LineGeometry | None = None
         self._section_plane_pick_geometries: list[LineGeometry] = []
+        self._axis_gizmo_renderer: vtkRenderer | None = None
         self._axis_gizmo_actor: vtkAxesActor | None = None
-        self._orientation_marker_widget: vtkOrientationMarkerWidget | None = None
-        self._axis_gizmo_visible = True
+        self._axis_gizmo_visible = False
+        self._axis_gizmo_requested_visible: bool | None = None
+        self._axis_gizmo_camera_key: tuple[float, ...] | None = None
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
@@ -159,10 +160,11 @@ class EmbeddedVTKViewport:
 
     def close(self) -> None:
         self._is_closed = True
-        if self._orientation_marker_widget is not None:
-            self._orientation_marker_widget.SetEnabled(0)
-            self._orientation_marker_widget = None
+        if self.render_window is not None and self._axis_gizmo_renderer is not None:
+            self.render_window.RemoveRenderer(self._axis_gizmo_renderer)
+        self._axis_gizmo_renderer = None
         self._axis_gizmo_actor = None
+        self._axis_gizmo_camera_key = None
         if self.interactor is not None:
             self.interactor.Disable()
             self.interactor.TerminateApp()
@@ -573,30 +575,102 @@ class EmbeddedVTKViewport:
         )
 
     def _update_axis_gizmo(self, show_axis_gizmo: bool) -> None:
-        self._axis_gizmo_visible = bool(show_axis_gizmo)
-        if self.interactor is None:
+        requested_visible = bool(show_axis_gizmo)
+        if (
+            self._axis_gizmo_requested_visible == requested_visible
+            and self._axis_gizmo_visible == requested_visible
+            and (not requested_visible or self._axis_gizmo_renderer is not None)
+        ):
             return
 
-        if not show_axis_gizmo:
-            if self._orientation_marker_widget is not None:
-                self._orientation_marker_widget.SetEnabled(0)
+        self._axis_gizmo_requested_visible = requested_visible
+        if self.render_window is None:
+            self._axis_gizmo_visible = requested_visible
             return
 
-        if self._orientation_marker_widget is None:
-            self._axis_gizmo_actor = vtkAxesActor()
-            self._axis_gizmo_actor.SetTotalLength(0.85, 0.85, 0.85)
-            self._axis_gizmo_actor.SetShaftTypeToCylinder()
-            self._axis_gizmo_actor.SetCylinderRadius(0.045)
-            self._axis_gizmo_actor.SetConeRadius(0.16)
-            self._axis_gizmo_actor.SetSphereRadius(0.08)
-            self._orientation_marker_widget = vtkOrientationMarkerWidget()
-            self._orientation_marker_widget.SetOrientationMarker(self._axis_gizmo_actor)
-            self._orientation_marker_widget.SetInteractor(self.interactor)
-            self._orientation_marker_widget.SetViewport(0.82, 0.78, 0.98, 0.98)
-            self._orientation_marker_widget.InteractiveOff()
+        if not requested_visible:
+            self._set_axis_gizmo_draw(False)
+            return
 
-        self._orientation_marker_widget.SetEnabled(1)
-        self._orientation_marker_widget.InteractiveOff()
+        self._ensure_axis_gizmo_renderer()
+        self._set_axis_gizmo_draw(True)
+        self._sync_axis_gizmo_camera(force=True)
+
+    def _ensure_axis_gizmo_renderer(self) -> None:
+        if self.render_window is None or self._axis_gizmo_renderer is not None:
+            return
+
+        self._axis_gizmo_actor = vtkAxesActor()
+        self._axis_gizmo_actor.SetTotalLength(0.85, 0.85, 0.85)
+        self._axis_gizmo_actor.SetShaftTypeToCylinder()
+        self._axis_gizmo_actor.SetCylinderRadius(0.045)
+        self._axis_gizmo_actor.SetConeRadius(0.16)
+        self._axis_gizmo_actor.SetSphereRadius(0.08)
+
+        self._axis_gizmo_renderer = vtkRenderer()
+        self._axis_gizmo_renderer.SetLayer(1)
+        self._axis_gizmo_renderer.SetViewport(0.82, 0.78, 0.98, 0.98)
+        self._axis_gizmo_renderer.InteractiveOff()
+        try:
+            self._axis_gizmo_renderer.SetBackgroundAlpha(0.0)
+        except AttributeError:
+            pass
+        self._axis_gizmo_renderer.AddActor(self._axis_gizmo_actor)
+
+        try:
+            current_layers = int(self.render_window.GetNumberOfLayers())
+        except AttributeError:
+            current_layers = 1
+        if current_layers < 2:
+            self.render_window.SetNumberOfLayers(2)
+        self.render_window.AddRenderer(self._axis_gizmo_renderer)
+
+    def _set_axis_gizmo_draw(self, visible: bool) -> None:
+        self._axis_gizmo_visible = bool(visible)
+        if self._axis_gizmo_actor is not None:
+            self._axis_gizmo_actor.SetVisibility(1 if visible else 0)
+        if self._axis_gizmo_renderer is not None:
+            try:
+                self._axis_gizmo_renderer.SetDraw(1 if visible else 0)
+            except AttributeError:
+                pass
+        if not visible:
+            self._axis_gizmo_camera_key = None
+
+    def _sync_axis_gizmo_camera(self, *, force: bool = False) -> None:
+        if (
+            not self._axis_gizmo_visible
+            or self._axis_gizmo_renderer is None
+            or self._axis_gizmo_actor is None
+        ):
+            return
+
+        source_camera = self.renderer.GetActiveCamera()
+        forward = _normalized_vector(
+            np.asarray(source_camera.GetDirectionOfProjection(), dtype=float),
+            fallback=np.asarray([0.0, 0.0, -1.0], dtype=float),
+        )
+        view_up = _normalized_vector(
+            np.asarray(source_camera.GetViewUp(), dtype=float),
+            fallback=np.asarray([0.0, 1.0, 0.0], dtype=float),
+        )
+        key = _axis_gizmo_camera_key(forward, view_up)
+        if not force and self._axis_gizmo_camera_key == key:
+            return
+
+        self._axis_gizmo_camera_key = key
+        camera = self._axis_gizmo_renderer.GetActiveCamera()
+        distance = 4.0
+        camera.SetFocalPoint(0.0, 0.0, 0.0)
+        camera.SetPosition(
+            float(-forward[0] * distance),
+            float(-forward[1] * distance),
+            float(-forward[2] * distance),
+        )
+        camera.SetViewUp(float(view_up[0]), float(view_up[1]), float(view_up[2]))
+        camera.ParallelProjectionOn()
+        camera.SetParallelScale(1.15)
+        self._axis_gizmo_renderer.ResetCameraClippingRange()
 
     def _update_normal_actor(
         self,
@@ -1406,6 +1480,7 @@ class EmbeddedVTKViewport:
     def _render(self) -> None:
         if self.render_window is not None and not self._is_closed:
             try:
+                self._sync_axis_gizmo_camera()
                 self.render_window.Render()
             except TclError:
                 return
@@ -1578,6 +1653,16 @@ def _array_key(values: Sequence[float] | np.ndarray | None) -> tuple[float, ...]
         return None
 
     return tuple(round(float(value), 9) for value in np.asarray(values, dtype=float).ravel())
+
+
+def _axis_gizmo_camera_key(
+    forward: np.ndarray,
+    view_up: np.ndarray,
+) -> tuple[float, ...]:
+    return (
+        *tuple(round(float(value), 6) for value in np.asarray(forward, dtype=float).ravel()),
+        *tuple(round(float(value), 6) for value in np.asarray(view_up, dtype=float).ravel()),
+    )
 
 
 def _axis_plane_origin(axis: str, offset: float) -> np.ndarray:
