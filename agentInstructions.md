@@ -247,3 +247,169 @@ Acceptance:
 * pytest passes
 
 Stop after this task.
+
+------------------------------------------------------------
+Task 45: Section plane transform overhaul + viewport axis gizmo
+------------------------------------------------------------
+
+Goal:
+Fix section-plane interaction so planes can be moved and rotated predictably, and add a small viewport axis/orientation gizmo for spatial reference.
+
+Do not add new surface-generation features.
+Do not add BREP export.
+Do not rewrite the whole viewport.
+Do not add dependencies.
+Do not change project format unless required for plane rotation.
+
+Current issues:
+- Section planes still have inverted grab controls depending on camera orientation.
+- Section planes can only move along their axis/offset.
+- Section planes cannot be freely rotated.
+- User lacks a viewport orientation reference like a small axis/viewcube gizmo.
+- Existing model transform behavior should not regress.
+
+Requirements:
+
+1. Add section plane transform data
+
+Extend SectionPlaneState to support orientation.
+
+Current:
+- axis
+- offset
+
+Add if needed:
+- origin: list/np vector or equivalent
+- normal: list/np vector or equivalent
+- rotation/euler if simpler
+
+Backward compatibility:
+- old axis/offset planes must still load
+- if no orientation exists, derive normal from axis and offset
+
+2. Preserve simple axis plane behavior
+
+Existing axis/offset controls must still work.
+
+If user sets:
+- axis = X/Y/Z
+- offset = value
+
+Then plane orientation should update to that axis-aligned plane.
+
+3. Add section plane move behavior
+
+When section plane is selected:
+
+G = grab/move plane
+
+Movement should be camera-relative and predictable.
+
+Minimum:
+- moving mouse up/right should move plane consistently relative to camera view
+- no inverted/diagonal behavior caused by world-origin assumptions
+
+Preferred:
+- G then X/Y/Z constrains movement along world axis
+- G then plane-normal mode moves along plane normal
+
+If full local-plane movement is risky:
+- implement stable normal-offset movement first
+
+4. Add section plane rotation behavior
+
+When section plane is selected:
+
+R = rotate plane
+
+Minimum:
+- R rotates plane around its own origin/center
+- X/Y/Z constrains rotation around world axis
+- preview updates live
+- Enter confirms
+- Esc cancels
+
+Do not rotate the mesh.
+Do not affect other section planes.
+
+5. Plane visual feedback
+
+During section-plane transform:
+- show selected plane distinctly
+- show active transform axis/rotation indicator
+- show numeric readout in status bar:
+  - move delta
+  - rotation angle
+
+6. Update section computation
+
+Compute Section must use the selected plane's current orientation.
+
+If full arbitrary-plane slicing is not supported yet:
+- do not fake it silently
+- show status:
+  "Arbitrary rotated section planes are visual-only until arbitrary slicing is implemented."
+
+Preferred if feasible:
+- implement arbitrary plane slicing using plane origin + normal.
+
+7. Project save/load
+
+If section plane orientation is added:
+- save/load origin/normal or rotation
+- old project files still load
+- axis/offset still serialize for compatibility
+
+8. Viewport axis/orientation gizmo
+
+Add a small orientation gizmo in the top-right of the viewport.
+
+Goal:
+- visual reference only
+- not interactive yet
+
+Requirements:
+- shows X/Y/Z colored or labeled axes
+- updates with camera orientation
+- remains fixed in top-right screen area
+- does not interfere with picking
+- does not affect scene bounds
+- does not reset camera
+- should be lightweight
+
+If a true overlay renderer is hard:
+- implement a simple VTK overlay actor or small 2D canvas overlay
+- keep it stable and non-interactive
+
+9. Axis gizmo settings placeholder
+
+Add Preferences → Viewport placeholder:
+- Show Axis Gizmo
+
+Can be functional if easy:
+- toggle axis gizmo visibility
+- persist setting if simple
+
+10. Tests
+
+Add/update tests for:
+- SectionPlaneState supports orientation defaults
+- old axis/offset plane still works
+- rotated plane state stores/loads safely
+- section plane transform does not affect mesh transform
+- cancel transform restores previous plane state
+- axis gizmo toggle state if implemented
+- app launches
+
+Acceptance:
+- app launches
+- selected section plane moves predictably
+- selected section plane can rotate
+- transform confirm/cancel works
+- existing mesh move/rotate still works
+- axis/offset controls still work
+- section computation either supports rotated planes or clearly reports limitation
+- top-right axis gizmo appears and tracks camera orientation
+- pytest passes
+
+Stop after this task.
