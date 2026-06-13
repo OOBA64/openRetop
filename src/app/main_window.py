@@ -50,6 +50,8 @@ from app.transforms import (
     calculate_origin_to_world_origin,
     camera_relative_move_delta,
     mesh_rotate_delta,
+    normalized_vector,
+    rotate_vector_around_axis,
     rotation_matrix,
     transform_bounds,
     transform_point,
@@ -1576,7 +1578,7 @@ class OpenRetopWindow:
             self._handle_keybind_action(action)
             return
 
-        if shortcut in {"X", "Y", "Z"}:
+        if shortcut in {"X", "Y", "Z", "N"}:
             self._handle_shortcut(shortcut)
 
     def open_model(self) -> None:
@@ -1703,8 +1705,14 @@ class OpenRetopWindow:
                 self._refresh_scene_browser()
                 self.status_text.set("Section plane not found")
                 return
-            self._sync_section_controls_from_active_plane()
+        else:
+            active_plane = get_active_plane(self.app_state.section_collection)
+            if active_plane is None:
+                self._set_selected_item(None, status="No selection")
+                return
+            set_active_plane(self.app_state.section_collection, active_plane.id)
 
+        self._sync_section_controls_from_active_plane()
         self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
 
     def select_section_planes(
@@ -2931,18 +2939,26 @@ class OpenRetopWindow:
 
         return any(plane.visible for plane in self.app_state.section_collection.planes)
 
-    def _sync_active_section_plane_from_controls(self) -> None:
+    def _sync_active_section_plane_from_controls(self) -> bool:
         active_plane = get_active_plane(self.app_state.section_collection)
         if active_plane is None:
-            return
+            return False
 
-        active_plane.axis = normalize_axis(self.section_axis.get())
+        axis = normalize_axis(self.section_axis.get())
+        offset = float(self.section_offset.get())
+        reset_to_axis_aligned = not np.allclose(
+            plane_normal(active_plane),
+            world_axis_vector(axis),
+            atol=1e-6,
+        )
+        active_plane.axis = axis
         set_plane_axis_offset(
             active_plane,
-            self.section_axis.get(),
-            float(self.section_offset.get()),
+            axis,
+            offset,
         )
         active_plane.visible = bool(self.show_section_plane.get())
+        return reset_to_axis_aligned
 
     def _sync_section_controls_from_active_plane(self, *, clamp_offset: bool = True) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
@@ -3014,7 +3030,9 @@ class OpenRetopWindow:
         self._set_project_dirty(True)
 
     def _on_section_plane_visibility_changed(self) -> None:
-        self._sync_active_section_plane_from_controls()
+        active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is not None:
+            active_plane.visible = bool(self.show_section_plane.get())
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
 
@@ -3389,9 +3407,13 @@ class OpenRetopWindow:
         return set()
 
     def _on_section_axis_changed(self, _event: object | None = None) -> None:
-        self._sync_active_section_plane_from_controls()
+        reset_to_axis_aligned = self._sync_active_section_plane_from_controls()
         self._configure_offset_range(reset=False)
         self._update_section_plane_label(set_status=True)
+        if reset_to_axis_aligned:
+            self.status_text.set(
+                f"Section plane reset to axis-aligned {self.section_axis.get()} mode"
+            )
         self._clear_section_for_plane_change()
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
@@ -3439,9 +3461,14 @@ class OpenRetopWindow:
         finally:
             self._updating_offset = False
 
+        reset_to_axis_aligned = False
         if sync_plane:
-            self._sync_active_section_plane_from_controls()
+            reset_to_axis_aligned = self._sync_active_section_plane_from_controls()
         self._update_section_plane_label(set_status=True)
+        if reset_to_axis_aligned:
+            self.status_text.set(
+                f"Section plane reset to axis-aligned {self.section_axis.get()} mode"
+            )
         if clear_section:
             self._clear_section_for_plane_change()
         if refresh:
@@ -3844,15 +3871,26 @@ class OpenRetopWindow:
         section_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
         section_axis = self.section_axis.get()
         section_offset = float(self.section_offset.get())
+        section_plane_id: str | None = None
+        section_plane_name: str | None = None
         if self.app_state.selected_item == SELECT_SECTION_PLANE:
+            if len(self.app_state.section_collection.selected_plane_ids) != 1:
+                self.status_text.set("Select one section plane to transform.")
+                return
+
             active_plane = get_active_plane(self.app_state.section_collection)
             if active_plane is None:
                 self.status_text.set("No section plane")
+                return
+            if active_plane.id not in self.app_state.section_collection.selected_plane_ids:
+                self.status_text.set("Select one section plane to transform.")
                 return
             section_origin = plane_origin(active_plane)
             section_normal = plane_normal(active_plane)
             section_axis = active_plane.axis
             section_offset = active_plane.offset
+            section_plane_id = active_plane.id
+            section_plane_name = active_plane.name
 
         self.app_state.transform_state = ActiveTransformState(
             selected_item=self.app_state.selected_item,
@@ -3865,6 +3903,8 @@ class OpenRetopWindow:
             section_offset=section_offset,
             section_origin=section_origin,
             section_normal=section_normal,
+            section_plane_id=section_plane_id,
+            section_plane_name=section_plane_name,
         )
         self.app_state.active_transform_mode = mode
         self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
@@ -3874,6 +3914,21 @@ class OpenRetopWindow:
         self.status_text.set(self._active_transform_status())
 
     def _set_transform_axis_constraint(self, axis: str) -> None:
+        axis = axis.upper()
+        if axis == "N":
+            state = self.app_state.transform_state
+            if (
+                state is None
+                or state.selected_item != SELECT_SECTION_PLANE
+                or state.mode != "move"
+            ):
+                self.status_text.set(
+                    "Move Along Plane Normal is available while moving a section plane"
+                )
+                return
+        elif axis not in {"X", "Y", "Z"}:
+            return
+
         if self.app_state.transform_state is None:
             self.app_state.active_transform_axis = axis
             self.status_text.set(f"Axis constraint: {axis}")
@@ -3985,7 +4040,7 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        active_plane = get_active_plane(self.app_state.section_collection)
+        active_plane = self._section_plane_for_transform_state(state)
         if active_plane is None:
             return
 
@@ -3993,6 +4048,16 @@ class OpenRetopWindow:
         model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
         camera_vectors = self.viewport.get_camera_vectors()
         if state.axis_constraint is None:
+            movement, readout = camera_relative_move_delta(
+                state.mouse_start,
+                mouse_position,
+                camera_vectors.right,
+                camera_vectors.up,
+                model_diagonal,
+                fine=fine,
+            )
+            readout = self._section_movement_readout(movement)
+        elif state.axis_constraint == "N":
             movement, amount = axis_constrained_camera_move_delta(
                 state.mouse_start,
                 mouse_position,
@@ -4002,7 +4067,7 @@ class OpenRetopWindow:
                 model_diagonal,
                 fine=fine,
             )
-            readout = f"Delta normal: {amount:.2f}"
+            readout = f"{amount:.3f}"
         else:
             movement, amount = axis_constrained_camera_move_delta(
                 state.mouse_start,
@@ -4013,7 +4078,7 @@ class OpenRetopWindow:
                 model_diagonal,
                 fine=fine,
             )
-            readout = f"Delta {state.axis_constraint}: {amount:.2f}"
+            readout = f"Delta {state.axis_constraint} {amount:.3f}"
 
         set_plane_origin_normal(
             active_plane,
@@ -4033,19 +4098,28 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
-        active_plane = get_active_plane(self.app_state.section_collection)
+        active_plane = self._section_plane_for_transform_state(state)
         if active_plane is None:
             return
 
-        axis = self._display_transform_axis(state) or "Z"
-        rotation_delta, angle_delta = mesh_rotate_delta(
+        axis = self._display_transform_axis(state)
+        _rotation_delta, angle_delta = mesh_rotate_delta(
             state.mouse_start,
             mouse_position,
             np.asarray([0.0, 0.0, 0.0], dtype=float),
-            axis,
+            axis or "Z",
             fine=fine,
         )
-        normal = rotation_matrix(rotation_delta) @ state.section_normal
+        rotation_axis = (
+            world_axis_vector(axis)
+            if axis in {"X", "Y", "Z"}
+            else self._section_view_rotation_axis(state)
+        )
+        normal = rotate_vector_around_axis(
+            state.section_normal,
+            rotation_axis,
+            angle_delta,
+        )
         set_plane_origin_normal(active_plane, state.section_origin, normal)
         self._sync_section_controls_from_plane_orientation(active_plane)
         self.app_state.active_transform_axis = axis
@@ -4070,7 +4144,7 @@ class OpenRetopWindow:
         if commit and state.selected_item == SELECT_SECTION_PLANE:
             if self._section_transform_changed(state):
                 self._clear_section_for_plane_change()
-            active_plane = get_active_plane(self.app_state.section_collection)
+            active_plane = self._section_plane_for_transform_state(state)
             if active_plane is not None:
                 self._sync_section_controls_from_plane_orientation(active_plane)
         self._refresh_viewport(reset_camera=False)
@@ -4089,7 +4163,7 @@ class OpenRetopWindow:
             return
 
         if state.selected_item == SELECT_SECTION_PLANE:
-            active_plane = get_active_plane(self.app_state.section_collection)
+            active_plane = self._section_plane_for_transform_state(state)
             if active_plane is None:
                 return
             active_plane.axis = normalize_axis(state.section_axis)
@@ -4102,7 +4176,7 @@ class OpenRetopWindow:
             self._sync_section_controls_from_plane_orientation(active_plane)
 
     def _section_transform_changed(self, state: ActiveTransformState) -> bool:
-        active_plane = get_active_plane(self.app_state.section_collection)
+        active_plane = self._section_plane_for_transform_state(state)
         if active_plane is None:
             return False
 
@@ -4110,6 +4184,33 @@ class OpenRetopWindow:
             np.allclose(plane_origin(active_plane), state.section_origin, atol=1e-8)
             and np.allclose(plane_normal(active_plane), state.section_normal, atol=1e-8)
         )
+
+    def _section_plane_for_transform_state(
+        self,
+        state: ActiveTransformState,
+    ) -> SectionPlaneState | None:
+        if state.section_plane_id is not None:
+            for plane in self.app_state.section_collection.planes:
+                if plane.id == state.section_plane_id:
+                    return plane
+
+        return get_active_plane(self.app_state.section_collection)
+
+    def _section_view_rotation_axis(self, state: ActiveTransformState) -> np.ndarray:
+        camera_vectors = self.viewport.get_camera_vectors()
+        plane_normal_vector = normalized_vector(
+            state.section_normal,
+            fallback=np.asarray([0.0, 0.0, 1.0], dtype=float),
+        )
+        for candidate in (camera_vectors.up, camera_vectors.right, camera_vectors.forward):
+            candidate_axis = normalized_vector(
+                np.asarray(candidate, dtype=float),
+                fallback=np.asarray([1.0, 0.0, 0.0], dtype=float),
+            )
+            if abs(float(np.dot(candidate_axis, plane_normal_vector))) < 0.92:
+                return candidate_axis
+
+        return world_axis_vector("X")
 
     def _cycle_section_axis_for_rotation(self) -> None:
         current_index = SECTION_AXES.index(self.section_axis.get())
@@ -4126,27 +4227,64 @@ class OpenRetopWindow:
         if self.app_state.transform_state is None:
             return "No selection" if self.app_state.selected_item is None else "Transform"
 
-        mode_label = "Move mode" if self.app_state.transform_state.mode == "move" else "Rotate mode"
-        axis = self._display_transform_axis(self.app_state.transform_state)
+        state = self.app_state.transform_state
+        if state.selected_item == SELECT_SECTION_PLANE:
+            return self._section_plane_transform_status(state)
+
+        mode_label = "Move mode" if state.mode == "move" else "Rotate mode"
+        axis = self._display_transform_axis(state)
         parts = [mode_label]
         if axis is not None:
             parts.append(f"{axis} axis")
         if self._last_transform_readout is not None:
             parts.append(self._last_transform_readout)
-        elif self.app_state.transform_state.mode == "move" and axis is None:
+        elif state.mode == "move" and axis is None:
             parts.append(
                 "press X/Y/Z to constrain, Enter/Click to confirm, Esc/Right-click to cancel"
             )
-        elif self.app_state.transform_state.mode == "rotate":
+        elif state.mode == "rotate":
             parts.append("move mouse horizontally")
         return " - ".join(parts)
 
     def _display_transform_axis(self, state: ActiveTransformState) -> str | None:
         if state.mode == "rotate":
+            if state.selected_item == SELECT_SECTION_PLANE:
+                return state.axis_constraint
             return state.axis_constraint or "Z"
         if state.selected_item == SELECT_SECTION_PLANE:
             return state.axis_constraint
         return state.axis_constraint
+
+    def _section_plane_transform_status(self, state: ActiveTransformState) -> str:
+        plane_name = state.section_plane_name or "Section Plane"
+        axis = self._display_transform_axis(state)
+        if state.mode == "move":
+            if self._last_transform_readout is None:
+                if axis == "N":
+                    return f"Moving {plane_name} along normal: drag mouse"
+                if axis in {"X", "Y", "Z"}:
+                    return f"Moving {plane_name} along {axis}: drag mouse"
+                return (
+                    f"Moving {plane_name}: camera-relative grab "
+                    "(X/Y/Z constrain, N normal, Enter/click confirm, Esc cancel)"
+                )
+            if axis == "N":
+                return f"Moving {plane_name} along normal: {self._last_transform_readout}"
+            return f"Moving {plane_name}: {self._last_transform_readout}"
+
+        axis_label = axis if axis in {"X", "Y", "Z"} else "view"
+        if self._last_transform_readout is None:
+            return f"Rotating {plane_name} around {axis_label}: move mouse horizontally"
+        return f"Rotating {plane_name} around {axis_label}: {self._last_transform_readout}"
+
+    @staticmethod
+    def _section_movement_readout(movement: np.ndarray) -> str:
+        values = np.asarray(movement, dtype=float)
+        return (
+            f"Delta X {values[0]:.3f}, "
+            f"Delta Y {values[1]:.3f}, "
+            f"Delta Z {values[2]:.3f}"
+        )
 
     def rename_selected(self) -> None:
         renameable_node_ids = self._renameable_selected_node_ids()
@@ -4262,7 +4400,7 @@ class OpenRetopWindow:
                 self._end_active_transform(commit=True, status="Transform confirmed")
             return
 
-        if key in {"X", "Y", "Z"}:
+        if key in {"X", "Y", "Z", "N"}:
             self._set_transform_axis_constraint(key)
             return
 

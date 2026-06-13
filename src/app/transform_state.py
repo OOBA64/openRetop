@@ -25,3 +25,5 @@ class ActiveTransformState:
     section_normal: np.ndarray = field(
         default_factory=lambda: np.asarray([0.0, 0.0, 1.0], dtype=float)
     )
+    section_plane_id: str | None = None
+    section_plane_name: str | None = None

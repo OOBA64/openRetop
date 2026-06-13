@@ -17,6 +17,7 @@ from app.transforms import (
     camera_relative_move_delta,
     mesh_move_delta,
     mesh_rotate_delta,
+    rotate_vector_around_axis,
     rotation_matrix,
     section_offset_delta,
     transform_bounds,
@@ -73,6 +74,15 @@ class TransformMathTests(unittest.TestCase):
         matrix = rotation_matrix(np.asarray([0.0, 0.0, 90.0]))
 
         self.assertTrue(np.allclose(matrix @ np.asarray([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]))
+
+    def test_rotate_vector_around_arbitrary_axis(self) -> None:
+        rotated = rotate_vector_around_axis(
+            np.asarray([0.0, 0.0, 1.0], dtype=float),
+            np.asarray([1.0, 0.0, 0.0], dtype=float),
+            90.0,
+        )
+
+        self.assertTrue(np.allclose(rotated, [0.0, -1.0, 0.0]))
 
     def test_transform_point_leaves_point_unchanged_with_identity(self) -> None:
         point = np.asarray([1.0, 2.0, 3.0])

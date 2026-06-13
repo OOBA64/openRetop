@@ -138,7 +138,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         render_calls: list[bool] = []
         viewport._render = lambda: render_calls.append(True)  # type: ignore[method-assign]
 
-        viewport._on_key_press(SimpleNamespace(keysym="r", char="r", x=4, y=5, state=0))
+        for key in ("r", "n"):
+            viewport._on_key_press(SimpleNamespace(keysym=key, char=key, x=4, y=5, state=0))
 
         self.assertEqual(interactor.calls, [])
         self.assertEqual(render_calls, [])

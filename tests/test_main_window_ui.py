@@ -57,6 +57,7 @@ from sections.section_state import (
     plane_normal,
     plane_origin,
     set_active_plane,
+    set_plane_origin_normal,
 )
 from surfaces.surface_state import SurfacePatch, add_surface
 
@@ -4850,15 +4851,21 @@ class MainWindowUiTests(unittest.TestCase):
             start_offset = window.section_offset.get()
             start_origin = plane_origin(active_plane)
             start_normal = plane_normal(active_plane)
+            window.viewport.camera_right = np.asarray([0.0, 1.0, 0.0], dtype=float)
+            window.viewport.camera_up = np.asarray([0.0, 0.0, 1.0], dtype=float)
+
             window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("G")
-            self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
+            self.assertEqual(
+                window.status_text.get(),
+                "Moving Section Plane 1: camera-relative grab "
+                "(X/Y/Z constrain, N normal, Enter/click confirm, Esc cancel)",
+            )
             window._on_viewport_pointer_event("motion", 50, 0)
-            moved_offset = window.section_offset.get()
-            self.assertGreater(moved_offset, start_offset)
-            self.assertEqual(window.section_offset_text.get(), f"{moved_offset:.3f}")
-            self.assertAlmostEqual(active_plane.offset, moved_offset)
-            self.assertIn("Delta normal:", window.status_text.get())
+            camera_moved_origin = plane_origin(active_plane)
+            self.assertAlmostEqual(camera_moved_origin[0], start_origin[0])
+            self.assertGreater(camera_moved_origin[1], start_origin[1])
+            self.assertIn("Moving Section Plane 1: Delta X", window.status_text.get())
 
             handled = window._on_viewport_pointer_event("right_release", 50, 0)
             self.assertTrue(handled)
@@ -4869,8 +4876,23 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(np.allclose(plane_normal(active_plane), start_normal))
 
             window._handle_shortcut("G")
+            window._handle_shortcut("N")
+            self.assertEqual(
+                window.status_text.get(),
+                "Moving Section Plane 1 along normal: drag mouse",
+            )
+            window._on_viewport_pointer_event("motion", 0, -50)
+            moved_offset = window.section_offset.get()
+            self.assertGreater(moved_offset, start_offset)
+            self.assertEqual(window.section_offset_text.get(), f"{moved_offset:.3f}")
+            self.assertAlmostEqual(active_plane.offset, moved_offset)
+            self.assertIn("Moving Section Plane 1 along normal:", window.status_text.get())
+            window._handle_shortcut("Escape")
+            self.assertAlmostEqual(active_plane.offset, start_offset)
+
+            window._handle_shortcut("G")
             window._handle_shortcut("X")
-            self.assertEqual(window.status_text.get(), "Move mode - X axis")
+            self.assertEqual(window.status_text.get(), "Moving Section Plane 1 along X: drag mouse")
             window._on_viewport_pointer_event("motion", 100, 0)
             moved_origin = plane_origin(active_plane)
             self.assertGreater(moved_origin[0], start_origin[0])
@@ -4880,14 +4902,34 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Transform confirmed")
             self.assertTrue(np.allclose(plane_origin(active_plane), moved_origin))
 
+            window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("R")
-            self.assertEqual(window.status_text.get(), "Rotate mode - Z axis - move mouse horizontally")
+            self.assertEqual(
+                window.status_text.get(),
+                "Rotating Section Plane 1 around view: move mouse horizontally",
+            )
+            self.assertIsNone(window.viewport.scene_calls[-1]["active_transform_axis"])
+            window._on_viewport_pointer_event("motion", 40, 0)
+            view_rotated_normal = plane_normal(active_plane)
+            self.assertFalse(np.allclose(view_rotated_normal, start_normal))
+            self.assertIn("Rotating Section Plane 1 around view: 20.0 deg", window.status_text.get())
+            self.assertTrue(np.allclose(window.app_state.mesh_object.location, mesh_location))
+            self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, mesh_rotation))
+            window._handle_shortcut("Esc")
+            self.assertEqual(window.status_text.get(), "Transform cancelled")
+            self.assertTrue(np.allclose(plane_normal(active_plane), start_normal))
+
+            window._on_viewport_pointer_event("motion", 0, 0)
+            window._handle_shortcut("R")
             window._handle_shortcut("X")
-            self.assertEqual(window.status_text.get(), "Rotate mode - X axis - move mouse horizontally")
+            self.assertEqual(
+                window.status_text.get(),
+                "Rotating Section Plane 1 around X: move mouse horizontally",
+            )
             window._on_viewport_pointer_event("motion", 40, 0)
             rotated_normal = plane_normal(active_plane)
             self.assertFalse(np.allclose(rotated_normal, start_normal))
-            self.assertIn("20.0 deg", window.status_text.get())
+            self.assertEqual(window.status_text.get(), "Rotating Section Plane 1 around X: 20.0 deg")
             self.assertTrue(np.allclose(window.app_state.mesh_object.location, mesh_location))
             self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, mesh_rotation))
 
@@ -4895,6 +4937,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Transform cancelled")
             self.assertTrue(np.allclose(plane_normal(active_plane), start_normal))
 
+            window._on_viewport_pointer_event("motion", 0, 0)
             window._handle_shortcut("R")
             window._handle_shortcut("X")
             window._on_viewport_pointer_event("motion", 40, 0)
@@ -4904,6 +4947,89 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Transform confirmed")
             self.assertTrue(np.allclose(plane_normal(active_plane), confirmed_normal))
             self.assertFalse(np.allclose(confirmed_normal, start_normal))
+        finally:
+            window.root.destroy()
+
+    def test_section_plane_transform_affects_active_plane_only_and_rejects_multi_selection(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            first_plane = window.app_state.section_collection.planes[0]
+            window.add_section_plane()
+            second_plane = window.app_state.section_collection.planes[1]
+            first_origin = plane_origin(first_plane)
+            first_normal = plane_normal(first_plane)
+            second_origin = plane_origin(second_plane)
+
+            window.select_section_planes(
+                [first_plane.id, second_plane.id],
+                active_plane_id=second_plane.id,
+            )
+            window._handle_shortcut("G")
+
+            self.assertIsNone(window.app_state.transform_state)
+            self.assertEqual(window.status_text.get(), "Select one section plane to transform.")
+
+            window.select_section_plane(second_plane.id)
+            window._on_viewport_pointer_event("motion", 0, 0)
+            window._handle_shortcut("G")
+            window._handle_shortcut("X")
+            window._on_viewport_pointer_event("motion", 100, 0)
+
+            self.assertTrue(np.allclose(plane_origin(first_plane), first_origin))
+            self.assertTrue(np.allclose(plane_normal(first_plane), first_normal))
+            self.assertGreater(plane_origin(second_plane)[0], second_origin[0])
+            self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, [0.0, 0.0, 0.0]))
+            window._handle_shortcut("Enter")
+
+            second_normal = plane_normal(second_plane)
+            window._handle_shortcut("R")
+            window._handle_shortcut("X")
+            window._on_viewport_pointer_event("motion", 40, 0)
+
+            self.assertTrue(np.allclose(plane_origin(first_plane), first_origin))
+            self.assertTrue(np.allclose(plane_normal(first_plane), first_normal))
+            self.assertFalse(np.allclose(plane_normal(second_plane), second_normal))
+            self.assertTrue(np.allclose(window.app_state.mesh_object.rotation, [0.0, 0.0, 0.0]))
+        finally:
+            window.root.destroy()
+
+    def test_axis_offset_controls_reset_rotated_section_plane_to_axis_aligned_mode(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.select_section_plane()
+            active_plane = window.app_state.section_collection.planes[0]
+            set_plane_origin_normal(
+                active_plane,
+                np.asarray([0.0, 0.0, 0.25], dtype=float),
+                np.asarray([1.0, 0.0, 1.0], dtype=float),
+            )
+            window._sync_section_controls_from_plane_orientation(active_plane)
+            self.assertFalse(
+                np.allclose(plane_normal(active_plane), np.asarray([0.0, 0.0, 1.0]))
+            )
+
+            window.show_section_plane.set(False)
+            window._on_section_plane_visibility_changed()
+            self.assertFalse(active_plane.visible)
+            self.assertFalse(
+                np.allclose(plane_normal(active_plane), np.asarray([0.0, 0.0, 1.0]))
+            )
+
+            window._set_section_offset(0.5, clamp=True, refresh=True, mark_dirty=True)
+
+            self.assertTrue(np.allclose(plane_normal(active_plane), np.asarray([0.0, 0.0, 1.0])))
+            self.assertTrue(np.allclose(plane_origin(active_plane), np.asarray([0.0, 0.0, 0.5])))
+            self.assertAlmostEqual(active_plane.offset, 0.5)
+            self.assertEqual(
+                window.status_text.get(),
+                "Section plane reset to axis-aligned Z mode",
+            )
         finally:
             window.root.destroy()
 

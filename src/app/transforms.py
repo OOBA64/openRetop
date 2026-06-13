@@ -31,6 +31,23 @@ def rotation_matrix(rotation: np.ndarray) -> np.ndarray:
     return _rotation_z(rz) @ _rotation_y(ry) @ _rotation_x(rx)
 
 
+def rotate_vector_around_axis(
+    vector: np.ndarray,
+    axis_vector: np.ndarray,
+    angle_degrees: float,
+) -> np.ndarray:
+    values = np.asarray(vector, dtype=float)
+    axis = normalized_vector(axis_vector, fallback=np.asarray([0.0, 0.0, 1.0], dtype=float))
+    angle = radians(float(angle_degrees))
+    cosine = cos(angle)
+    sine = sin(angle)
+    return (
+        values * cosine
+        + np.cross(axis, values) * sine
+        + axis * float(np.dot(axis, values)) * (1.0 - cosine)
+    )
+
+
 def transform_point(matrix: np.ndarray, point: np.ndarray) -> np.ndarray:
     homogeneous = np.append(np.asarray(point, dtype=float), 1.0)
     return (np.asarray(matrix, dtype=float) @ homogeneous)[:3]

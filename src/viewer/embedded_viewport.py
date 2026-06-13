@@ -56,6 +56,7 @@ APP_SHORTCUT_KEYSYMS = {
     "escape",
     "f",
     "g",
+    "n",
     "r",
     "return",
     "x",
@@ -903,7 +904,7 @@ class EmbeddedVTKViewport:
                 )
             )
             gizmo_line_widths.append(2.8)
-        if active_transform_mode == "rotate":
+        if active_transform_mode == "rotate" and active_axis is not None:
             axis = active_axis or "Z"
             ring_radius = rotation_ring_radius_for_axis(
                 self._mesh_min_bound if self._mesh_min_bound is not None else origin - 1.0,
@@ -929,6 +930,10 @@ class EmbeddedVTKViewport:
                 if len(angle_indicator.lines) > 0:
                     gizmo_geometries.append(angle_indicator)
                     gizmo_line_widths.append(2.0)
+
+        if not gizmo_geometries:
+            self._clear_overlay_group("active_transform_gizmo")
+            return
 
         if self._try_update_line_overlay_group(
             "active_transform_gizmo",
@@ -1739,8 +1744,10 @@ def _normalized_vector(vector: np.ndarray, *, fallback: np.ndarray) -> np.ndarra
 
 
 def _active_axis_for_gizmo(mode: str | None, axis: str | None) -> str | None:
+    if axis not in {"X", "Y", "Z"}:
+        return None
     if mode == "rotate":
-        return axis or "Z"
+        return axis
     if mode == "move":
         return axis
     return None
