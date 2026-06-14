@@ -336,6 +336,69 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.curves[1].id, "curve-b")
         self.assertFalse(project.curves[1].visible)
 
+    def test_project_from_app_state_exports_manual_curve_metadata(self) -> None:
+        curve_collection = CurveCollection()
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            dtype=float,
+        )
+        add_curve(
+            curve_collection,
+            StoredCurve(
+                id="curve-manual",
+                name="Manual Curve 1",
+                section_result_id="",
+                plane_id="plane-a",
+                original_points=points.copy(),
+                fitted_points=points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+                visible=True,
+                selected=True,
+                metadata={
+                    "creation_type": "manual",
+                    "work_plane_type": "section_plane",
+                    "source_section_plane_id": "plane-a",
+                    "closed": True,
+                },
+            ),
+        )
+
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            curve_collection=curve_collection,
+        )
+
+        self.assertEqual(len(project.curves), 1)
+        curve = project.curves[0]
+        self.assertEqual(curve.name, "Manual Curve 1")
+        self.assertEqual(curve.section_result_id, "")
+        self.assertEqual(curve.plane_id, "plane-a")
+        self.assertEqual(curve.mean_error, 0.0)
+        self.assertEqual(curve.max_error, 0.0)
+        self.assertTrue(curve.is_closed)
+        self.assertEqual(
+            curve.metadata,
+            {
+                "creation_type": "manual",
+                "work_plane_type": "section_plane",
+                "source_section_plane_id": "plane-a",
+                "closed": True,
+            },
+        )
+
     def test_project_from_app_state_exports_all_stored_surfaces(self) -> None:
         surface_collection = SurfaceCollection()
         add_surface(

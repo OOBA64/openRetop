@@ -42,6 +42,7 @@ from app.scene_browser import (
 )
 from curves.curve_state import StoredCurve, add_curve
 from mesh.loader import LoadedMesh, MeshMetadata
+from mesh.triangle_mesh import TriangleMeshData
 from project.project_data import (
     ProjectCurve,
     ProjectSectionPlane,
@@ -61,6 +62,7 @@ from sections.section_state import (
     set_plane_origin_normal,
 )
 from surfaces.surface_state import SurfacePatch, add_surface
+from viewer.embedded_viewport import MeshPickResult
 
 
 class FakeBounds:
@@ -137,11 +139,17 @@ class FakeViewport:
         self.scene_calls: list[dict[str, object]] = []
         self.frame_count = 0
         self.reset_count = 0
+        self.named_views: list[str] = []
+        self.framed_bounds: list[tuple[np.ndarray, np.ndarray]] = []
         self.closed = False
         self.selection_callback = None
         self.pointer_callback = None
         self.camera_right = np.asarray([1.0, 0.0, 0.0], dtype=float)
         self.camera_up = np.asarray([0.0, 1.0, 0.0], dtype=float)
+        self.projected_points: list[np.ndarray | None] = []
+        self.projection_calls: list[dict[str, object]] = []
+        self.mesh_pick_results: list[MeshPickResult] = []
+        self.mesh_pick_calls: list[dict[str, int]] = []
 
     def start(self) -> None:
         return None
@@ -155,14 +163,51 @@ class FakeViewport:
     def set_scene(self, mesh: object, **kwargs: object) -> None:
         self.scene_calls.append({"mesh": mesh, **kwargs})
 
+    def screen_point_to_plane(
+        self,
+        x_position: int,
+        y_position: int,
+        plane_origin: object,
+        plane_normal: object,
+    ) -> np.ndarray | None:
+        self.projection_calls.append(
+            {
+                "x": int(x_position),
+                "y": int(y_position),
+                "plane_origin": np.asarray(plane_origin, dtype=float),
+                "plane_normal": np.asarray(plane_normal, dtype=float),
+            }
+        )
+        if self.projected_points:
+            point = self.projected_points.pop(0)
+            return None if point is None else np.asarray(point, dtype=float)
+        return np.asarray([float(x_position), float(y_position), 0.0], dtype=float)
+
+    def pick_mesh_at_screen_point(self, x_position: int, y_position: int) -> MeshPickResult:
+        self.mesh_pick_calls.append({"x": int(x_position), "y": int(y_position)})
+        if self.mesh_pick_results:
+            return self.mesh_pick_results.pop(0)
+        return MeshPickResult(hit=False)
+
     def frame_model(self) -> None:
         self.frame_count += 1
+
+    def frame_bounds(self, minimum_bound: object, maximum_bound: object) -> None:
+        self.framed_bounds.append(
+            (
+                np.asarray(minimum_bound, dtype=float),
+                np.asarray(maximum_bound, dtype=float),
+            )
+        )
 
     def reset_view(self) -> None:
         self.reset_count += 1
 
     def reset_camera(self) -> None:
         self.reset_count += 1
+
+    def set_named_view(self, name: str) -> None:
+        self.named_views.append(str(name))
 
     def get_camera_vectors(self) -> object:
         return SimpleNamespace(
@@ -267,6 +312,27 @@ def _make_curve_closed(curve: StoredCurve) -> None:
     curve.is_closed = True
 
 
+def _sharp_region_mesh() -> TriangleMeshData:
+    return TriangleMeshData(
+        vertices=np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        ),
+        triangles=np.asarray(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+            ],
+            dtype=int,
+        ),
+    )
+
+
 def _load_sample_model(window: OpenRetopWindow) -> None:
     mesh = FakeMesh()
     metadata = MeshMetadata(
@@ -341,6 +407,40 @@ def _build_two_section_scene(
     )
 
 
+def _create_manual_curve(
+    window: OpenRetopWindow,
+    points: list[tuple[float, float, float]],
+    *,
+    closed: bool = False,
+    snap_to_mesh: bool = False,
+    triangle_indices: list[int | None] | None = None,
+) -> StoredCurve:
+    window.start_manual_curve_mode()
+    window.manual_curve_snap_to_mesh.set(snap_to_mesh)
+    window._on_manual_curve_snap_to_mesh_changed()
+    if snap_to_mesh:
+        triangle_indices = triangle_indices or [None] * len(points)
+        window.viewport.mesh_pick_results = [
+            MeshPickResult(
+                hit=True,
+                position=np.asarray(point, dtype=float),
+                normal=np.asarray([0.0, 0.0, 1.0], dtype=float),
+                triangle_index=triangle_indices[index],
+            )
+            for index, point in enumerate(points)
+        ]
+    else:
+        window.viewport.projected_points = [np.asarray(point, dtype=float) for point in points]
+    for index, _point in enumerate(points):
+        handled = window._on_viewport_pointer_event("left_press", 10 + index, 20 + index)
+        if not handled:
+            raise AssertionError("Manual curve point click was not handled")
+    if closed:
+        window._handle_shortcut("C")
+    window._handle_shortcut("Enter")
+    return window.app_state.curve_collection.curves[-1]
+
+
 class MainWindowUiTests(unittest.TestCase):
     def test_menu_bar_and_initial_no_selection_context_match_instructions(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
@@ -373,14 +473,23 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.view_menu.entrycget(0, "label"), "Frame All")
             self.assertEqual(window.view_menu.entrycget(1, "label"), "Frame Selected")
             self.assertEqual(window.view_menu.entrycget(2, "label"), "Reset View")
-            self.assertEqual(window.view_menu.entrycget(3, "label"), "Show Grid")
-            self.assertEqual(window.view_menu.entrycget(4, "label"), "Show Axes")
-            self.assertEqual(window.view_menu.entrycget(5, "label"), "Show All Objects")
-            self.assertEqual(window.view_menu.entrycget(6, "label"), "Isolate Selected")
-            self.assertEqual(window.view_menu.entrycget(7, "label"), "Toggle Selected Visibility")
-            self.assertEqual(window.view_menu.index("end"), 7)
-            self.assertEqual(window.view_menu.type(3), "checkbutton")
-            self.assertEqual(window.view_menu.type(4), "checkbutton")
+            self.assertEqual(window.view_menu.type(3), "separator")
+            self.assertEqual(window.view_menu.entrycget(4, "label"), "Top")
+            self.assertEqual(window.view_menu.entrycget(5, "label"), "Bottom")
+            self.assertEqual(window.view_menu.entrycget(6, "label"), "Front")
+            self.assertEqual(window.view_menu.entrycget(7, "label"), "Back")
+            self.assertEqual(window.view_menu.entrycget(8, "label"), "Left")
+            self.assertEqual(window.view_menu.entrycget(9, "label"), "Right")
+            self.assertEqual(window.view_menu.entrycget(10, "label"), "Isometric")
+            self.assertEqual(window.view_menu.type(11), "separator")
+            self.assertEqual(window.view_menu.entrycget(12, "label"), "Show Grid")
+            self.assertEqual(window.view_menu.entrycget(13, "label"), "Show Axes")
+            self.assertEqual(window.view_menu.entrycget(14, "label"), "Show All Objects")
+            self.assertEqual(window.view_menu.entrycget(15, "label"), "Isolate Selected")
+            self.assertEqual(window.view_menu.entrycget(16, "label"), "Toggle Selected Visibility")
+            self.assertEqual(window.view_menu.index("end"), 16)
+            self.assertEqual(window.view_menu.type(12), "checkbutton")
+            self.assertEqual(window.view_menu.type(13), "checkbutton")
             self.assertEqual(window.scene_menu.entrycget(0, "label"), "Rename Selected")
             self.assertEqual(window.scene_menu.entrycget(1, "label"), "Delete Selected")
             self.assertEqual(window.scene_menu.entrycget(2, "label"), "Toggle Visibility")
@@ -395,8 +504,15 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.curves_menu.entrycget(10, "label"), "Simplify Selected Curve")
             self.assertEqual(window.curves_menu.entrycget(11, "label"), "Smooth Selected Curve")
             self.assertEqual(window.curves_menu.entrycget(12, "label"), "Loft Between Two Curves")
+            self.assertEqual(window.curves_menu.entrycget(13, "label"), "Create Manual Curve")
+            self.assertEqual(window.curves_menu.entrycget(14, "label"), "Snap to Mesh")
+            self.assertEqual(window.curves_menu.type(14), "checkbutton")
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Fill Closed Curve")
             self.assertEqual(window.surfaces_menu.entrycget(1, "label"), "Loft Between Two Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(2, "label"), "Select Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(3, "label"), "Isolate Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(4, "label"), "Show Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(5, "label"), "Frame Source Curves")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
@@ -406,6 +522,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
             self.assertTrue(window.show_axis_gizmo.get())
+            self.assertTrue(window.show_viewcube.get())
+            self.assertEqual(window.viewcube_frame.winfo_manager(), "place")
             self.assertFalse(window.show_normals.get())
             self.assertFalse(window.show_section_plane.get())
             self.assertEqual(window.proxy_quality.get(), "Medium")
@@ -452,12 +570,27 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_named_view_menu_invokes_viewport_without_refreshing_scene(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            scene_call_count = len(window.viewport.scene_calls)
+            window.view_menu.invoke(4)
+
+            self.assertEqual(window.viewport.named_views, ["top"])
+            self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
+            self.assertEqual(window.status_text.get(), "View: Top")
+        finally:
+            window.root.destroy()
+
     def test_preferences_dialog_opens_with_startup_values_and_controls(self) -> None:
         settings = default_app_settings()
         settings.display.show_grid = False
         settings.display.show_axes = False
         settings.display.show_normals = True
         settings.display.show_axis_gizmo = False
+        settings.display.show_viewcube = False
         settings.import_settings.default_proxy_quality = "High"
 
         with TemporaryDirectory() as tmpdir:
@@ -494,6 +627,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window.preferences_vars["show_grid"].get())
             self.assertFalse(window.preferences_vars["show_axes"].get())
             self.assertFalse(window.preferences_vars["show_axis_gizmo"].get())
+            self.assertFalse(window.preferences_vars["show_viewcube"].get())
             self.assertNotIn("show_normals", window.preferences_vars)
             self.assertEqual(window.preferences_vars["default_proxy_quality"].get(), "High")
             self.assertTrue(_widgets_with_text(dialog, "Startup window mode"))
@@ -501,6 +635,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(_widgets_with_text(dialog, "Startup Show Grid"))
             self.assertTrue(_widgets_with_text(dialog, "Startup Show Axes"))
             self.assertTrue(_widgets_with_text(dialog, "Show Axis Gizmo"))
+            self.assertTrue(_widgets_with_text(dialog, "Show ViewCube"))
             self.assertTrue(_widgets_with_text(dialog, "Surface preview opacity"))
             self.assertTrue(_widgets_with_text(dialog, "Curve display thickness"))
             self.assertTrue(_widgets_with_text(dialog, "Rename Selected"))
@@ -549,6 +684,7 @@ class MainWindowUiTests(unittest.TestCase):
                 window.preferences_vars["show_grid"].set(False)
                 window.preferences_vars["show_axes"].set(False)
                 window.preferences_vars["show_axis_gizmo"].set(False)
+                window.preferences_vars["show_viewcube"].set(False)
                 window.preferences_vars["window_mode"].set("remembered_size")
                 window.preferences_vars["remember_window_size"].set(False)
                 window.preferences_vars["keybind.toggle_visibility"].set("V")
@@ -559,6 +695,8 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(window.show_grid.get())
                 self.assertTrue(window.show_axes.get())
                 self.assertTrue(window.show_axis_gizmo.get())
+                self.assertTrue(window.show_viewcube.get())
+                self.assertEqual(window.viewcube_frame.winfo_manager(), "place")
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "Medium")
                 self.assertEqual(window.status_text.get(), "Preferences applied")
@@ -567,6 +705,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(window.settings.display.show_axes)
                 self.assertFalse(window.settings.display.show_normals)
                 self.assertFalse(window.settings.display.show_axis_gizmo)
+                self.assertFalse(window.settings.display.show_viewcube)
                 self.assertEqual(
                     window.settings.import_settings.default_proxy_quality,
                     "Low",
@@ -580,6 +719,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(saved_settings.display.show_axes)
                 self.assertFalse(saved_settings.display.show_normals)
                 self.assertFalse(saved_settings.display.show_axis_gizmo)
+                self.assertFalse(saved_settings.display.show_viewcube)
                 self.assertEqual(
                     saved_settings.import_settings.default_proxy_quality,
                     "Low",
@@ -599,6 +739,8 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(restored_window.show_grid.get())
                 self.assertFalse(restored_window.show_axes.get())
                 self.assertFalse(restored_window.show_axis_gizmo.get())
+                self.assertFalse(restored_window.show_viewcube.get())
+                self.assertEqual(restored_window.viewcube_frame.winfo_manager(), "")
                 self.assertFalse(restored_window.show_normals.get())
                 self.assertEqual(restored_window.proxy_quality.get(), "Low")
             finally:
@@ -687,6 +829,7 @@ class MainWindowUiTests(unittest.TestCase):
         settings.display.show_axes = False
         settings.display.show_normals = True
         settings.display.show_axis_gizmo = False
+        settings.display.show_viewcube = False
         settings.import_settings.default_proxy_quality = "High"
         settings.ui.window_width = 1120
         settings.ui.window_height = 720
@@ -702,6 +845,8 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(window.show_grid.get())
                 self.assertFalse(window.show_axes.get())
                 self.assertFalse(window.show_axis_gizmo.get())
+                self.assertFalse(window.show_viewcube.get())
+                self.assertEqual(window.viewcube_frame.winfo_manager(), "")
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "High")
                 _assert_startup_size_or_zoomed(self, window, "1120x720")
@@ -721,6 +866,8 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(window.show_grid.get())
                 self.assertTrue(window.show_axes.get())
                 self.assertTrue(window.show_axis_gizmo.get())
+                self.assertTrue(window.show_viewcube.get())
+                self.assertEqual(window.viewcube_frame.winfo_manager(), "place")
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "Medium")
                 _assert_startup_size_or_zoomed(self, window, "1280x800")
@@ -750,6 +897,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(saved_settings.display.show_grid)
             self.assertTrue(saved_settings.display.show_axes)
             self.assertTrue(saved_settings.display.show_axis_gizmo)
+            self.assertTrue(saved_settings.display.show_viewcube)
             self.assertFalse(saved_settings.display.show_normals)
             self.assertEqual(saved_settings.import_settings.default_proxy_quality, "Medium")
             self.assertEqual(saved_settings.ui.window_width, 1180)
@@ -762,6 +910,8 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertTrue(restored_window.show_grid.get())
                 self.assertTrue(restored_window.show_axes.get())
                 self.assertTrue(restored_window.show_axis_gizmo.get())
+                self.assertTrue(restored_window.show_viewcube.get())
+                self.assertEqual(restored_window.viewcube_frame.winfo_manager(), "place")
                 self.assertFalse(restored_window.show_normals.get())
                 self.assertEqual(restored_window.proxy_quality.get(), "Medium")
                 _assert_startup_size_or_zoomed(self, restored_window, "1180x740")
@@ -2366,6 +2516,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(3)
             self.assertEqual(window.status_text.get(), "No selection")
+            window.tools_menu.invoke(5)
+            self.assertEqual(window.status_text.get(), "No selection")
             window.sections_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No selection")
             window.sections_menu.invoke(2)
@@ -2392,10 +2544,22 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Select exactly one curve to simplify")
             window.curves_menu.invoke(11)
             self.assertEqual(window.status_text.get(), "Select exactly one curve to smooth")
+            window.curves_menu.invoke(13)
+            self.assertEqual(window.status_text.get(), "No selection")
+            window.curves_menu.invoke(14)
+            self.assertEqual(window.status_text.get(), "Snap to Mesh ON")
             window.surfaces_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(1)
             self.assertEqual(window.status_text.get(), "No curves available")
+            window.surfaces_menu.invoke(2)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(3)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(4)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(5)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
         finally:
             window.root.destroy()
 
@@ -2587,7 +2751,7 @@ class MainWindowUiTests(unittest.TestCase):
                 (NODE_MESH, NODE_SECTION_PLANES),
             )
             self.assertEqual(tree.item(NODE_MESH, "text"), "[V] sample.stl")
-            self.assertEqual(tree.item(NODE_SECTION_PLANES, "text"), "Section Planes")
+            self.assertEqual(tree.item(NODE_SECTION_PLANES, "text"), "[H] Section Planes")
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertEqual(tree.item(section_plane_node, "text"), "[H] Section Plane 1")
             self.assertFalse(tree.exists(NODE_SECTION_RESULTS))
@@ -2633,9 +2797,11 @@ class MainWindowUiTests(unittest.TestCase):
             )
             self.assertEqual(tree.get_children(NODE_SECTION_PLANES), (section_plane_node,))
             self.assertEqual(tree.get_children(NODE_SECTION_RESULTS), (section_result_node,))
+            self.assertEqual(tree.item(NODE_SECTION_RESULTS, "text"), "[V] Section Results")
             self.assertEqual(tree.item(section_result_node, "text"), "[V] Section 1")
+            self.assertEqual(tree.item(NODE_CURVES, "text"), "[V] Curves")
             self.assertEqual(tree.get_children(NODE_CURVES), (section_curve_group,))
-            self.assertEqual(tree.item(section_curve_group, "text"), "Section 1")
+            self.assertEqual(tree.item(section_curve_group, "text"), "[V] Section 1")
             self.assertEqual(tree.get_children(section_curve_group), (curve_node,))
             self.assertEqual(tree.item(curve_node, "text"), "[V] Section 1 Curve 1")
 
@@ -2657,12 +2823,14 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(stored_result.visible)
             self.assertIsNone(window.viewport.scene_calls[-1]["section_result"])
             self.assertEqual(tree.item(section_result_node, "text"), "[H] Section 1")
+            self.assertEqual(tree.item(NODE_SECTION_RESULTS, "text"), "[H] Section Results")
 
             window.section_result_visible.set(True)
             window._on_section_result_visibility_changed()
             self.assertTrue(stored_result.visible)
             self.assertIs(window.viewport.scene_calls[-1]["section_result"], stored_result.result)
             self.assertEqual(tree.item(section_result_node, "text"), "[V] Section 1")
+            self.assertEqual(tree.item(NODE_SECTION_RESULTS, "text"), "[V] Section Results")
 
             window.clear_section()
             self.assertEqual(
@@ -2733,7 +2901,7 @@ class MainWindowUiTests(unittest.TestCase):
                     NODE_SURFACES,
                 ),
             )
-            self.assertEqual(tree.item(NODE_SURFACES, "text"), "Surfaces")
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[M] Surfaces")
             self.assertEqual(
                 tree.get_children(NODE_SURFACES),
                 (first_surface_node, second_surface_node),
@@ -2771,6 +2939,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Selected: Patch A")
             self.assertEqual(tree.get_children(NODE_SURFACES), (first_surface_node, second_surface_node))
             self.assertEqual(tree.item(first_surface_node, "text"), "[H] Patch A")
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Surfaces")
 
             tree.selection_set(second_surface_node)
             tree.event_generate("<<TreeviewSelect>>")
@@ -2948,7 +3117,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertEqual(stored_result.name, "Rim Section")
             self.assertEqual(tree.item(result_node, "text"), "[V] Rim Section")
-            self.assertEqual(tree.item(curve_group, "text"), "Rim Section")
+            self.assertEqual(tree.item(curve_group, "text"), "[V] Rim Section")
 
             window.select_curve(stored_curve.id)
             self.assertEqual(window.curve_section_text.get(), "Rim Section")
@@ -3286,6 +3455,438 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_scene_browser_parent_visibility_labels_show_visible_hidden_and_mixed(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                first_plane,
+                second_plane,
+                first_result,
+                second_result,
+                first_curve,
+                second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+            first_plane.visible = True
+            second_plane.visible = True
+            first_result.visible = True
+            second_result.visible = False
+            first_curve.visible = True
+            second_curve.visible = False
+            first_surface.visible = False
+            second_surface.visible = False
+            repaired_curve = StoredCurve(
+                id="curve-repaired",
+                name="Repaired",
+                section_result_id="missing-result",
+                plane_id=first_plane.id,
+                original_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=float),
+                fitted_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=float),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=False,
+                metadata={"repair_type": "join"},
+            )
+            unassigned_curve = StoredCurve(
+                id="curve-unassigned",
+                name="Unassigned",
+                section_result_id="missing-result",
+                plane_id=first_plane.id,
+                original_points=np.asarray([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=float),
+                fitted_points=np.asarray([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=float),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+            )
+            add_curve(window.app_state.curve_collection, repaired_curve)
+            add_curve(window.app_state.curve_collection, unassigned_curve)
+            window._refresh_viewport(reset_camera=False)
+
+            tree = window.scene_browser.tree
+            self.assertEqual(tree.item(NODE_SECTION_PLANES, "text"), "[V] Section Planes")
+            self.assertEqual(tree.item(NODE_SECTION_RESULTS, "text"), "[M] Section Results")
+            self.assertEqual(tree.item(NODE_CURVES, "text"), "[M] Curves")
+            self.assertEqual(
+                tree.item(curve_group_node_id(first_result.id), "text"),
+                "[V] Section 1",
+            )
+            self.assertEqual(
+                tree.item(curve_group_node_id(second_result.id), "text"),
+                "[H] Section 2",
+            )
+            self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "[H] Repaired Curves")
+            self.assertEqual(tree.item(NODE_CURVE_GROUP_UNASSIGNED, "text"), "[V] Unassigned")
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Surfaces")
+        finally:
+            window.root.destroy()
+
+    def test_scene_browser_curve_labels_include_tiny_repaired_and_closed_tags(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.compute_section()
+            result = window.app_state.section_collection.results[0]
+            tiny_curve = window.app_state.curve_collection.curves[0]
+            tiny_points = np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.001, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            tiny_curve.original_points = tiny_points.copy()
+            tiny_curve.fitted_points = tiny_points.copy()
+
+            repaired_curve = StoredCurve(
+                id="curve-repaired",
+                name="Smoothed Curve 1",
+                section_result_id=result.id,
+                plane_id=result.plane_id,
+                original_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=float),
+                fitted_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=float),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                metadata={"operation": "smooth"},
+            )
+            closed_curve = StoredCurve(
+                id="curve-closed",
+                name="Loop Curve",
+                section_result_id=result.id,
+                plane_id=result.plane_id,
+                original_points=np.asarray(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0],
+                    ],
+                    dtype=float,
+                ),
+                fitted_points=np.asarray(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0],
+                    ],
+                    dtype=float,
+                ),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+            )
+            add_curve(window.app_state.curve_collection, repaired_curve)
+            add_curve(window.app_state.curve_collection, closed_curve)
+            window._refresh_viewport(reset_camera=False)
+
+            tree = window.scene_browser.tree
+            self.assertEqual(
+                tree.item(curve_node_id(tiny_curve.id), "text"),
+                "[V] Section 1 Curve 1 (tiny)",
+            )
+            self.assertEqual(
+                tree.item(curve_node_id(repaired_curve.id), "text"),
+                "[V] Smoothed Curve 1 (repaired)",
+            )
+            self.assertEqual(
+                tree.item(curve_node_id(closed_curve.id), "text"),
+                "[V] Loop Curve (closed)",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_select_source_curves_selects_expected_curves_for_active_surface(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                _first_plane,
+                _second_plane,
+                _first_result,
+                _second_result,
+                first_curve,
+                second_curve,
+                _first_surface,
+                _second_surface,
+            ) = _build_two_section_scene(window)
+            loft_surface = SurfacePatch(
+                id="surface-loft",
+                name="Loft Surface 1",
+                source_curve_ids=[second_curve.id, first_curve.id],
+                surface_type="preview_loft",
+            )
+            add_surface(window.app_state.surface_collection, loft_surface)
+
+            window.select_surface(loft_surface.id)
+            self.assertEqual(window.app_state.selected_item, "surface")
+            self.assertEqual(window.app_state.curve_collection.selected_curve_ids, set())
+            self.assertEqual(
+                window.viewport.scene_calls[-1]["surface_source_curve_ids"],
+                (second_curve.id, first_curve.id),
+            )
+
+            window.select_source_curves_for_active_surface()
+
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id, second_curve.id},
+            )
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, second_curve.id)
+            self.assertEqual(
+                window.status_text.get(),
+                "Selected source curves for Loft Surface 1",
+            )
+
+            window.clear_selection()
+            window.select_source_curves_for_active_surface()
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+
+            window._on_scene_browser_visibility(
+                "select_source_curves",
+                (surface_node_id(loft_surface.id),),
+            )
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {first_curve.id, second_curve.id},
+            )
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, second_curve.id)
+        finally:
+            window.root.destroy()
+
+    def test_source_curve_commands_isolate_show_frame_and_report_missing_sources(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                _first_plane,
+                _second_plane,
+                _first_result,
+                _second_result,
+                first_curve,
+                second_curve,
+                _first_surface,
+                _second_surface,
+            ) = _build_two_section_scene(window)
+            surface = SurfacePatch(
+                id="surface-source-workflow",
+                name="Loft Surface 1",
+                source_curve_ids=[first_curve.id, "missing-curve"],
+                surface_type="preview_loft",
+            )
+            add_surface(window.app_state.surface_collection, surface)
+            window.select_surface(surface.id)
+
+            first_curve.visible = False
+            second_curve.visible = True
+            window.show_source_curves_for_active_surface()
+            self.assertTrue(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(
+                window.status_text.get(),
+                "Shown source curves for Loft Surface 1 (1 missing source curve)",
+            )
+
+            window.isolate_source_curves_for_active_surface()
+            self.assertTrue(first_curve.visible)
+            self.assertFalse(second_curve.visible)
+            self.assertEqual(
+                window.status_text.get(),
+                "Isolated source curves for Loft Surface 1 (1 missing source curve)",
+            )
+
+            window.frame_source_curves_for_active_surface()
+            self.assertEqual(len(window.viewport.framed_bounds), 1)
+            self.assertEqual(
+                window.status_text.get(),
+                "Framed source curves for Loft Surface 1 (1 missing source curve)",
+            )
+
+            missing_surface = SurfacePatch(
+                id="surface-missing-only",
+                name="Missing Surface",
+                source_curve_ids=["missing-a", "missing-b"],
+                surface_type="preview_loft",
+            )
+            add_surface(window.app_state.surface_collection, missing_surface)
+            window.select_surface(missing_surface.id)
+            window.select_source_curves_for_active_surface()
+            self.assertEqual(
+                window.status_text.get(),
+                "No source curves found for Missing Surface (2 missing source curves)",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_parent_and_group_visibility_actions_affect_child_objects(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                _first_plane,
+                _second_plane,
+                first_result,
+                second_result,
+                first_curve,
+                second_curve,
+                _first_surface,
+                _second_surface,
+            ) = _build_two_section_scene(window)
+            first_curve.visible = True
+            second_curve.visible = True
+            window._refresh_viewport(reset_camera=False)
+
+            tree = window.scene_browser.tree
+            tree.selection_set(NODE_CURVES)
+            tree.focus(NODE_CURVES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.toggle_selected_scene_objects()
+
+            self.assertFalse(first_curve.visible)
+            self.assertFalse(second_curve.visible)
+            self.assertEqual(tree.item(NODE_CURVES, "text"), "[H] Curves")
+
+            second_curve.visible = True
+            window._refresh_viewport(reset_camera=False)
+            first_group = curve_group_node_id(first_result.id)
+            tree.selection_set(first_group)
+            tree.focus(first_group)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.toggle_selected_scene_objects()
+
+            self.assertTrue(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(tree.item(first_group, "text"), "[V] Section 1")
+            self.assertEqual(tree.item(curve_group_node_id(second_result.id), "text"), "[V] Section 2")
+
+            first_curve.visible = False
+            second_curve.visible = False
+            window._refresh_viewport(reset_camera=False)
+            window._on_scene_browser_visibility("show_selected", (NODE_CURVES,))
+
+            self.assertTrue(first_curve.visible)
+            self.assertTrue(second_curve.visible)
+            self.assertEqual(tree.item(NODE_CURVES, "text"), "[V] Curves")
+        finally:
+            window.root.destroy()
+
+    def test_delete_selected_curve_group_removes_child_curves_and_surfaces(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            (
+                _first_plane,
+                _second_plane,
+                first_result,
+                _second_result,
+                first_curve,
+                second_curve,
+                first_surface,
+                second_surface,
+            ) = _build_two_section_scene(window)
+
+            tree = window.scene_browser.tree
+            group_node = curve_group_node_id(first_result.id)
+            tree.selection_set(group_node)
+            tree.focus(group_node)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.delete_selected_scene_objects()
+
+            self.assertNotIn(first_curve, window.app_state.curve_collection.curves)
+            self.assertIn(second_curve, window.app_state.curve_collection.curves)
+            self.assertNotIn(first_surface, window.app_state.surface_collection.surfaces)
+            self.assertIn(second_surface, window.app_state.surface_collection.surfaces)
+            self.assertEqual(window.status_text.get(), "Deleted 2 selected objects")
+        finally:
+            window.root.destroy()
+
+    def test_frame_selected_curve_uses_curve_bounds(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.compute_section()
+            curve = window.app_state.curve_collection.curves[0]
+            curve.fitted_points = np.asarray(
+                [[2.0, 3.0, 4.0], [5.0, 7.0, 11.0]],
+                dtype=float,
+            )
+            window.select_curve(curve.id)
+
+            window.frame_selected()
+
+            self.assertEqual(window.status_text.get(), "View framed to selection")
+            self.assertEqual(len(window.viewport.framed_bounds), 1)
+            minimum_bound, maximum_bound = window.viewport.framed_bounds[0]
+            self.assertTrue(np.allclose(minimum_bound, [2.0, 3.0, 4.0]))
+            self.assertTrue(np.allclose(maximum_bound, [5.0, 7.0, 11.0]))
+            self.assertEqual(window.viewport.frame_count, 0)
+        finally:
+            window.root.destroy()
+
+    def test_parent_rename_is_disabled_and_rejected(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _build_two_section_scene(window)
+            menu = window.scene_browser._context_menu
+            labels = [
+                menu.entrycget(index, "label")
+                for index in range(menu.index("end") + 1)
+                if menu.type(index) != "separator"
+            ]
+            self.assertIn("Show Selected", labels)
+            self.assertFalse(window.scene_browser._is_renameable_node(NODE_CURVES))
+
+            tree = window.scene_browser.tree
+            tree.selection_set(NODE_CURVES)
+            tree.focus(NODE_CURVES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            window.rename_selected()
+
+            self.assertEqual(window.status_text.get(), "Select one object to rename.")
+        finally:
+            window.root.destroy()
+
+    def test_visibility_command_can_be_undone_and_redone(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.compute_section()
+            curve = window.app_state.curve_collection.curves[0]
+            curve_node = curve_node_id(curve.id)
+
+            window._on_scene_browser_visibility("hide_selected", (curve_node,))
+            self.assertFalse(curve.visible)
+            window.undo()
+            self.assertTrue(curve.visible)
+            self.assertEqual(window.status_text.get(), "Undid Hide Visibility")
+            window.redo()
+            self.assertFalse(curve.visible)
+            self.assertEqual(window.status_text.get(), "Redid Hide Visibility")
+        finally:
+            window.root.destroy()
+
     def test_bulk_delete_selected_curves_and_surfaces(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -3605,9 +4206,31 @@ class MainWindowUiTests(unittest.TestCase):
                 window.surface_preview_warning_text.get(),
                 "Fan fill preview may be inaccurate for concave curves",
             )
+            self.assertEqual(window.surface_resampled_point_count_text.get(), "(none)")
+            self.assertEqual(window.surface_reversed_second_curve_text.get(), "(none)")
+            self.assertEqual(window.surface_seam_shift_applied_text.get(), "(none)")
+            self.assertEqual(window.surface_average_pair_distance_text.get(), "(none)")
+            self.assertEqual(window.surface_max_pair_distance_text.get(), "(none)")
+            self.assertEqual(window.surface_opacity_text.get(), "0.22")
+            self.assertTrue(window.surface_wireframe_overlay.get())
             self.assertIn("curve_count=1", window.surface_metadata_text.get())
             self.assertIn("source_curve_names=", window.surface_metadata_text.get())
             self.assertIn("source=selected_curve", window.surface_metadata_text.get())
+            preview = window.viewport.scene_calls[-1]["surface_previews"][0]
+            self.assertAlmostEqual(preview.opacity, 0.22)
+            self.assertTrue(preview.wireframe_overlay)
+
+            window._on_surface_opacity_changed("0.35")
+            preview = window.viewport.scene_calls[-1]["surface_previews"][0]
+            self.assertAlmostEqual(surface.metadata["display_opacity"], 0.35)
+            self.assertAlmostEqual(preview.opacity, 0.35)
+            self.assertEqual(window.surface_opacity_text.get(), "0.35")
+
+            window.surface_wireframe_overlay.set(False)
+            window._on_surface_wireframe_changed()
+            preview = window.viewport.scene_calls[-1]["surface_previews"][0]
+            self.assertFalse(surface.metadata["wireframe_overlay"])
+            self.assertFalse(preview.wireframe_overlay)
 
             tree = window.scene_browser.tree
             surface_node = surface_node_id(surface.id)
@@ -3681,6 +4304,17 @@ class MainWindowUiTests(unittest.TestCase):
                 window.status_text.get(),
                 "Lofted Loft Surface 1 from 2 curves",
             )
+            self.assertGreaterEqual(int(window.surface_resampled_point_count_text.get()), 2)
+            self.assertIn(
+                window.surface_reversed_second_curve_text.get(),
+                {"Yes", "No"},
+            )
+            self.assertIn(
+                window.surface_seam_shift_applied_text.get(),
+                {"Yes", "No"},
+            )
+            self.assertNotEqual(window.surface_average_pair_distance_text.get(), "(none)")
+            self.assertNotEqual(window.surface_max_pair_distance_text.get(), "(none)")
             self.assertIn("resampled_point_count=", window.surface_metadata_text.get())
 
             window.select_curves(
@@ -4039,7 +4673,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             tree = window.scene_browser.tree
             joined_node = curve_node_id(joined_curve.id)
-            self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "Repaired Curves")
+            self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "[V] Repaired Curves")
             self.assertEqual(tree.get_children(NODE_CURVE_GROUP_REPAIRED), (joined_node,))
             self.assertEqual(tree.item(joined_node, "text"), "[V] Joined Curve 1")
         finally:
@@ -5147,7 +5781,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.frame_selected()
             self.assertEqual(window.viewport.frame_count, 1)
-            self.assertEqual(window.status_text.get(), "Selected: sample.stl")
+            self.assertEqual(window.status_text.get(), "View framed to selection")
         finally:
             window.root.destroy()
 
@@ -5685,6 +6319,420 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(
                 window.status_text.get(),
                 "Section plane reset to axis-aligned Z mode",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_mode_starts_empty_and_places_points_on_active_section_plane(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            active_plane = window.app_state.section_collection.planes[0]
+            window.start_manual_curve_mode()
+
+            self.assertTrue(window._manual_curve_active)
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertFalse(window._manual_curve_closed)
+            self.assertEqual(window._manual_curve_plane_type, "section_plane")
+            self.assertEqual(window._manual_curve_source_section_plane_id, active_plane.id)
+            self.assertIn("Manual Curve: click to place points", window.status_text.get())
+            self.assertIn("Manual Curve: using Section Plane", window.status_text.get())
+            self.assertEqual(window.viewport.scene_calls[-1]["manual_curve_points"], [])
+
+            projected_point = np.asarray([0.25, 0.5, 0.75], dtype=float)
+            window.viewport.projected_points = [projected_point]
+            handled = window._on_viewport_pointer_event("left_press", 40, 60)
+
+            self.assertTrue(handled)
+            self.assertEqual(len(window._manual_curve_points), 1)
+            self.assertTrue(np.allclose(window._manual_curve_points[0], projected_point))
+            self.assertIn("1 point", window.status_text.get())
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.projection_calls[-1]["plane_origin"],
+                    plane_origin(active_plane),
+                )
+            )
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.projection_calls[-1]["plane_normal"],
+                    plane_normal(active_plane),
+                )
+            )
+            self.assertEqual(len(window.app_state.curve_collection.curves), 0)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_backspace_escape_and_closed_toggle_behaviors(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.viewport.projected_points = [
+                np.asarray([0.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 1.0, 0.0], dtype=float),
+            ]
+            window._on_viewport_pointer_event("left_press", 10, 10)
+            window._on_viewport_pointer_event("left_press", 20, 20)
+
+            window._handle_shortcut("C")
+            self.assertFalse(window._manual_curve_closed)
+            self.assertEqual(window.status_text.get(), "Manual Curve: need at least 3 points to close")
+
+            window._on_viewport_pointer_event("left_press", 30, 30)
+            window._handle_shortcut("C")
+            self.assertTrue(window._manual_curve_closed)
+            self.assertTrue(window.viewport.scene_calls[-1]["manual_curve_closed"])
+
+            window._handle_shortcut("Backspace")
+            self.assertEqual(len(window._manual_curve_points), 2)
+            self.assertFalse(window._manual_curve_closed)
+
+            window._handle_shortcut("Esc")
+            self.assertFalse(window._manual_curve_active)
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertEqual(window.status_text.get(), "Manual Curve cancelled")
+            self.assertIsNone(window.viewport.scene_calls[-1]["manual_curve_points"])
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_enter_rejects_too_few_points_and_invalid_projection(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window._handle_shortcut("Enter")
+            self.assertEqual(window.status_text.get(), "Manual Curve: open curve needs at least 2 points")
+
+            window.viewport.projected_points = [None]
+            handled = window._on_viewport_pointer_event("left_press", 20, 20)
+            self.assertTrue(handled)
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertEqual(window.status_text.get(), "Manual Curve: could not place point on work plane")
+
+            window._manual_curve_points = [
+                np.asarray([0.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 0.0, 0.0], dtype=float),
+            ]
+            window._manual_curve_closed = True
+            window._handle_shortcut("Enter")
+            self.assertEqual(window.status_text.get(), "Manual Curve: closed curve needs at least 3 points")
+            self.assertEqual(len(window.app_state.curve_collection.curves), 0)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_enter_creates_stored_curve_with_metadata_and_undo_redo(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            active_plane = window.app_state.section_collection.planes[0]
+            curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    (1.0, 1.0, 0.0),
+                ],
+                closed=True,
+            )
+
+            self.assertEqual(curve.name, "Manual Curve 1")
+            self.assertTrue(curve.visible)
+            self.assertTrue(curve.selected)
+            self.assertTrue(curve.is_closed)
+            self.assertEqual(curve.mean_error, 0.0)
+            self.assertEqual(curve.max_error, 0.0)
+            self.assertTrue(np.allclose(curve.original_points, curve.fitted_points))
+            self.assertEqual(curve.metadata["creation_type"], "manual")
+            self.assertEqual(curve.metadata["work_plane_type"], "section_plane")
+            self.assertEqual(curve.metadata["source_section_plane_id"], active_plane.id)
+            self.assertTrue(curve.metadata["closed"])
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
+            self.assertIn(curve.id, window.app_state.curve_collection.selected_curve_ids)
+            self.assertEqual(window.status_text.get(), "Created Manual Curve 1")
+            self.assertIn("(manual)", window.scene_browser.tree.item(curve_node_id(curve.id), "text"))
+
+            window.undo()
+            self.assertEqual(len(window.app_state.curve_collection.curves), 0)
+            self.assertEqual(window.status_text.get(), "Undid Create Manual Curve")
+
+            window.redo()
+            self.assertEqual(len(window.app_state.curve_collection.curves), 1)
+            restored_curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(restored_curve.name, "Manual Curve 1")
+            self.assertEqual(restored_curve.metadata["creation_type"], "manual")
+            self.assertEqual(window.status_text.get(), "Redid Create Manual Curve")
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_uses_world_xy_when_no_active_section_plane_exists(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.section_collection.planes = []
+            window.app_state.section_collection.active_plane_id = None
+            curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                ],
+            )
+
+            self.assertEqual(curve.metadata["work_plane_type"], "world_xy")
+            self.assertNotIn("source_section_plane_id", curve.metadata)
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.projection_calls[-1]["plane_origin"],
+                    np.asarray([0.0, 0.0, 0.0], dtype=float),
+                )
+            )
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.projection_calls[-1]["plane_normal"],
+                    np.asarray([0.0, 0.0, 1.0], dtype=float),
+                )
+            )
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_snap_to_mesh_no_hit_does_not_add_point(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.manual_curve_snap_to_mesh.set(True)
+            window._on_manual_curve_snap_to_mesh_changed()
+
+            handled = window._on_viewport_pointer_event("left_press", 50, 60)
+
+            self.assertTrue(handled)
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertEqual(window.status_text.get(), "No mesh under cursor")
+            self.assertEqual(window.viewport.mesh_pick_calls[-1], {"x": 50, "y": 60})
+            self.assertEqual(len(window.viewport.projection_calls), 0)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_snap_to_mesh_creates_curve_on_mesh_metadata(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.3),
+                    (1.0, 0.0, 0.4),
+                ],
+                snap_to_mesh=True,
+                triangle_indices=[4, 9],
+            )
+
+            self.assertEqual(curve.metadata["creation_type"], "curve_on_mesh")
+            self.assertEqual(curve.metadata["snap_mode"], "mesh")
+            self.assertEqual(curve.metadata["source_mesh_name"], "sample.stl")
+            self.assertEqual(curve.metadata["snap_triangle_indices"], [4, 9])
+            self.assertEqual(
+                curve.metadata["snap_normals"],
+                [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+            )
+            self.assertFalse(curve.metadata["closed"])
+            self.assertEqual(window.status_text.get(), "Created Manual Curve 1")
+            self.assertTrue(np.allclose(curve.fitted_points[0], [0.0, 0.0, 0.3]))
+            self.assertEqual(len(window.viewport.projection_calls), 0)
+        finally:
+            window.root.destroy()
+
+    def test_delete_mesh_clears_pending_snapped_manual_curve_mode(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.manual_curve_snap_to_mesh.set(True)
+            window._on_manual_curve_snap_to_mesh_changed()
+            window.viewport.mesh_pick_results = [
+                MeshPickResult(
+                    hit=True,
+                    position=np.asarray([0.25, 0.5, 0.75], dtype=float),
+                    normal=np.asarray([0.0, 0.0, 1.0], dtype=float),
+                    triangle_index=2,
+                )
+            ]
+            window._on_viewport_pointer_event("left_press", 10, 10)
+
+            self.assertTrue(window._manual_curve_active)
+            self.assertEqual(len(window._manual_curve_points), 1)
+            self.assertTrue(window.manual_curve_snap_to_mesh.get())
+
+            with patch("app.main_window.messagebox.askyesno", return_value=True):
+                window.delete_mesh()
+
+            self.assertFalse(window._manual_curve_active)
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertEqual(window._manual_curve_snap_point_count, 0)
+            self.assertFalse(window.manual_curve_snap_to_mesh.get())
+            self.assertEqual(window.status_text.get(), "Mesh deleted")
+        finally:
+            window.root.destroy()
+
+    def test_region_select_mode_click_creates_visible_region(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            mesh = _sharp_region_mesh()
+            window.app_state.mesh_object.display_mesh = mesh
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(
+                    hit=True,
+                    position=np.asarray([0.1, 0.1, 0.0], dtype=float),
+                    normal=np.asarray([0.0, 0.0, 1.0], dtype=float),
+                    triangle_index=0,
+                )
+            )
+
+            window.start_region_select_mode()
+            self.assertTrue(window._region_select_active)
+            handled = window._on_viewport_pointer_event("left_press", 20, 30)
+
+            region = window.app_state.region_collection.active_region
+            self.assertTrue(handled)
+            self.assertIsNotNone(region)
+            self.assertEqual(region.triangle_indices, (0,))
+            self.assertEqual(region.source_mesh_name, "sample.stl")
+            self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
+            self.assertIn("1 triangle", window.status_text.get())
+        finally:
+            window.root.destroy()
+
+    def test_region_threshold_affects_click_selection_size(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.region_threshold_degrees.set(95.0)
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window.start_region_select_mode()
+            window._on_viewport_pointer_event("left_press", 20, 30)
+            wide_region = window.app_state.region_collection.active_region
+
+            window.region_threshold_degrees.set(20.0)
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window._on_viewport_pointer_event("left_press", 20, 30)
+            narrow_region = window.app_state.region_collection.active_region
+
+            self.assertIsNotNone(wide_region)
+            self.assertIsNotNone(narrow_region)
+            self.assertGreater(
+                len(wide_region.triangle_indices),
+                len(narrow_region.triangle_indices),
+            )
+            self.assertEqual(set(wide_region.triangle_indices), {0, 1})
+            self.assertEqual(narrow_region.triangle_indices, (0,))
+        finally:
+            window.root.destroy()
+
+    def test_clear_and_hide_show_region_selection_updates_viewport(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window.start_region_select_mode()
+            window._on_viewport_pointer_event("left_press", 20, 30)
+            region = window.app_state.region_collection.active_region
+            self.assertIsNotNone(region)
+
+            window.hide_region_highlight()
+            self.assertFalse(region.visible)
+            self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
+
+            window.show_region_highlight()
+            self.assertTrue(region.visible)
+            self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
+
+            window.clear_region_selection()
+            self.assertIsNone(window.app_state.region_collection.active_region)
+            self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
+        finally:
+            window.root.destroy()
+
+    def test_manual_curves_can_create_fill_and_loft_surfaces(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            closed_curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    (1.0, 1.0, 0.0),
+                ],
+                closed=True,
+            )
+
+            window.fill_closed_curve()
+            self.assertEqual(len(window.app_state.surface_collection.surfaces), 1)
+            fill_surface = window.app_state.surface_collection.surfaces[0]
+            self.assertEqual(fill_surface.surface_type, "preview_fill")
+            self.assertEqual(fill_surface.source_curve_ids, [closed_curve.id])
+
+            first_open_curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.2),
+                    (1.0, 0.0, 0.2),
+                ],
+            )
+            second_open_curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 1.0, 0.2),
+                    (1.0, 1.0, 0.2),
+                ],
+            )
+            window.select_curves(
+                [first_open_curve.id, second_open_curve.id],
+                active_curve_id=first_open_curve.id,
+            )
+            window.loft_between_two_curves()
+
+            self.assertEqual(len(window.app_state.surface_collection.surfaces), 2)
+            loft_surface = window.app_state.surface_collection.surfaces[1]
+            self.assertEqual(loft_surface.surface_type, "preview_loft")
+            self.assertEqual(
+                loft_surface.source_curve_ids,
+                [first_open_curve.id, second_open_curve.id],
             )
         finally:
             window.root.destroy()

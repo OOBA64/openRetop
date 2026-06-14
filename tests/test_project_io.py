@@ -542,6 +542,97 @@ class ProjectIOTests(unittest.TestCase):
             },
         )
 
+    def test_save_load_project_preserves_manual_curve_metadata(self) -> None:
+        project = default_project_data()
+        project.curves = [
+            ProjectCurve(
+                id="curve-manual",
+                name="Manual Curve 1",
+                section_result_id="",
+                plane_id="plane-a",
+                original_points=[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                ],
+                fitted_points=[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                ],
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+                visible=True,
+                metadata={
+                    "creation_type": "manual",
+                    "work_plane_type": "section_plane",
+                    "source_section_plane_id": "plane-a",
+                    "closed": True,
+                },
+            )
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "manual.openretop"
+            save_project(project, project_path)
+            loaded_project = load_project(project_path)
+
+        curve = loaded_project.curves[0]
+        self.assertEqual(curve.name, "Manual Curve 1")
+        self.assertEqual(curve.section_result_id, "")
+        self.assertEqual(curve.plane_id, "plane-a")
+        self.assertTrue(curve.is_closed)
+        self.assertEqual(
+            curve.metadata,
+            {
+                "creation_type": "manual",
+                "work_plane_type": "section_plane",
+                "source_section_plane_id": "plane-a",
+                "closed": True,
+            },
+        )
+
+    def test_save_load_project_preserves_snapped_curve_metadata(self) -> None:
+        project = default_project_data()
+        project.curves = [
+            ProjectCurve(
+                id="curve-snap",
+                name="Manual Curve 1",
+                section_result_id="",
+                plane_id="",
+                original_points=[[0.0, 0.0, 0.2], [1.0, 0.0, 0.4]],
+                fitted_points=[[0.0, 0.0, 0.2], [1.0, 0.0, 0.4]],
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+                metadata={
+                    "creation_type": "curve_on_mesh",
+                    "snap_mode": "mesh",
+                    "source_mesh_name": "sample.stl",
+                    "closed": False,
+                    "snap_triangle_indices": [4, 9],
+                    "snap_normals": [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+                },
+            )
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "snapped.openretop"
+            save_project(project, project_path)
+            loaded_project = load_project(project_path)
+
+        curve = loaded_project.curves[0]
+        self.assertEqual(curve.metadata["creation_type"], "curve_on_mesh")
+        self.assertEqual(curve.metadata["snap_mode"], "mesh")
+        self.assertEqual(curve.metadata["source_mesh_name"], "sample.stl")
+        self.assertEqual(curve.metadata["snap_triangle_indices"], [4, 9])
+        self.assertEqual(
+            curve.metadata["snap_normals"],
+            [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+        )
+
     def test_project_from_dict_rejects_invalid_curve_points_clearly(self) -> None:
         with self.assertRaises(ValueError) as context:
             project_from_dict(

@@ -47,6 +47,10 @@ def build_preferences_dialog(
             master=dialog,
             value=settings.display.show_axis_gizmo,
         ),
+        "show_viewcube": BooleanVar(
+            master=dialog,
+            value=settings.display.show_viewcube,
+        ),
         "default_proxy_quality": StringVar(
             master=dialog,
             value=settings.import_settings.default_proxy_quality,
@@ -150,11 +154,16 @@ def _build_viewport_tab(
         text="Show Axis Gizmo",
         variable=variables["show_axis_gizmo"],
     ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
-    _add_placeholder_row(tab, 3, "Surface preview opacity", variables["surface_preview_opacity"])
-    _add_placeholder_row(tab, 4, "Curve display thickness", variables["curve_display_thickness"])
+    ttk.Checkbutton(
+        tab,
+        text="Show ViewCube",
+        variable=variables["show_viewcube"],
+    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    _add_placeholder_row(tab, 4, "Surface preview opacity", variables["surface_preview_opacity"])
+    _add_placeholder_row(tab, 5, "Curve display thickness", variables["curve_display_thickness"])
     _add_placeholder_row(
         tab,
-        5,
+        6,
         "Selected object highlight thickness",
         variables["selected_highlight_thickness"],
     )

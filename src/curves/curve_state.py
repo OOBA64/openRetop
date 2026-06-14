@@ -214,8 +214,33 @@ def compute_curve_diagnostics(
     )
 
 
-def is_repaired_curve(curve: StoredCurve) -> bool:
-    return str(curve.metadata.get("repair_type", "")) in {"join", "auto_close"}
+def is_repaired_curve(curve: object) -> bool:
+    metadata = getattr(curve, "metadata", {})
+    if not isinstance(metadata, dict):
+        return False
+
+    repair_type = _metadata_token(metadata.get("repair_type"))
+    if repair_type in {"join", "auto_close"}:
+        return True
+
+    processing_tokens = {
+        _metadata_token(metadata.get(key))
+        for key in (
+            "processing_type",
+            "operation",
+            "processing_operation",
+            "curve_operation",
+            "generated_operation",
+        )
+    }
+    if processing_tokens & {"simplify", "smooth"}:
+        return True
+
+    return "simplification_tolerance" in metadata or "smoothing_method" in metadata
+
+
+def _metadata_token(value: object) -> str:
+    return str(value).strip().lower()
 
 
 def join_curves(

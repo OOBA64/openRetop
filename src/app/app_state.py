@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from curves.curve_state import CurveCollection, StoredCurve
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
+from regions.region_state import RegionCollection
 
 from app.object_state import MeshObjectState
 from app.transform_state import ActiveTransformState
@@ -40,6 +41,7 @@ class AppState:
     )
     curve_collection: CurveCollection = field(default_factory=CurveCollection)
     surface_collection: SurfaceCollection = field(default_factory=SurfaceCollection)
+    region_collection: RegionCollection = field(default_factory=RegionCollection)
 
     def clear_selection(self) -> None:
         self.selected_item = None

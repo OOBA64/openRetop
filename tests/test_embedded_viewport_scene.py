@@ -13,15 +13,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from curves.curve_state import StoredCurve
 from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
+from regions.region_state import RegionSelection
 from sections.section_state import SectionPlaneState, set_plane_axis_offset
 from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.embedded_viewport import (
+    ACTIVE_CURVE_LINE_WIDTH,
     EmbeddedVTKViewport,
+    MANUAL_CURVE_POINT_LINE_WIDTH,
+    MANUAL_CURVE_PREVIEW_LINE_WIDTH,
+    MANUAL_CURVE_SNAP_POINT_COLOR,
+    MANUAL_CURVE_SNAP_POLYLINE_COLOR,
+    MeshPickResult,
+    REPAIRED_CURVE_LINE_WIDTH,
     SELECTION_BOUNDING_BOX_LINE_WIDTH,
     SECTION_RESULT_LINE_WIDTH,
     SELECTED_CURVE_LINE_WIDTH,
+    SURFACE_SOURCE_CURVE_LINE_WIDTH,
+    TINY_CURVE_LINE_WIDTH,
     UNSELECTED_CURVE_LINE_WIDTH,
     _bounds_corners,
+    _classify_curve_display,
     _line_polydata,
     _mesh_actor,
     _mesh_polydata,
@@ -168,6 +179,42 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
                 dtype=float,
             ),
             triangles=np.asarray([[0, 1, 2]], dtype=int),
+        )
+
+    def _stored_curve(
+        self,
+        curve_id: str = "curve-1",
+        *,
+        selected: bool = False,
+        visible: bool = True,
+        is_closed: bool = False,
+        metadata: dict[str, object] | None = None,
+        points: np.ndarray | None = None,
+    ) -> StoredCurve:
+        curve_points = (
+            np.asarray(points, dtype=float)
+            if points is not None
+            else np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+        )
+        return StoredCurve(
+            id=curve_id,
+            name=f"Curve {curve_id}",
+            section_result_id="section-result-1",
+            plane_id="plane-1",
+            original_points=curve_points.copy(),
+            fitted_points=curve_points.copy(),
+            mean_error=0.0,
+            max_error=0.0,
+            is_closed=is_closed,
+            visible=visible,
+            selected=selected,
+            metadata=dict(metadata or {}),
         )
 
     def _viewport(self) -> EmbeddedVTKViewport:
@@ -442,6 +489,27 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertIs(first_actor, second_actor)
         self.assertIsNot(first_actor, replacement_actor)
+
+    def test_mesh_pick_result_structure_and_empty_scene_miss(self) -> None:
+        hit_result = MeshPickResult(
+            hit=True,
+            position=np.asarray([1.0, 2.0, 3.0], dtype=float),
+            normal=np.asarray([0.0, 0.0, 1.0], dtype=float),
+            triangle_index=7,
+        )
+
+        self.assertTrue(hit_result.hit)
+        self.assertTrue(np.allclose(hit_result.position, [1.0, 2.0, 3.0]))
+        self.assertTrue(np.allclose(hit_result.normal, [0.0, 0.0, 1.0]))
+        self.assertEqual(hit_result.triangle_index, 7)
+
+        viewport = self._viewport()
+        miss_result = viewport.pick_mesh_at_screen_point(20, 30)
+
+        self.assertFalse(miss_result.hit)
+        self.assertIsNone(miss_result.position)
+        self.assertIsNone(miss_result.normal)
+        self.assertIsNone(miss_result.triangle_index)
 
     def test_view_metrics_can_use_source_bounds_instead_of_display_bounds(self) -> None:
         viewport = EmbeddedVTKViewport(parent=object())
@@ -1019,6 +1087,147 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             np.allclose(viewport._section_plane_pick_geometries[0].points[:, 2], 0.25)
         )
 
+    def test_curve_display_classifier_marks_repaired_and_tiny_curves(self) -> None:
+        repaired_curve = self._stored_curve(
+            metadata={"repair_type": "join"},
+        )
+        tiny_curve = self._stored_curve(
+            curve_id="curve-tiny",
+            points=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.001, 0.0, 0.0],
+                ],
+                dtype=float,
+            ),
+        )
+
+        self.assertEqual(_classify_curve_display(repaired_curve), "repaired")
+        self.assertEqual(_classify_curve_display(tiny_curve), "tiny")
+        self.assertEqual(
+            _classify_curve_display(
+                self._stored_curve(metadata={"operation": "simplify"}),
+            ),
+            "repaired",
+        )
+        self.assertEqual(
+            _classify_curve_display(
+                self._stored_curve(metadata={"processing_type": "smooth"}),
+            ),
+            "repaired",
+        )
+
+    def test_curve_display_classifier_prioritizes_selected_and_active(self) -> None:
+        repaired_selected = self._stored_curve(
+            curve_id="curve-selected",
+            selected=True,
+            metadata={"repair_type": "auto_close"},
+        )
+        active_selected = self._stored_curve(
+            curve_id="curve-active",
+            selected=True,
+            metadata={"repair_type": "join"},
+        )
+
+        self.assertEqual(_classify_curve_display(repaired_selected), "selected")
+        self.assertEqual(
+            _classify_curve_display(
+                active_selected,
+                active_curve_id=active_selected.id,
+            ),
+            "active",
+        )
+
+    def test_selected_surface_source_curves_render_with_source_style(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        source_curve = self._stored_curve("curve-source")
+        normal_curve = self._stored_curve("curve-normal")
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            curve_results=[normal_curve, source_curve],
+            surface_source_curve_ids=[source_curve.id],
+        )
+
+        self.assertIn("curve_results", viewport._actor_groups)
+        line_widths = [
+            actor.GetProperty().GetLineWidth()
+            for actor in viewport._actor_groups["curve_results"]
+        ]
+        self.assertTrue(
+            np.allclose(
+                line_widths,
+                [UNSELECTED_CURVE_LINE_WIDTH, SURFACE_SOURCE_CURVE_LINE_WIDTH],
+            )
+        )
+
+    def test_hidden_surface_source_curve_is_not_rendered(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        hidden_source = self._stored_curve("curve-hidden", visible=False)
+        normal_curve = self._stored_curve("curve-normal")
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            curve_results=[hidden_source, normal_curve],
+            surface_source_curve_ids=[hidden_source.id],
+        )
+
+        self.assertIn("curve_results", viewport._actor_groups)
+        actors = viewport._actor_groups["curve_results"]
+        self.assertEqual(len(actors), 1)
+        self.assertAlmostEqual(
+            actors[0].GetProperty().GetLineWidth(),
+            UNSELECTED_CURVE_LINE_WIDTH,
+            places=5,
+        )
+
+    def test_curve_styles_use_distinct_line_widths_for_repaired_tiny_selected_and_active(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        tiny_curve = self._stored_curve(
+            "curve-tiny",
+            points=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.001, 0.0, 0.0],
+                ],
+                dtype=float,
+            ),
+        )
+        repaired_curve = self._stored_curve(
+            "curve-repaired",
+            metadata={"operation": "smooth"},
+        )
+        selected_curve = self._stored_curve("curve-selected", selected=True)
+        active_curve = self._stored_curve("curve-active", selected=True)
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            curve_results=[tiny_curve, repaired_curve, selected_curve, active_curve],
+            active_curve_id=active_curve.id,
+        )
+
+        line_widths = [
+            actor.GetProperty().GetLineWidth()
+            for actor in viewport._actor_groups["curve_results"]
+        ]
+        self.assertTrue(
+            np.allclose(
+                line_widths,
+                [
+                    TINY_CURVE_LINE_WIDTH,
+                    REPAIRED_CURVE_LINE_WIDTH,
+                    SELECTED_CURVE_LINE_WIDTH,
+                    ACTIVE_CURVE_LINE_WIDTH,
+                ],
+            )
+        )
+
     def test_selected_curve_renders_with_selected_overlay(self) -> None:
         viewport = self._viewport()
         mesh = self._triangle_mesh()
@@ -1058,21 +1267,126 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             viewport,
             mesh,
             curve_results=[first_curve, second_curve],
+            active_curve_id=second_curve.id,
         )
 
-        self.assertIn("curve_result", viewport._actors_by_role)
-        self.assertIn("selected_curve_result", viewport._actor_groups)
-        self.assertEqual(len(viewport._actor_groups["selected_curve_result"]), 1)
+        self.assertIn("curve_results", viewport._actor_groups)
+        self.assertNotIn("curve_result", viewport._actors_by_role)
+        line_widths = [
+            actor.GetProperty().GetLineWidth()
+            for actor in viewport._actor_groups["curve_results"]
+        ]
+        self.assertTrue(
+            np.allclose(
+                line_widths,
+                [UNSELECTED_CURVE_LINE_WIDTH, ACTIVE_CURVE_LINE_WIDTH],
+            )
+        )
+
+    def test_manual_curve_preview_renders_pending_points_polyline_and_clears(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        pending_points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            dtype=float,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            manual_curve_points=pending_points,
+            manual_curve_closed=True,
+            manual_curve_plane_normal=(0.0, 0.0, 1.0),
+        )
+
+        self.assertIn("manual_curve_preview", viewport._actor_groups)
+        actors = viewport._actor_groups["manual_curve_preview"]
+        self.assertEqual(len(actors), 2)
         self.assertAlmostEqual(
-            viewport._actor_groups["selected_curve_result"][0].GetProperty().GetLineWidth(),
-            SELECTED_CURVE_LINE_WIDTH,
+            actors[0].GetProperty().GetLineWidth(),
+            MANUAL_CURVE_POINT_LINE_WIDTH,
             places=5,
         )
         self.assertAlmostEqual(
-            viewport._actors_by_role["curve_result"].GetProperty().GetLineWidth(),
-            UNSELECTED_CURVE_LINE_WIDTH,
+            actors[1].GetProperty().GetLineWidth(),
+            MANUAL_CURVE_PREVIEW_LINE_WIDTH,
             places=5,
         )
+        self.assertEqual(actors[1].GetMapper().GetInput().GetNumberOfLines(), 3)
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            manual_curve_points=[],
+        )
+
+        self.assertNotIn("manual_curve_preview", viewport._actor_groups)
+
+    def test_manual_curve_snap_preview_uses_distinct_colors(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        pending_points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            manual_curve_points=pending_points,
+            manual_curve_snap_to_mesh=True,
+        )
+
+        actors = viewport._actor_groups["manual_curve_preview"]
+        marker_colors = actors[0].GetMapper().GetInput().GetCellData().GetScalars()
+        line_colors = actors[1].GetMapper().GetInput().GetCellData().GetScalars()
+        self.assertTrue(
+            np.allclose(
+                np.asarray(marker_colors.GetTuple3(0), dtype=float) / 255.0,
+                MANUAL_CURVE_SNAP_POINT_COLOR,
+                atol=1.0 / 255.0,
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                np.asarray(line_colors.GetTuple3(0), dtype=float) / 255.0,
+                MANUAL_CURVE_SNAP_POLYLINE_COLOR,
+                atol=1.0 / 255.0,
+            )
+        )
+
+    def test_region_selection_overlay_renders_selected_triangles_and_clears(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        region = RegionSelection(
+            id="region-1",
+            name="Region 1",
+            triangle_indices=(0,),
+            threshold_degrees=20.0,
+            max_triangle_count=50_000,
+            source_mesh_identifier="sample.stl",
+            source_mesh_name="sample.stl",
+        )
+
+        self._set_basic_scene(viewport, mesh, region_selection=region)
+
+        self.assertIn("region_selection", viewport._actors_by_role)
+        actor = viewport._actors_by_role["region_selection"]
+        polydata = actor.GetMapper().GetInput()
+        self.assertEqual(polydata.GetNumberOfCells(), 1)
+        self.assertGreater(actor.GetProperty().GetOpacity(), 0.0)
+        self.assertTrue(actor.GetProperty().GetEdgeVisibility())
+
+        self._set_basic_scene(viewport, mesh, region_selection=None)
+
+        self.assertNotIn("region_selection", viewport._actors_by_role)
 
     def test_surface_previews_render_and_clear_with_selected_styling(self) -> None:
         viewport = self._viewport()
@@ -1088,6 +1402,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             ),
             faces=np.asarray([[0, 1, 2]], dtype=int),
             source_surface_id="surface-1",
+            opacity=0.12,
+            wireframe_overlay=False,
         )
         second_preview = SurfacePreviewMesh(
             vertices=np.asarray(
@@ -1100,6 +1416,8 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             ),
             faces=np.asarray([[0, 1, 2]], dtype=int),
             source_surface_id="surface-2",
+            opacity=0.08,
+            wireframe_overlay=False,
         )
 
         self._set_basic_scene(
@@ -1112,11 +1430,14 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertIn("surface_previews", viewport._actor_groups)
         surface_actors = viewport._actor_groups["surface_previews"]
         self.assertEqual(len(surface_actors), 2)
+        self.assertAlmostEqual(surface_actors[0].GetProperty().GetOpacity(), 0.12)
+        self.assertEqual(surface_actors[0].GetProperty().GetEdgeVisibility(), 0)
         self.assertLess(surface_actors[0].GetProperty().GetOpacity(), 1.0)
         self.assertGreater(
             surface_actors[1].GetProperty().GetOpacity(),
             surface_actors[0].GetProperty().GetOpacity(),
         )
+        self.assertAlmostEqual(surface_actors[1].GetProperty().GetOpacity(), 0.30)
         self.assertEqual(surface_actors[1].GetProperty().GetEdgeVisibility(), 1)
         count_with_previews = self._actor_count(viewport)
 
@@ -1181,6 +1502,62 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertIsNot(viewport._mesh_actor, first_actor)
         self.assertIs(viewport._actors_by_role["mesh"], viewport._mesh_actor)
+
+    def test_named_view_changes_camera_direction_and_renders_once(self) -> None:
+        viewport = self._viewport()
+        render_calls: list[bool] = []
+        viewport._render = lambda: render_calls.append(True)  # type: ignore[method-assign]
+        viewport._view_extent = 4.0
+        camera = viewport.renderer.GetActiveCamera()
+        camera.SetFocalPoint(3.0, 4.0, 5.0)
+
+        viewport.set_named_view("top")
+
+        self.assertEqual(len(render_calls), 1)
+        self.assertTrue(np.allclose(camera.GetFocalPoint(), (3.0, 4.0, 5.0)))
+        self.assertTrue(np.allclose(camera.GetDirectionOfProjection(), (0.0, 0.0, -1.0)))
+        self.assertTrue(np.allclose(camera.GetViewUp(), (0.0, 1.0, 0.0)))
+        self.assertAlmostEqual(
+            np.linalg.norm(np.asarray(camera.GetPosition()) - np.asarray(camera.GetFocalPoint())),
+            11.2,
+        )
+
+        viewport.set_named_view("right")
+
+        self.assertEqual(len(render_calls), 2)
+        self.assertTrue(np.allclose(camera.GetDirectionOfProjection(), (-1.0, 0.0, 0.0)))
+        self.assertTrue(np.allclose(camera.GetViewUp(), (0.0, 0.0, 1.0)))
+
+    def test_named_view_does_not_change_mesh_transform_or_scene_actors(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        transform = np.identity(4)
+        transform[0, 3] = 2.0
+        transform[1, 3] = -3.0
+        self._set_basic_scene(viewport, mesh, transform_matrix=transform)
+        actor_count = self._actor_count(viewport)
+        mesh_actor = viewport._mesh_actor
+        assert mesh_actor is not None
+        matrix_before = np.asarray(
+            [
+                [mesh_actor.GetUserMatrix().GetElement(row, column) for column in range(4)]
+                for row in range(4)
+            ],
+            dtype=float,
+        )
+
+        viewport.set_named_view("isometric")
+
+        matrix_after = np.asarray(
+            [
+                [mesh_actor.GetUserMatrix().GetElement(row, column) for column in range(4)]
+                for row in range(4)
+            ],
+            dtype=float,
+        )
+        self.assertTrue(np.allclose(matrix_after, matrix_before))
+        self.assertIs(viewport._mesh_actor, mesh_actor)
+        self.assertEqual(self._actor_count(viewport), actor_count)
 
     def test_clearing_section_result_removes_section_actor(self) -> None:
         viewport = self._viewport()

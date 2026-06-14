@@ -124,13 +124,38 @@ def _visibility_label(label: str, visible: bool) -> str:
     return f"[V] {label}" if visible else f"[H] {label}"
 
 
+def _visibility_group_label(label: str, visible_values: Sequence[bool]) -> str:
+    values = [bool(value) for value in visible_values]
+    if values and all(values):
+        prefix = "[V]"
+    elif not values or not any(values):
+        prefix = "[H]"
+    else:
+        prefix = "[M]"
+    return f"{prefix} {label}"
+
+
 def _curve_display_label(curve: StoredCurve, fallback_label: str) -> str:
     label = curve.name or fallback_label
+    suffixes: list[str] = []
     if curve.is_tiny_fragment:
-        return f"{label} (tiny)"
+        suffixes.append("(tiny)")
+    if is_repaired_curve(curve):
+        suffixes.append("(repaired)")
     if curve.is_closed:
-        return f"{label} (closed)"
-    return label
+        suffixes.append("(closed)")
+    if _is_manual_curve(curve):
+        suffixes.append("(manual)")
+    return f"{label} {' '.join(suffixes)}" if suffixes else label
+
+
+def _is_manual_curve(curve: StoredCurve) -> bool:
+    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+    return (
+        bool(metadata.get("manual"))
+        or str(metadata.get("source", "")).strip().lower() == "manual"
+        or str(metadata.get("creation_type", "")).strip().lower() == "manual"
+    )
 
 
 class SceneBrowser:
@@ -186,6 +211,26 @@ class SceneBrowser:
             label="Rename",
             command=lambda: self._emit_visibility_action("rename"),
         )
+        self._select_source_curves_menu_index = 1
+        self._context_menu.add_command(
+            label="Select Source Curves",
+            command=lambda: self._emit_visibility_action("select_source_curves"),
+        )
+        self._isolate_source_curves_menu_index = 2
+        self._context_menu.add_command(
+            label="Isolate Source Curves",
+            command=lambda: self._emit_visibility_action("isolate_source_curves"),
+        )
+        self._show_source_curves_menu_index = 3
+        self._context_menu.add_command(
+            label="Show Source Curves",
+            command=lambda: self._emit_visibility_action("show_source_curves"),
+        )
+        self._frame_source_curves_menu_index = 4
+        self._context_menu.add_command(
+            label="Frame Source Curves",
+            command=lambda: self._emit_visibility_action("frame_source_curves"),
+        )
         self._context_menu.add_separator()
         self._context_menu.add_command(
             label="Toggle Visibility",
@@ -194,6 +239,10 @@ class SceneBrowser:
         self._context_menu.add_command(
             label="Hide Selected",
             command=lambda: self._emit_visibility_action("hide_selected"),
+        )
+        self._context_menu.add_command(
+            label="Show Selected",
+            command=lambda: self._emit_visibility_action("show_selected"),
         )
         self._context_menu.add_command(
             label="Isolate Selected",
@@ -319,7 +368,14 @@ class SceneBrowser:
         active_section_plane_id: str | None,
         selected_section_plane_ids: set[str],
     ) -> None:
-        self._ensure_node(NODE_SECTION_PLANES, "Section Planes", open_node=True)
+        self._ensure_node(
+            NODE_SECTION_PLANES,
+            _visibility_group_label(
+                "Section Planes",
+                [plane.visible for plane in section_planes],
+            ),
+            open_node=True,
+        )
 
         current_node_ids: list[str] = []
         for index, plane in enumerate(section_planes, start=1):
@@ -367,7 +423,14 @@ class SceneBrowser:
         active_section_result_id: str | None,
         selected_section_result_ids: set[str],
     ) -> None:
-        self._ensure_node(NODE_SECTION_RESULTS, "Section Results", open_node=True)
+        self._ensure_node(
+            NODE_SECTION_RESULTS,
+            _visibility_group_label(
+                "Section Results",
+                [result.visible for result in section_results],
+            ),
+            open_node=True,
+        )
 
         current_node_ids: list[str] = []
         for index, result in enumerate(section_results, start=1):
@@ -416,7 +479,11 @@ class SceneBrowser:
         active_curve_id: str | None,
         selected_curve_ids: set[str],
     ) -> None:
-        self._ensure_node(NODE_CURVES, "Curves", open_node=True)
+        self._ensure_node(
+            NODE_CURVES,
+            _visibility_group_label("Curves", [curve.visible for curve in curves]),
+            open_node=True,
+        )
 
         result_by_id = {result.id: result for result in section_results}
         curves_by_result_id: dict[str | None, list[StoredCurve]] = {}
@@ -439,7 +506,10 @@ class SceneBrowser:
             current_group_ids.append(group_id)
             self._ensure_node(
                 group_id,
-                result.name or "Section",
+                _visibility_group_label(
+                    result.name or "Section",
+                    [curve.visible for curve in grouped_curves],
+                ),
                 parent=NODE_CURVES,
                 open_node=True,
             )
@@ -449,7 +519,10 @@ class SceneBrowser:
             current_group_ids.append(NODE_CURVE_GROUP_REPAIRED)
             self._ensure_node(
                 NODE_CURVE_GROUP_REPAIRED,
-                "Repaired Curves",
+                _visibility_group_label(
+                    "Repaired Curves",
+                    [curve.visible for curve in repaired_curves],
+                ),
                 parent=NODE_CURVES,
                 open_node=True,
             )
@@ -464,7 +537,10 @@ class SceneBrowser:
             current_group_ids.append(NODE_CURVE_GROUP_UNASSIGNED)
             self._ensure_node(
                 NODE_CURVE_GROUP_UNASSIGNED,
-                "Unassigned",
+                _visibility_group_label(
+                    "Unassigned",
+                    [curve.visible for curve in unassigned_curves],
+                ),
                 parent=NODE_CURVES,
                 open_node=True,
             )
@@ -542,7 +618,14 @@ class SceneBrowser:
         active_surface_id: str | None,
         selected_surface_ids: set[str],
     ) -> None:
-        self._ensure_node(NODE_SURFACES, "Surfaces", open_node=True)
+        self._ensure_node(
+            NODE_SURFACES,
+            _visibility_group_label(
+                "Surfaces",
+                [surface.visible for surface in surfaces],
+            ),
+            open_node=True,
+        )
 
         current_node_ids: list[str] = []
         for index, surface in enumerate(surfaces, start=1):
@@ -761,7 +844,29 @@ class SceneBrowser:
                 and self._is_renameable_node(self.selected_node_ids()[0])
                 else "disabled"
             )
+            source_curve_state = (
+                "normal"
+                if len(self.selected_node_ids()) == 1
+                and surface_id_from_node(self.selected_node_ids()[0]) is not None
+                else "disabled"
+            )
             self._context_menu.entryconfigure(0, state=rename_state)
+            self._context_menu.entryconfigure(
+                self._select_source_curves_menu_index,
+                state=source_curve_state,
+            )
+            self._context_menu.entryconfigure(
+                self._isolate_source_curves_menu_index,
+                state=source_curve_state,
+            )
+            self._context_menu.entryconfigure(
+                self._show_source_curves_menu_index,
+                state=source_curve_state,
+            )
+            self._context_menu.entryconfigure(
+                self._frame_source_curves_menu_index,
+                state=source_curve_state,
+            )
             try:
                 self._context_menu.tk_popup(
                     getattr(event, "x_root", 0),

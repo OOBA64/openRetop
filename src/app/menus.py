@@ -33,6 +33,18 @@ def build_menu_bar(app: object) -> Menu:
     app.view_menu.add_command(label="Frame All", command=app.frame_all)
     app.view_menu.add_command(label="Frame Selected", command=app.frame_selected)
     app.view_menu.add_command(label="Reset View", command=app.reset_view)
+    app.view_menu.add_separator()
+    app.view_menu.add_command(label="Top", command=lambda: app.set_named_view("top"))
+    app.view_menu.add_command(label="Bottom", command=lambda: app.set_named_view("bottom"))
+    app.view_menu.add_command(label="Front", command=lambda: app.set_named_view("front"))
+    app.view_menu.add_command(label="Back", command=lambda: app.set_named_view("back"))
+    app.view_menu.add_command(label="Left", command=lambda: app.set_named_view("left"))
+    app.view_menu.add_command(label="Right", command=lambda: app.set_named_view("right"))
+    app.view_menu.add_command(
+        label="Isometric",
+        command=lambda: app.set_named_view("isometric"),
+    )
+    app.view_menu.add_separator()
     app.view_menu.add_checkbutton(
         label="Show Grid",
         variable=app.show_grid,
@@ -107,6 +119,15 @@ def build_menu_bar(app: object) -> Menu:
         label="Loft Between Two Curves",
         command=app.loft_between_two_curves,
     )
+    app.curves_menu.add_command(
+        label="Create Manual Curve",
+        command=app.start_manual_curve_mode,
+    )
+    app.curves_menu.add_checkbutton(
+        label="Snap to Mesh",
+        variable=app.manual_curve_snap_to_mesh,
+        command=app._on_manual_curve_snap_to_mesh_changed,
+    )
     menu_bar.add_cascade(label="Curves", menu=app.curves_menu)
 
     app.surfaces_menu = Menu(menu_bar, tearoff=False)
@@ -117,6 +138,22 @@ def build_menu_bar(app: object) -> Menu:
     app.surfaces_menu.add_command(
         label="Loft Between Two Curves",
         command=app.loft_between_two_curves,
+    )
+    app.surfaces_menu.add_command(
+        label="Select Source Curves",
+        command=app.select_source_curves_for_active_surface,
+    )
+    app.surfaces_menu.add_command(
+        label="Isolate Source Curves",
+        command=app.isolate_source_curves_for_active_surface,
+    )
+    app.surfaces_menu.add_command(
+        label="Show Source Curves",
+        command=app.show_source_curves_for_active_surface,
+    )
+    app.surfaces_menu.add_command(
+        label="Frame Source Curves",
+        command=app.frame_source_curves_for_active_surface,
     )
     app.surfaces_menu.add_command(label="Delete Selected Surface", command=app.delete_selected_surface)
     app.surfaces_menu.add_command(
@@ -130,6 +167,19 @@ def build_menu_bar(app: object) -> Menu:
     app.tools_menu.add_command(label="Select Section Plane", command=app.select_section_plane)
     app.tools_menu.add_command(label="Move", command=app.start_move_transform)
     app.tools_menu.add_command(label="Rotate", command=app.start_rotate_transform)
+    app.tools_menu.add_separator()
+    app.tools_menu.add_command(label="Region Select", command=app.start_region_select_mode)
+    app.tools_menu.add_command(
+        label="Set Region Threshold",
+        command=app.configure_region_threshold,
+    )
+    app.tools_menu.add_command(
+        label="Set Region Max Triangles",
+        command=app.configure_region_max_triangle_count,
+    )
+    app.tools_menu.add_command(label="Clear Region Selection", command=app.clear_region_selection)
+    app.tools_menu.add_command(label="Hide Region Highlight", command=app.hide_region_highlight)
+    app.tools_menu.add_command(label="Show Region Highlight", command=app.show_region_highlight)
     menu_bar.add_cascade(label="Tools", menu=app.tools_menu)
 
     app.help_menu = Menu(menu_bar, tearoff=False)

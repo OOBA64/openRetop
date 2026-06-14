@@ -30,6 +30,8 @@ class SurfacePreviewMesh:
     faces: np.ndarray
     source_surface_id: str
     selected: bool = False
+    opacity: float | None = None
+    wireframe_overlay: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(

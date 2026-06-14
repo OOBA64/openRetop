@@ -70,6 +70,7 @@ def _key_label(key: str) -> str | None:
     aliases = {
         "Return": "Enter",
         "Escape": "Esc",
+        "BackSpace": "Backspace",
         "Delete": "Delete",
         "F2": "F2",
     }
