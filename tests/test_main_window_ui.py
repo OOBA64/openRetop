@@ -24,8 +24,10 @@ from app.main_window import (
 )
 from app.scene_browser import (
     NODE_CURVES,
+    NODE_CURVE_GROUP_MANUAL,
     NODE_CURVE_GROUP_UNASSIGNED,
     NODE_CURVE_GROUP_REPAIRED,
+    NODE_EMPTY_SCENE,
     NODE_MESH,
     NODE_SCENE,
     NODE_SECTION_PLANES,
@@ -450,12 +452,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.menu_bar.entrycget(0, "label"), "File")
             self.assertEqual(window.menu_bar.entrycget(1, "label"), "Edit")
             self.assertEqual(window.menu_bar.entrycget(2, "label"), "View")
-            self.assertEqual(window.menu_bar.entrycget(3, "label"), "Scene")
-            self.assertEqual(window.menu_bar.entrycget(4, "label"), "Sections")
-            self.assertEqual(window.menu_bar.entrycget(5, "label"), "Curves")
-            self.assertEqual(window.menu_bar.entrycget(6, "label"), "Surfaces")
-            self.assertEqual(window.menu_bar.entrycget(7, "label"), "Tools")
-            self.assertEqual(window.menu_bar.entrycget(8, "label"), "Help")
+            self.assertEqual(window.menu_bar.entrycget(3, "label"), "Help")
+            self.assertEqual(window.menu_bar.index("end"), 3)
             self.assertEqual(window.file_menu.entrycget(0, "label"), "New Project")
             self.assertEqual(window.file_menu.entrycget(1, "label"), "Open Project")
             self.assertEqual(window.file_menu.entrycget(2, "label"), "Save Project")
@@ -473,21 +471,20 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.view_menu.entrycget(0, "label"), "Frame All")
             self.assertEqual(window.view_menu.entrycget(1, "label"), "Frame Selected")
             self.assertEqual(window.view_menu.entrycget(2, "label"), "Reset View")
-            self.assertEqual(window.view_menu.type(3), "separator")
-            self.assertEqual(window.view_menu.entrycget(4, "label"), "Top")
-            self.assertEqual(window.view_menu.entrycget(5, "label"), "Bottom")
-            self.assertEqual(window.view_menu.entrycget(6, "label"), "Front")
-            self.assertEqual(window.view_menu.entrycget(7, "label"), "Back")
-            self.assertEqual(window.view_menu.entrycget(8, "label"), "Left")
-            self.assertEqual(window.view_menu.entrycget(9, "label"), "Right")
-            self.assertEqual(window.view_menu.entrycget(10, "label"), "Isometric")
-            self.assertEqual(window.view_menu.type(11), "separator")
-            self.assertEqual(window.view_menu.entrycget(12, "label"), "Show Grid")
-            self.assertEqual(window.view_menu.entrycget(13, "label"), "Show Axes")
-            self.assertEqual(window.view_menu.entrycget(14, "label"), "Show All Objects")
-            self.assertEqual(window.view_menu.entrycget(15, "label"), "Isolate Selected")
-            self.assertEqual(window.view_menu.entrycget(16, "label"), "Toggle Selected Visibility")
-            self.assertEqual(window.view_menu.index("end"), 16)
+            self.assertEqual(window.view_menu.entrycget(3, "label"), "Top View")
+            self.assertEqual(window.view_menu.entrycget(4, "label"), "Bottom View")
+            self.assertEqual(window.view_menu.entrycget(5, "label"), "Front View")
+            self.assertEqual(window.view_menu.entrycget(6, "label"), "Back View")
+            self.assertEqual(window.view_menu.entrycget(7, "label"), "Left View")
+            self.assertEqual(window.view_menu.entrycget(8, "label"), "Right View")
+            self.assertEqual(window.view_menu.entrycget(9, "label"), "Isometric View")
+            self.assertEqual(window.view_menu.entrycget(10, "label"), "Show Grid")
+            self.assertEqual(window.view_menu.entrycget(11, "label"), "Show Axes")
+            self.assertEqual(window.view_menu.entrycget(12, "label"), "Show Axis Gizmo")
+            self.assertEqual(window.view_menu.entrycget(13, "label"), "Show View Controls")
+            self.assertEqual(window.view_menu.index("end"), 13)
+            self.assertEqual(window.view_menu.type(10), "checkbutton")
+            self.assertEqual(window.view_menu.type(11), "checkbutton")
             self.assertEqual(window.view_menu.type(12), "checkbutton")
             self.assertEqual(window.view_menu.type(13), "checkbutton")
             self.assertEqual(window.scene_menu.entrycget(0, "label"), "Rename Selected")
@@ -517,31 +514,53 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
             self.assertEqual(window.tools_menu.entrycget(3, "label"), "Rotate")
-            self.assertEqual(window.help_menu.entrycget(0, "label"), "About")
+            self.assertEqual(window.help_menu.entrycget(0, "label"), "Hotkeys")
+            self.assertEqual(window.help_menu.entrycget(1, "label"), "About")
 
             self.assertTrue(window.show_grid.get())
             self.assertTrue(window.show_axes.get())
             self.assertTrue(window.show_axis_gizmo.get())
             self.assertTrue(window.show_viewcube.get())
             self.assertEqual(window.viewcube_frame.winfo_manager(), "place")
+            self.assertIs(window.view_controls_frame, window.viewcube_frame)
+            self.assertTrue(_widgets_with_text(window.view_controls_frame, "View"))
+            self.assertFalse(_widgets_with_text(window.view_controls_frame, "ViewCube"))
+            self.assertFalse(_widgets_with_text(window.view_controls_frame, "View Controls"))
+            self.assertEqual(
+                [button.cget("text") for button in window.view_controls_buttons],
+                ["Top", "Front", "Right", "Iso"],
+            )
+            self.assertTrue(
+                all(int(button.cget("width")) == 5 for button in window.view_controls_buttons)
+            )
+            self.assertEqual(window.view_controls_frame.place_info().get("anchor"), "ne")
+            self.assertEqual(window.view_controls_frame.place_info().get("x"), "-10")
+            self.assertEqual(window.view_controls_frame.place_info().get("y"), "10")
             self.assertFalse(window.show_normals.get())
             self.assertFalse(window.show_section_plane.get())
             self.assertEqual(window.proxy_quality.get(), "Medium")
             self.assertEqual(tuple(window.proxy_quality_dropdown.cget("values")), ("Low", "Medium", "High"))
-            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertEqual(window.status_text.get(), "Open Model to begin")
+            self.assertEqual(window.current_mode_text.get(), "No Mode")
+            self.assertEqual(
+                window.command_prompt_text.get(),
+                "Open a model, adjust viewport visibility, or frame the scene.",
+            )
+            self.assertIn("G=move", window.hotkey_hint_text.get())
             self.assertIsNone(window.current_project_path)
             self.assertFalse(window.project_dirty)
             self.assertEqual(window.root.title(), "openRetop - Untitled Project")
             self.assertIsNone(window.app_state.selected_item)
             self.assertEqual(
-                [window.sidebar_notebook.tab(index, "text") for index in range(window.sidebar_notebook.index("end"))],
-                ["Object", "Transform", "Sections", "Curves", "Surfaces", "Info"],
+                list(window.workbench_panels.keys()),
+                ["Scene", "Transform", "Sections", "Curves", "Surfaces", "Manual RE", "Analysis"],
             )
+            self.assertEqual(window.current_workbench.get(), "Scene")
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "")
-            self.assertEqual(window.curve_context_frame.winfo_manager(), "")
-            self.assertEqual(window.surface_context_frame.winfo_manager(), "")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.curve_context_frame.winfo_manager(), "grid")
+            self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
             self.assertFalse(hasattr(window, "apply_transform_button"))
             self.assertEqual(str(window.select_model_button.cget("state")), "disabled")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "disabled")
@@ -550,9 +569,13 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.section_plane_text.get(), "Section: Z = 0.000")
             self.assertEqual(window.section_result_text.get(), "Section result: none")
             self.assertEqual(window.scale_value.get(), "1.000")
+            self.assertGreaterEqual(int(window.sidebar_canvas.cget("width")), 260)
+            self.assertLessEqual(int(window.sidebar_canvas.cget("width")), 300)
             self.assertEqual(window.scene_browser.frame.winfo_manager(), "grid")
+            self.assertEqual(int(window.scene_browser.frame.cget("width")), 230)
             self.assertEqual(window.scene_browser.tree.item(NODE_SCENE, "text"), "Scene")
-            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), ())
+            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), (NODE_EMPTY_SCENE,))
+            self.assertEqual(window.scene_browser.tree.item(NODE_EMPTY_SCENE, "text"), "No mesh loaded")
         finally:
             window.root.destroy()
 
@@ -565,8 +588,60 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Nothing to undo")
             window.redo()
             self.assertEqual(window.status_text.get(), "Nothing to redo")
-            window.help_menu.invoke(0)
+            window.help_menu.invoke(1)
             self.assertEqual(window.status_text.get(), "About: Not implemented yet")
+        finally:
+            window.root.destroy()
+
+    def test_manual_re_workbench_explains_manual_curve_and_snap_state(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window._set_active_workbench("Manual RE", set_status=True)
+
+            self.assertEqual(window.current_workbench.get(), "Manual RE")
+            self.assertEqual(window.manual_curve_mode_title.get(), "Manual Curve")
+            self.assertEqual(
+                window.manual_curve_mode_details.get(),
+                "Create a manual curve by placing points.",
+            )
+            self.assertEqual(
+                window.manual_curve_snap_help_text.get(),
+                "Load a mesh to enable Snap to Mesh.",
+            )
+            self.assertEqual(str(window.start_manual_curve_button.cget("state")), "disabled")
+            self.assertEqual(str(window.manual_curve_snap_check.cget("state")), "disabled")
+
+            _load_sample_model(window)
+            window._set_active_workbench("Manual RE", set_status=True)
+
+            self.assertEqual(str(window.start_manual_curve_button.cget("state")), "normal")
+            self.assertEqual(str(window.manual_curve_snap_check.cget("state")), "normal")
+            self.assertEqual(
+                window.manual_curve_snap_help_text.get(),
+                "Snap to Mesh places manual curve points on the scan surface.",
+            )
+
+            window.start_manual_curve_mode()
+
+            details = window.manual_curve_mode_details.get()
+            self.assertEqual(window.manual_curve_mode_title.get(), "MANUAL CURVE MODE")
+            self.assertEqual(window.current_mode_text.get(), "Manual Curve")
+            self.assertEqual(
+                window.command_prompt_text.get(),
+                "Manual Curve: click to place point.",
+            )
+            self.assertIn("Enter=finish", window.hotkey_hint_text.get())
+            self.assertIn("MANUAL CURVE MODE", details)
+            self.assertIn("Point count: 0", details)
+            self.assertIn("Snap mode: Off", details)
+            self.assertIn("Drawing plane: Section Plane", details)
+            self.assertIn("Closed: No", details)
+            self.assertEqual(str(window.finish_manual_curve_button.cget("state")), "normal")
+            self.assertEqual(str(window.cancel_manual_curve_button.cget("state")), "normal")
+            self.assertEqual(str(window.remove_manual_point_button.cget("state")), "normal")
+            self.assertEqual(str(window.toggle_manual_closed_button.cget("state")), "normal")
         finally:
             window.root.destroy()
 
@@ -576,7 +651,7 @@ class MainWindowUiTests(unittest.TestCase):
 
         try:
             scene_call_count = len(window.viewport.scene_calls)
-            window.view_menu.invoke(4)
+            window.view_menu.invoke(3)
 
             self.assertEqual(window.viewport.named_views, ["top"])
             self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
@@ -629,18 +704,33 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window.preferences_vars["show_axis_gizmo"].get())
             self.assertFalse(window.preferences_vars["show_viewcube"].get())
             self.assertNotIn("show_normals", window.preferences_vars)
+            self.assertNotIn("surface_preview_opacity", window.preferences_vars)
+            self.assertNotIn("curve_display_thickness", window.preferences_vars)
+            self.assertNotIn("selected_highlight_thickness", window.preferences_vars)
             self.assertEqual(window.preferences_vars["default_proxy_quality"].get(), "High")
             self.assertTrue(_widgets_with_text(dialog, "Startup window mode"))
             self.assertTrue(_widgets_with_text(dialog, "Remember last window size"))
-            self.assertTrue(_widgets_with_text(dialog, "Startup Show Grid"))
-            self.assertTrue(_widgets_with_text(dialog, "Startup Show Axes"))
-            self.assertTrue(_widgets_with_text(dialog, "Show Axis Gizmo"))
-            self.assertTrue(_widgets_with_text(dialog, "Show View Controls"))
-            self.assertTrue(_widgets_with_text(dialog, "Surface preview opacity"))
-            self.assertTrue(_widgets_with_text(dialog, "Curve display thickness"))
+            self.assertTrue(_widgets_with_text(dialog, "Default Show Grid"))
+            self.assertTrue(_widgets_with_text(dialog, "Default Show Axes"))
+            self.assertTrue(_widgets_with_text(dialog, "Default Show Axis Gizmo"))
+            self.assertTrue(_widgets_with_text(dialog, "Default Show View Controls"))
+            self.assertFalse(_widgets_with_text(dialog, "Startup Show Grid"))
+            self.assertFalse(_widgets_with_text(dialog, "Startup Show Axes"))
+            self.assertFalse(_widgets_with_text(dialog, "Surface preview opacity"))
+            self.assertFalse(_widgets_with_text(dialog, "Curve display thickness"))
+            self.assertFalse(_widgets_with_text(dialog, "Selected object highlight thickness"))
             self.assertTrue(_widgets_with_text(dialog, "Rename Selected"))
             self.assertTrue(_widgets_with_text(dialog, "Toggle Visibility"))
             self.assertTrue(_widgets_with_text(dialog, "Delete Selected"))
+            self.assertTrue(_widgets_with_text(dialog, "Manual Curve"))
+            self.assertTrue(_widgets_with_text(dialog, "Finish Curve"))
+            self.assertTrue(_widgets_with_text(dialog, "Remove Last Point"))
+            self.assertTrue(_widgets_with_text(dialog, "Toggle Closed"))
+            self.assertTrue(_widgets_with_text(dialog, "Backspace"))
+            self.assertTrue(_widgets_with_text(dialog, "C"))
+            self.assertTrue(_widgets_with_text(dialog, "Reset Preferences"))
+            self.assertTrue(_widgets_with_text(dialog, "Diagnostics"))
+            self.assertFalse(_widgets_with_text(dialog, "Clear Recent Files"))
             self.assertEqual(window.preferences_vars["keybind.rename_selected"].get(), "F2")
             self.assertEqual(window.preferences_vars["keybind.toggle_visibility"].get(), "H")
             self.assertEqual(window.preferences_vars["keybind.isolate_selected"].get(), "Shift+H")
@@ -960,7 +1050,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.location_x.get(), "0.000")
             self.assertEqual(window.rotation_z.get(), "0.000")
             self.assertEqual(window.scale_value.get(), "1.000")
-            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), ())
+            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), (NODE_EMPTY_SCENE,))
+            self.assertEqual(window.scene_browser.tree.item(NODE_EMPTY_SCENE, "text"), "No mesh loaded")
             self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
             self.assertIsNone(window.viewport.scene_calls[-1]["selected_item"])
 
@@ -2268,6 +2359,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window.undo_stack.can_undo)
             self.assertFalse(window.undo_stack.can_redo)
 
+            _load_sample_model(window)
             window.select_model()
             window.mesh_name_text.set("Second Rename")
             window._on_mesh_name_changed()
@@ -2517,7 +2609,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.tools_menu.invoke(3)
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(5)
-            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertEqual(window.status_text.get(), "Load a mesh to use Region Select")
             window.sections_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No selection")
             window.sections_menu.invoke(2)
@@ -2545,9 +2637,9 @@ class MainWindowUiTests(unittest.TestCase):
             window.curves_menu.invoke(11)
             self.assertEqual(window.status_text.get(), "Select exactly one curve to smooth")
             window.curves_menu.invoke(13)
-            self.assertEqual(window.status_text.get(), "No selection")
+            self.assertEqual(window.status_text.get(), "Load a mesh to use Manual Curve")
             window.curves_menu.invoke(14)
-            self.assertEqual(window.status_text.get(), "Snap to Mesh: On")
+            self.assertEqual(window.status_text.get(), "Load a mesh to use Snap to Mesh")
             window.surfaces_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(1)
@@ -2687,9 +2779,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(window.project_dirty)
             self.assertEqual(window.root.title(), "openRetop - Untitled Project *")
             self.assertIsNone(window.app_state.selected_item)
+            self.assertEqual(window.current_workbench.get(), "Scene")
             self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
             self.assertEqual(str(window.select_model_button.cget("state")), "normal")
             self.assertEqual(str(window.select_section_plane_button.cget("state")), "normal")
             self.assertTrue(window.show_grid.get())
@@ -2801,7 +2894,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.item(section_result_node, "text"), "[V] Section 1")
             self.assertEqual(tree.item(NODE_CURVES, "text"), "[V] Curves")
             self.assertEqual(tree.get_children(NODE_CURVES), (section_curve_group,))
-            self.assertEqual(tree.item(section_curve_group, "text"), "[V] Section 1")
+            self.assertEqual(tree.item(section_curve_group, "text"), "[V] Section: Section 1")
             self.assertEqual(tree.get_children(section_curve_group), (curve_node,))
             self.assertEqual(tree.item(curve_node, "text"), "[V] Section 1 Curve 1")
 
@@ -2918,8 +3011,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(first_surface.selected)
             self.assertFalse(second_surface.selected)
             self.assertEqual(tree.selection(), (first_surface_node,))
+            self.assertEqual(window.current_workbench.get(), "Surfaces")
             self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.surface_name_text.get(), "Patch A")
             self.assertEqual(window.surface_type_text.get(), "loft")
             self.assertEqual(window.surface_source_curve_count_text.get(), "1")
@@ -3117,7 +3211,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertEqual(stored_result.name, "Rim Section")
             self.assertEqual(tree.item(result_node, "text"), "[V] Rim Section")
-            self.assertEqual(tree.item(curve_group, "text"), "[V] Rim Section")
+            self.assertEqual(tree.item(curve_group, "text"), "[V] Section: Rim Section")
 
             window.select_curve(stored_curve.id)
             self.assertEqual(window.curve_section_text.get(), "Rim Section")
@@ -3503,6 +3597,20 @@ class MainWindowUiTests(unittest.TestCase):
                 is_closed=False,
                 visible=True,
             )
+            manual_curve = StoredCurve(
+                id="curve-manual",
+                name="Manual Curve 1",
+                section_result_id="",
+                plane_id="",
+                original_points=np.asarray([[0.0, 2.0, 0.0], [1.0, 2.0, 0.0]], dtype=float),
+                fitted_points=np.asarray([[0.0, 2.0, 0.0], [1.0, 2.0, 0.0]], dtype=float),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+                metadata={"creation_type": "manual", "snap_to_mesh": False},
+            )
+            add_curve(window.app_state.curve_collection, manual_curve)
             add_curve(window.app_state.curve_collection, repaired_curve)
             add_curve(window.app_state.curve_collection, unassigned_curve)
             window._refresh_viewport(reset_camera=False)
@@ -3513,14 +3621,25 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(tree.item(NODE_CURVES, "text"), "[M] Curves")
             self.assertEqual(
                 tree.item(curve_group_node_id(first_result.id), "text"),
-                "[V] Section 1",
+                "[V] Section: Section 1",
             )
             self.assertEqual(
                 tree.item(curve_group_node_id(second_result.id), "text"),
-                "[H] Section 2",
+                "[H] Section: Section 2",
             )
+            self.assertEqual(tree.item(NODE_CURVE_GROUP_MANUAL, "text"), "[V] Manual Curves")
             self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "[H] Repaired Curves")
             self.assertEqual(tree.item(NODE_CURVE_GROUP_UNASSIGNED, "text"), "[V] Unassigned")
+            self.assertEqual(
+                tree.get_children(NODE_CURVES),
+                (
+                    NODE_CURVE_GROUP_MANUAL,
+                    NODE_CURVE_GROUP_REPAIRED,
+                    curve_group_node_id(first_result.id),
+                    curve_group_node_id(second_result.id),
+                    NODE_CURVE_GROUP_UNASSIGNED,
+                ),
+            )
             self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Surfaces")
         finally:
             window.root.destroy()
@@ -3769,8 +3888,8 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertTrue(first_curve.visible)
             self.assertTrue(second_curve.visible)
-            self.assertEqual(tree.item(first_group, "text"), "[V] Section 1")
-            self.assertEqual(tree.item(curve_group_node_id(second_result.id), "text"), "[V] Section 2")
+            self.assertEqual(tree.item(first_group, "text"), "[V] Section: Section 1")
+            self.assertEqual(tree.item(curve_group_node_id(second_result.id), "text"), "[V] Section: Section 2")
 
             first_curve.visible = False
             second_curve.visible = False
@@ -4675,7 +4794,7 @@ class MainWindowUiTests(unittest.TestCase):
             joined_node = curve_node_id(joined_curve.id)
             self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "[V] Repaired Curves")
             self.assertEqual(tree.get_children(NODE_CURVE_GROUP_REPAIRED), (joined_node,))
-            self.assertEqual(tree.item(joined_node, "text"), "[V] Joined Curve 1")
+            self.assertEqual(tree.item(joined_node, "text"), "[V] Joined Curve 1 (repaired)")
         finally:
             window.root.destroy()
 
@@ -4786,8 +4905,8 @@ class MainWindowUiTests(unittest.TestCase):
 
             generated_node = curve_node_id(simplified_curve.id)
             tree = window.scene_browser.tree
-            self.assertIn(generated_node, tree.get_children(NODE_CURVE_GROUP_UNASSIGNED))
-            self.assertEqual(tree.item(generated_node, "text"), "[V] Simplified Curve 1")
+            self.assertIn(generated_node, tree.get_children(NODE_CURVE_GROUP_REPAIRED))
+            self.assertEqual(tree.item(generated_node, "text"), "[V] Simplified Curve 1 (repaired)")
         finally:
             window.root.destroy()
 
@@ -4837,7 +4956,7 @@ class MainWindowUiTests(unittest.TestCase):
             generated_node = curve_node_id(smoothed_curve.id)
             self.assertIn(
                 generated_node,
-                window.scene_browser.tree.get_children(NODE_CURVE_GROUP_UNASSIGNED),
+                window.scene_browser.tree.get_children(NODE_CURVE_GROUP_REPAIRED),
             )
         finally:
             window.root.destroy()
@@ -5388,8 +5507,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(first_curve.selected)
             self.assertFalse(second_curve.selected)
             self.assertEqual(tree.selection(), (first_curve_node,))
+            self.assertEqual(window.current_workbench.get(), "Curves")
             self.assertEqual(window.curve_context_frame.winfo_manager(), "grid")
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.curve_name_text.get(), "Section 1 Curve 1")
             self.assertEqual(window.curve_section_text.get(), "Section 1")
             self.assertEqual(window.curve_plane_text.get(), f"{first_plane.name} (Z = 0.000)")
@@ -5754,9 +5874,10 @@ class MainWindowUiTests(unittest.TestCase):
             window._set_project_dirty(False)
             self.assertEqual(window.app_state.selected_item, "model")
             self.assertEqual(window.status_text.get(), "Selected: sample.stl")
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.current_workbench.get(), "Transform")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "grid")
-            self.assertEqual(window.section_context_frame.winfo_manager(), "")
+            self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
             self.assertEqual(window.selected_object_text.get(), "sample.stl")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "model")
             self.assertIsNotNone(window.viewport.scene_calls[-1]["object_origin"])
@@ -5817,7 +5938,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.viewport.reset_count, reset_count)
             self.assertIsNone(window.viewport.scene_calls[-1]["mesh"])
             self.assertIsNone(window.viewport.scene_calls[-1]["selected_item"])
-            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), ())
+            self.assertEqual(window.scene_browser.tree.get_children(NODE_SCENE), (NODE_EMPTY_SCENE,))
+            self.assertEqual(window.scene_browser.tree.item(NODE_EMPTY_SCENE, "text"), "No mesh loaded")
         finally:
             window.root.destroy()
 
@@ -5884,10 +6006,14 @@ class MainWindowUiTests(unittest.TestCase):
             window._on_viewport_pointer_event("motion", 10, 10)
             window._handle_shortcut("G")
             self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
+            self.assertEqual(window.current_mode_text.get(), "Transform: Move")
+            self.assertTrue(window.command_prompt_text.get().startswith("Move mode"))
+            self.assertIn("Enter/click confirm", window.hotkey_hint_text.get())
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_mode"], "move")
 
             window._handle_shortcut("X")
             self.assertEqual(window.status_text.get(), "Move mode - X axis")
+            self.assertEqual(window.command_prompt_text.get(), "Move mode - X axis")
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_axis"], "X")
             window._handle_shortcut("X")
             self.assertTrue(window.status_text.get().startswith("Move mode - press X/Y/Z"))
@@ -5905,6 +6031,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             window._handle_shortcut("Escape")
             self.assertEqual(window.status_text.get(), "Transform cancelled")
+            self.assertEqual(window.current_mode_text.get(), "No Mode")
             self.assertTrue(np.allclose(window.app_state.mesh_object.location, start_location))
             self.assertEqual(window.location_x.get(), f"{start_location[0]:.3f}")
             self.assertIsNone(window.viewport.scene_calls[-1]["active_transform_mode"])
@@ -6012,6 +6139,11 @@ class MainWindowUiTests(unittest.TestCase):
                 window.status_text.get(),
                 "Rotate mode - Z axis - move mouse horizontally",
             )
+            self.assertEqual(window.current_mode_text.get(), "Transform: Rotate")
+            self.assertEqual(
+                window.command_prompt_text.get(),
+                "Rotate mode - Z axis - move mouse horizontally",
+            )
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_mode"], "rotate")
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_axis"], "Z")
             self.assertEqual(window.viewport.scene_calls[-1]["active_transform_angle_delta"], 0.0)
@@ -6068,7 +6200,8 @@ class MainWindowUiTests(unittest.TestCase):
             window.select_section_plane()
             self.assertEqual(window.app_state.selected_item, "section_plane")
             self.assertEqual(window.status_text.get(), "Selected: Section Plane")
-            self.assertEqual(window.no_selection_frame.winfo_manager(), "")
+            self.assertEqual(window.current_workbench.get(), "Sections")
+            self.assertEqual(window.no_selection_frame.winfo_manager(), "grid")
             self.assertEqual(window.model_context_frame.winfo_manager(), "")
             self.assertEqual(window.section_context_frame.winfo_manager(), "grid")
             self.assertEqual(window.viewport.scene_calls[-1]["selected_item"], "section_plane")
@@ -6396,7 +6529,7 @@ class MainWindowUiTests(unittest.TestCase):
             window._handle_shortcut("Esc")
             self.assertFalse(window._manual_curve_active)
             self.assertEqual(window._manual_curve_points, [])
-            self.assertEqual(window.status_text.get(), "Manual Curve cancelled")
+            self.assertEqual(window.status_text.get(), "Manual curve cancelled")
             self.assertIsNone(window.viewport.scene_calls[-1]["manual_curve_points"])
         finally:
             window.root.destroy()
@@ -6471,6 +6604,16 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(restored_curve.name, "Manual Curve 1")
             self.assertEqual(restored_curve.metadata["creation_type"], "manual")
             self.assertEqual(window.status_text.get(), "Redid Create Manual Curve")
+
+            window.select_curve(restored_curve.id)
+            window.delete_selected_curve()
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertEqual(window.status_text.get(), "Deleted: Manual Curve 1")
+
+            window.undo()
+            self.assertEqual(len(window.app_state.curve_collection.curves), 1)
+            self.assertEqual(window.app_state.curve_collection.curves[0].name, "Manual Curve 1")
+            self.assertEqual(window.status_text.get(), "Undid Delete Curve")
         finally:
             window.root.destroy()
 
@@ -6521,7 +6664,12 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertTrue(handled)
             self.assertEqual(window._manual_curve_points, [])
-            self.assertEqual(window.status_text.get(), "No mesh under cursor")
+            self.assertEqual(window.status_text.get(), "No mesh under cursor.")
+            self.assertEqual(window.current_mode_text.get(), "Manual Curve")
+            self.assertEqual(
+                window.command_prompt_text.get(),
+                "Snap to Mesh: click mesh surface to place point.",
+            )
             self.assertEqual(window.viewport.mesh_pick_calls[-1], {"x": 50, "y": 60})
             self.assertEqual(len(window.viewport.projection_calls), 0)
         finally:
@@ -6611,6 +6759,12 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.start_region_select_mode()
             self.assertTrue(window._region_select_active)
+            self.assertEqual(window.current_mode_text.get(), "Region Select")
+            self.assertEqual(
+                window.command_prompt_text.get(),
+                "Region Select: click mesh surface to inspect connected area.",
+            )
+            self.assertEqual(window.hotkey_hint_text.get(), "Esc=cancel")
             handled = window._on_viewport_pointer_event("left_press", 20, 30)
 
             region = window.app_state.region_collection.active_region
@@ -6620,6 +6774,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(region.source_mesh_name, "sample.stl")
             self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
             self.assertIn("1 triangle", window.status_text.get())
+
+            window._handle_shortcut("Esc")
+            self.assertFalse(window._region_select_active)
+            self.assertEqual(window.current_mode_text.get(), "No Mode")
+            self.assertEqual(window.status_text.get(), "Region Select cancelled")
         finally:
             window.root.destroy()
 

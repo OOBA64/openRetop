@@ -164,7 +164,7 @@ class EmbeddedVTKViewport:
     def __init__(self, parent: object) -> None:
         self.parent = parent
         self.renderer = vtkRenderer()
-        self.renderer.SetBackground(0.08, 0.09, 0.1)
+        self.renderer.SetBackground(0.055, 0.06, 0.068)
         self.widget: Canvas | None = None
         self.render_window: vtkRenderWindow | None = None
         self.interactor: vtkRenderWindowInteractor | None = None
@@ -219,7 +219,7 @@ class EmbeddedVTKViewport:
 
         self.widget = Canvas(
             self.parent,
-            background="#14171a",
+            background="#101316",
             borderwidth=0,
             highlightthickness=0,
         )
@@ -818,15 +818,15 @@ class EmbeddedVTKViewport:
             return
 
         self._axis_gizmo_actor = vtkAxesActor()
-        self._axis_gizmo_actor.SetTotalLength(0.85, 0.85, 0.85)
+        self._axis_gizmo_actor.SetTotalLength(0.72, 0.72, 0.72)
         self._axis_gizmo_actor.SetShaftTypeToCylinder()
-        self._axis_gizmo_actor.SetCylinderRadius(0.045)
-        self._axis_gizmo_actor.SetConeRadius(0.16)
-        self._axis_gizmo_actor.SetSphereRadius(0.08)
+        self._axis_gizmo_actor.SetCylinderRadius(0.035)
+        self._axis_gizmo_actor.SetConeRadius(0.13)
+        self._axis_gizmo_actor.SetSphereRadius(0.065)
 
         self._axis_gizmo_renderer = vtkRenderer()
         self._axis_gizmo_renderer.SetLayer(1)
-        self._axis_gizmo_renderer.SetViewport(0.82, 0.78, 0.98, 0.98)
+        self._axis_gizmo_renderer.SetViewport(0.84, 0.58, 0.98, 0.74)
         self._axis_gizmo_renderer.InteractiveOff()
         try:
             self._axis_gizmo_renderer.SetBackgroundAlpha(0.0)

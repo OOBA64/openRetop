@@ -203,7 +203,7 @@ class SceneBrowser:
         self._active_surface_node_id: str | None = None
         self._selected_surface_node_ids: set[str] = set()
 
-        self.frame = ttk.Frame(parent, width=220, padding=(8, 8))
+        self.frame = ttk.Frame(parent, width=230, padding=(8, 8), style="Sidebar.TFrame")
         self.frame.grid_propagate(False)
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(1, weight=1)
@@ -542,24 +542,6 @@ class SceneBrowser:
                 current_node_ids,
             )
 
-        for result in section_results:
-            grouped_curves = curves_by_result_id.get(result.id, [])
-            if not grouped_curves:
-                continue
-
-            group_id = curve_group_node_id(result.id)
-            current_group_ids.append(group_id)
-            self._ensure_node(
-                group_id,
-                _visibility_group_label(
-                    result.name or "Section",
-                    [curve.visible for curve in grouped_curves],
-                ),
-                parent=NODE_CURVES,
-                open_node=True,
-            )
-            self._sync_curve_group_nodes(group_id, grouped_curves, current_node_ids)
-
         if repaired_curves:
             current_group_ids.append(NODE_CURVE_GROUP_REPAIRED)
             self._ensure_node(
@@ -576,6 +558,25 @@ class SceneBrowser:
                 repaired_curves,
                 current_node_ids,
             )
+
+        for result in section_results:
+            grouped_curves = curves_by_result_id.get(result.id, [])
+            if not grouped_curves:
+                continue
+
+            group_id = curve_group_node_id(result.id)
+            current_group_ids.append(group_id)
+            result_label = result.name or "Section"
+            self._ensure_node(
+                group_id,
+                _visibility_group_label(
+                    f"Section: {result_label}",
+                    [curve.visible for curve in grouped_curves],
+                ),
+                parent=NODE_CURVES,
+                open_node=True,
+            )
+            self._sync_curve_group_nodes(group_id, grouped_curves, current_node_ids)
 
         unassigned_curves = curves_by_result_id.get(None, [])
         if unassigned_curves:
@@ -601,6 +602,9 @@ class SceneBrowser:
             current_group_ids=current_group_id_set,
             current_node_ids=current_node_id_set,
         )
+        for index, group_id in enumerate(current_group_ids):
+            if self.tree.exists(group_id):
+                self.tree.move(group_id, NODE_CURVES, index)
         self._curve_node_ids = current_node_id_set
         self._curve_group_node_ids = current_group_id_set
         active_node_id = (
@@ -632,6 +636,7 @@ class SceneBrowser:
                 bool(curve.visible),
             )
             self._ensure_node(node_id, label, parent=group_id)
+            self.tree.move(node_id, group_id, index - 1)
 
     def _remove_stale_curve_nodes(
         self,

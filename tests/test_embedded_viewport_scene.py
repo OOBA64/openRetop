@@ -912,6 +912,11 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertIsNotNone(viewport._axis_gizmo_actor)
         self.assertIsNone(viewport.interactor)
         self.assertFalse(hasattr(viewport, "_orientation_marker_widget"))
+        assert viewport._axis_gizmo_renderer is not None
+        self.assertEqual(
+            tuple(round(value, 2) for value in viewport._axis_gizmo_renderer.GetViewport()),
+            (0.84, 0.58, 0.98, 0.74),
+        )
 
         first_renderer = viewport._axis_gizmo_renderer
         first_actor = viewport._axis_gizmo_actor

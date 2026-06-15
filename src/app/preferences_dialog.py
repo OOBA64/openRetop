@@ -55,9 +55,6 @@ def build_preferences_dialog(
             master=dialog,
             value=settings.import_settings.default_proxy_quality,
         ),
-        "surface_preview_opacity": StringVar(master=dialog, value="Default"),
-        "curve_display_thickness": StringVar(master=dialog, value="Default"),
-        "selected_highlight_thickness": StringVar(master=dialog, value="Default"),
     }
     for field_name, _label in KEYBIND_DISPLAY_ORDER:
         variables[f"keybind.{field_name}"] = StringVar(
@@ -141,32 +138,24 @@ def _build_viewport_tab(
 
     ttk.Checkbutton(
         tab,
-        text="Startup Show Grid",
+        text="Default Show Grid",
         variable=variables["show_grid"],
     ).grid(row=0, column=0, columnspan=2, sticky="w")
     ttk.Checkbutton(
         tab,
-        text="Startup Show Axes",
+        text="Default Show Axes",
         variable=variables["show_axes"],
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
     ttk.Checkbutton(
         tab,
-        text="Show Axis Gizmo",
+        text="Default Show Axis Gizmo",
         variable=variables["show_axis_gizmo"],
     ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
     ttk.Checkbutton(
         tab,
-        text="Show View Controls",
+        text="Default Show View Controls",
         variable=variables["show_viewcube"],
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
-    _add_placeholder_row(tab, 4, "Surface preview opacity", variables["surface_preview_opacity"])
-    _add_placeholder_row(tab, 5, "Curve display thickness", variables["curve_display_thickness"])
-    _add_placeholder_row(
-        tab,
-        6,
-        "Selected object highlight thickness",
-        variables["selected_highlight_thickness"],
-    )
 
 
 def _build_keybinds_tab(
@@ -188,11 +177,18 @@ def _build_keybinds_tab(
     start_row = len(KEYBIND_DISPLAY_ORDER) + 1
     ttk.Separator(tab).grid(row=start_row, column=0, columnspan=2, sticky="ew", pady=(8, 6))
     ttk.Label(tab, text="Manual Curve").grid(row=start_row + 1, column=0, sticky="w", pady=2)
-    ttk.Label(
-        tab,
-        text="Enter finish, Esc cancel, Backspace remove last point, C toggle closed.",
-        wraplength=260,
-    ).grid(row=start_row + 1, column=1, sticky="w", padx=(8, 0), pady=2)
+    for offset, (label, shortcut) in enumerate(
+        (
+            ("Finish Curve", "Enter"),
+            ("Cancel", "Esc"),
+            ("Remove Last Point", "Backspace"),
+            ("Toggle Closed", "C"),
+        ),
+        start=2,
+    ):
+        row = start_row + offset
+        ttk.Label(tab, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(tab, text=shortcut).grid(row=row, column=1, sticky="w", padx=(8, 0), pady=2)
 
 
 def _build_advanced_tab(
@@ -203,23 +199,9 @@ def _build_advanced_tab(
     tab.columnconfigure(0, weight=1)
     notebook.add(tab, text="Advanced")
 
-    for row, label in enumerate(
-        ("Reset Preferences", "Clear Recent Files", "Diagnostics")
-    ):
+    for row, label in enumerate(("Reset Preferences", "Diagnostics")):
         ttk.Button(
             tab,
             text=label,
             command=lambda item=label: placeholder_callback(item),
         ).grid(row=row, column=0, sticky="ew", pady=(0 if row == 0 else 6, 0))
-
-
-def _add_placeholder_row(
-    parent: ttk.Frame,
-    row: int,
-    label: str,
-    variable: StringVar | BooleanVar,
-) -> None:
-    ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
-    entry = ttk.Entry(parent, textvariable=variable, width=16)
-    entry.configure(state="disabled")
-    entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)

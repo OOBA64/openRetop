@@ -52,7 +52,7 @@ def build_xy_grid(
 
     for value in coordinates:
         is_origin_line = abs(value) <= step * 0.01
-        color = [0.24, 0.26, 0.28] if is_origin_line else [0.14, 0.15, 0.16]
+        color = [0.20, 0.23, 0.26] if is_origin_line else [0.10, 0.115, 0.13]
         add_line((-half_extent, value, 0.0), (half_extent, value, 0.0), color)
         add_line((value, -half_extent, 0.0), (value, half_extent, 0.0), color)
 
