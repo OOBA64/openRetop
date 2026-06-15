@@ -17,8 +17,10 @@ from app.object_state import MeshObjectState
 from app.preferences_dialog import build_preferences_dialog
 from app.scene_browser import (
     CURVE_GROUP_REPAIRED_ID,
+    CURVE_GROUP_MANUAL_ID,
     NODE_CURVES,
     NODE_CURVE_GROUP_UNASSIGNED,
+    NODE_CURVE_GROUP_MANUAL,
     NODE_CURVE_GROUP_REPAIRED,
     NODE_MESH,
     NODE_SECTION_PLANES,
@@ -337,6 +339,7 @@ class OpenRetopWindow:
         self.show_axes = BooleanVar(value=self.settings.display.show_axes)
         self.show_axis_gizmo = BooleanVar(value=self.settings.display.show_axis_gizmo)
         self.show_viewcube = BooleanVar(value=self.settings.display.show_viewcube)
+        self.show_view_controls = self.show_viewcube
         self.show_normals = BooleanVar(value=False)
         self.show_section_plane = BooleanVar(value=False)
         self.manual_curve_snap_to_mesh = BooleanVar(value=False)
@@ -362,7 +365,12 @@ class OpenRetopWindow:
         self.rotation_z = StringVar(value="0.000")
         self.scale_value = StringVar(value="1.000")
 
-        self.status_text = StringVar(value="No selection")
+        self.status_text = StringVar(value="Open Model to begin")
+        self.current_mode_text = StringVar(value="Idle")
+        self.empty_scene_prompt_text = StringVar(value="Load a mesh to begin reverse engineering.")
+        self.manual_curve_mode_title = StringVar(value="Manual Curve")
+        self.manual_curve_mode_details = StringVar(value="Inactive")
+        self.project_path_text = StringVar(value="Project: Untitled Project")
         self.file_name_text = StringVar(value="(none)")
         self.vertex_count_text = StringVar(value="0")
         self.triangle_count_text = StringVar(value="0")
@@ -431,6 +439,7 @@ class OpenRetopWindow:
         self._build_layout()
         self._set_selection_buttons_enabled(False)
         self._show_context(None)
+        self._sync_workflow_ui()
         self._refresh_scene_browser()
         self._bind_keyboard_shortcuts()
 
@@ -524,6 +533,12 @@ class OpenRetopWindow:
     def _update_window_title(self) -> None:
         marker = " *" if self.project_dirty else ""
         self.root.title(f"openRetop - {self._project_display_name()}{marker}")
+        if hasattr(self, "project_path_text"):
+            self.project_path_text.set(
+                f"Project: {self.current_project_path}"
+                if self.current_project_path is not None
+                else "Project: Untitled Project"
+            )
 
     def _set_project_dirty(self, dirty: bool = True) -> None:
         self.project_dirty = bool(dirty)
@@ -1299,6 +1314,8 @@ class OpenRetopWindow:
     def _build_layout(self) -> None:
         style = ttk.Style(self.root)
         style.configure("SidebarHeading.TLabel", font=("", 10, "bold"))
+        style.configure("ViewControls.TFrame", relief="solid", borderwidth=1)
+        style.configure("ViewControlsHeading.TLabel", font=("", 10, "bold"))
 
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
@@ -1352,49 +1369,55 @@ class OpenRetopWindow:
         self.sidebar_notebook.grid(row=0, column=0, sticky="nsew")
         self.sidebar.rowconfigure(0, weight=1)
 
-        self.object_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.scene_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.object_tab = self.scene_tab
         self.transform_tab = ttk.Frame(self.sidebar_notebook, padding=8)
         self.sections_tab = ttk.Frame(self.sidebar_notebook, padding=8)
         self.curves_tab = ttk.Frame(self.sidebar_notebook, padding=8)
         self.surfaces_tab = ttk.Frame(self.sidebar_notebook, padding=8)
+        self.manual_re_tab = ttk.Frame(self.sidebar_notebook, padding=8)
         self.info_tab = ttk.Frame(self.sidebar_notebook, padding=8)
         for tab in (
-            self.object_tab,
+            self.scene_tab,
             self.transform_tab,
             self.sections_tab,
             self.curves_tab,
             self.surfaces_tab,
+            self.manual_re_tab,
             self.info_tab,
         ):
             tab.columnconfigure(0, weight=1)
 
-        self.sidebar_notebook.add(self.object_tab, text="Object")
+        self.sidebar_notebook.add(self.scene_tab, text="Scene")
         self.sidebar_notebook.add(self.transform_tab, text="Transform")
         self.sidebar_notebook.add(self.sections_tab, text="Sections")
         self.sidebar_notebook.add(self.curves_tab, text="Curves")
         self.sidebar_notebook.add(self.surfaces_tab, text="Surfaces")
+        self.sidebar_notebook.add(self.manual_re_tab, text="Manual RE")
         self.sidebar_notebook.add(self.info_tab, text="Info")
 
-        ttk.Label(
-            self.transform_tab,
-            text="Transform controls appear in the Object tab for the selected model.",
-            wraplength=250,
-        ).grid(row=0, column=0, sticky="ew")
-
-        self.file_frame = ttk.Frame(self.info_tab)
+        self.file_frame = ttk.Frame(self.scene_tab)
         self.file_frame.grid(row=0, column=0, sticky="ew")
         self.file_frame.columnconfigure(1, weight=1)
         self._build_file_section(self.file_frame)
 
-        self.no_selection_frame = ttk.Frame(self.object_tab)
-        self.no_selection_frame.grid(row=0, column=0, sticky="ew")
+        self.no_selection_frame = ttk.Frame(self.scene_tab)
+        self.no_selection_frame.grid(row=1, column=0, sticky="ew")
         self.no_selection_frame.columnconfigure(0, weight=1)
         self._build_no_selection_context(self.no_selection_frame)
 
-        self.model_context_frame = ttk.Frame(self.object_tab)
+        self.model_context_frame = ttk.Frame(self.transform_tab)
         self.model_context_frame.grid(row=0, column=0, sticky="ew")
         self.model_context_frame.columnconfigure(0, weight=1)
         self._build_model_context(self.model_context_frame)
+
+        self.transform_empty_frame = ttk.Frame(self.transform_tab)
+        self.transform_empty_frame.grid(row=1, column=0, sticky="ew")
+        ttk.Label(
+            self.transform_empty_frame,
+            text="Select the model to edit transforms.",
+            wraplength=250,
+        ).grid(row=0, column=0, sticky="ew")
 
         self.section_context_frame = ttk.Frame(self.sections_tab)
         self.section_context_frame.grid(row=0, column=0, sticky="ew")
@@ -1416,9 +1439,19 @@ class OpenRetopWindow:
         self.surface_context_frame.columnconfigure(0, weight=1)
         self._build_surface_context(self.surface_context_frame)
 
+        self.manual_re_frame = ttk.Frame(self.manual_re_tab)
+        self.manual_re_frame.grid(row=0, column=0, sticky="ew")
+        self.manual_re_frame.columnconfigure(0, weight=1)
+        self._build_manual_re_context(self.manual_re_frame)
+
+        self.info_frame = ttk.Frame(self.info_tab)
+        self.info_frame.grid(row=0, column=0, sticky="ew")
+        self.info_frame.columnconfigure(1, weight=1)
+        self._build_info_context(self.info_frame)
+
         self.viewport_frame = ttk.Frame(main)
         self.viewport_frame.grid(row=0, column=1, sticky="nsew")
-        self._build_viewcube_shell(self.viewport_frame)
+        self._build_view_controls_shell(self.viewport_frame)
 
         self.scene_browser = SceneBrowser(
             main,
@@ -1436,13 +1469,28 @@ class OpenRetopWindow:
         status_bar.pack(fill="x", side="bottom")
 
     def _build_file_section(self, parent: ttk.Frame) -> None:
-        row = self._add_heading(parent, 0, "File")
+        row = self._add_heading(parent, 0, "Project")
+        ttk.Button(parent, text="New Project", command=self.new_project).grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+        )
+        row += 1
         self.open_model_button = ttk.Button(
             parent,
             text="Open Model",
             command=self.open_model,
         )
-        self.open_model_button.grid(row=row, column=0, columnspan=2, sticky="ew")
+        self.open_model_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        ttk.Button(parent, text="Save Project", command=self.save_project).grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
         row += 1
         row = self._add_info_row(parent, row, "Loaded file", self.file_name_text)
         ttk.Label(parent, text="Proxy quality").grid(row=row, column=0, sticky="w", pady=2)
@@ -1456,21 +1504,28 @@ class OpenRetopWindow:
         self.proxy_quality_dropdown.grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
         self.proxy_quality_dropdown.bind("<<ComboboxSelected>>", self._on_proxy_quality_changed)
 
-    def _build_viewcube_shell(self, parent: ttk.Frame) -> None:
-        self.viewcube_frame = ttk.Frame(parent, padding=(4, 4), style="ViewCube.TFrame")
+    def _build_view_controls_shell(self, parent: ttk.Frame) -> None:
+        self.view_controls_frame = ttk.Frame(parent, padding=(6, 5), style="ViewControls.TFrame")
+        self.viewcube_frame = self.view_controls_frame
+        ttk.Label(
+            self.view_controls_frame,
+            text="View Controls",
+            style="ViewControlsHeading.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 3))
         for column in range(2):
-            self.viewcube_frame.columnconfigure(column, weight=1)
+            self.view_controls_frame.columnconfigure(column, weight=1)
 
         button_specs = (
-            ("Top", "top", 0, 0),
-            ("Front", "front", 0, 1),
-            ("Right", "right", 1, 0),
-            ("Iso", "isometric", 1, 1),
+            ("Top", "top", 1, 0),
+            ("Front", "front", 1, 1),
+            ("Right", "right", 2, 0),
+            ("Iso", "isometric", 2, 1),
         )
-        self.viewcube_buttons: list[ttk.Button] = []
+        self.view_controls_buttons: list[ttk.Button] = []
+        self.viewcube_buttons = self.view_controls_buttons
         for label, view_name, row, column in button_specs:
             button = ttk.Button(
-                self.viewcube_frame,
+                self.view_controls_frame,
                 text=label,
                 width=6,
                 takefocus=False,
@@ -1483,14 +1538,17 @@ class OpenRetopWindow:
                 padx=(0 if column == 0 else 3, 0),
                 pady=(0 if row == 0 else 3, 0),
             )
-            self.viewcube_buttons.append(button)
+            self.view_controls_buttons.append(button)
+
+    def _build_viewcube_shell(self, parent: ttk.Frame) -> None:
+        self._build_view_controls_shell(parent)
 
     def _sync_viewcube_shell_visibility(self) -> None:
-        frame = getattr(self, "viewcube_frame", None)
+        frame = getattr(self, "view_controls_frame", None)
         if frame is None:
             return
 
-        if bool(self.show_viewcube.get()):
+        if bool(self.show_view_controls.get()):
             frame.place(relx=1.0, x=-12, y=12, anchor="ne")
             frame.lift()
         else:
@@ -1498,7 +1556,29 @@ class OpenRetopWindow:
 
     def _build_no_selection_context(self, parent: ttk.Frame) -> None:
         row = self._add_separator(parent, 0)
-        row = self._add_heading(parent, row, "Scene/View")
+        row = self._add_heading(parent, row, "Start")
+        ttk.Label(
+            parent,
+            textvariable=self.empty_scene_prompt_text,
+            wraplength=250,
+        ).grid(row=row, column=0, columnspan=2, sticky="ew")
+        row += 1
+        self.empty_open_model_button = ttk.Button(
+            parent,
+            text="Open Model",
+            command=self.open_model,
+        )
+        self.empty_open_model_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(6, 0),
+        )
+        row += 1
+
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "View")
         self.show_grid_check = ttk.Checkbutton(
             parent,
             text="Show Grid",
@@ -1522,6 +1602,14 @@ class OpenRetopWindow:
             command=self._on_view_option_changed,
         )
         self.show_axis_gizmo_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        self.show_view_controls_check = ttk.Checkbutton(
+            parent,
+            text="Show View Controls",
+            variable=self.show_view_controls,
+            command=self._on_view_option_changed,
+        )
+        self.show_view_controls_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
         ttk.Button(parent, text="Frame All", command=self.frame_all).grid(
             row=row,
@@ -1566,17 +1654,6 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         self.selection_buttons.append(self.select_section_plane_button)
-        row += 1
-
-        row = self._add_separator(parent, row)
-        row = self._add_heading(parent, row, "Mesh Info")
-        row = self._add_info_row(parent, row, "Vertices", self.vertex_count_text)
-        row = self._add_info_row(parent, row, "Source triangles", self.triangle_count_text)
-        row = self._add_info_row(parent, row, "Display triangles", self.display_triangle_count_text)
-        row = self._add_info_row(parent, row, "Reduction", self.display_reduction_text)
-        row = self._add_info_row(parent, row, "Display proxy", self.display_proxy_text)
-        row = self._add_info_row(parent, row, "Source", self.source_retained_text)
-        self._add_info_row(parent, row, "Bounding box", self.bbox_size_text)
 
     def _build_model_context(self, parent: ttk.Frame) -> None:
         row = self._add_separator(parent, 0)
@@ -2122,6 +2199,132 @@ class OpenRetopWindow:
         self.surface_deselect_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.selection_buttons.append(self.surface_deselect_button)
 
+    def _build_manual_re_context(self, parent: ttk.Frame) -> None:
+        row = self._add_heading(parent, 0, "Manual Curve")
+        ttk.Label(
+            parent,
+            textvariable=self.manual_curve_mode_title,
+            style="SidebarHeading.TLabel",
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        ttk.Label(
+            parent,
+            textvariable=self.manual_curve_mode_details,
+            wraplength=250,
+        ).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        row += 1
+        self.start_manual_curve_button = ttk.Button(
+            parent,
+            text="Create Manual Curve",
+            command=self.start_manual_curve_mode,
+        )
+        self.start_manual_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew")
+        row += 1
+        self.finish_manual_curve_button = ttk.Button(
+            parent,
+            text="Finish Curve",
+            command=self._confirm_manual_curve,
+        )
+        self.finish_manual_curve_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.cancel_manual_curve_button = ttk.Button(
+            parent,
+            text="Cancel",
+            command=lambda: self._cancel_manual_curve_mode(status="Manual curve cancelled"),
+        )
+        self.cancel_manual_curve_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.remove_manual_point_button = ttk.Button(
+            parent,
+            text="Remove Last Point",
+            command=self._remove_last_manual_curve_point,
+        )
+        self.remove_manual_point_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.toggle_manual_closed_button = ttk.Button(
+            parent,
+            text="Toggle Closed",
+            command=self._toggle_manual_curve_closed,
+        )
+        self.toggle_manual_closed_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.manual_curve_snap_check = ttk.Checkbutton(
+            parent,
+            text="Snap to Mesh",
+            variable=self.manual_curve_snap_to_mesh,
+            command=self._on_manual_curve_snap_to_mesh_changed,
+        )
+        self.manual_curve_snap_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        row += 1
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Coming Later")
+        self.region_select_placeholder_button = ttk.Button(
+            parent,
+            text="Region Select",
+            command=self.start_region_select_mode,
+        )
+        self.region_select_placeholder_button.grid(row=row, column=0, columnspan=2, sticky="ew")
+        row += 1
+        for label in ("Boundary From Region", "Fit Patch From Region"):
+            button = ttk.Button(parent, text=label, command=lambda item=label: self._not_implemented(item))
+            button.configure(state="disabled")
+            button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+            row += 1
+
+    def _build_info_context(self, parent: ttk.Frame) -> None:
+        row = self._add_heading(parent, 0, "Project")
+        row = self._add_info_row(parent, row, "Loaded file", self.file_name_text)
+        row = self._add_info_row(parent, row, "Project", self.project_path_text)
+        row = self._add_info_row(parent, row, "Mode", self.current_mode_text)
+        row = self._add_info_row(parent, row, "Status", self.status_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Mesh Stats")
+        row = self._add_info_row(parent, row, "Vertices", self.vertex_count_text)
+        row = self._add_info_row(parent, row, "Source triangles", self.triangle_count_text)
+        row = self._add_info_row(parent, row, "Display triangles", self.display_triangle_count_text)
+        row = self._add_info_row(parent, row, "Reduction", self.display_reduction_text)
+        row = self._add_info_row(parent, row, "Display proxy", self.display_proxy_text)
+        row = self._add_info_row(parent, row, "Source", self.source_retained_text)
+        row = self._add_info_row(parent, row, "Bounding box", self.bbox_size_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Selection Stats")
+        row = self._add_info_row(parent, row, "Selected", self.selected_object_text)
+        row = self._add_info_row(parent, row, "Vertices", self.selected_vertex_count_text)
+        row = self._add_info_row(parent, row, "Source triangles", self.selected_triangle_count_text)
+        row = self._add_info_row(parent, row, "Display triangles", self.selected_display_triangle_count_text)
+        row = self._add_info_row(parent, row, "Bounding box", self.selected_bbox_size_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Hotkeys")
+        ttk.Label(
+            parent,
+            text="Enter finish, Esc cancel, Backspace remove point, C toggle closed, G move, R rotate, F frame.",
+            wraplength=250,
+        ).grid(row=row, column=0, columnspan=2, sticky="ew")
+
     def _add_heading(self, parent: ttk.Frame, row: int, text: str) -> int:
         ttk.Label(parent, text=text, style="SidebarHeading.TLabel").grid(
             row=row,
@@ -2203,6 +2406,7 @@ class OpenRetopWindow:
         for frame in (
             self.no_selection_frame,
             self.model_context_frame,
+            self.transform_empty_frame,
             self.section_context_frame,
             self.section_result_context_frame,
             self.curve_context_frame,
@@ -2212,7 +2416,7 @@ class OpenRetopWindow:
 
         if selected_item == SELECT_MODEL and self.app_state.mesh_object is not None:
             self.model_context_frame.grid()
-            self.sidebar_notebook.select(self.object_tab)
+            self.sidebar_notebook.select(self.transform_tab)
         elif selected_item == SELECT_SECTION_PLANE and self.app_state.mesh_object is not None:
             self.section_context_frame.grid()
             self.sidebar_notebook.select(self.sections_tab)
@@ -2227,7 +2431,8 @@ class OpenRetopWindow:
             self.sidebar_notebook.select(self.surfaces_tab)
         else:
             self.no_selection_frame.grid()
-            self.sidebar_notebook.select(self.object_tab)
+            self.transform_empty_frame.grid()
+            self.sidebar_notebook.select(self.scene_tab)
 
     def _on_sidebar_mousewheel(self, event: object) -> None:
         delta = getattr(event, "delta", 0)
@@ -2351,8 +2556,12 @@ class OpenRetopWindow:
 
     def _set_open_model_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        self.open_model_button.configure(state=state)
-        self.file_menu.entryconfigure(OPEN_MODEL_MENU_INDEX, state=state)
+        for name in ("open_model_button", "empty_open_model_button"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=state)
+        if hasattr(self, "file_menu"):
+            self.file_menu.entryconfigure(OPEN_MODEL_MENU_INDEX, state=state)
 
     def _set_load_progress_stage(
         self,
@@ -3018,18 +3227,38 @@ class OpenRetopWindow:
                 for curve in self.app_state.curve_collection.curves
                 if is_repaired_curve(curve)
             ]
+        if section_result_id == CURVE_GROUP_MANUAL_ID:
+            return [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if self._is_manual_or_mesh_curve(curve)
+            ]
         if section_result_id == "":
             return [
                 curve.id
                 for curve in self.app_state.curve_collection.curves
                 if curve.section_result_id not in result_ids
+                and not self._is_manual_or_mesh_curve(curve)
             ]
 
         return [
             curve.id
             for curve in self.app_state.curve_collection.curves
             if curve.section_result_id == section_result_id
+            and not self._is_manual_or_mesh_curve(curve)
         ]
+
+    @staticmethod
+    def _is_manual_or_mesh_curve(curve: StoredCurve) -> bool:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        return (
+            str(metadata.get("creation_type", "")).strip().lower()
+            in {"manual", "curve_on_mesh"}
+            or str(metadata.get("snap_mode", "")).strip().lower() == "mesh"
+            or str(metadata.get("source", "")).strip().lower() == "manual"
+            or bool(metadata.get("manual"))
+            or bool(metadata.get("snap_to_mesh"))
+        )
 
     def _on_viewport_pointer_event(
         self,
@@ -3076,7 +3305,8 @@ class OpenRetopWindow:
 
     def start_region_select_mode(self) -> None:
         if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
+            self.status_text.set("Load a mesh to use Region Select")
+            self._sync_workflow_ui()
             return
 
         if self.app_state.transform_state is not None:
@@ -3909,7 +4139,8 @@ class OpenRetopWindow:
 
     def start_manual_curve_mode(self) -> None:
         if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
+            self.status_text.set("Load a mesh to use Manual Curve")
+            self._sync_workflow_ui()
             return
 
         if self.app_state.transform_state is not None:
@@ -3933,20 +4164,30 @@ class OpenRetopWindow:
         self._manual_curve_snap_flags = []
         self._manual_curve_snap_triangle_indices = []
         self._manual_curve_snap_normals = []
+        self.sidebar_notebook.select(self.manual_re_tab)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
+        self._sync_workflow_ui()
 
     def _on_manual_curve_snap_to_mesh_changed(self) -> None:
+        if self.app_state.mesh_object is None:
+            self.manual_curve_snap_to_mesh.set(False)
+            self.status_text.set("Load a mesh to use Snap to Mesh")
+            self._sync_workflow_ui()
+            return
+
         if self._manual_curve_active:
             self._refresh_viewport(reset_camera=False)
             self.status_text.set(self._manual_curve_status())
+            self._sync_workflow_ui()
             return
 
         self.status_text.set(
-            "Snap to Mesh ON"
+            "Snap to Mesh: On"
             if bool(self.manual_curve_snap_to_mesh.get())
-            else "Snap to Mesh OFF"
+            else "Snap to Mesh: Off"
         )
+        self._sync_workflow_ui()
 
     def _manual_curve_work_plane(
         self,
@@ -3974,7 +4215,7 @@ class OpenRetopWindow:
 
     def _handle_manual_curve_shortcut(self, key: str) -> None:
         if key in {"Escape", "Esc"}:
-            self._cancel_manual_curve_mode(status="Manual Curve cancelled")
+            self._cancel_manual_curve_mode(status="Manual curve cancelled")
             return
         if key == "Enter":
             self._confirm_manual_curve()
@@ -4008,6 +4249,7 @@ class OpenRetopWindow:
         self._append_manual_curve_point(point_array, snapped=False)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
+        self._sync_workflow_ui()
 
     def _place_manual_curve_mesh_point(self, x_position: int, y_position: int) -> None:
         pick_result = self.viewport.pick_mesh_at_screen_point(int(x_position), int(y_position))
@@ -4045,6 +4287,7 @@ class OpenRetopWindow:
         )
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
+        self._sync_workflow_ui()
 
     def _append_manual_curve_point(
         self,
@@ -4096,24 +4339,29 @@ class OpenRetopWindow:
             self._manual_curve_closed = False
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
+        self._sync_workflow_ui()
 
     def _toggle_manual_curve_closed(self) -> None:
         if len(self._manual_curve_points) < 3:
             self.status_text.set("Manual Curve: need at least 3 points to close")
+            self._sync_workflow_ui()
             return
 
         self._manual_curve_closed = not self._manual_curve_closed
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
+        self._sync_workflow_ui()
 
     def _confirm_manual_curve(self) -> None:
         point_count = len(self._manual_curve_points)
         if self._manual_curve_closed:
             if point_count < 3:
                 self.status_text.set("Manual Curve: closed curve needs at least 3 points")
+                self._sync_workflow_ui()
                 return
         elif point_count < 2:
             self.status_text.set("Manual Curve: open curve needs at least 2 points")
+            self._sync_workflow_ui()
             return
 
         points = np.asarray(self._manual_curve_points, dtype=float).reshape((-1, 3))
@@ -4140,6 +4388,7 @@ class OpenRetopWindow:
         self._push_created_curve_command(curve, command_name="Create Manual Curve")
         self.status_text.set(f"Created {curve.name}")
         self._set_project_dirty(True)
+        self._sync_workflow_ui()
 
     def _next_manual_curve_name(self) -> str:
         existing_names = {
@@ -4155,6 +4404,7 @@ class OpenRetopWindow:
         self._refresh_viewport(reset_camera=False)
         if status is not None:
             self.status_text.set(status)
+        self._sync_workflow_ui()
 
     def _manual_curve_metadata(self) -> dict[str, object]:
         metadata: dict[str, object] = {
@@ -4162,7 +4412,9 @@ class OpenRetopWindow:
         }
         if self._manual_curve_snap_point_count > 0:
             metadata["creation_type"] = "curve_on_mesh"
+            metadata["snap_to_mesh"] = True
             metadata["snap_mode"] = "mesh"
+            metadata["work_plane_type"] = "mesh"
             mesh_object = self.app_state.mesh_object
             if mesh_object is not None and mesh_object.name:
                 metadata["source_mesh_name"] = mesh_object.name
@@ -4173,6 +4425,7 @@ class OpenRetopWindow:
             return metadata
 
         metadata["creation_type"] = "manual"
+        metadata["snap_to_mesh"] = False
         metadata["work_plane_type"] = self._manual_curve_plane_type
         if self._manual_curve_source_section_plane_id is not None:
             metadata["source_section_plane_id"] = self._manual_curve_source_section_plane_id
@@ -4199,9 +4452,9 @@ class OpenRetopWindow:
         point_label = "point" if point_count == 1 else "points"
         closed_label = "closed" if self._manual_curve_closed else "open"
         snap_label = (
-            "Snap to Mesh ON"
+            "Snap to Mesh: On"
             if bool(self.manual_curve_snap_to_mesh.get())
-            else "Snap to Mesh OFF"
+            else "Snap to Mesh: Off"
         )
         return (
             "Manual Curve: click to place points; "
@@ -4960,6 +5213,181 @@ class OpenRetopWindow:
             has_surfaces=bool(self.app_state.surface_collection.surfaces),
             selected_item=self.app_state.selected_item,
         )
+        self._sync_workflow_ui()
+
+    def _sync_workflow_ui(self) -> None:
+        if not hasattr(self, "root"):
+            return
+
+        has_mesh = self.app_state.mesh_object is not None
+        self.empty_scene_prompt_text.set(
+            "Mesh loaded. Select an object or choose a workflow."
+            if has_mesh
+            else "Load a mesh to begin reverse engineering."
+        )
+        self.project_path_text.set(
+            f"Project: {self.current_project_path}"
+            if self.current_project_path is not None
+            else "Project: Untitled Project"
+        )
+        self.current_mode_text.set(self._current_mode_label())
+        self._sync_mesh_required_sidebar_controls(has_mesh)
+        self._sync_manual_curve_panel()
+        self._update_menu_availability()
+
+    def _sync_mesh_required_sidebar_controls(self, has_mesh: bool) -> None:
+        state = "normal" if has_mesh else "disabled"
+        for name in (
+            "section_plane_name_entry",
+            "show_section_plane_check",
+            "axis_dropdown",
+            "offset_slider",
+            "offset_input",
+            "compute_section_button",
+            "clear_section_button",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=state)
+
+    def _current_mode_label(self) -> str:
+        if self._manual_curve_active:
+            return "Manual Curve"
+        if self._region_select_active:
+            return "Region Select"
+        if self.app_state.transform_state is not None:
+            return self._active_transform_status()
+        return "Idle"
+
+    def _sync_manual_curve_panel(self) -> None:
+        has_mesh = self.app_state.mesh_object is not None
+        active = bool(self._manual_curve_active)
+        point_count = len(self._manual_curve_points)
+        point_label = "point" if point_count == 1 else "points"
+        self.manual_curve_mode_title.set("MANUAL CURVE MODE" if active else "Manual Curve")
+        if active:
+            snap_label = "On" if bool(self.manual_curve_snap_to_mesh.get()) else "Off"
+            closed_label = "Closed" if self._manual_curve_closed else "Open"
+            self.manual_curve_mode_details.set(
+                "Click to add points\n"
+                "Enter: Finish\n"
+                "Esc: Cancel\n"
+                "Backspace: Remove last point\n"
+                "C: Toggle closed\n"
+                f"Snap to Mesh: {snap_label}\n"
+                f"{point_count} {point_label}, {closed_label}"
+            )
+        elif has_mesh:
+            self.manual_curve_mode_details.set(
+                "Create curves by clicking points on the active section plane, "
+                "world XY, or the mesh when Snap to Mesh is on."
+            )
+        else:
+            self.manual_curve_mode_details.set("Load a mesh to use Manual Curve or Snap to Mesh.")
+
+        active_state = "normal" if active else "disabled"
+        start_state = "normal" if has_mesh and not active else "disabled"
+        snap_state = "normal" if has_mesh else "disabled"
+        region_state = "normal" if has_mesh else "disabled"
+        for name, state in (
+            ("start_manual_curve_button", start_state),
+            ("finish_manual_curve_button", active_state),
+            ("cancel_manual_curve_button", active_state),
+            ("remove_manual_point_button", active_state),
+            ("toggle_manual_closed_button", active_state),
+            ("manual_curve_snap_check", snap_state),
+            ("region_select_placeholder_button", region_state),
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=state)
+        if not has_mesh and bool(self.manual_curve_snap_to_mesh.get()):
+            self.manual_curve_snap_to_mesh.set(False)
+
+    def _update_menu_availability(self) -> None:
+        has_mesh = self.app_state.mesh_object is not None
+        manual_active = bool(self._manual_curve_active)
+        scene_node_ids = self._scene_visibility_target_node_ids()
+        has_scene_selection = bool(
+            self._expanded_visibility_node_ids(scene_node_ids)
+            & self._all_visibility_object_node_ids()
+        )
+        can_rename_scene_selection = (
+            len(scene_node_ids) == 1
+            and self.scene_browser._is_renameable_node(scene_node_ids[0])
+        )
+        has_curve = self._active_curve() is not None or bool(get_selected_curves(self.app_state.curve_collection))
+        has_surface = self._active_surface() is not None
+
+        self._set_menu_labels_state(self.edit_menu, ("Rename Selected",), can_rename_scene_selection)
+        self._set_menu_labels_state(self.edit_menu, ("Delete Selected",), has_scene_selection)
+        self._set_menu_labels_state(self.view_menu, ("Frame Selected",), has_scene_selection)
+        self._set_menu_labels_state(
+            self.scene_menu,
+            (
+                "Hide Selected",
+                "Show Selected",
+                "Isolate Selected",
+                "Toggle Selected Visibility",
+                "Delete Selected",
+                "Frame Selected",
+            ),
+            has_scene_selection,
+        )
+        self._set_menu_labels_state(self.scene_menu, ("Show All",), has_mesh)
+        self._set_menu_labels_state(
+            self.sections_menu,
+            (
+                "Add Section Plane",
+                "Delete Selected Section Plane",
+                "Compute Section",
+                "Clear Active Section Result",
+                "Clear All Section Results",
+            ),
+            has_mesh,
+        )
+        self._set_menu_labels_state(self.curves_menu, ("Create Manual Curve",), has_mesh and not manual_active)
+        self._set_menu_labels_state(self.curves_menu, ("Finish Manual Curve", "Cancel Manual Curve"), manual_active)
+        self._set_menu_labels_state(
+            self.curves_menu,
+            (
+                "Join Selected Curves",
+                "Auto-Close Selected Curve",
+                "Simplify Selected Curve",
+                "Smooth Selected Curve",
+                "Select Tiny Curves",
+                "Hide Tiny Curves",
+                "Delete Tiny Curves",
+                "Delete Selected Curve",
+            ),
+            has_mesh,
+        )
+        self._set_menu_labels_state(self.curves_menu, ("Snap to Mesh",), has_mesh)
+        self._set_menu_labels_state(
+            self.surfaces_menu,
+            (
+                "Fill Closed Curve",
+                "Loft Between Two Curves",
+                "Select Source Curves",
+                "Isolate Source Curves",
+                "Show Source Curves",
+                "Frame Source Curves",
+                "Toggle Surface Visibility",
+                "Delete Selected Surface",
+            ),
+            has_mesh and (has_curve or has_surface),
+        )
+        self._set_menu_labels_state(
+            self.tools_menu,
+            ("Select Model", "Select Section Plane", "Move", "Rotate", "Manual Curve", "Region Select"),
+            has_mesh,
+        )
+
+    @staticmethod
+    def _set_menu_labels_state(menu: object, labels: tuple[str, ...], enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for label in labels:
+            _set_menu_entry_state_by_label(menu, label, state)
 
     def _should_show_section_plane(self) -> bool:
         if not self.mesh_state.is_loaded:
@@ -5034,6 +5462,7 @@ class OpenRetopWindow:
         self._update_section_plane_label(set_status=False)
 
     def _on_view_option_changed(self) -> None:
+        self._sync_viewcube_shell_visibility()
         self._refresh_viewport(reset_camera=False)
         self._set_project_dirty(True)
 
@@ -5292,12 +5721,19 @@ class OpenRetopWindow:
                     for curve in self.app_state.curve_collection.curves
                     if curve.section_result_id not in section_result_ids
                     and not is_repaired_curve(curve)
+                    and not self._is_manual_or_mesh_curve(curve)
                 )
             elif node_id == NODE_CURVE_GROUP_REPAIRED:
                 expanded_node_ids.update(
                     curve_node_id(curve.id)
                     for curve in self.app_state.curve_collection.curves
                     if is_repaired_curve(curve)
+                )
+            elif node_id == NODE_CURVE_GROUP_MANUAL:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                    if self._is_manual_or_mesh_curve(curve)
                 )
             else:
                 for result in self.app_state.section_collection.results:
@@ -5307,6 +5743,7 @@ class OpenRetopWindow:
                         curve_node_id(curve.id)
                         for curve in self.app_state.curve_collection.curves
                         if curve.section_result_id == result.id
+                        and not self._is_manual_or_mesh_curve(curve)
                     )
                     break
         return expanded_node_ids
@@ -5414,6 +5851,14 @@ class OpenRetopWindow:
             return
 
         self._on_scene_browser_visibility("hide_unselected", tuple(node_ids))
+
+    def show_selected_scene_objects(self) -> None:
+        node_ids = self._scene_visibility_target_node_ids()
+        if not node_ids:
+            self.status_text.set("No selection")
+            return
+
+        self._on_scene_browser_visibility("show_selected", tuple(node_ids))
 
     def show_all_scene_objects(self) -> None:
         self._on_scene_browser_visibility("show_all", ())
@@ -6798,3 +7243,21 @@ def _plural_label(count: int, singular: str) -> str:
 
 def _format_percent(value: float) -> str:
     return f"{float(value):.1f}%"
+
+
+def _set_menu_entry_state_by_label(menu: object, label: str, state: str) -> None:
+    if menu is None:
+        return
+    try:
+        end_index = menu.index("end")
+    except TclError:
+        return
+    if end_index is None:
+        return
+    for index in range(int(end_index) + 1):
+        try:
+            if menu.entrycget(index, "label") == label:
+                menu.entryconfigure(index, state=state)
+                return
+        except TclError:
+            continue

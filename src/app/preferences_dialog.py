@@ -156,7 +156,7 @@ def _build_viewport_tab(
     ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
     ttk.Checkbutton(
         tab,
-        text="Show ViewCube",
+        text="Show View Controls",
         variable=variables["show_viewcube"],
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
     _add_placeholder_row(tab, 4, "Surface preview opacity", variables["surface_preview_opacity"])
@@ -184,6 +184,15 @@ def _build_keybinds_tab(
             textvariable=variables[f"keybind.{field_name}"],
             width=16,
         ).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+
+    start_row = len(KEYBIND_DISPLAY_ORDER) + 1
+    ttk.Separator(tab).grid(row=start_row, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+    ttk.Label(tab, text="Manual Curve").grid(row=start_row + 1, column=0, sticky="w", pady=2)
+    ttk.Label(
+        tab,
+        text="Enter finish, Esc cancel, Backspace remove last point, C toggle closed.",
+        wraplength=260,
+    ).grid(row=start_row + 1, column=1, sticky="w", padx=(8, 0), pady=2)
 
 
 def _build_advanced_tab(

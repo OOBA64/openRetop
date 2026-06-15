@@ -19,6 +19,7 @@ from surfaces.surface_state import SurfacePatch
 
 
 NODE_SCENE = "scene"
+NODE_EMPTY_SCENE = "empty_scene"
 NODE_MESH = "model"
 NODE_SECTION_PLANES = "section_planes"
 NODE_SECTION_PLANE = "section_plane"
@@ -29,7 +30,9 @@ NODE_CURVE = "curve"
 NODE_CURVE_GROUP = "curve_group"
 NODE_CURVE_GROUP_UNASSIGNED = f"{NODE_CURVE_GROUP}:unassigned"
 NODE_CURVE_GROUP_REPAIRED = f"{NODE_CURVE_GROUP}:repaired"
+NODE_CURVE_GROUP_MANUAL = f"{NODE_CURVE_GROUP}:manual"
 CURVE_GROUP_REPAIRED_ID = "__repaired_curves__"
+CURVE_GROUP_MANUAL_ID = "__manual_curves__"
 NODE_SURFACES = "surfaces"
 NODE_SURFACE = "surface"
 
@@ -79,6 +82,8 @@ def curve_group_id_from_node(node_id: str | None) -> str | None:
         return ""
     if node_id == NODE_CURVE_GROUP_REPAIRED:
         return CURVE_GROUP_REPAIRED_ID
+    if node_id == NODE_CURVE_GROUP_MANUAL:
+        return CURVE_GROUP_MANUAL_ID
 
     prefix = f"{NODE_CURVE_GROUP}:"
     if not node_id.startswith(prefix):
@@ -138,14 +143,17 @@ def _visibility_group_label(label: str, visible_values: Sequence[bool]) -> str:
 def _curve_display_label(curve: StoredCurve, fallback_label: str) -> str:
     label = curve.name or fallback_label
     suffixes: list[str] = []
-    if curve.is_tiny_fragment:
-        suffixes.append("(tiny)")
+    if _is_mesh_snapped_curve(curve):
+        suffixes.append("(mesh)")
+    elif _is_manual_curve(curve):
+        suffixes.append("(manual)")
     if is_repaired_curve(curve):
         suffixes.append("(repaired)")
+    if curve.is_tiny_fragment:
+        suffixes.append("(tiny)")
     if curve.is_closed:
         suffixes.append("(closed)")
-    if _is_manual_curve(curve):
-        suffixes.append("(manual)")
+    suffixes = suffixes[:2]
     return f"{label} {' '.join(suffixes)}" if suffixes else label
 
 
@@ -154,7 +162,17 @@ def _is_manual_curve(curve: StoredCurve) -> bool:
     return (
         bool(metadata.get("manual"))
         or str(metadata.get("source", "")).strip().lower() == "manual"
-        or str(metadata.get("creation_type", "")).strip().lower() == "manual"
+        or str(metadata.get("creation_type", "")).strip().lower()
+        in {"manual", "curve_on_mesh"}
+    )
+
+
+def _is_mesh_snapped_curve(curve: StoredCurve) -> bool:
+    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+    return (
+        str(metadata.get("creation_type", "")).strip().lower() == "curve_on_mesh"
+        or str(metadata.get("snap_mode", "")).strip().lower() == "mesh"
+        or bool(metadata.get("snap_to_mesh"))
     )
 
 
@@ -297,6 +315,7 @@ class SceneBrowser:
         self._syncing_selection = True
         try:
             if has_mesh:
+                self._remove_node(NODE_EMPTY_SCENE)
                 self._ensure_node(
                     NODE_MESH,
                     _visibility_label(mesh_name or "Mesh", bool(mesh_visible)),
@@ -309,6 +328,11 @@ class SceneBrowser:
             else:
                 self._remove_node(NODE_MESH)
                 self._remove_section_plane_nodes()
+                self._ensure_node(
+                    NODE_EMPTY_SCENE,
+                    "No mesh loaded",
+                    open_node=False,
+                )
 
             if has_section_result:
                 self._sync_section_result_nodes(
@@ -488,7 +512,11 @@ class SceneBrowser:
         result_by_id = {result.id: result for result in section_results}
         curves_by_result_id: dict[str | None, list[StoredCurve]] = {}
         repaired_curves: list[StoredCurve] = []
+        manual_curves: list[StoredCurve] = []
         for curve in curves:
+            if _is_manual_curve(curve):
+                manual_curves.append(curve)
+                continue
             if is_repaired_curve(curve):
                 repaired_curves.append(curve)
                 continue
@@ -497,6 +525,23 @@ class SceneBrowser:
 
         current_group_ids: list[str] = []
         current_node_ids: list[str] = []
+        if manual_curves:
+            current_group_ids.append(NODE_CURVE_GROUP_MANUAL)
+            self._ensure_node(
+                NODE_CURVE_GROUP_MANUAL,
+                _visibility_group_label(
+                    "Manual Curves",
+                    [curve.visible for curve in manual_curves],
+                ),
+                parent=NODE_CURVES,
+                open_node=True,
+            )
+            self._sync_curve_group_nodes(
+                NODE_CURVE_GROUP_MANUAL,
+                manual_curves,
+                current_node_ids,
+            )
+
         for result in section_results:
             grouped_curves = curves_by_result_id.get(result.id, [])
             if not grouped_curves:
@@ -672,6 +717,7 @@ class SceneBrowser:
 
     def _order_nodes(self) -> None:
         ordered_nodes = (
+            NODE_EMPTY_SCENE,
             NODE_MESH,
             NODE_SECTION_PLANES,
             NODE_SECTION_RESULTS,
