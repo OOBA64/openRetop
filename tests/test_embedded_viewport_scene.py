@@ -17,10 +17,13 @@ from regions.region_state import RegionSelection
 from sections.section_state import SectionPlaneState, set_plane_axis_offset
 from surfaces.surface_preview import SurfacePreviewMesh
 from viewer.embedded_viewport import (
+    ACTIVE_CURVE_COLOR,
     ACTIVE_CURVE_LINE_WIDTH,
     EmbeddedVTKViewport,
+    MANUAL_CURVE_FIRST_POINT_COLOR,
     MANUAL_CURVE_POINT_LINE_WIDTH,
     MANUAL_CURVE_PREVIEW_LINE_WIDTH,
+    MANUAL_CURVE_SELECTED_POINT_COLOR,
     MANUAL_CURVE_SNAP_POINT_COLOR,
     MANUAL_CURVE_SNAP_POLYLINE_COLOR,
     MeshPickResult,
@@ -1288,8 +1291,9 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             )
         )
 
-    def test_manual_curve_preview_renders_pending_points_polyline_and_clears(self) -> None:
+    def test_manual_curve_preview_renders_smooth_pending_points_and_clears(self) -> None:
         viewport = self._viewport()
+        viewport.render_window = FakeRenderWindow()  # type: ignore[assignment]
         mesh = self._triangle_mesh()
         pending_points = np.asarray(
             [
@@ -1306,11 +1310,16 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             manual_curve_points=pending_points,
             manual_curve_closed=True,
             manual_curve_plane_normal=(0.0, 0.0, 1.0),
+            manual_curve_selected_control_point_index=1,
+            show_axis_gizmo=False,
         )
 
         self.assertIn("manual_curve_preview", viewport._actor_groups)
         actors = viewport._actor_groups["manual_curve_preview"]
         self.assertEqual(len(actors), 2)
+        self.assertIsNotNone(viewport._manual_overlay_renderer)
+        self.assertEqual(viewport.render_window.layer_count, 3)
+        self.assertIn(viewport._manual_overlay_renderer, viewport.render_window.added_renderers)
         self.assertAlmostEqual(
             actors[0].GetProperty().GetLineWidth(),
             MANUAL_CURVE_POINT_LINE_WIDTH,
@@ -1321,15 +1330,69 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             MANUAL_CURVE_PREVIEW_LINE_WIDTH,
             places=5,
         )
-        self.assertEqual(actors[1].GetMapper().GetInput().GetNumberOfLines(), 3)
+        self.assertEqual(actors[0].GetMapper().GetInput().GetNumberOfLines(), 3)
+        self.assertGreater(actors[1].GetMapper().GetInput().GetNumberOfLines(), 3)
+        self.assertIn("manual_curve_control_points", viewport._actor_groups)
+        point_actors = viewport._actor_groups["manual_curve_control_points"]
+        self.assertEqual(len(point_actors), 3)
+        self.assertTrue(
+            all(actor.GetMapper().GetInput().GetNumberOfPolys() > 0 for actor in point_actors)
+        )
+        point_colors = [actor.GetProperty().GetColor() for actor in point_actors]
+        self.assertTrue(
+            any(np.allclose(color, MANUAL_CURVE_FIRST_POINT_COLOR) for color in point_colors)
+        )
+        self.assertTrue(
+            any(np.allclose(color, MANUAL_CURVE_SELECTED_POINT_COLOR) for color in point_colors)
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            manual_curve_points=pending_points[:1],
+            show_axis_gizmo=False,
+        )
+
+        self.assertNotIn("manual_curve_preview", viewport._actor_groups)
+        self.assertIn("manual_curve_control_points", viewport._actor_groups)
+        point_actors = viewport._actor_groups["manual_curve_control_points"]
+        self.assertEqual(len(point_actors), 1)
+        self.assertGreater(point_actors[0].GetMapper().GetInput().GetNumberOfPolys(), 0)
 
         self._set_basic_scene(
             viewport,
             mesh,
             manual_curve_points=[],
+            show_axis_gizmo=False,
         )
 
         self.assertNotIn("manual_curve_preview", viewport._actor_groups)
+        self.assertNotIn("manual_curve_control_points", viewport._actor_groups)
+
+    def test_manual_curve_preview_respects_polyline_curve_method(self) -> None:
+        viewport = self._viewport()
+        mesh = self._triangle_mesh()
+        pending_points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            dtype=float,
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            manual_curve_points=pending_points,
+            manual_curve_closed=True,
+            manual_curve_method="polyline",
+            show_axis_gizmo=False,
+        )
+
+        actors = viewport._actor_groups["manual_curve_preview"]
+        self.assertEqual(actors[0].GetMapper().GetInput().GetNumberOfLines(), 3)
+        self.assertEqual(actors[1].GetMapper().GetInput().GetNumberOfLines(), 3)
 
     def test_manual_curve_snap_preview_uses_distinct_colors(self) -> None:
         viewport = self._viewport()
@@ -1350,19 +1413,68 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         )
 
         actors = viewport._actor_groups["manual_curve_preview"]
-        marker_colors = actors[0].GetMapper().GetInput().GetCellData().GetScalars()
         line_colors = actors[1].GetMapper().GetInput().GetCellData().GetScalars()
+        point_actors = viewport._actor_groups["manual_curve_control_points"]
+        point_colors = [actor.GetProperty().GetColor() for actor in point_actors]
         self.assertTrue(
-            np.allclose(
-                np.asarray(marker_colors.GetTuple3(0), dtype=float) / 255.0,
-                MANUAL_CURVE_SNAP_POINT_COLOR,
-                atol=1.0 / 255.0,
-            )
+            any(np.allclose(color, MANUAL_CURVE_SNAP_POINT_COLOR) for color in point_colors)
         )
         self.assertTrue(
             np.allclose(
                 np.asarray(line_colors.GetTuple3(0), dtype=float) / 255.0,
                 MANUAL_CURVE_SNAP_POLYLINE_COLOR,
+                atol=1.0 / 255.0,
+            )
+        )
+
+    def test_selected_manual_curve_result_renders_in_top_overlay_layer(self) -> None:
+        viewport = self._viewport()
+        viewport.render_window = FakeRenderWindow()  # type: ignore[assignment]
+        mesh = self._triangle_mesh()
+        points = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            dtype=float,
+        )
+        manual_curve = StoredCurve(
+            id="manual-curve-1",
+            name="Manual Curve 1",
+            section_result_id="",
+            plane_id="",
+            original_points=points,
+            fitted_points=points.copy(),
+            mean_error=0.0,
+            max_error=0.0,
+            is_closed=False,
+            selected=True,
+            metadata={
+                "creation_type": "manual",
+                "control_points": points.tolist(),
+            },
+        )
+
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            curve_results=[manual_curve],
+            active_curve_id=manual_curve.id,
+            show_axis_gizmo=False,
+        )
+
+        self.assertIn("selected_manual_curve_result", viewport._actor_groups)
+        self.assertIsNotNone(viewport._manual_overlay_renderer)
+        self.assertEqual(viewport.render_window.layer_count, 3)
+        self.assertIn(viewport._manual_overlay_renderer, viewport.render_window.added_renderers)
+        actors = viewport._actor_groups["selected_manual_curve_result"]
+        self.assertEqual(len(actors), 1)
+        colors = actors[0].GetMapper().GetInput().GetCellData().GetScalars()
+        self.assertTrue(
+            np.allclose(
+                np.asarray(colors.GetTuple3(0), dtype=float) / 255.0,
+                ACTIVE_CURVE_COLOR,
                 atol=1.0 / 255.0,
             )
         )

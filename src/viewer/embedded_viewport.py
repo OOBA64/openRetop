@@ -10,6 +10,10 @@ from typing import Callable, Sequence
 import numpy as np
 
 from curves.curve_state import is_repaired_curve
+from curves.manual_curve import (
+    DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+    sample_manual_curve,
+)
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
 from mesh.triangle_mesh import TriangleMeshData
@@ -85,12 +89,17 @@ SELECTED_CURVE_LINE_WIDTH = 4.6
 ACTIVE_CURVE_COLOR = (1.0, 0.92, 0.12)
 ACTIVE_CURVE_LINE_WIDTH = 5.4
 MANUAL_CURVE_POINT_COLOR = (1.0, 0.92, 0.12)
+MANUAL_CURVE_FIRST_POINT_COLOR = (1.0, 0.56, 0.08)
+MANUAL_CURVE_SELECTED_POINT_COLOR = (0.0, 1.0, 1.0)
 MANUAL_CURVE_POLYLINE_COLOR = (0.0, 0.95, 1.0)
+MANUAL_CURVE_CONTROL_POLYGON_COLOR = (0.45, 0.58, 0.62)
 MANUAL_CURVE_CLOSING_COLOR = (1.0, 0.48, 0.12)
 MANUAL_CURVE_SNAP_POINT_COLOR = (1.0, 0.38, 0.95)
 MANUAL_CURVE_SNAP_POLYLINE_COLOR = (0.52, 1.0, 0.42)
-MANUAL_CURVE_POINT_LINE_WIDTH = 3.4
-MANUAL_CURVE_PREVIEW_LINE_WIDTH = 3.0
+MANUAL_CURVE_POINT_LINE_WIDTH = 1.4
+MANUAL_CURVE_PREVIEW_LINE_WIDTH = 4.2
+MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO = 0.012
+MANUAL_CURVE_FIRST_POINT_RADIUS_RATIO = 0.015
 REGION_SELECTION_COLOR = (0.0, 0.82, 1.0)
 REGION_SELECTION_EDGE_COLOR = (0.88, 1.0, 1.0)
 REGION_SELECTION_OPACITY = 0.34
@@ -195,6 +204,7 @@ class EmbeddedVTKViewport:
         self._axis_gizmo_visible = False
         self._axis_gizmo_requested_visible: bool | None = None
         self._axis_gizmo_camera_key: tuple[float, ...] | None = None
+        self._manual_overlay_renderer: vtkRenderer | None = None
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
@@ -244,9 +254,12 @@ class EmbeddedVTKViewport:
         self._cancel_pending_render()
         if self.render_window is not None and self._axis_gizmo_renderer is not None:
             self.render_window.RemoveRenderer(self._axis_gizmo_renderer)
+        if self.render_window is not None and self._manual_overlay_renderer is not None:
+            self.render_window.RemoveRenderer(self._manual_overlay_renderer)
         self._axis_gizmo_renderer = None
         self._axis_gizmo_actor = None
         self._axis_gizmo_camera_key = None
+        self._manual_overlay_renderer = None
         if self.interactor is not None:
             self.interactor.Disable()
             self.interactor.TerminateApp()
@@ -422,6 +435,9 @@ class EmbeddedVTKViewport:
         manual_curve_closed: bool = False,
         manual_curve_plane_normal: Sequence[float] | None = None,
         manual_curve_snap_to_mesh: bool = False,
+        manual_curve_selected_control_point_index: int | None = None,
+        manual_curve_method: str = "catmull_rom",
+        manual_curve_sample_count: int = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
         show_axis_gizmo: bool = True,
         reset_camera: bool = False,
     ) -> None:
@@ -518,6 +534,9 @@ class EmbeddedVTKViewport:
             closed=manual_curve_closed,
             plane_normal=manual_curve_plane_normal,
             snap_to_mesh=manual_curve_snap_to_mesh,
+            selected_control_point_index=manual_curve_selected_control_point_index,
+            curve_method=manual_curve_method,
+            sample_count=manual_curve_sample_count,
         )
 
         if reset_camera:
@@ -1217,34 +1236,62 @@ class EmbeddedVTKViewport:
         closed: bool,
         plane_normal: Sequence[float] | None,
         snap_to_mesh: bool,
+        selected_control_point_index: int | None,
+        curve_method: str,
+        sample_count: int,
     ) -> None:
+        control_points = _manual_curve_points_array(manual_curve_points)
         geometries, line_widths, key = _manual_curve_preview_geometries(
-            manual_curve_points,
+            control_points,
             closed=closed,
             plane_normal=plane_normal,
             snap_to_mesh=snap_to_mesh,
             reference_extent=self._view_extent,
+            curve_method=curve_method,
+            sample_count=sample_count,
         )
+        if len(control_points) == 0:
+            self._clear_overlay_group("manual_curve_preview")
+            self._clear_overlay_group("manual_curve_control_points")
+            return
+
         if not geometries:
             self._clear_overlay_group("manual_curve_preview")
-            return
-
-        if self._try_update_line_overlay_group(
-            "manual_curve_preview",
-            geometries,
-            line_widths,
-            key=key,
-        ):
-            return
-
-        self._replace_overlay_group(
-            "manual_curve_preview",
-            [
-                _line_actor(geometry, line_width=line_width)
-                for geometry, line_width in zip(geometries, line_widths)
-            ],
-            key=key,
+        else:
+            lines_updated = self._try_update_line_overlay_group(
+                "manual_curve_preview",
+                geometries,
+                line_widths,
+                key=key,
+            )
+            if not lines_updated:
+                self._replace_overlay_group(
+                    "manual_curve_preview",
+                    [
+                        _line_actor(geometry, line_width=line_width)
+                        for geometry, line_width in zip(geometries, line_widths)
+                    ],
+                    key=key,
+                )
+        point_key = (
+            "manual_curve_control_points",
+            _array_key(control_points),
+            bool(snap_to_mesh),
+            None if selected_control_point_index is None else int(selected_control_point_index),
+            round(float(self._view_extent), 9),
         )
+        if self._group_keys.get("manual_curve_control_points") != point_key:
+            point_actors = _manual_curve_control_point_actors(
+                control_points,
+                reference_extent=self._view_extent,
+                snap_to_mesh=snap_to_mesh,
+                selected_index=selected_control_point_index,
+            )
+            self._replace_overlay_group(
+                "manual_curve_control_points",
+                point_actors,
+                key=point_key,
+            )
 
     def _update_region_selection_actor(
         self,
@@ -1330,6 +1377,7 @@ class EmbeddedVTKViewport:
             self._remove_actor("curve_result")
             self._clear_overlay_group("selected_curve_result")
             self._clear_overlay_group("curve_results")
+            self._clear_overlay_group("selected_manual_curve_result")
             return
 
         self._remove_actor("curve_result")
@@ -1342,7 +1390,17 @@ class EmbeddedVTKViewport:
         )
         if not display_groups:
             self._clear_overlay_group("curve_results")
+            self._clear_overlay_group("selected_manual_curve_result")
             return
+
+        selected_manual_results = [
+            result
+            for category, results in display_groups
+            if category in {"selected", "active"}
+            for result in results
+            if _is_manual_curve_result(result)
+        ]
+        self._update_selected_manual_curve_overlay(selected_manual_results)
 
         key = (
             "curve_results",
@@ -1386,6 +1444,35 @@ class EmbeddedVTKViewport:
                 _line_actor(geometry, line_width=line_width)
                 for geometry, line_width in zip(geometries, line_widths)
             ],
+            key=key,
+        )
+
+    def _update_selected_manual_curve_overlay(self, curve_results: Sequence[CurveFitResult]) -> None:
+        if not curve_results:
+            self._clear_overlay_group("selected_manual_curve_result")
+            return
+
+        key = (
+            "selected_manual_curve_result",
+            tuple(_curve_display_key(result, "manual_overlay") for result in curve_results),
+        )
+        geometries = [
+            _polyline_geometry(
+                [result.fitted_points for result in curve_results],
+                color=ACTIVE_CURVE_COLOR,
+            )
+        ]
+        line_widths = [ACTIVE_CURVE_LINE_WIDTH + 0.8]
+        if self._try_update_line_overlay_group(
+            "selected_manual_curve_result",
+            geometries,
+            line_widths,
+            key=key,
+        ):
+            return
+        self._replace_overlay_group(
+            "selected_manual_curve_result",
+            [_line_actor(geometries[0], line_width=line_widths[0])],
             key=key,
         )
 
@@ -1450,14 +1537,51 @@ class EmbeddedVTKViewport:
         actor_list = list(actors)
         self._actor_groups[group_name] = actor_list
         self._group_keys[group_name] = key
+        renderer = self._renderer_for_overlay_group(group_name)
         for actor in actor_list:
-            self.renderer.AddActor(actor)
+            renderer.AddActor(actor)
 
     def _clear_overlay_group(self, group_name: str) -> None:
         actors = self._actor_groups.pop(group_name, [])
         self._group_keys.pop(group_name, None)
         for actor in actors:
             self.renderer.RemoveActor(actor)
+            if self._manual_overlay_renderer is not None:
+                self._manual_overlay_renderer.RemoveActor(actor)
+
+    def _renderer_for_overlay_group(self, group_name: str) -> vtkRenderer:
+        if group_name in {
+            "manual_curve_preview",
+            "manual_curve_control_points",
+            "selected_manual_curve_result",
+        }:
+            return self._ensure_manual_overlay_renderer()
+        return self.renderer
+
+    def _ensure_manual_overlay_renderer(self) -> vtkRenderer:
+        if self.render_window is None:
+            return self.renderer
+        if self._manual_overlay_renderer is not None:
+            self._manual_overlay_renderer.SetActiveCamera(self.renderer.GetActiveCamera())
+            return self._manual_overlay_renderer
+
+        self._manual_overlay_renderer = vtkRenderer()
+        self._manual_overlay_renderer.SetLayer(2)
+        self._manual_overlay_renderer.SetViewport(0.0, 0.0, 1.0, 1.0)
+        self._manual_overlay_renderer.InteractiveOff()
+        self._manual_overlay_renderer.SetActiveCamera(self.renderer.GetActiveCamera())
+        try:
+            self._manual_overlay_renderer.SetBackgroundAlpha(0.0)
+        except AttributeError:
+            pass
+        try:
+            current_layers = int(self.render_window.GetNumberOfLayers())
+        except AttributeError:
+            current_layers = 1
+        if current_layers < 3:
+            self.render_window.SetNumberOfLayers(3)
+        self.render_window.AddRenderer(self._manual_overlay_renderer)
+        return self._manual_overlay_renderer
 
     def _set_actor_visible(self, actor: vtkActor, visible: bool) -> None:
         actor.SetVisibility(1 if visible else 0)
@@ -2147,6 +2271,21 @@ def _curve_identifier(curve: object) -> str | None:
     return str(curve_id)
 
 
+def _is_manual_curve_result(curve: object) -> bool:
+    metadata = getattr(curve, "metadata", {})
+    if not isinstance(metadata, dict):
+        return False
+
+    creation_type = str(metadata.get("creation_type", "")).strip().lower()
+    snap_mode = str(metadata.get("snap_mode", "")).strip().lower()
+    return bool(
+        creation_type in {"manual", "curve_on_mesh"}
+        or snap_mode == "mesh"
+        or "control_points" in metadata
+        or metadata.get("snap_to_mesh") is True
+    )
+
+
 def _curve_display_key(curve: CurveFitResult, category: str) -> tuple[object, ...]:
     points = np.asarray(getattr(curve, "fitted_points", []), dtype=float)
     if points.ndim == 2 and points.shape[1] == 3 and len(points) > 0:
@@ -2179,6 +2318,8 @@ def _manual_curve_preview_geometries(
     plane_normal: Sequence[float] | None,
     snap_to_mesh: bool,
     reference_extent: float,
+    curve_method: str,
+    sample_count: int,
 ) -> tuple[list[LineGeometry], list[float], object | None]:
     points = _manual_curve_points_array(manual_curve_points)
     if len(points) == 0:
@@ -2191,24 +2332,36 @@ def _manual_curve_preview_geometries(
         ).reshape(3),
         fallback=np.asarray([0.0, 0.0, 1.0], dtype=float),
     )
-    geometries = [
-        _manual_curve_marker_geometry(
-            points,
-            plane_normal=normal,
-            reference_extent=reference_extent,
-            snap_to_mesh=snap_to_mesh,
-        )
-    ]
-    line_widths = [MANUAL_CURVE_POINT_LINE_WIDTH]
+    geometries: list[LineGeometry] = []
+    line_widths: list[float] = []
     if len(points) >= 2:
         geometries.append(
             _manual_curve_polyline_geometry(
                 points,
                 closed=bool(closed),
-                snap_to_mesh=snap_to_mesh,
+                color=MANUAL_CURVE_CONTROL_POLYGON_COLOR,
             )
         )
-        line_widths.append(MANUAL_CURVE_PREVIEW_LINE_WIDTH)
+        line_widths.append(MANUAL_CURVE_POINT_LINE_WIDTH)
+        sampled_points = sample_manual_curve(
+            points,
+            is_closed=bool(closed),
+            method=curve_method,
+            sample_count=sample_count,
+        )
+        if len(sampled_points) >= 2:
+            geometries.append(
+                _manual_curve_polyline_geometry(
+                    sampled_points,
+                    closed=False,
+                    color=(
+                        MANUAL_CURVE_SNAP_POLYLINE_COLOR
+                        if snap_to_mesh
+                        else MANUAL_CURVE_POLYLINE_COLOR
+                    ),
+                )
+            )
+            line_widths.append(MANUAL_CURVE_PREVIEW_LINE_WIDTH)
 
     key = (
         "manual_curve_preview",
@@ -2216,6 +2369,8 @@ def _manual_curve_preview_geometries(
         bool(closed),
         bool(snap_to_mesh),
         _array_key(normal),
+        str(curve_method).strip().lower(),
+        int(sample_count),
         round(float(reference_extent), 9),
     )
     return (geometries, line_widths, key)
@@ -2242,43 +2397,188 @@ def _manual_curve_points_array(
         return np.zeros((0, 3), dtype=float)
 
 
-def _manual_curve_marker_geometry(
-    points: np.ndarray,
+def _manual_curve_control_point_actors(
+    points: Sequence[Sequence[float]] | np.ndarray,
     *,
-    plane_normal: np.ndarray,
     reference_extent: float,
     snap_to_mesh: bool,
-) -> LineGeometry:
-    u_axis, v_axis = _manual_curve_marker_basis(plane_normal)
-    marker_size = max(float(reference_extent) * 0.015, 0.025)
-    all_points: list[list[float]] = []
-    lines: list[tuple[int, int]] = []
-    colors: list[list[float]] = []
-    color = list(MANUAL_CURVE_SNAP_POINT_COLOR if snap_to_mesh else MANUAL_CURVE_POINT_COLOR)
+    selected_index: int | None,
+) -> list[vtkActor]:
+    point_array = _manual_curve_points_array(points)
+    if len(point_array) == 0:
+        return []
 
-    for point in points:
-        center = np.asarray(point, dtype=float)
-        start_index = len(all_points)
-        all_points.extend(
-            [
-                (center - u_axis * marker_size).tolist(),
-                (center + u_axis * marker_size).tolist(),
-                (center - v_axis * marker_size).tolist(),
-                (center + v_axis * marker_size).tolist(),
-            ]
-        )
-        lines.extend(
-            [
-                (start_index, start_index + 1),
-                (start_index + 2, start_index + 3),
-            ]
-        )
-        colors.extend([color, color])
+    selected = _valid_manual_curve_selected_index(selected_index, point_count=len(point_array))
+    normal_indices: list[int] = []
+    first_indices: list[int] = []
+    selected_indices: list[int] = []
+    for index in range(len(point_array)):
+        if selected is not None and index == selected:
+            selected_indices.append(index)
+        elif index == 0:
+            first_indices.append(index)
+        else:
+            normal_indices.append(index)
 
-    return LineGeometry(
-        points=np.asarray(all_points, dtype=float),
-        lines=np.asarray(lines, dtype=int),
-        colors=np.asarray(colors, dtype=float),
+    actors: list[vtkActor] = []
+    normal_color = MANUAL_CURVE_SNAP_POINT_COLOR if snap_to_mesh else MANUAL_CURVE_POINT_COLOR
+    normal_radius = _manual_curve_control_point_radius(reference_extent)
+    first_radius = _manual_curve_control_point_radius(reference_extent, prominent=True)
+    for indices, color, radius in (
+        (normal_indices, normal_color, normal_radius),
+        (first_indices, MANUAL_CURVE_FIRST_POINT_COLOR, first_radius),
+        (selected_indices, MANUAL_CURVE_SELECTED_POINT_COLOR, first_radius),
+    ):
+        if indices:
+            actors.append(
+                _manual_curve_sphere_actor(
+                    point_array[indices],
+                    radius=radius,
+                    color=color,
+                )
+            )
+    return actors
+
+
+def _valid_manual_curve_selected_index(selected_index: int | None, *, point_count: int) -> int | None:
+    if selected_index is None:
+        return None
+    try:
+        index = int(selected_index)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= index < point_count:
+        return index
+    return None
+
+
+def _manual_curve_control_point_radius(
+    reference_extent: float,
+    *,
+    prominent: bool = False,
+) -> float:
+    try:
+        extent = float(reference_extent)
+    except (TypeError, ValueError):
+        extent = 1.0
+    if not np.isfinite(extent) or extent <= 0.0:
+        extent = 1.0
+    ratio = (
+        MANUAL_CURVE_FIRST_POINT_RADIUS_RATIO
+        if prominent
+        else MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO
+    )
+    return max(extent * ratio, 0.006)
+
+
+def _manual_curve_sphere_actor(
+    points: Sequence[Sequence[float]] | np.ndarray,
+    *,
+    radius: float,
+    color: tuple[float, float, float],
+) -> vtkActor:
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(_manual_curve_sphere_polydata(points, radius=float(radius)))
+    mapper.ScalarVisibilityOff()
+
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    try:
+        actor.PickableOff()
+    except AttributeError:
+        pass
+
+    property_ = actor.GetProperty()
+    property_.SetColor(*color)
+    property_.SetAmbient(0.50)
+    property_.SetDiffuse(0.58)
+    property_.SetSpecular(0.25)
+    property_.SetSpecularPower(18.0)
+    property_.SetInterpolationToPhong()
+    return actor
+
+
+def _manual_curve_sphere_polydata(
+    points: Sequence[Sequence[float]] | np.ndarray,
+    *,
+    radius: float,
+) -> vtkPolyData:
+    centers = _manual_curve_points_array(points)
+    if len(centers) == 0:
+        return _mesh_polydata(
+            TriangleMeshData(
+                vertices=np.zeros((0, 3), dtype=float),
+                triangles=np.zeros((0, 3), dtype=int),
+            )
+        )
+
+    unit_vertices, unit_faces = _unit_sphere_mesh()
+    radius = max(float(radius), 1e-6)
+    vertices: list[np.ndarray] = []
+    faces: list[np.ndarray] = []
+    for center in centers:
+        offset = len(vertices) * len(unit_vertices)
+        vertices.append((unit_vertices * radius) + center)
+        faces.append(unit_faces + offset)
+
+    return _mesh_polydata(
+        TriangleMeshData(
+            vertices=np.vstack(vertices),
+            triangles=np.vstack(faces),
+        )
+    )
+
+
+def _unit_sphere_mesh(
+    *,
+    latitude_steps: int = 6,
+    longitude_steps: int = 12,
+) -> tuple[np.ndarray, np.ndarray]:
+    latitude_steps = max(int(latitude_steps), 3)
+    longitude_steps = max(int(longitude_steps), 6)
+    vertices: list[list[float]] = [[0.0, 0.0, 1.0]]
+    for latitude_index in range(1, latitude_steps):
+        phi = np.pi * float(latitude_index) / float(latitude_steps)
+        z_value = float(np.cos(phi))
+        radius = float(np.sin(phi))
+        for longitude_index in range(longitude_steps):
+            theta = 2.0 * np.pi * float(longitude_index) / float(longitude_steps)
+            vertices.append(
+                [
+                    radius * float(np.cos(theta)),
+                    radius * float(np.sin(theta)),
+                    z_value,
+                ]
+            )
+    bottom_index = len(vertices)
+    vertices.append([0.0, 0.0, -1.0])
+
+    faces: list[list[int]] = []
+    first_ring = 1
+    for longitude_index in range(longitude_steps):
+        next_index = (longitude_index + 1) % longitude_steps
+        faces.append([0, first_ring + longitude_index, first_ring + next_index])
+
+    for ring_index in range(latitude_steps - 2):
+        current_ring = 1 + (ring_index * longitude_steps)
+        next_ring = current_ring + longitude_steps
+        for longitude_index in range(longitude_steps):
+            next_index = (longitude_index + 1) % longitude_steps
+            current = current_ring + longitude_index
+            current_next = current_ring + next_index
+            lower = next_ring + longitude_index
+            lower_next = next_ring + next_index
+            faces.append([current, lower, current_next])
+            faces.append([current_next, lower, lower_next])
+
+    last_ring = 1 + ((latitude_steps - 2) * longitude_steps)
+    for longitude_index in range(longitude_steps):
+        next_index = (longitude_index + 1) % longitude_steps
+        faces.append([bottom_index, last_ring + next_index, last_ring + longitude_index])
+
+    return (
+        np.asarray(vertices, dtype=float),
+        np.asarray(faces, dtype=int),
     )
 
 
@@ -2305,11 +2605,11 @@ def _manual_curve_polyline_geometry(
     points: np.ndarray,
     *,
     closed: bool,
-    snap_to_mesh: bool,
+    color: tuple[float, float, float],
 ) -> LineGeometry:
     lines: list[tuple[int, int]] = []
     colors: list[list[float]] = []
-    line_color = list(MANUAL_CURVE_SNAP_POLYLINE_COLOR if snap_to_mesh else MANUAL_CURVE_POLYLINE_COLOR)
+    line_color = list(color)
     for index in range(len(points) - 1):
         lines.append((index, index + 1))
         colors.append(line_color)

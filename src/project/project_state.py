@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from curves.curve_state import CurveCollection, refresh_curve_diagnostics
+from curves.manual_curve import ensure_manual_curve_storage
 from project.project_data import (
     ProjectCurve,
     ProjectData,
@@ -167,6 +168,7 @@ def _curves_from_collection(
         return []
 
     for curve in curve_collection.curves:
+        ensure_manual_curve_storage(curve)
         refresh_curve_diagnostics(curve)
 
     return [

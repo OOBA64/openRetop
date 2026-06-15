@@ -14,6 +14,7 @@ from app.selection_types import (
 )
 from curves.curve_state import StoredCurve
 from curves.curve_state import is_repaired_curve
+from curves.manual_curve import is_manual_curve_like
 from sections.section_state import SectionPlaneState, StoredSectionResult
 from surfaces.surface_state import SurfacePatch
 
@@ -143,28 +144,29 @@ def _visibility_group_label(label: str, visible_values: Sequence[bool]) -> str:
 def _curve_display_label(curve: StoredCurve, fallback_label: str) -> str:
     label = curve.name or fallback_label
     suffixes: list[str] = []
-    if _is_mesh_snapped_curve(curve):
-        suffixes.append("(mesh)")
-    elif _is_manual_curve(curve):
-        suffixes.append("(manual)")
-    if is_repaired_curve(curve):
+    manual_curve = _is_manual_curve(curve)
+    if manual_curve:
+        source_label = "mesh" if _is_mesh_snapped_curve(curve) else "manual"
+        method_label = _manual_curve_method_label(curve)
+        suffixes.append(f"({source_label}, {method_label})")
+    elif is_repaired_curve(curve):
         suffixes.append("(repaired)")
-    if curve.is_tiny_fragment:
+    if not manual_curve and curve.is_tiny_fragment:
         suffixes.append("(tiny)")
-    if curve.is_closed:
+    if not manual_curve and curve.is_closed:
         suffixes.append("(closed)")
     suffixes = suffixes[:2]
     return f"{label} {' '.join(suffixes)}" if suffixes else label
 
 
 def _is_manual_curve(curve: StoredCurve) -> bool:
+    return is_manual_curve_like(curve)
+
+
+def _manual_curve_method_label(curve: StoredCurve) -> str:
     metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-    return (
-        bool(metadata.get("manual"))
-        or str(metadata.get("source", "")).strip().lower() == "manual"
-        or str(metadata.get("creation_type", "")).strip().lower()
-        in {"manual", "curve_on_mesh"}
-    )
+    method = str(metadata.get("curve_method", "catmull_rom")).strip().lower()
+    return "polyline" if method == "polyline" else "smooth"
 
 
 def _is_mesh_snapped_curve(curve: StoredCurve) -> bool:

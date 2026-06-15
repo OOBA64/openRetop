@@ -10,6 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from curves.curve_state import CurveCollection, StoredCurve, add_curve
+from curves.manual_curve import DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
 from geometry.sections import SectionPolyline, SectionResult
 from project.project_data import PROJECT_VERSION
 from project.project_state import project_from_app_state
@@ -396,6 +397,10 @@ class ProjectStateTests(unittest.TestCase):
                 "work_plane_type": "section_plane",
                 "source_section_plane_id": "plane-a",
                 "closed": True,
+                "control_points": points.tolist(),
+                "curve_method": "polyline",
+                "sample_count": DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+                "snap_to_mesh": False,
             },
         )
 

@@ -43,6 +43,10 @@ from app.scene_browser import (
     surface_node_id,
 )
 from curves.curve_state import StoredCurve, add_curve
+from curves.manual_curve import (
+    DEFAULT_MANUAL_CURVE_METHOD,
+    DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+)
 from mesh.loader import LoadedMesh, MeshMetadata
 from mesh.triangle_mesh import TriangleMeshData
 from project.project_data import (
@@ -434,13 +438,26 @@ def _create_manual_curve(
     else:
         window.viewport.projected_points = [np.asarray(point, dtype=float) for point in points]
     for index, _point in enumerate(points):
-        handled = window._on_viewport_pointer_event("left_press", 10 + index, 20 + index)
-        if not handled:
+        if not _manual_curve_click(window, 10 + index, 20 + index):
             raise AssertionError("Manual curve point click was not handled")
     if closed:
         window._handle_shortcut("C")
     window._handle_shortcut("Enter")
     return window.app_state.curve_collection.curves[-1]
+
+
+def _manual_curve_click(window: OpenRetopWindow, x_position: int, y_position: int) -> bool:
+    press_handled = window._on_viewport_pointer_event(
+        "left_press",
+        x_position,
+        y_position,
+    )
+    release_handled = window._on_viewport_pointer_event(
+        "left_release",
+        x_position,
+        y_position,
+    )
+    return bool(press_handled and release_handled)
 
 
 class MainWindowUiTests(unittest.TestCase):
@@ -611,12 +628,18 @@ class MainWindowUiTests(unittest.TestCase):
                 "Load a mesh to enable Snap to Mesh.",
             )
             self.assertEqual(str(window.start_manual_curve_button.cget("state")), "disabled")
+            self.assertEqual(str(window.edit_manual_curve_button.cget("state")), "disabled")
+            self.assertEqual(str(window.done_manual_curve_edit_button.cget("state")), "disabled")
+            self.assertEqual(str(window.add_manual_point_button.cget("state")), "disabled")
+            self.assertEqual(str(window.insert_manual_point_button.cget("state")), "disabled")
+            self.assertEqual(str(window.delete_manual_point_button.cget("state")), "disabled")
             self.assertEqual(str(window.manual_curve_snap_check.cget("state")), "disabled")
 
             _load_sample_model(window)
             window._set_active_workbench("Manual RE", set_status=True)
 
             self.assertEqual(str(window.start_manual_curve_button.cget("state")), "normal")
+            self.assertEqual(str(window.edit_manual_curve_button.cget("state")), "disabled")
             self.assertEqual(str(window.manual_curve_snap_check.cget("state")), "normal")
             self.assertEqual(
                 window.manual_curve_snap_help_text.get(),
@@ -642,6 +665,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(str(window.cancel_manual_curve_button.cget("state")), "normal")
             self.assertEqual(str(window.remove_manual_point_button.cget("state")), "normal")
             self.assertEqual(str(window.toggle_manual_closed_button.cget("state")), "normal")
+            self.assertEqual(str(window.done_manual_curve_edit_button.cget("state")), "disabled")
+            self.assertEqual(str(window.add_manual_point_button.cget("state")), "disabled")
+            self.assertEqual(str(window.insert_manual_point_button.cget("state")), "disabled")
         finally:
             window.root.destroy()
 
@@ -6476,7 +6502,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             projected_point = np.asarray([0.25, 0.5, 0.75], dtype=float)
             window.viewport.projected_points = [projected_point]
-            handled = window._on_viewport_pointer_event("left_press", 40, 60)
+            handled = _manual_curve_click(window, 40, 60)
 
             self.assertTrue(handled)
             self.assertEqual(len(window._manual_curve_points), 1)
@@ -6510,14 +6536,14 @@ class MainWindowUiTests(unittest.TestCase):
                 np.asarray([1.0, 0.0, 0.0], dtype=float),
                 np.asarray([1.0, 1.0, 0.0], dtype=float),
             ]
-            window._on_viewport_pointer_event("left_press", 10, 10)
-            window._on_viewport_pointer_event("left_press", 20, 20)
+            _manual_curve_click(window, 10, 10)
+            _manual_curve_click(window, 20, 20)
 
             window._handle_shortcut("C")
             self.assertFalse(window._manual_curve_closed)
             self.assertEqual(window.status_text.get(), "Manual Curve: need at least 3 points to close")
 
-            window._on_viewport_pointer_event("left_press", 30, 30)
+            _manual_curve_click(window, 30, 30)
             window._handle_shortcut("C")
             self.assertTrue(window._manual_curve_closed)
             self.assertTrue(window.viewport.scene_calls[-1]["manual_curve_closed"])
@@ -6534,6 +6560,36 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_manual_curve_click_near_first_point_snaps_closed_without_duplicate_point(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.viewport.projected_points = [
+                np.asarray([0.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 1.0, 0.0], dtype=float),
+                np.asarray([0.02, 0.0, 0.0], dtype=float),
+            ]
+
+            for index in range(4):
+                handled = _manual_curve_click(window, 10 + index, 20 + index)
+                self.assertTrue(handled)
+
+            self.assertTrue(window._manual_curve_closed)
+            self.assertEqual(len(window._manual_curve_points), 3)
+            self.assertEqual(window.status_text.get(), "Manual Curve: snapped closed to first point")
+
+            window._handle_shortcut("Enter")
+            curve = window.app_state.curve_collection.curves[-1]
+            self.assertTrue(curve.is_closed)
+            self.assertEqual(len(curve.original_points), 3)
+            self.assertTrue(np.allclose(curve.fitted_points[0], curve.fitted_points[-1]))
+        finally:
+            window.root.destroy()
+
     def test_manual_curve_enter_rejects_too_few_points_and_invalid_projection(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -6545,7 +6601,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Manual Curve: open curve needs at least 2 points")
 
             window.viewport.projected_points = [None]
-            handled = window._on_viewport_pointer_event("left_press", 20, 20)
+            handled = _manual_curve_click(window, 20, 20)
             self.assertTrue(handled)
             self.assertEqual(window._manual_curve_points, [])
             self.assertEqual(window.status_text.get(), "Manual Curve: could not place point on work plane")
@@ -6568,13 +6624,17 @@ class MainWindowUiTests(unittest.TestCase):
         try:
             _load_sample_model(window)
             active_plane = window.app_state.section_collection.planes[0]
-            curve = _create_manual_curve(
-                window,
+            expected_points = np.asarray(
                 [
                     (0.0, 0.0, 0.0),
                     (1.0, 0.0, 0.0),
                     (1.0, 1.0, 0.0),
                 ],
+                dtype=float,
+            )
+            curve = _create_manual_curve(
+                window,
+                [tuple(point) for point in expected_points],
                 closed=True,
             )
 
@@ -6584,15 +6644,25 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(curve.is_closed)
             self.assertEqual(curve.mean_error, 0.0)
             self.assertEqual(curve.max_error, 0.0)
-            self.assertTrue(np.allclose(curve.original_points, curve.fitted_points))
+            self.assertTrue(np.allclose(curve.original_points, expected_points))
+            self.assertGreater(len(curve.fitted_points), len(curve.original_points))
+            self.assertTrue(np.allclose(curve.fitted_points[0], curve.fitted_points[-1]))
             self.assertEqual(curve.metadata["creation_type"], "manual")
             self.assertEqual(curve.metadata["work_plane_type"], "section_plane")
             self.assertEqual(curve.metadata["source_section_plane_id"], active_plane.id)
             self.assertTrue(curve.metadata["closed"])
+            self.assertEqual(curve.metadata["control_points"], expected_points.tolist())
+            self.assertEqual(curve.metadata["curve_method"], DEFAULT_MANUAL_CURVE_METHOD)
+            self.assertEqual(curve.metadata["sample_count"], DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)
             self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
             self.assertIn(curve.id, window.app_state.curve_collection.selected_curve_ids)
-            self.assertEqual(window.status_text.get(), "Created Manual Curve 1")
-            self.assertIn("(manual)", window.scene_browser.tree.item(curve_node_id(curve.id), "text"))
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window.current_mode_text.get(), "Manual Curve Edit")
+            self.assertEqual(window.status_text.get(), "Created Manual Curve 1. Editing curve.")
+            self.assertIn(
+                "(manual, smooth)",
+                window.scene_browser.tree.item(curve_node_id(curve.id), "text"),
+            )
 
             window.undo()
             self.assertEqual(len(window.app_state.curve_collection.curves), 0)
@@ -6614,6 +6684,278 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(len(window.app_state.curve_collection.curves), 1)
             self.assertEqual(window.app_state.curve_collection.curves[0].name, "Manual Curve 1")
             self.assertEqual(window.status_text.get(), "Undid Delete Curve")
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_finish_enters_edit_mode_and_done_exits_cleanly(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    (1.0, 1.0, 0.0),
+                ],
+            )
+
+            self.assertTrue(window._manual_curve_active)
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window._manual_curve_edit_curve_id, curve.id)
+            self.assertFalse(window._manual_curve_placing_enabled)
+            self.assertEqual(window.current_workbench.get(), "Manual RE")
+            self.assertEqual(window.current_mode_text.get(), "Manual Curve Edit")
+            self.assertEqual(window.finish_manual_curve_button.cget("text"), "Apply Edits")
+            self.assertEqual(window.cancel_manual_curve_button.cget("text"), "Cancel Edit")
+            self.assertEqual(str(window.done_manual_curve_edit_button.cget("state")), "normal")
+            self.assertEqual(str(window.add_manual_point_button.cget("state")), "normal")
+            self.assertEqual(str(window.insert_manual_point_button.cget("state")), "normal")
+            self.assertEqual(str(window.remove_manual_point_button.cget("state")), "disabled")
+            self.assertEqual(
+                window.status_text.get(),
+                "Created Manual Curve 1. Editing curve.",
+            )
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.scene_calls[-1]["manual_curve_points"],
+                    curve.original_points,
+                )
+            )
+
+            window.done_manual_curve_editing()
+
+            self.assertFalse(window._manual_curve_active)
+            self.assertFalse(window._manual_curve_edit_active)
+            self.assertEqual(window.current_mode_text.get(), "No Mode")
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
+            self.assertIn(curve.id, window.app_state.curve_collection.selected_curve_ids)
+            self.assertEqual(window.status_text.get(), "Manual curve editing finished")
+            self.assertIsNone(window.viewport.scene_calls[-1]["manual_curve_points"])
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_edit_mode_rejects_non_manual_curve(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            points = np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            section_curve = StoredCurve(
+                id="section-curve-1",
+                name="Section Curve 1",
+                section_result_id="section-result-1",
+                plane_id="plane-1",
+                original_points=points,
+                fitted_points=points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, section_curve)
+            window.select_curve(section_curve.id)
+
+            window.start_manual_curve_edit_mode()
+
+            self.assertFalse(window._manual_curve_edit_active)
+            self.assertEqual(
+                window.status_text.get(),
+                "Only manual curves can be edited in this mode.",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_edit_add_insert_apply_cancel_and_context_actions(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    (1.0, 1.0, 0.0),
+                ],
+            )
+            self.assertEqual(len(curve.metadata["control_points"]), 3)
+
+            window.viewport.projected_points = [np.asarray([1.0, 0.0, 0.0], dtype=float)]
+            self.assertTrue(_manual_curve_click(window, 20, 20))
+            self.assertEqual(window._manual_curve_selected_control_point_index, 1)
+            self.assertEqual(window.status_text.get(), "Selected control point 2")
+            self.assertEqual(str(window.delete_manual_point_button.cget("state")), "normal")
+
+            menu = window._build_manual_curve_context_menu()
+            labels = [
+                menu.entrycget(index, "label")
+                for index in range(menu.index("end") + 1)
+            ]
+            self.assertIn("Apply / Finish Current Curve", labels)
+            self.assertIn("Cancel Current Action", labels)
+            self.assertIn("Restart Current Curve", labels)
+            self.assertIn("Done Editing", labels)
+            self.assertIn("Toggle Closed", labels)
+            self.assertIn("Delete Selected Point", labels)
+
+            before_count = len(window._manual_curve_points)
+            with patch.object(window, "_show_manual_curve_context_menu") as popup:
+                handled = window._on_viewport_pointer_event("right_release", 40, 40)
+            self.assertTrue(handled)
+            popup.assert_called_once()
+            self.assertEqual(len(window._manual_curve_points), before_count)
+
+            window.activate_manual_curve_add_point()
+            self.assertTrue(window._manual_curve_add_point_active)
+            window.viewport.projected_points = [np.asarray([2.0, 1.0, 0.0], dtype=float)]
+            self.assertTrue(_manual_curve_click(window, 30, 30))
+            self.assertFalse(window._manual_curve_add_point_active)
+            self.assertEqual(len(window._manual_curve_points), 4)
+            self.assertEqual(window.status_text.get(), "Point added. Add Point mode off.")
+            self.assertEqual(len(curve.metadata["control_points"]), 3)
+
+            window.activate_manual_curve_insert_point()
+            window.viewport.projected_points = [np.asarray([0.5, 0.0, 0.0], dtype=float)]
+            self.assertTrue(_manual_curve_click(window, 35, 35))
+            self.assertFalse(window._manual_curve_insert_point_active)
+            self.assertEqual(len(window._manual_curve_points), 5)
+            self.assertEqual(window.status_text.get(), "Point inserted. Insert mode off.")
+
+            window.apply_manual_curve_edits()
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window.status_text.get(), "Curve edits saved")
+            self.assertEqual(len(curve.metadata["control_points"]), 5)
+            self.assertGreater(len(curve.fitted_points), len(curve.original_points))
+
+            window.undo()
+            restored_curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(window.status_text.get(), "Undid Edit Manual Curve")
+            self.assertEqual(len(restored_curve.metadata["control_points"]), 3)
+            self.assertEqual(len(window._manual_curve_points), 3)
+
+            window.redo()
+            curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(window.status_text.get(), "Redid Edit Manual Curve")
+            self.assertEqual(len(curve.metadata["control_points"]), 5)
+            self.assertEqual(len(window._manual_curve_points), 5)
+
+            window.activate_manual_curve_add_point()
+            window.viewport.projected_points = [np.asarray([3.0, 1.0, 0.0], dtype=float)]
+            self.assertTrue(_manual_curve_click(window, 45, 45))
+            self.assertEqual(len(window._manual_curve_points), 6)
+
+            window.cancel_manual_curve_edit()
+
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window.status_text.get(), "Curve edit cancelled")
+            self.assertEqual(len(window._manual_curve_points), 5)
+            self.assertEqual(len(curve.metadata["control_points"]), 5)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_edit_drag_delete_floor_and_curve_type(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    (1.0, 1.0, 0.0),
+                ],
+            )
+
+            window.viewport.projected_points = [np.asarray([1.0, 0.0, 0.0], dtype=float)]
+            self.assertTrue(_manual_curve_click(window, 20, 20))
+            self.assertEqual(window._manual_curve_selected_control_point_index, 1)
+
+            moved_point = np.asarray([1.5, 0.25, 0.0], dtype=float)
+            window.viewport.projected_points = [moved_point]
+            self.assertTrue(window._on_viewport_pointer_event("left_press", 20, 20))
+            self.assertTrue(window._on_viewport_pointer_event("motion", 30, 31))
+            self.assertTrue(window._manual_curve_drag_active)
+            self.assertTrue(np.allclose(window._manual_curve_points[1], moved_point))
+            self.assertEqual(window.status_text.get(), "Moving control point 2")
+            self.assertTrue(window._on_viewport_pointer_event("left_release", 30, 31))
+            self.assertFalse(window._manual_curve_drag_active)
+            self.assertEqual(window.status_text.get(), "Moved control point 2")
+
+            window.manual_curve_type_text.set("Polyline")
+            window._on_manual_curve_type_changed()
+            self.assertEqual(window._manual_curve_curve_method, "polyline")
+            self.assertEqual(window.status_text.get(), "Curve type: Polyline")
+            self.assertEqual(window.viewport.scene_calls[-1]["manual_curve_method"], "polyline")
+
+            window.apply_manual_curve_edits()
+            curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(curve.metadata["curve_method"], "polyline")
+            self.assertEqual(len(curve.fitted_points), len(curve.original_points))
+            self.assertTrue(np.allclose(curve.metadata["control_points"][1], moved_point))
+
+            window.delete_selected_manual_curve_point()
+            self.assertEqual(len(window._manual_curve_points), 2)
+            self.assertEqual(window.status_text.get(), "Deleted control point 2")
+            window.delete_selected_manual_curve_point()
+            self.assertEqual(len(window._manual_curve_points), 2)
+            self.assertEqual(
+                window.status_text.get(),
+                "Cannot delete point: curve needs more control points",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_project_restore_upgrades_legacy_manual_curve(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            points = [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ]
+            project = default_project_data()
+            project.curves = [
+                ProjectCurve(
+                    id="curve-legacy",
+                    name="Manual Curve 1",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=points,
+                    fitted_points=[],
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                    visible=True,
+                    metadata={"creation_type": "manual", "closed": False},
+                )
+            ]
+
+            window._restore_project_curve_collection(project)
+
+            curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(curve.metadata["control_points"], points)
+            self.assertEqual(curve.metadata["curve_method"], "polyline")
+            self.assertFalse(curve.metadata["snap_to_mesh"])
+            self.assertTrue(np.allclose(curve.original_points, points))
+            self.assertTrue(np.allclose(curve.fitted_points, points))
+            self.assertIn(
+                "(manual, polyline)",
+                window.scene_browser.tree.item(curve_node_id(curve.id), "text"),
+            )
         finally:
             window.root.destroy()
 
@@ -6660,7 +7002,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.manual_curve_snap_to_mesh.set(True)
             window._on_manual_curve_snap_to_mesh_changed()
 
-            handled = window._on_viewport_pointer_event("left_press", 50, 60)
+            handled = _manual_curve_click(window, 50, 60)
 
             self.assertTrue(handled)
             self.assertEqual(window._manual_curve_points, [])
@@ -6700,8 +7042,27 @@ class MainWindowUiTests(unittest.TestCase):
                 [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
             )
             self.assertFalse(curve.metadata["closed"])
-            self.assertEqual(window.status_text.get(), "Created Manual Curve 1")
+            self.assertEqual(
+                curve.metadata["control_points"],
+                [[0.0, 0.0, 0.3], [1.0, 0.0, 0.4]],
+            )
+            self.assertEqual(curve.metadata["curve_method"], DEFAULT_MANUAL_CURVE_METHOD)
+            self.assertEqual(curve.metadata["sample_count"], DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window.status_text.get(), "Created Manual Curve 1. Editing curve.")
+            self.assertIn(
+                "(mesh, smooth)",
+                window.scene_browser.tree.item(curve_node_id(curve.id), "text"),
+            )
+            self.assertTrue(
+                np.allclose(
+                    curve.original_points,
+                    np.asarray([[0.0, 0.0, 0.3], [1.0, 0.0, 0.4]], dtype=float),
+                )
+            )
+            self.assertGreater(len(curve.fitted_points), len(curve.original_points))
             self.assertTrue(np.allclose(curve.fitted_points[0], [0.0, 0.0, 0.3]))
+            self.assertTrue(np.allclose(curve.fitted_points[-1], [1.0, 0.0, 0.4]))
             self.assertEqual(len(window.viewport.projection_calls), 0)
         finally:
             window.root.destroy()
@@ -6723,7 +7084,7 @@ class MainWindowUiTests(unittest.TestCase):
                     triangle_index=2,
                 )
             ]
-            window._on_viewport_pointer_event("left_press", 10, 10)
+            _manual_curve_click(window, 10, 10)
 
             self.assertTrue(window._manual_curve_active)
             self.assertEqual(len(window._manual_curve_points), 1)
