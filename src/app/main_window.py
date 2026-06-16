@@ -372,6 +372,12 @@ class OpenRetopWindow:
         self._manual_curve_left_dragged = False
         self._manual_curve_context_menu: Menu | None = None
         self._manual_curve_last_context_actions: tuple[str, ...] = ()
+        self._manual_curve_preview_point: np.ndarray | None = None
+        self._manual_curve_preview_valid = False
+        self._manual_curve_preview_snaps_closed = False
+        self._manual_curve_preview_snaps_to_mesh = False
+        self._manual_curve_preview_triangle_index: int | None = None
+        self._manual_curve_preview_normal: list[float] | None = None
         self._region_select_active = False
         self._is_loading_model = False
         self._start_viewport_after_id: str | None = None
@@ -1644,6 +1650,9 @@ class OpenRetopWindow:
     def _set_active_workbench(self, workbench: str, *, set_status: bool) -> None:
         if workbench not in WORKBENCH_NAMES:
             return
+        previous_workbench = self.current_workbench.get()
+        if previous_workbench != workbench:
+            self._clear_manual_curve_preview_state()
         self.current_workbench.set(workbench)
         for name, panel in getattr(self, "workbench_panels", {}).items():
             if name == workbench:
@@ -4609,7 +4618,13 @@ class OpenRetopWindow:
         if event_type == "motion":
             self._update_manual_curve_drag_state(int(x_position), int(y_position))
             if self._should_drag_manual_curve_selected_point():
+                self._clear_manual_curve_preview_state()
                 self._drag_manual_curve_selected_point(int(x_position), int(y_position))
+            else:
+                self._update_manual_curve_preview_from_screen(
+                    int(x_position),
+                    int(y_position),
+                )
             return True
 
         if event_type == "left_release":
@@ -4636,6 +4651,11 @@ class OpenRetopWindow:
 
         if event_type == "right_release":
             self._show_manual_curve_context_menu(int(x_position), int(y_position))
+            return True
+
+        if event_type == "leave":
+            if self._clear_manual_curve_preview_state():
+                self._refresh_viewport(reset_camera=False)
             return True
 
         return False
@@ -4700,6 +4720,218 @@ class OpenRetopWindow:
         self._manual_curve_left_dragged = False
         return is_click
 
+    def _update_manual_curve_preview_from_screen(
+        self,
+        x_position: int,
+        y_position: int,
+    ) -> None:
+        status_signature = self._manual_curve_preview_status_signature()
+        if not self._manual_curve_preview_enabled():
+            if self._clear_manual_curve_preview_state():
+                self._refresh_viewport(reset_camera=False)
+            self._sync_manual_curve_preview_status(status_signature)
+            return
+
+        (
+            point,
+            valid,
+            snaps_to_mesh,
+            triangle_index,
+            normal,
+        ) = self._manual_curve_preview_candidate_from_screen(x_position, y_position)
+        if not valid or point is None:
+            if self._set_manual_curve_preview_state(
+                valid=False,
+                snaps_to_mesh=snaps_to_mesh,
+            ):
+                self._refresh_viewport(reset_camera=False)
+            self._sync_manual_curve_preview_status(status_signature)
+            return
+
+        snaps_closed = should_snap_closed_to_first_point(
+            self._manual_curve_points,
+            point,
+            model_extent=self._manual_curve_model_extent(),
+        )
+        if self._set_manual_curve_preview_state(
+            point=point,
+            valid=True,
+            snaps_closed=snaps_closed,
+            snaps_to_mesh=snaps_to_mesh,
+            triangle_index=triangle_index,
+            normal=normal,
+        ):
+            self._refresh_viewport(reset_camera=False)
+        self._sync_manual_curve_preview_status(status_signature)
+
+    def _manual_curve_preview_enabled(self) -> bool:
+        if not self._manual_curve_active:
+            return False
+        if self.current_workbench.get() != "Manual RE":
+            return False
+        if self._manual_curve_edit_active:
+            return bool(
+                (self._manual_curve_add_point_active or self._manual_curve_insert_point_active)
+                and not self._manual_curve_drag_active
+            )
+        return bool(self._manual_curve_placing_enabled)
+
+    def _manual_curve_preview_status_signature(self) -> tuple[object, ...]:
+        return (
+            bool(self._manual_curve_preview_enabled()),
+            bool(self._manual_curve_preview_valid),
+            bool(self._manual_curve_preview_snaps_closed),
+            bool(self.manual_curve_snap_to_mesh.get()),
+            bool(self._manual_curve_edit_active),
+            bool(self._manual_curve_add_point_active),
+            bool(self._manual_curve_insert_point_active),
+        )
+
+    def _sync_manual_curve_preview_status(
+        self,
+        previous_signature: tuple[object, ...],
+    ) -> None:
+        status = self._manual_curve_preview_status()
+        if (
+            previous_signature == self._manual_curve_preview_status_signature()
+            and self.status_text.get() == status
+        ):
+            return
+        self.status_text.set(status)
+
+    def _manual_curve_preview_status(self) -> str:
+        if not self._manual_curve_preview_enabled():
+            return self._manual_curve_status()
+        if self._manual_curve_preview_snaps_closed:
+            return "Manual Curve: click near first point to close."
+        if self._manual_curve_edit_active:
+            if self._manual_curve_add_point_active:
+                return "Edit Curve: Add Point active. Click to place next point."
+            if self._manual_curve_insert_point_active:
+                return "Edit Curve: Insert Point active. Click segment location."
+            return "Manual Curve Edit: click a control point to select it."
+        if bool(self.manual_curve_snap_to_mesh.get()):
+            if self._manual_curve_preview_valid:
+                return "Manual Curve: Snap to Mesh On. Click scan surface to place."
+            return "Manual Curve: no mesh under cursor."
+        if self._manual_curve_preview_valid:
+            return "Manual Curve: previewing next point. Click to place."
+        return "Manual Curve: could not place point on work plane"
+
+    def _manual_curve_preview_candidate_from_screen(
+        self,
+        x_position: int,
+        y_position: int,
+    ) -> tuple[np.ndarray | None, bool, bool, int | None, list[float] | None]:
+        if bool(self.manual_curve_snap_to_mesh.get()):
+            pick_result = self.viewport.pick_mesh_at_screen_point(
+                int(x_position),
+                int(y_position),
+            )
+            if not bool(getattr(pick_result, "hit", False)):
+                return (None, False, True, None, None)
+            position = getattr(pick_result, "position", None)
+            point = self._finite_manual_curve_point(position)
+            if point is None:
+                return (None, False, True, None, None)
+            triangle_index = self._manual_curve_triangle_index_value(
+                getattr(pick_result, "triangle_index", None)
+            )
+            normal = self._manual_curve_pick_normal_value(
+                getattr(pick_result, "normal", None)
+            )
+            return (point, True, True, triangle_index, normal)
+
+        point = self.viewport.screen_point_to_plane(
+            int(x_position),
+            int(y_position),
+            self._manual_curve_plane_origin,
+            self._manual_curve_plane_normal,
+        )
+        point_array = self._finite_manual_curve_point(point)
+        if point_array is None:
+            return (None, False, False, None, None)
+        return (point_array, True, False, None, None)
+
+    @staticmethod
+    def _finite_manual_curve_point(point: object) -> np.ndarray | None:
+        if point is None:
+            return None
+        try:
+            point_array = np.asarray(point, dtype=float).reshape(3)
+        except (TypeError, ValueError):
+            return None
+        if not np.all(np.isfinite(point_array)):
+            return None
+        return point_array
+
+    @staticmethod
+    def _manual_curve_triangle_index_value(index: object) -> int | None:
+        if index is None:
+            return None
+        try:
+            return int(index)
+        except (TypeError, ValueError):
+            return None
+
+    def _set_manual_curve_preview_state(
+        self,
+        *,
+        point: np.ndarray | None = None,
+        valid: bool,
+        snaps_closed: bool = False,
+        snaps_to_mesh: bool = False,
+        triangle_index: int | None = None,
+        normal: list[float] | None = None,
+    ) -> bool:
+        point_array = None if point is None else np.asarray(point, dtype=float).reshape(3)
+        changed = self._manual_curve_preview_state_changed(
+            point_array,
+            valid=valid,
+            snaps_closed=snaps_closed,
+            snaps_to_mesh=snaps_to_mesh,
+            triangle_index=triangle_index,
+            normal=normal,
+        )
+        self._manual_curve_preview_point = point_array if valid else None
+        self._manual_curve_preview_valid = bool(valid)
+        self._manual_curve_preview_snaps_closed = bool(snaps_closed and valid)
+        self._manual_curve_preview_snaps_to_mesh = bool(snaps_to_mesh and valid)
+        self._manual_curve_preview_triangle_index = triangle_index if valid else None
+        self._manual_curve_preview_normal = list(normal) if valid and normal is not None else None
+        return changed
+
+    def _manual_curve_preview_state_changed(
+        self,
+        point: np.ndarray | None,
+        *,
+        valid: bool,
+        snaps_closed: bool,
+        snaps_to_mesh: bool,
+        triangle_index: int | None,
+        normal: list[float] | None,
+    ) -> bool:
+        if self._manual_curve_preview_valid != bool(valid):
+            return True
+        if self._manual_curve_preview_snaps_closed != bool(snaps_closed and valid):
+            return True
+        if self._manual_curve_preview_snaps_to_mesh != bool(snaps_to_mesh and valid):
+            return True
+        if self._manual_curve_preview_triangle_index != (triangle_index if valid else None):
+            return True
+        current_normal = self._manual_curve_preview_normal
+        next_normal = list(normal) if valid and normal is not None else None
+        if current_normal != next_normal:
+            return True
+        if not valid:
+            return self._manual_curve_preview_point is not None
+        if point is None or self._manual_curve_preview_point is None:
+            return True
+        return not bool(np.allclose(self._manual_curve_preview_point, point))
+
+    def _clear_manual_curve_preview_state(self) -> bool:
+        return self._set_manual_curve_preview_state(valid=False)
+
     def start_manual_curve_mode(self) -> None:
         if self.app_state.mesh_object is None:
             self.status_text.set("Load a mesh to use Manual Curve")
@@ -4733,6 +4965,7 @@ class OpenRetopWindow:
         self._manual_curve_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
         self._manual_curve_left_press_position = None
         self._manual_curve_left_dragged = False
+        self._clear_manual_curve_preview_state()
         self._manual_curve_points = []
         self._manual_curve_closed = False
         self._manual_curve_snap_point_count = 0
@@ -4752,6 +4985,7 @@ class OpenRetopWindow:
             return
 
         if self._manual_curve_active:
+            self._clear_manual_curve_preview_state()
             self._refresh_viewport(reset_camera=False)
             self.status_text.set(self._manual_curve_status())
             self._sync_workflow_ui()
@@ -4841,6 +5075,7 @@ class OpenRetopWindow:
         self._manual_curve_insert_point_active = False
         self._manual_curve_left_press_position = None
         self._manual_curve_left_dragged = False
+        self._clear_manual_curve_preview_state()
         self._load_manual_curve_edit_working_copy(curve, control_data=control_data)
         self._set_active_workbench("Manual RE", set_status=False)
         self._refresh_viewport(reset_camera=False)
@@ -4969,32 +5204,67 @@ class OpenRetopWindow:
         if key == "C":
             self._toggle_manual_curve_closed()
 
-    def _place_manual_curve_point(self, x_position: int, y_position: int) -> None:
-        if bool(self.manual_curve_snap_to_mesh.get()):
-            self._place_manual_curve_mesh_point(x_position, y_position)
-            return
-
-        point = self.viewport.screen_point_to_plane(
-            int(x_position),
-            int(y_position),
-            self._manual_curve_plane_origin,
-            self._manual_curve_plane_normal,
+    def _prepare_manual_curve_preview_for_click(
+        self,
+        x_position: int,
+        y_position: int,
+    ) -> bool:
+        if not self._manual_curve_preview_enabled():
+            return False
+        point, valid, snaps_to_mesh, triangle_index, normal = (
+            self._manual_curve_preview_candidate_from_screen(x_position, y_position)
         )
-        if point is None:
-            self.status_text.set("Manual Curve: could not place point on work plane")
+        if not valid or point is None:
+            self._set_manual_curve_preview_state(
+                valid=False,
+                snaps_to_mesh=snaps_to_mesh,
+            )
+            return False
+        self._set_manual_curve_preview_state(
+            point=point,
+            valid=True,
+            snaps_closed=should_snap_closed_to_first_point(
+                self._manual_curve_points,
+                point,
+                model_extent=self._manual_curve_model_extent(),
+            ),
+            snaps_to_mesh=snaps_to_mesh,
+            triangle_index=triangle_index,
+            normal=normal,
+        )
+        return True
+
+    def _manual_curve_click_miss_status(self) -> str:
+        if bool(self.manual_curve_snap_to_mesh.get()):
+            return "Manual Curve: no mesh under cursor."
+        return "Manual Curve: could not place point on work plane"
+
+    def _place_manual_curve_point(self, x_position: int, y_position: int) -> None:
+        if not self._prepare_manual_curve_preview_for_click(x_position, y_position):
+            self.status_text.set(self._manual_curve_click_miss_status())
             self._sync_workflow_ui()
             return
 
-        point_array = np.asarray(point, dtype=float).reshape(3)
-        if not np.all(np.isfinite(point_array)):
-            self.status_text.set("Manual Curve: could not place point on work plane")
+        point_array = self._manual_curve_preview_point
+        if point_array is None:
+            self.status_text.set(self._manual_curve_click_miss_status())
             self._sync_workflow_ui()
             return
-
-        if self._snap_manual_curve_closed_to_first_point(point_array):
+        if self._manual_curve_preview_snaps_closed:
+            self._snap_manual_curve_closed_to_first_point(point_array)
+            self._clear_manual_curve_preview_state()
             return
 
-        self._append_manual_curve_point(point_array, snapped=False)
+        snapped = bool(self._manual_curve_preview_snaps_to_mesh)
+        triangle_index = self._manual_curve_preview_triangle_index
+        normal = self._manual_curve_preview_normal
+        self._clear_manual_curve_preview_state()
+        self._append_manual_curve_point(
+            point_array,
+            snapped=snapped,
+            triangle_index=triangle_index,
+            normal=normal,
+        )
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
         self._sync_workflow_ui()
@@ -5024,6 +5294,7 @@ class OpenRetopWindow:
             return
 
         if self._snap_manual_curve_closed_to_first_point(point_array):
+            self._clear_manual_curve_preview_state()
             return
 
         triangle_index = getattr(pick_result, "triangle_index", None)
@@ -5034,6 +5305,7 @@ class OpenRetopWindow:
         normal_value = self._manual_curve_pick_normal_value(
             getattr(pick_result, "normal", None)
         )
+        self._clear_manual_curve_preview_state()
         self._append_manual_curve_point(
             point_array,
             snapped=True,
@@ -5051,7 +5323,7 @@ class OpenRetopWindow:
         *,
         ctrl_pressed: bool,
     ) -> None:
-        if self._manual_curve_add_point_active or bool(ctrl_pressed):
+        if self._manual_curve_add_point_active:
             self._add_manual_curve_edit_point(int(x_position), int(y_position))
             return
         if self._manual_curve_insert_point_active:
@@ -5108,20 +5380,33 @@ class OpenRetopWindow:
         return point_array
 
     def _add_manual_curve_edit_point(self, x_position: int, y_position: int) -> None:
-        point = self._manual_curve_point_from_screen(
-            x_position,
-            y_position,
-            snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
-        )
-        if point is None:
+        if not self._prepare_manual_curve_preview_for_click(x_position, y_position):
+            self.status_text.set(self._manual_curve_click_miss_status())
+            self._sync_workflow_ui()
             return
 
-        if self._snap_manual_curve_closed_to_first_point(point, edit_status=True):
+        point = self._manual_curve_preview_point
+        if point is None:
+            self.status_text.set(self._manual_curve_click_miss_status())
+            self._sync_workflow_ui()
+            return
+        if self._manual_curve_preview_snaps_closed:
+            self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
             self._manual_curve_add_point_active = False
             self._manual_curve_placing_enabled = False
+            self._clear_manual_curve_preview_state()
             return
 
-        self._manual_curve_points.append(point)
+        snapped = bool(self._manual_curve_preview_snaps_to_mesh)
+        triangle_index = self._manual_curve_preview_triangle_index
+        normal = self._manual_curve_preview_normal
+        self._clear_manual_curve_preview_state()
+        self._append_manual_curve_point(
+            point,
+            snapped=snapped,
+            triangle_index=triangle_index,
+            normal=normal,
+        )
         self._manual_curve_selected_control_point_index = len(self._manual_curve_points) - 1
         self._manual_curve_add_point_active = False
         self._manual_curve_placing_enabled = False
@@ -5130,21 +5415,35 @@ class OpenRetopWindow:
         self._sync_workflow_ui()
 
     def _insert_manual_curve_edit_point(self, x_position: int, y_position: int) -> None:
-        point = self._manual_curve_point_from_screen(
-            x_position,
-            y_position,
-            snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
-        )
-        if point is None:
+        if not self._prepare_manual_curve_preview_for_click(x_position, y_position):
+            self.status_text.set(self._manual_curve_click_miss_status())
+            self._sync_workflow_ui()
             return
 
-        if self._snap_manual_curve_closed_to_first_point(point, edit_status=True):
+        point = self._manual_curve_preview_point
+        if point is None:
+            self.status_text.set(self._manual_curve_click_miss_status())
+            self._sync_workflow_ui()
+            return
+        if self._manual_curve_preview_snaps_closed:
+            self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
+            self._clear_manual_curve_preview_state()
             return
 
+        snapped = bool(self._manual_curve_preview_snaps_to_mesh)
+        triangle_index = self._manual_curve_preview_triangle_index
+        normal = self._manual_curve_preview_normal
+        self._clear_manual_curve_preview_state()
         insert_index = self._manual_curve_insert_index_for_point(point)
-        self._manual_curve_points.insert(insert_index, point)
+        self._insert_manual_curve_point(
+            insert_index,
+            point,
+            snapped=snapped,
+            triangle_index=triangle_index,
+            normal=normal,
+        )
         self._manual_curve_selected_control_point_index = insert_index
         self._manual_curve_insert_point_active = False
         self._manual_curve_placing_enabled = False
@@ -5223,7 +5522,7 @@ class OpenRetopWindow:
         self._manual_curve_add_point_active = True
         self._manual_curve_insert_point_active = False
         self._manual_curve_placing_enabled = True
-        self.status_text.set("Add Point: click once to place a control point.")
+        self.status_text.set("Edit Curve: Add Point active. Click to place next point.")
         self._sync_workflow_ui()
 
     def activate_manual_curve_insert_point(self) -> None:
@@ -5235,7 +5534,7 @@ class OpenRetopWindow:
         self._manual_curve_insert_point_active = True
         self._manual_curve_add_point_active = False
         self._manual_curve_placing_enabled = True
-        self.status_text.set("Insert Point: click once to insert into nearest segment.")
+        self.status_text.set("Edit Curve: Insert Point active. Click segment location.")
         self._sync_workflow_ui()
 
     def delete_selected_manual_curve_point(self) -> None:
@@ -5256,6 +5555,17 @@ class OpenRetopWindow:
 
         removed_index = self._manual_curve_selected_control_point_index
         self._manual_curve_points.pop(removed_index)
+        if removed_index < len(self._manual_curve_snap_flags):
+            was_snapped = self._manual_curve_snap_flags.pop(removed_index)
+            if was_snapped:
+                self._manual_curve_snap_point_count = max(
+                    0,
+                    self._manual_curve_snap_point_count - 1,
+                )
+        if removed_index < len(self._manual_curve_snap_triangle_indices):
+            self._manual_curve_snap_triangle_indices.pop(removed_index)
+        if removed_index < len(self._manual_curve_snap_normals):
+            self._manual_curve_snap_normals.pop(removed_index)
         if removed_index >= len(self._manual_curve_points):
             removed_index = len(self._manual_curve_points) - 1
         self._manual_curve_selected_control_point_index = removed_index
@@ -5283,12 +5593,9 @@ class OpenRetopWindow:
             self.status_text.set("Manual Curve: already closed")
         else:
             self._manual_curve_closed = True
-            self.status_text.set(
-                "Curve closed"
-                if edit_status
-                else "Manual Curve: snapped closed to first point"
-            )
+            self.status_text.set("Curve closed to first point")
         self._manual_curve_selected_control_point_index = 0 if edit_status else None
+        self._clear_manual_curve_preview_state()
         self._refresh_viewport(reset_camera=False)
         self._sync_workflow_ui()
         return True
@@ -5324,6 +5631,27 @@ class OpenRetopWindow:
         self._manual_curve_snap_flags.append(snapped)
         self._manual_curve_snap_triangle_indices.append(triangle_index)
         self._manual_curve_snap_normals.append(normal)
+        if snapped:
+            self._manual_curve_snap_point_count += 1
+
+    def _insert_manual_curve_point(
+        self,
+        index: int,
+        point: np.ndarray,
+        *,
+        snapped: bool,
+        triangle_index: int | None = None,
+        normal: list[float] | None = None,
+    ) -> None:
+        insert_index = min(max(int(index), 0), len(self._manual_curve_points))
+        self._manual_curve_points.insert(
+            insert_index,
+            np.asarray(point, dtype=float).reshape(3),
+        )
+        snapped = bool(snapped)
+        self._manual_curve_snap_flags.insert(insert_index, snapped)
+        self._manual_curve_snap_triangle_indices.insert(insert_index, triangle_index)
+        self._manual_curve_snap_normals.insert(insert_index, normal)
         if snapped:
             self._manual_curve_snap_point_count += 1
 
@@ -5581,6 +5909,7 @@ class OpenRetopWindow:
     def _cancel_manual_curve_subaction(self, *, status: str) -> bool:
         if self._manual_curve_drag_active:
             self._manual_curve_drag_active = False
+            self._clear_manual_curve_preview_state()
             self.status_text.set(status)
             self._sync_workflow_ui()
             return True
@@ -5588,6 +5917,7 @@ class OpenRetopWindow:
             self._manual_curve_add_point_active = False
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
+            self._clear_manual_curve_preview_state()
             self.status_text.set(status)
             self._sync_workflow_ui()
             return True
@@ -5708,6 +6038,7 @@ class OpenRetopWindow:
         self._manual_curve_snap_flags = []
         self._manual_curve_snap_triangle_indices = []
         self._manual_curve_snap_normals = []
+        self._clear_manual_curve_preview_state()
         if reset_snap:
             self.manual_curve_snap_to_mesh.set(False)
 
@@ -6455,6 +6786,18 @@ class OpenRetopWindow:
             ),
             manual_curve_method=self._manual_curve_curve_method,
             manual_curve_sample_count=self._manual_curve_sample_count,
+            manual_curve_preview_point=(
+                self._manual_curve_preview_point
+                if self._manual_curve_active and self._manual_curve_preview_valid
+                else None
+            ),
+            manual_curve_preview_valid=(
+                self._manual_curve_preview_valid
+                if self._manual_curve_active
+                else False
+            ),
+            manual_curve_preview_snaps_closed=self._manual_curve_preview_snaps_closed,
+            manual_curve_preview_snaps_to_mesh=self._manual_curve_preview_snaps_to_mesh,
             reset_camera=reset_camera,
         )
         self._refresh_scene_browser()
@@ -6531,17 +6874,17 @@ class OpenRetopWindow:
         self.current_mode_text.set(mode)
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                prompt = "Add Point: click once to place a control point."
+                prompt = "Edit Curve: Add Point active. Click to place next point."
             elif self._manual_curve_insert_point_active:
-                prompt = "Insert Point: click once to insert into nearest segment."
+                prompt = "Edit Curve: Insert Point active. Click segment location."
             else:
                 prompt = "Manual Curve Edit: click a control point to select it."
             hints = "Enter=apply, Esc=done/cancel action, Backspace=delete point, C=closed"
         elif self._manual_curve_active:
             if bool(self.manual_curve_snap_to_mesh.get()):
-                prompt = "Snap to Mesh: click mesh surface to place point."
+                prompt = "Manual Curve: Snap to Mesh On. Click scan surface to place."
             else:
-                prompt = "Manual Curve: click to place point."
+                prompt = "Manual Curve: previewing next point. Click to place."
             hints = "Enter=finish, Esc=cancel, Backspace=remove, C=closed"
         elif self.app_state.transform_state is not None:
             prompt = self._active_transform_status()

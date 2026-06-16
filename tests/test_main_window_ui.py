@@ -653,7 +653,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.current_mode_text.get(), "Manual Curve")
             self.assertEqual(
                 window.command_prompt_text.get(),
-                "Manual Curve: click to place point.",
+                "Manual Curve: previewing next point. Click to place.",
             )
             self.assertIn("Enter=finish", window.hotkey_hint_text.get())
             self.assertIn("MANUAL CURVE MODE", details)
@@ -6524,6 +6524,196 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_manual_curve_preview_updates_on_motion_without_placing_point(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            preview_point = np.asarray([0.25, 0.5, 0.75], dtype=float)
+            window.viewport.projected_points = [preview_point]
+
+            handled = window._on_viewport_pointer_event("motion", 40, 60)
+
+            self.assertTrue(handled)
+            self.assertTrue(window._manual_curve_preview_valid)
+            self.assertTrue(np.allclose(window._manual_curve_preview_point, preview_point))
+            self.assertFalse(window._manual_curve_preview_snaps_to_mesh)
+            self.assertFalse(window._manual_curve_preview_snaps_closed)
+            self.assertIsNone(window._manual_curve_preview_triangle_index)
+            self.assertIsNone(window._manual_curve_preview_normal)
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertEqual(len(window.app_state.curve_collection.curves), 0)
+            self.assertEqual(
+                window.status_text.get(),
+                "Manual Curve: previewing next point. Click to place.",
+            )
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.scene_calls[-1]["manual_curve_preview_point"],
+                    preview_point,
+                )
+            )
+            self.assertTrue(window.viewport.scene_calls[-1]["manual_curve_preview_valid"])
+
+            handled = window._on_viewport_pointer_event("leave", 40, 60)
+
+            self.assertTrue(handled)
+            self.assertFalse(window._manual_curve_preview_valid)
+            self.assertIsNone(window._manual_curve_preview_point)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_preview_tracks_closure_and_clears_on_mode_exit(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window._manual_curve_points = [
+                np.asarray([0.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 0.0, 0.0], dtype=float),
+                np.asarray([1.0, 1.0, 0.0], dtype=float),
+            ]
+            window.viewport.projected_points = [np.asarray([0.01, 0.0, 0.0], dtype=float)]
+
+            window._on_viewport_pointer_event("motion", 10, 10)
+
+            self.assertTrue(window._manual_curve_preview_valid)
+            self.assertTrue(window._manual_curve_preview_snaps_closed)
+            self.assertEqual(len(window._manual_curve_points), 3)
+
+            window._set_active_workbench("Scene", set_status=False)
+
+            self.assertFalse(window._manual_curve_preview_valid)
+            self.assertIsNone(window._manual_curve_preview_point)
+
+            window.viewport.projected_points = [np.asarray([0.5, 0.0, 0.0], dtype=float)]
+            window._on_viewport_pointer_event("motion", 20, 20)
+            self.assertFalse(window._manual_curve_preview_valid)
+
+            window._handle_shortcut("Esc")
+
+            self.assertFalse(window._manual_curve_preview_valid)
+            self.assertIsNone(window._manual_curve_preview_point)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_snap_preview_tracks_mesh_hit_and_miss_without_status_spam(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.manual_curve_snap_to_mesh.set(True)
+            window._on_manual_curve_snap_to_mesh_changed()
+            hit_point = np.asarray([0.0, 0.0, 0.3], dtype=float)
+            window.viewport.mesh_pick_results = [
+                MeshPickResult(
+                    hit=True,
+                    position=hit_point,
+                    normal=np.asarray([0.0, 0.0, 1.0], dtype=float),
+                    triangle_index=12,
+                )
+            ]
+
+            window._on_viewport_pointer_event("motion", 50, 60)
+
+            self.assertTrue(window._manual_curve_preview_valid)
+            self.assertTrue(np.allclose(window._manual_curve_preview_point, hit_point))
+            self.assertTrue(window._manual_curve_preview_snaps_to_mesh)
+            self.assertEqual(window._manual_curve_preview_triangle_index, 12)
+            self.assertEqual(window._manual_curve_preview_normal, [0.0, 0.0, 1.0])
+            self.assertEqual(window._manual_curve_points, [])
+            self.assertEqual(
+                window.status_text.get(),
+                "Manual Curve: Snap to Mesh On. Click scan surface to place.",
+            )
+
+            window._on_viewport_pointer_event("motion", 55, 65)
+
+            self.assertFalse(window._manual_curve_preview_valid)
+            self.assertIsNone(window._manual_curve_preview_point)
+            self.assertEqual(window.status_text.get(), "Manual Curve: no mesh under cursor.")
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_preview_clears_on_new_project_and_delete_mesh(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.viewport.projected_points = [np.asarray([0.25, 0.5, 0.0], dtype=float)]
+            window._on_viewport_pointer_event("motion", 10, 10)
+            self.assertTrue(window._manual_curve_preview_valid)
+
+            window._set_project_dirty(False)
+            window.new_project()
+
+            self.assertFalse(window._manual_curve_preview_valid)
+            self.assertIsNone(window._manual_curve_preview_point)
+
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            window.viewport.projected_points = [np.asarray([0.5, 0.25, 0.0], dtype=float)]
+            window._on_viewport_pointer_event("motion", 20, 20)
+            self.assertTrue(window._manual_curve_preview_valid)
+
+            with patch("app.main_window.messagebox.askyesno", return_value=True):
+                window.delete_mesh()
+
+            self.assertFalse(window._manual_curve_preview_valid)
+            self.assertIsNone(window._manual_curve_preview_point)
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_preview_click_safety_requires_valid_click_release(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+
+            window.viewport.projected_points = [np.asarray([0.1, 0.2, 0.0], dtype=float)]
+            self.assertTrue(window._on_viewport_pointer_event("motion", 10, 10))
+            self.assertEqual(window._manual_curve_points, [])
+
+            with patch.object(window, "_show_manual_curve_context_menu") as popup:
+                self.assertTrue(window._on_viewport_pointer_event("right_release", 12, 12))
+            popup.assert_called_once()
+            self.assertEqual(window._manual_curve_points, [])
+
+            self.assertFalse(window._on_viewport_pointer_event("middle_press", 15, 15))
+            self.assertFalse(window._on_viewport_pointer_event("middle_release", 15, 15))
+            self.assertEqual(window._manual_curve_points, [])
+
+            window.viewport.projected_points = [np.asarray([0.4, 0.5, 0.0], dtype=float)]
+            self.assertTrue(window._on_viewport_pointer_event("left_press", 20, 20))
+            self.assertTrue(window._on_viewport_pointer_event("motion", 30, 30))
+            self.assertTrue(window._on_viewport_pointer_event("left_release", 30, 30))
+            self.assertEqual(window._manual_curve_points, [])
+
+            window.viewport.projected_points = [np.asarray([0.7, 0.8, 0.0], dtype=float)]
+            self.assertTrue(_manual_curve_click(window, 40, 40))
+            self.assertEqual(len(window._manual_curve_points), 1)
+            self.assertTrue(np.allclose(window._manual_curve_points[0], [0.7, 0.8, 0.0]))
+
+            window.viewport.projected_points = [None]
+            self.assertTrue(_manual_curve_click(window, 45, 45))
+            self.assertEqual(len(window._manual_curve_points), 1)
+            self.assertEqual(
+                window.status_text.get(),
+                "Manual Curve: could not place point on work plane",
+            )
+        finally:
+            window.root.destroy()
+
     def test_manual_curve_backspace_escape_and_closed_toggle_behaviors(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -6580,7 +6770,7 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertTrue(window._manual_curve_closed)
             self.assertEqual(len(window._manual_curve_points), 3)
-            self.assertEqual(window.status_text.get(), "Manual Curve: snapped closed to first point")
+            self.assertEqual(window.status_text.get(), "Curve closed to first point")
 
             window._handle_shortcut("Enter")
             curve = window.app_state.curve_collection.curves[-1]
@@ -6817,17 +7007,31 @@ class MainWindowUiTests(unittest.TestCase):
 
             window.activate_manual_curve_add_point()
             self.assertTrue(window._manual_curve_add_point_active)
+            add_preview = np.asarray([1.5, 0.5, 0.0], dtype=float)
+            window.viewport.projected_points = [add_preview]
+            window._on_viewport_pointer_event("motion", 28, 28)
+            self.assertTrue(window._manual_curve_preview_valid)
+            self.assertTrue(np.allclose(window._manual_curve_preview_point, add_preview))
+            self.assertEqual(len(window._manual_curve_points), 3)
             window.viewport.projected_points = [np.asarray([2.0, 1.0, 0.0], dtype=float)]
             self.assertTrue(_manual_curve_click(window, 30, 30))
             self.assertFalse(window._manual_curve_add_point_active)
+            self.assertFalse(window._manual_curve_preview_valid)
             self.assertEqual(len(window._manual_curve_points), 4)
             self.assertEqual(window.status_text.get(), "Point added. Add Point mode off.")
             self.assertEqual(len(curve.metadata["control_points"]), 3)
 
             window.activate_manual_curve_insert_point()
+            insert_preview = np.asarray([0.25, 0.0, 0.0], dtype=float)
+            window.viewport.projected_points = [insert_preview]
+            window._on_viewport_pointer_event("motion", 34, 34)
+            self.assertTrue(window._manual_curve_preview_valid)
+            self.assertTrue(np.allclose(window._manual_curve_preview_point, insert_preview))
+            self.assertEqual(len(window._manual_curve_points), 4)
             window.viewport.projected_points = [np.asarray([0.5, 0.0, 0.0], dtype=float)]
             self.assertTrue(_manual_curve_click(window, 35, 35))
             self.assertFalse(window._manual_curve_insert_point_active)
+            self.assertFalse(window._manual_curve_preview_valid)
             self.assertEqual(len(window._manual_curve_points), 5)
             self.assertEqual(window.status_text.get(), "Point inserted. Insert mode off.")
 
@@ -7006,11 +7210,11 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertTrue(handled)
             self.assertEqual(window._manual_curve_points, [])
-            self.assertEqual(window.status_text.get(), "No mesh under cursor.")
+            self.assertEqual(window.status_text.get(), "Manual Curve: no mesh under cursor.")
             self.assertEqual(window.current_mode_text.get(), "Manual Curve")
             self.assertEqual(
                 window.command_prompt_text.get(),
-                "Snap to Mesh: click mesh surface to place point.",
+                "Manual Curve: Snap to Mesh On. Click scan surface to place.",
             )
             self.assertEqual(window.viewport.mesh_pick_calls[-1], {"x": 50, "y": 60})
             self.assertEqual(len(window.viewport.projection_calls), 0)
