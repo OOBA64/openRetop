@@ -8,6 +8,7 @@ from tkinter import Menu, ttk
 from app.selection_types import (
     SELECT_CURVE,
     SELECT_MODEL,
+    SELECT_REGION,
     SELECT_SECTION_PLANE,
     SELECT_SECTION_RESULT,
     SELECT_SURFACE,
@@ -15,6 +16,7 @@ from app.selection_types import (
 from curves.curve_state import StoredCurve
 from curves.curve_state import is_repaired_curve
 from curves.manual_curve import is_manual_curve_like
+from regions.region_state import RegionSelection
 from sections.section_state import SectionPlaneState, StoredSectionResult
 from surfaces.surface_state import SurfacePatch
 
@@ -36,6 +38,8 @@ CURVE_GROUP_REPAIRED_ID = "__repaired_curves__"
 CURVE_GROUP_MANUAL_ID = "__manual_curves__"
 NODE_SURFACES = "surfaces"
 NODE_SURFACE = "surface"
+NODE_REGIONS = "regions"
+NODE_REGION = "region"
 
 
 def section_plane_node_id(plane_id: str) -> str:
@@ -126,6 +130,22 @@ def surface_id_from_node(node_id: str | None) -> str | None:
     return surface_id or None
 
 
+def region_node_id(region_id: str) -> str:
+    return f"{NODE_REGION}:{region_id}"
+
+
+def region_id_from_node(node_id: str | None) -> str | None:
+    if node_id is None:
+        return None
+
+    prefix = f"{NODE_REGION}:"
+    if not node_id.startswith(prefix):
+        return None
+
+    region_id = node_id[len(prefix) :]
+    return region_id or None
+
+
 def _visibility_label(label: str, visible: bool) -> str:
     return f"[V] {label}" if visible else f"[H] {label}"
 
@@ -157,6 +177,12 @@ def _curve_display_label(curve: StoredCurve, fallback_label: str) -> str:
         suffixes.append("(closed)")
     suffixes = suffixes[:2]
     return f"{label} {' '.join(suffixes)}" if suffixes else label
+
+
+def _region_display_label(region: RegionSelection, fallback_label: str) -> str:
+    label = region.name or fallback_label
+    triangle_count = len(region.triangle_indices)
+    return f"{label} ({triangle_count:,} tris)"
 
 
 def _is_manual_curve(curve: StoredCurve) -> bool:
@@ -204,6 +230,9 @@ class SceneBrowser:
         self._surface_node_ids: set[str] = set()
         self._active_surface_node_id: str | None = None
         self._selected_surface_node_ids: set[str] = set()
+        self._region_node_ids: set[str] = set()
+        self._active_region_node_id: str | None = None
+        self._selected_region_node_ids: set[str] = set()
 
         self.frame = ttk.Frame(parent, width=230, padding=(8, 8), style="Sidebar.TFrame")
         self.frame.grid_propagate(False)
@@ -227,56 +256,69 @@ class SceneBrowser:
         self.tree.bind("<Button-3>", self._on_tree_context_menu)
 
         self._context_menu = Menu(self.tree, tearoff=False)
+        self._select_menu_index = 0
+        self._context_menu.add_command(
+            label="Select",
+            command=lambda: self._emit_visibility_action("select"),
+        )
+        self._rename_menu_index = 1
         self._context_menu.add_command(
             label="Rename",
             command=lambda: self._emit_visibility_action("rename"),
         )
-        self._select_source_curves_menu_index = 1
+        self._select_source_curves_menu_index = 2
         self._context_menu.add_command(
             label="Select Source Curves",
             command=lambda: self._emit_visibility_action("select_source_curves"),
         )
-        self._isolate_source_curves_menu_index = 2
+        self._isolate_source_curves_menu_index = 3
         self._context_menu.add_command(
             label="Isolate Source Curves",
             command=lambda: self._emit_visibility_action("isolate_source_curves"),
         )
-        self._show_source_curves_menu_index = 3
+        self._show_source_curves_menu_index = 4
         self._context_menu.add_command(
             label="Show Source Curves",
             command=lambda: self._emit_visibility_action("show_source_curves"),
         )
-        self._frame_source_curves_menu_index = 4
+        self._frame_source_curves_menu_index = 5
         self._context_menu.add_command(
             label="Frame Source Curves",
             command=lambda: self._emit_visibility_action("frame_source_curves"),
         )
         self._context_menu.add_separator()
+        self._toggle_visibility_menu_index = 7
         self._context_menu.add_command(
             label="Toggle Visibility",
             command=lambda: self._emit_visibility_action("toggle_visibility"),
         )
+        self._hide_selected_menu_index = 8
         self._context_menu.add_command(
             label="Hide Selected",
             command=lambda: self._emit_visibility_action("hide_selected"),
         )
+        self._show_selected_menu_index = 9
         self._context_menu.add_command(
             label="Show Selected",
             command=lambda: self._emit_visibility_action("show_selected"),
         )
+        self._isolate_selected_menu_index = 10
         self._context_menu.add_command(
             label="Isolate Selected",
             command=lambda: self._emit_visibility_action("hide_unselected"),
         )
+        self._show_all_menu_index = 11
         self._context_menu.add_command(
             label="Show All",
             command=lambda: self._emit_visibility_action("show_all"),
         )
         self._context_menu.add_separator()
+        self._delete_selected_menu_index = 13
         self._context_menu.add_command(
             label="Delete Selected",
             command=lambda: self._emit_visibility_action("delete_selected"),
         )
+        self._frame_selected_menu_index = 14
         self._context_menu.add_command(
             label="Frame Selected",
             command=lambda: self._emit_visibility_action("frame_selected"),
@@ -306,6 +348,9 @@ class SceneBrowser:
         has_curves: bool,
         has_surfaces: bool,
         selected_item: str | None,
+        regions: Sequence[RegionSelection] = (),
+        active_region_id: str | None = None,
+        selected_region_ids: set[str] | None = None,
     ) -> None:
         """Refresh visible nodes from app state and mirror viewport selection."""
 
@@ -313,6 +358,8 @@ class SceneBrowser:
         has_section_result = has_mesh and bool(has_section_result)
         has_curves = has_mesh and bool(has_curves)
         has_surfaces = has_mesh and bool(has_surfaces)
+        has_regions = has_mesh and bool(regions)
+        selected_region_ids = selected_region_ids or set()
 
         self._syncing_selection = True
         try:
@@ -363,6 +410,15 @@ class SceneBrowser:
                 )
             else:
                 self._remove_surface_nodes()
+
+            if has_regions:
+                self._sync_region_nodes(
+                    regions,
+                    active_region_id=active_region_id,
+                    selected_region_ids=selected_region_ids,
+                )
+            else:
+                self._remove_region_nodes()
 
             self._order_nodes()
             self._sync_tree_selection(selected_item)
@@ -718,6 +774,59 @@ class SceneBrowser:
         self._active_surface_node_id = None
         self._remove_node(NODE_SURFACES)
 
+    def _sync_region_nodes(
+        self,
+        regions: Sequence[RegionSelection],
+        *,
+        active_region_id: str | None,
+        selected_region_ids: set[str],
+    ) -> None:
+        self._ensure_node(
+            NODE_REGIONS,
+            _visibility_group_label(
+                "Regions",
+                [region.visible for region in regions],
+            ),
+            open_node=True,
+        )
+
+        current_node_ids: list[str] = []
+        for index, region in enumerate(regions, start=1):
+            node_id = region_node_id(region.id)
+            current_node_ids.append(node_id)
+            label = _visibility_label(
+                _region_display_label(region, f"Region {index}"),
+                bool(region.visible),
+            )
+            self._ensure_node(node_id, label, parent=NODE_REGIONS)
+
+        current_node_id_set = set(current_node_ids)
+        for child_id in self.tree.get_children(NODE_REGIONS):
+            if child_id not in current_node_id_set:
+                self.tree.delete(child_id)
+
+        self._region_node_ids = current_node_id_set
+        self._selected_region_node_ids = {
+            region_node_id(region_id)
+            for region_id in selected_region_ids
+            if region_node_id(region_id) in current_node_id_set
+        }
+        active_node_id = (
+            region_node_id(active_region_id)
+            if active_region_id is not None
+            else None
+        )
+        if active_node_id in current_node_id_set:
+            self._active_region_node_id = active_node_id
+        else:
+            self._active_region_node_id = current_node_ids[0] if current_node_ids else None
+
+    def _remove_region_nodes(self) -> None:
+        self._region_node_ids = set()
+        self._selected_region_node_ids = set()
+        self._active_region_node_id = None
+        self._remove_node(NODE_REGIONS)
+
     def _remove_node(self, node_id: str) -> None:
         if self.tree.exists(node_id):
             self.tree.delete(node_id)
@@ -730,6 +839,7 @@ class SceneBrowser:
             NODE_SECTION_RESULTS,
             NODE_CURVES,
             NODE_SURFACES,
+            NODE_REGIONS,
         )
         for index, node_id in enumerate(ordered_nodes):
             if self.tree.exists(node_id):
@@ -807,6 +917,8 @@ class SceneBrowser:
             return self._active_curve_node_id
         if selected_item == SELECT_SURFACE:
             return self._active_surface_node_id
+        if selected_item == SELECT_REGION:
+            return self._active_region_node_id
         return None
 
     def _selection_for_node(self, node_id: str | None) -> str | None:
@@ -817,6 +929,7 @@ class SceneBrowser:
             NODE_SECTION_RESULTS,
             NODE_CURVES,
             NODE_SURFACES,
+            NODE_REGIONS,
         }:
             return node_id
         if node_id in self._curve_group_node_ids:
@@ -828,6 +941,8 @@ class SceneBrowser:
         if node_id in self._curve_node_ids:
             return node_id
         if node_id in self._surface_node_ids:
+            return node_id
+        if node_id in self._region_node_ids:
             return node_id
         return None
 
@@ -843,6 +958,8 @@ class SceneBrowser:
             return set(self._selected_curve_node_ids)
         if selected_item == SELECT_SURFACE:
             return set(self._selected_surface_node_ids)
+        if selected_item == SELECT_REGION:
+            return set(self._selected_region_node_ids)
         return set()
 
     def _node_order(self) -> tuple[str, ...]:
@@ -853,6 +970,7 @@ class SceneBrowser:
             NODE_SECTION_RESULTS,
             NODE_CURVES,
             NODE_SURFACES,
+            NODE_REGIONS,
         ):
             if not self.tree.exists(root_node_id):
                 continue
@@ -903,7 +1021,17 @@ class SceneBrowser:
                 and surface_id_from_node(self.selected_node_ids()[0]) is not None
                 else "disabled"
             )
-            self._context_menu.entryconfigure(0, state=rename_state)
+            selected_node_ids = self.selected_node_ids()
+            selected_state = "normal" if selected_node_ids else "disabled"
+            region_parent_selected = NODE_REGIONS in selected_node_ids
+            self._context_menu.entryconfigure(
+                self._select_menu_index,
+                state=selected_state,
+            )
+            self._context_menu.entryconfigure(
+                self._rename_menu_index,
+                state=rename_state,
+            )
             self._context_menu.entryconfigure(
                 self._select_source_curves_menu_index,
                 state=source_curve_state,
@@ -919,6 +1047,18 @@ class SceneBrowser:
             self._context_menu.entryconfigure(
                 self._frame_source_curves_menu_index,
                 state=source_curve_state,
+            )
+            self._context_menu.entryconfigure(
+                self._hide_selected_menu_index,
+                label="Hide Children" if region_parent_selected else "Hide Selected",
+            )
+            self._context_menu.entryconfigure(
+                self._show_selected_menu_index,
+                label="Show Children" if region_parent_selected else "Show Selected",
+            )
+            self._context_menu.entryconfigure(
+                self._delete_selected_menu_index,
+                label="Delete Children" if region_parent_selected else "Delete Selected",
             )
             try:
                 self._context_menu.tk_popup(
@@ -936,6 +1076,7 @@ class SceneBrowser:
             or node_id in self._section_result_node_ids
             or node_id in self._curve_node_ids
             or node_id in self._surface_node_ids
+            or node_id in self._region_node_ids
         )
 
     def _emit_visibility_action(self, action: str) -> None:

@@ -29,6 +29,7 @@ from app.scene_browser import (
     NODE_CURVE_GROUP_REPAIRED,
     NODE_EMPTY_SCENE,
     NODE_MESH,
+    NODE_REGIONS,
     NODE_SCENE,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
@@ -36,6 +37,7 @@ from app.scene_browser import (
     curve_group_node_id,
     curve_id_from_node,
     curve_node_id,
+    region_node_id,
     section_result_id_from_node,
     section_plane_node_id,
     section_result_node_id,
@@ -325,7 +327,7 @@ def _sharp_region_mesh() -> TriangleMeshData:
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
+                [-0.5, 0.0, 0.5],
             ],
             dtype=float,
         ),
@@ -447,6 +449,20 @@ def _create_manual_curve(
 
 
 def _manual_curve_click(window: OpenRetopWindow, x_position: int, y_position: int) -> bool:
+    press_handled = window._on_viewport_pointer_event(
+        "left_press",
+        x_position,
+        y_position,
+    )
+    release_handled = window._on_viewport_pointer_event(
+        "left_release",
+        x_position,
+        y_position,
+    )
+    return bool(press_handled and release_handled)
+
+
+def _region_click(window: OpenRetopWindow, x_position: int, y_position: int) -> bool:
     press_handled = window._on_viewport_pointer_event(
         "left_press",
         x_position,
@@ -2635,7 +2651,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.tools_menu.invoke(3)
             self.assertEqual(window.status_text.get(), "No selection")
             window.tools_menu.invoke(5)
-            self.assertEqual(window.status_text.get(), "Load a mesh to use Region Select")
+            self.assertEqual(window.status_text.get(), "Region selection requires a loaded mesh.")
             window.sections_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No selection")
             window.sections_menu.invoke(2)
@@ -7327,10 +7343,14 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.current_mode_text.get(), "Region Select")
             self.assertEqual(
                 window.command_prompt_text.get(),
-                "Region Select: click mesh surface to inspect connected area.",
+                "Region Select: click a mesh area to grow a connected region.",
             )
-            self.assertEqual(window.hotkey_hint_text.get(), "Esc=cancel")
-            handled = window._on_viewport_pointer_event("left_press", 20, 30)
+            self.assertEqual(
+                window.hotkey_hint_text.get(),
+                "Esc cancel, click mesh to select region.",
+            )
+            self.assertEqual(str(window.region_select_button.cget("state")), "normal")
+            handled = _region_click(window, 20, 30)
 
             region = window.app_state.region_collection.active_region
             self.assertTrue(handled)
@@ -7338,11 +7358,29 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(region.triangle_indices, (0,))
             self.assertEqual(region.source_mesh_name, "sample.stl")
             self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
-            self.assertIn("1 triangle", window.status_text.get())
+            self.assertEqual(window.region_triangle_count_text.get(), "1")
+            self.assertEqual(window.region_seed_triangle_text.get(), "0")
+            self.assertEqual(window.app_state.selected_item, "region")
+            self.assertEqual(window.current_workbench.get(), "Manual RE")
+            self.assertEqual(window.manual_curve_mode_title.get(), "REGION SELECT MODE")
+            self.assertIn(
+                "Click a mesh area to grow a connected region by normal angle.",
+                window.manual_curve_mode_details.get(),
+            )
+            region_node = region_node_id(region.id)
+            self.assertTrue(window.scene_browser.tree.exists(NODE_REGIONS))
+            self.assertEqual(window.scene_browser.tree.selection(), (region_node,))
+            self.assertEqual(
+                window.scene_browser.tree.item(region_node, "text"),
+                "[V] Region 1 (1 tris)",
+            )
+            self.assertEqual(window.status_text.get(), "Selected region: 1 triangle at 20.0\u00b0.")
 
             window._handle_shortcut("Esc")
             self.assertFalse(window._region_select_active)
             self.assertEqual(window.current_mode_text.get(), "No Mode")
+            self.assertIs(window.app_state.region_collection.active_region, region)
+            self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
             self.assertEqual(window.status_text.get(), "Region Select cancelled")
         finally:
             window.root.destroy()
@@ -7354,19 +7392,21 @@ class MainWindowUiTests(unittest.TestCase):
         try:
             _load_sample_model(window)
             window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
-            window.region_threshold_degrees.set(95.0)
+            window.region_threshold_text.set("90")
+            window._on_region_threshold_entry_changed()
             window.viewport.mesh_pick_results.append(
                 MeshPickResult(hit=True, triangle_index=0)
             )
             window.start_region_select_mode()
-            window._on_viewport_pointer_event("left_press", 20, 30)
+            _region_click(window, 20, 30)
             wide_region = window.app_state.region_collection.active_region
 
-            window.region_threshold_degrees.set(20.0)
+            window.region_threshold_text.set("20")
+            window._on_region_threshold_entry_changed()
             window.viewport.mesh_pick_results.append(
                 MeshPickResult(hit=True, triangle_index=0)
             )
-            window._on_viewport_pointer_event("left_press", 20, 30)
+            _region_click(window, 20, 30)
             narrow_region = window.app_state.region_collection.active_region
 
             self.assertIsNotNone(wide_region)
@@ -7391,21 +7431,226 @@ class MainWindowUiTests(unittest.TestCase):
                 MeshPickResult(hit=True, triangle_index=0)
             )
             window.start_region_select_mode()
-            window._on_viewport_pointer_event("left_press", 20, 30)
+            _region_click(window, 20, 30)
             region = window.app_state.region_collection.active_region
             self.assertIsNotNone(region)
 
-            window.hide_region_highlight()
+            window.hide_region_selection()
             self.assertFalse(region.visible)
             self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
 
-            window.show_region_highlight()
+            window.show_region_selection()
             self.assertTrue(region.visible)
             self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
 
             window.clear_region_selection()
             self.assertIsNone(window.app_state.region_collection.active_region)
             self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
+            self.assertTrue(window._region_select_active)
+        finally:
+            window.root.destroy()
+
+    def test_region_select_ignores_drag_and_miss_keeps_active_region(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window.start_region_select_mode()
+            _region_click(window, 20, 30)
+            region = window.app_state.region_collection.active_region
+            self.assertIsNotNone(region)
+
+            window.viewport.mesh_pick_results.append(MeshPickResult(hit=False))
+            window._on_viewport_pointer_event("left_press", 20, 30)
+            window._on_viewport_pointer_event("motion", 40, 30)
+            window._on_viewport_pointer_event("left_release", 40, 30)
+            self.assertIs(window.app_state.region_collection.active_region, region)
+            self.assertEqual(len(window.viewport.mesh_pick_results), 1)
+
+            with patch.object(window, "_show_region_select_context_menu") as popup:
+                self.assertTrue(window._on_viewport_pointer_event("right_release", 30, 40))
+            popup.assert_called_once()
+            self.assertIs(window.app_state.region_collection.active_region, region)
+            self.assertEqual(len(window.viewport.mesh_pick_results), 1)
+
+            _region_click(window, 50, 60)
+            self.assertIs(window.app_state.region_collection.active_region, region)
+            self.assertEqual(window.status_text.get(), "No mesh under cursor.")
+        finally:
+            window.root.destroy()
+
+    def test_recompute_region_uses_controls_and_rejects_invalid_cap(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window.start_region_select_mode()
+            _region_click(window, 20, 30)
+            initial_region = window.app_state.region_collection.active_region
+            self.assertIsNotNone(initial_region)
+            initial_id = initial_region.id
+
+            window.region_threshold_text.set("90")
+            window._on_region_threshold_entry_changed()
+            window.recompute_region_selection()
+            recomputed = window.app_state.region_collection.active_region
+            self.assertIsNotNone(recomputed)
+            self.assertEqual(recomputed.id, initial_id)
+            self.assertEqual(set(recomputed.triangle_indices), {0, 1})
+            self.assertEqual(
+                window.status_text.get(),
+                "Recomputed region: 2 triangles at 90.0\u00b0.",
+            )
+
+            window.region_max_triangle_count.set("0")
+            window.recompute_region_selection()
+            self.assertIs(window.app_state.region_collection.active_region, recomputed)
+            self.assertEqual(
+                window.status_text.get(),
+                "Max triangles must be a whole number >= 1.",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_region_scene_browser_visibility_rename_frame_and_delete(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window.start_region_select_mode()
+            _region_click(window, 20, 30)
+            region = window.app_state.region_collection.active_region
+            self.assertIsNotNone(region)
+            region_node = region_node_id(region.id)
+            tree = window.scene_browser.tree
+
+            self.assertTrue(tree.exists(NODE_REGIONS))
+            self.assertEqual(tree.item(NODE_REGIONS, "text"), "[V] Regions")
+            self.assertEqual(tree.get_children(NODE_REGIONS), (region_node,))
+            self.assertEqual(tree.item(region_node, "text"), "[V] Region 1 (1 tris)")
+
+            tree.selection_set(NODE_REGIONS)
+            tree.focus(NODE_REGIONS)
+            with (
+                patch.object(window.scene_browser._context_menu, "tk_popup"),
+                patch.object(window.scene_browser._context_menu, "grab_release"),
+            ):
+                self.assertEqual(
+                    window.scene_browser._on_tree_context_menu(
+                        SimpleNamespace(y=-1, x_root=0, y_root=0)
+                    ),
+                    "break",
+                )
+            menu = window.scene_browser._context_menu
+            self.assertEqual(
+                menu.entrycget(window.scene_browser._select_menu_index, "label"),
+                "Select",
+            )
+            self.assertEqual(
+                menu.entrycget(window.scene_browser._hide_selected_menu_index, "label"),
+                "Hide Children",
+            )
+            self.assertEqual(
+                menu.entrycget(window.scene_browser._show_selected_menu_index, "label"),
+                "Show Children",
+            )
+            self.assertEqual(
+                menu.entrycget(window.scene_browser._delete_selected_menu_index, "label"),
+                "Delete Children",
+            )
+
+            window._on_scene_browser_visibility("hide_selected", (region_node,))
+            self.assertFalse(region.visible)
+            self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
+            self.assertEqual(tree.item(region_node, "text"), "[H] Region 1 (1 tris)")
+            self.assertEqual(tree.item(NODE_REGIONS, "text"), "[H] Regions")
+
+            window._on_scene_browser_visibility("show_selected", (region_node,))
+            self.assertTrue(region.visible)
+            self.assertIs(window.viewport.scene_calls[-1]["region_selection"], region)
+            self.assertEqual(tree.item(region_node, "text"), "[V] Region 1 (1 tris)")
+
+            tree.selection_set(region_node)
+            tree.focus(region_node)
+            window._on_scene_browser_visibility("select", (region_node,))
+            self.assertEqual(window.app_state.selected_item, "region")
+            self.assertEqual(window.status_text.get(), "Selected: Region 1")
+
+            window.region_name_text.set("Forehead Patch")
+            window._on_region_name_changed()
+            self.assertEqual(region.name, "Forehead Patch")
+            self.assertEqual(tree.item(region_node, "text"), "[V] Forehead Patch (1 tris)")
+
+            window._on_scene_browser_visibility("frame_selected", (region_node,))
+            self.assertEqual(len(window.viewport.framed_bounds), 1)
+            self.assertEqual(window.status_text.get(), "Framed: Forehead Patch")
+
+            window._on_scene_browser_visibility("delete_selected", (region_node,))
+            self.assertIsNone(window.app_state.region_collection.active_region)
+            self.assertFalse(tree.exists(NODE_REGIONS))
+            self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
+            self.assertEqual(window.status_text.get(), "Region deleted.")
+        finally:
+            window.root.destroy()
+
+    def test_region_select_exits_manual_curve_mode_and_lifecycle_clears_region(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.start_manual_curve_mode()
+            self.assertTrue(window._manual_curve_active)
+
+            window.start_region_select_mode()
+            self.assertFalse(window._manual_curve_active)
+            self.assertTrue(window._region_select_active)
+
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            _region_click(window, 20, 30)
+            self.assertIsNotNone(window.app_state.region_collection.active_region)
+            self.assertTrue(window.scene_browser.tree.exists(NODE_REGIONS))
+
+            with patch("app.main_window.messagebox.askyesnocancel", return_value=False):
+                window.new_project()
+
+            self.assertIsNone(window.app_state.region_collection.active_region)
+            self.assertFalse(window._region_select_active)
+            self.assertFalse(window.scene_browser.tree.exists(NODE_REGIONS))
+
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.start_region_select_mode()
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            _region_click(window, 20, 30)
+            self.assertIsNotNone(window.app_state.region_collection.active_region)
+
+            with patch("app.main_window.messagebox.askyesno", return_value=True):
+                window.delete_mesh()
+
+            self.assertIsNone(window.app_state.region_collection.active_region)
+            self.assertFalse(window._region_select_active)
+            self.assertFalse(window.scene_browser.tree.exists(NODE_REGIONS))
         finally:
             window.root.destroy()
 

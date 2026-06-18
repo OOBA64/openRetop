@@ -23,6 +23,7 @@ from app.scene_browser import (
     NODE_CURVE_GROUP_MANUAL,
     NODE_CURVE_GROUP_REPAIRED,
     NODE_MESH,
+    NODE_REGIONS,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
     NODE_SURFACES,
@@ -31,6 +32,8 @@ from app.scene_browser import (
     curve_group_node_id,
     curve_id_from_node,
     curve_node_id,
+    region_id_from_node,
+    region_node_id,
     section_result_id_from_node,
     section_result_node_id,
     section_plane_id_from_node,
@@ -41,6 +44,7 @@ from app.scene_browser import (
 from app.selection_types import (
     SELECT_CURVE,
     SELECT_MODEL,
+    SELECT_REGION,
     SELECT_SECTION_PLANE,
     SELECT_SECTION_RESULT,
     SELECT_SURFACE,
@@ -379,6 +383,11 @@ class OpenRetopWindow:
         self._manual_curve_preview_triangle_index: int | None = None
         self._manual_curve_preview_normal: list[float] | None = None
         self._region_select_active = False
+        self._region_select_left_press_position: tuple[int, int] | None = None
+        self._region_select_left_dragged = False
+        self._region_select_current_seed_triangle_index: int | None = None
+        self._region_select_last_hit_triangle_index: int | None = None
+        self._region_select_context_menu: Menu | None = None
         self._is_loading_model = False
         self._start_viewport_after_id: str | None = None
         self.current_project_path: Path | None = None
@@ -397,7 +406,10 @@ class OpenRetopWindow:
         self.show_section_plane = BooleanVar(value=False)
         self.manual_curve_snap_to_mesh = BooleanVar(value=False)
         self.region_threshold_degrees = DoubleVar(value=DEFAULT_REGION_THRESHOLD_DEGREES)
+        self.region_threshold_text = StringVar(value=f"{DEFAULT_REGION_THRESHOLD_DEGREES:.1f}")
         self.region_max_triangle_count = StringVar(value=str(DEFAULT_REGION_MAX_TRIANGLES))
+        self._last_valid_region_threshold = DEFAULT_REGION_THRESHOLD_DEGREES
+        self._last_valid_region_max_triangle_count = DEFAULT_REGION_MAX_TRIANGLES
         self.proxy_quality = StringVar(
             value=normalize_proxy_quality(
                 self.settings.import_settings.default_proxy_quality
@@ -430,6 +442,14 @@ class OpenRetopWindow:
             value="Load a mesh to enable Snap to Mesh."
         )
         self.manual_curve_type_text = StringVar(value="Smooth Curve")
+        self.region_name_text = StringVar(value="(none)")
+        self.region_triangle_count_text = StringVar(value="0")
+        self.region_threshold_display_text = StringVar(value="20.0 deg")
+        self.region_max_triangle_cap_text = StringVar(value=f"{DEFAULT_REGION_MAX_TRIANGLES:,}")
+        self.region_seed_triangle_text = StringVar(value="-")
+        self.region_source_mesh_text = StringVar(value="(none)")
+        self.region_visible_text = StringVar(value="No")
+        self.region_status_text = StringVar(value="No active region")
         self.project_path_text = StringVar(value="Project: Untitled Project")
         self.selected_object_type_text = StringVar(value="(none)")
         self.file_name_text = StringVar(value="(none)")
@@ -652,7 +672,8 @@ class OpenRetopWindow:
             return
 
         self._clear_scene_data(reset_camera=False)
-        self._set_project_dirty(True)
+        if deleted_count != 1 or not delete_targets["regions"]:
+            self._set_project_dirty(True)
         self.status_text.set("Mesh deleted")
 
     def _delete_mesh_confirmation_text(self) -> str:
@@ -1060,6 +1081,16 @@ class OpenRetopWindow:
                     surface.name = name
                     return
 
+        region_id = region_id_from_node(node_id)
+        active_region = self.app_state.region_collection.active_region
+        if (
+            region_id is not None
+            and active_region is not None
+            and active_region.id == region_id
+        ):
+            active_region.name = name
+            return
+
     def _push_visibility_command(
         self,
         command_name: str,
@@ -1110,6 +1141,11 @@ class OpenRetopWindow:
             node_id = surface_node_id(surface.id)
             if node_id in node_ids:
                 snapshot[node_id] = bool(surface.visible)
+        active_region = self.app_state.region_collection.active_region
+        if active_region is not None:
+            node_id = region_node_id(active_region.id)
+            if node_id in node_ids:
+                snapshot[node_id] = bool(active_region.visible)
         return snapshot
 
     def _apply_visibility_snapshot(self, snapshot: dict[str, bool]) -> None:
@@ -1131,6 +1167,11 @@ class OpenRetopWindow:
             node_id = surface_node_id(surface.id)
             if node_id in snapshot:
                 surface.visible = bool(snapshot[node_id])
+        active_region = self.app_state.region_collection.active_region
+        if active_region is not None:
+            node_id = region_node_id(active_region.id)
+            if node_id in snapshot:
+                active_region.visible = bool(snapshot[node_id])
 
     def _delete_undo_command_for_targets(
         self,
@@ -2730,14 +2771,110 @@ class OpenRetopWindow:
         ).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(2, 0))
         row += 1
         row = self._add_separator(parent, row)
-        row = self._add_heading(parent, row, "Coming Later")
-        self.region_select_placeholder_button = ttk.Button(
+        row = self._add_heading(parent, row, "Region Selection")
+        self.region_select_button = ttk.Button(
             parent,
             text="Region Select",
-            command=lambda: self._not_implemented("Region Select"),
+            command=self.start_region_select_mode,
         )
-        self.region_select_placeholder_button.grid(row=row, column=0, columnspan=2, sticky="ew")
+        self.region_select_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         row += 1
+        ttk.Label(parent, text="Region Name").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.region_name_entry = ttk.Entry(
+            parent,
+            textvariable=self.region_name_text,
+        )
+        self.region_name_entry.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+        self.region_name_entry.bind("<KeyRelease>", self._on_region_name_changed)
+        self.region_name_entry.bind("<FocusOut>", self._on_region_name_changed)
+        self.region_name_entry.bind("<Return>", self._on_region_name_changed)
+        row += 1
+        self.recompute_region_button = ttk.Button(
+            parent,
+            text="Recompute Region",
+            command=self.recompute_region_selection,
+        )
+        self.recompute_region_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.clear_region_button = ttk.Button(
+            parent,
+            text="Clear Region",
+            command=self.clear_region_selection,
+        )
+        self.clear_region_button.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        self.hide_region_button = ttk.Button(
+            parent,
+            text="Hide Region",
+            command=self.hide_region_selection,
+        )
+        self.hide_region_button.grid(row=row, column=1, sticky="ew", pady=(4, 0), padx=(8, 0))
+        row += 1
+        self.show_region_button = ttk.Button(
+            parent,
+            text="Show Region",
+            command=self.show_region_selection,
+        )
+        self.show_region_button.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        self.delete_region_button = ttk.Button(
+            parent,
+            text="Delete Region",
+            command=self.delete_region_selection,
+        )
+        self.delete_region_button.grid(row=row, column=1, sticky="ew", pady=(4, 0), padx=(8, 0))
+        row += 1
+        self.done_region_select_button = ttk.Button(
+            parent,
+            text="Done Selecting",
+            command=lambda: self._exit_region_select_mode(status="Region Select finished"),
+        )
+        self.done_region_select_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        ttk.Label(parent, text="Threshold").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.region_threshold_entry = ttk.Entry(
+            parent,
+            textvariable=self.region_threshold_text,
+            width=8,
+        )
+        self.region_threshold_entry.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+        self.region_threshold_entry.bind("<FocusOut>", self._on_region_threshold_entry_changed)
+        self.region_threshold_entry.bind("<Return>", self._on_region_threshold_entry_changed)
+        row += 1
+        self.region_threshold_slider = ttk.Scale(
+            parent,
+            from_=0.0,
+            to=90.0,
+            variable=self.region_threshold_degrees,
+            command=self._on_region_threshold_slider_changed,
+        )
+        self.region_threshold_slider.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        ttk.Label(parent, text="Max Triangles").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.region_max_triangle_entry = ttk.Entry(
+            parent,
+            textvariable=self.region_max_triangle_count,
+            width=12,
+        )
+        self.region_max_triangle_entry.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+        self.region_max_triangle_entry.bind("<FocusOut>", self._on_region_max_triangle_entry_changed)
+        self.region_max_triangle_entry.bind("<Return>", self._on_region_max_triangle_entry_changed)
+        row += 1
+        row = self._add_info_row(parent, row, "Triangles", self.region_triangle_count_text)
+        row = self._add_info_row(parent, row, "Seed triangle", self.region_seed_triangle_text)
+        row = self._add_info_row(parent, row, "Region status", self.region_status_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Coming Later")
         self.boundary_from_region_placeholder_button = ttk.Button(
             parent,
             text="Boundary From Region",
@@ -2763,12 +2900,6 @@ class OpenRetopWindow:
             sticky="ew",
             pady=(4, 0),
         )
-        row += 1
-        ttk.Label(
-            parent,
-            text="Region tools are placeholders for a later workflow pass.",
-            wraplength=250,
-        ).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
     def _build_info_context(self, parent: ttk.Frame) -> None:
         row = self._add_heading(parent, 0, "Project")
@@ -2792,6 +2923,15 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Source triangles", self.selected_triangle_count_text)
         row = self._add_info_row(parent, row, "Display triangles", self.selected_display_triangle_count_text)
         row = self._add_info_row(parent, row, "Bounding box", self.selected_bbox_size_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Active Region")
+        row = self._add_info_row(parent, row, "Region", self.region_name_text)
+        row = self._add_info_row(parent, row, "Triangle count", self.region_triangle_count_text)
+        row = self._add_info_row(parent, row, "Threshold", self.region_threshold_display_text)
+        row = self._add_info_row(parent, row, "Max cap", self.region_max_triangle_cap_text)
+        row = self._add_info_row(parent, row, "Seed triangle", self.region_seed_triangle_text)
+        row = self._add_info_row(parent, row, "Source mesh", self.region_source_mesh_text)
+        row = self._add_info_row(parent, row, "Visible", self.region_visible_text)
         row = self._add_separator(parent, row)
         row = self._add_heading(parent, row, "Hotkeys")
         ttk.Label(
@@ -2898,6 +3038,10 @@ class OpenRetopWindow:
             self.model_context_frame.grid_remove()
             self.transform_empty_frame.grid()
             self._set_active_workbench("Surfaces", set_status=False)
+        elif selected_item == SELECT_REGION and self.app_state.mesh_object is not None:
+            self.model_context_frame.grid_remove()
+            self.transform_empty_frame.grid()
+            self._set_active_workbench("Manual RE", set_status=False)
         else:
             self.model_context_frame.grid_remove()
             self.transform_empty_frame.grid()
@@ -3282,6 +3426,24 @@ class OpenRetopWindow:
         self._sync_surface_context_from_active_surface()
         self._set_selected_item(SELECT_SURFACE, status=f"Selected: {active_surface.name}")
 
+    def select_region(self, region_id: str | None = None) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        region = self.app_state.region_collection.active_region
+        if region is None:
+            self._set_selected_item(None, status="No selection")
+            return
+        if region_id is not None and region.id != region_id:
+            self._refresh_scene_browser()
+            self.status_text.set("Region not found")
+            return
+
+        region.selected = True
+        self._set_selected_item(SELECT_REGION, status=f"Selected: {region.name or 'Region 1'}")
+        self._sync_region_panel()
+
     def select_surfaces(
         self,
         surface_ids: list[str],
@@ -3542,7 +3704,8 @@ class OpenRetopWindow:
             self._end_active_transform(commit=False, status="Transform cancelled")
         if self._manual_curve_active:
             self._clear_manual_curve_state()
-        self._region_select_active = False
+        if self._region_select_active:
+            self._exit_region_select_mode()
 
         keep_selection_families: set[str] = set()
         if selected_item == SELECT_SECTION_PLANE:
@@ -3553,6 +3716,8 @@ class OpenRetopWindow:
             keep_selection_families.add("curves")
         if selected_item == SELECT_SURFACE:
             keep_selection_families.add("surfaces")
+        if selected_item == SELECT_REGION:
+            keep_selection_families.add("regions")
         self._clear_selection_families(keep=keep_selection_families)
         self.app_state.selected_item = selected_item
         self.app_state.active_transform_mode = None
@@ -3573,8 +3738,14 @@ class OpenRetopWindow:
             clear_curve_selection(self.app_state.curve_collection)
         if "surfaces" not in keep:
             clear_surface_selection(self.app_state.surface_collection)
+        if "regions" not in keep:
+            active_region = self.app_state.region_collection.active_region
+            if active_region is not None:
+                active_region.selected = False
 
     def _on_viewport_selection(self, selected_item: str | None) -> None:
+        if self._region_select_active:
+            return
         if selected_item == SELECT_MODEL:
             self.select_model()
         elif selected_item == SELECT_SECTION_PLANE:
@@ -3593,6 +3764,7 @@ class OpenRetopWindow:
         curve_group_id = curve_group_id_from_node(selected_item)
         curve_id = curve_id_from_node(selected_item)
         surface_id = surface_id_from_node(selected_item)
+        region_id = region_id_from_node(selected_item)
         selected_plane_ids = [
             selected_plane_id
             for selected_plane_id in (
@@ -3621,8 +3793,21 @@ class OpenRetopWindow:
             )
             if selected_surface_id is not None
         ]
+        selected_region_ids = [
+            selected_region_id
+            for selected_region_id in (
+                region_id_from_node(item) for item in selected_node_ids
+            )
+            if selected_region_id is not None
+        ]
         if selected_item == SELECT_MODEL:
             self.select_model()
+        elif selected_item == NODE_REGIONS:
+            region = self.app_state.region_collection.active_region
+            if region is not None:
+                self.select_region(region.id)
+            else:
+                self.status_text.set("No region selection")
         elif selected_item == NODE_CURVES:
             curve_ids = [curve.id for curve in self.app_state.curve_collection.curves]
             if curve_ids:
@@ -3656,6 +3841,9 @@ class OpenRetopWindow:
         elif selected_surface_ids and len(selected_surface_ids) == len(selected_node_ids):
             active_id = surface_id if surface_id in selected_surface_ids else selected_surface_ids[0]
             self.select_surfaces(selected_surface_ids, active_surface_id=active_id)
+        elif selected_region_ids and len(selected_region_ids) == len(selected_node_ids):
+            active_id = region_id if region_id in selected_region_ids else selected_region_ids[0]
+            self.select_region(active_id)
         elif selected_curve_ids and len(selected_curve_ids) == len(selected_node_ids):
             active_id = curve_id if curve_id in selected_curve_ids else selected_curve_ids[0]
             self.select_curves(selected_curve_ids, active_curve_id=active_id)
@@ -3675,6 +3863,8 @@ class OpenRetopWindow:
             self.select_curves([curve_id], active_curve_id=curve_id)
         elif surface_id is not None:
             self.select_surface(surface_id)
+        elif region_id is not None:
+            self.select_region(region_id)
         elif selected_item == SELECT_SECTION_PLANE:
             self.select_section_plane()
         elif selected_item == SELECT_SECTION_RESULT:
@@ -3683,6 +3873,8 @@ class OpenRetopWindow:
             self.select_curve()
         elif selected_item == SELECT_SURFACE:
             self.select_surface()
+        elif selected_item == SELECT_REGION:
+            self.select_region()
         else:
             self.clear_selection()
 
@@ -3740,11 +3932,11 @@ class OpenRetopWindow:
             )
 
         if self._region_select_active:
-            if event_type == "left_press":
-                self._select_region_at_screen_point(int(x_position), int(y_position))
-                return True
-            if event_type == "left_release":
-                return True
+            return self._handle_region_select_pointer_event(
+                event_type,
+                int(x_position),
+                int(y_position),
+            )
 
         if self.app_state.transform_state is None:
             return False
@@ -3768,7 +3960,7 @@ class OpenRetopWindow:
 
     def start_region_select_mode(self) -> None:
         if self.app_state.mesh_object is None:
-            self.status_text.set("Load a mesh to use Region Select")
+            self.status_text.set("Region selection requires a loaded mesh.")
             self._sync_workflow_ui()
             return
 
@@ -3780,8 +3972,12 @@ class OpenRetopWindow:
         self.app_state.active_transform_axis = None
         self._active_transform_angle_delta = None
         self._region_select_active = True
+        self._region_select_left_press_position = None
+        self._region_select_left_dragged = False
+        self._region_select_last_hit_triangle_index = None
+        self._set_active_workbench("Manual RE", set_status=False)
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._region_select_status())
+        self.status_text.set("Region Select: click a mesh area.")
         self._sync_workflow_ui()
 
     def configure_region_threshold(self) -> None:
@@ -3791,16 +3987,17 @@ class OpenRetopWindow:
             parent=self.root,
             initialvalue=self._region_threshold_value(),
             minvalue=0.0,
-            maxvalue=180.0,
+            maxvalue=90.0,
         )
         if value is None:
             self.status_text.set("Region threshold unchanged")
             return
 
-        self.region_threshold_degrees.set(self._clamped_region_threshold(value))
+        self._set_region_threshold_value(value, set_status=False)
         self.status_text.set(
             f"Region threshold: {self._region_threshold_value():.1f} degrees"
         )
+        self._sync_workflow_ui()
 
     def configure_region_max_triangle_count(self) -> None:
         value = simpledialog.askinteger(
@@ -3815,80 +4012,316 @@ class OpenRetopWindow:
             self.status_text.set("Region max triangles unchanged")
             return
 
-        self.region_max_triangle_count.set(str(max(1, int(value))))
+        self._set_region_max_triangle_value(value, set_status=False)
         self.status_text.set(
             f"Region max triangles: {self._region_max_triangle_value():,}"
         )
+        self._sync_workflow_ui()
 
     def clear_region_selection(self) -> None:
         had_region = self.app_state.region_collection.active_region is not None
-        self._clear_region_selection_state()
+        self.app_state.region_collection.clear()
+        self._region_select_current_seed_triangle_index = None
+        self._region_select_last_hit_triangle_index = None
+        if self.app_state.selected_item == SELECT_REGION:
+            self.app_state.selected_item = None
         self._refresh_viewport(reset_camera=False)
+        self._refresh_scene_browser()
         self.status_text.set(
-            "Region selection cleared" if had_region else "No region selection"
+            "Region selection cleared." if had_region else "No region selection"
         )
+        self._sync_workflow_ui()
 
-    def hide_region_highlight(self) -> None:
+    def hide_region_selection(self) -> None:
         region = self.app_state.region_collection.active_region
         if region is None:
             self.status_text.set("No region selection")
+            self._sync_workflow_ui()
             return
 
         region.visible = False
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Region highlight hidden")
+        self._refresh_scene_browser()
+        self.status_text.set("Region hidden.")
+        self._sync_workflow_ui()
 
-    def show_region_highlight(self) -> None:
+    def show_region_selection(self) -> None:
         region = self.app_state.region_collection.active_region
         if region is None:
             self.status_text.set("No region selection")
+            self._sync_workflow_ui()
             return
 
         region.visible = True
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Region highlight shown")
+        self._refresh_scene_browser()
+        self.status_text.set("Region shown.")
+        self._sync_workflow_ui()
+
+    def delete_region_selection(self) -> None:
+        had_region = self.app_state.region_collection.active_region is not None
+        self.app_state.region_collection.clear()
+        self._region_select_current_seed_triangle_index = None
+        self._region_select_last_hit_triangle_index = None
+        if self.app_state.selected_item == SELECT_REGION:
+            self.app_state.selected_item = None
+        self._refresh_viewport(reset_camera=False)
+        self._refresh_scene_browser()
+        self.status_text.set("Region deleted." if had_region else "No region selection")
+        self._sync_workflow_ui()
+
+    def frame_selected_region(self) -> None:
+        region = self.app_state.region_collection.active_region
+        mesh_object = self.app_state.mesh_object
+        if region is None:
+            self.status_text.set("No region selection")
+            return
+
+        bounds = None
+        if mesh_object is not None:
+            bounds = self._bounds_for_node_ids({region_node_id(region.id)})
+        if bounds is None:
+            if mesh_object is not None:
+                self.viewport.frame_model()
+                self.status_text.set("Region framing fallback: framed mesh.")
+            else:
+                self.status_text.set("Region geometry is unavailable")
+            return
+
+        minimum_bound, maximum_bound = bounds
+        if hasattr(self.viewport, "frame_bounds"):
+            self.viewport.frame_bounds(minimum_bound, maximum_bound)
+        else:
+            self.viewport.frame_model()
+        self.status_text.set(f"Framed: {region.name or 'Region 1'}")
+
+    def recompute_region_selection(self) -> None:
+        active_region = self.app_state.region_collection.active_region
+        mesh_object = self.app_state.mesh_object
+        if active_region is None or mesh_object is None:
+            self.status_text.set("No region selection")
+            self._sync_workflow_ui()
+            return
+
+        seed_triangle_index = active_region.seed_triangle_index
+        if seed_triangle_index is None:
+            self.status_text.set("Active region has no seed triangle")
+            self._sync_workflow_ui()
+            return
+
+        controls = self._validated_region_controls()
+        if controls is None:
+            self._sync_workflow_ui()
+            return
+        threshold_degrees, max_triangle_count = controls
+
+        region = create_region_selection(
+            mesh_object.display_mesh,
+            seed_triangle_index,
+            source_mesh_identifier=active_region.source_mesh_identifier
+            or self._region_source_mesh_identifier(),
+            source_mesh_name=active_region.source_mesh_name or mesh_object.name,
+            threshold_degrees=threshold_degrees,
+            max_triangle_count=max_triangle_count,
+            name=active_region.name or "Region 1",
+        )
+        if region is None:
+            self.status_text.set("Region Select: no region found")
+            self._sync_workflow_ui()
+            return
+
+        region.id = active_region.id
+        region.visible = bool(active_region.visible)
+        region.selected = True
+        self.app_state.region_collection.set_active(region)
+        self._region_select_current_seed_triangle_index = seed_triangle_index
+        self._region_select_last_hit_triangle_index = seed_triangle_index
+        self._refresh_viewport(reset_camera=False)
+        self._refresh_scene_browser()
+        self.status_text.set(self._region_result_status("Recomputed region", region))
+        self._sync_workflow_ui()
+
+    def hide_region_highlight(self) -> None:
+        self.hide_region_selection()
+
+    def show_region_highlight(self) -> None:
+        self.show_region_selection()
+
+    def _on_region_name_changed(self, event: object | None = None) -> None:
+        region = self.app_state.region_collection.active_region
+        if region is None:
+            return
+
+        candidate = self._validated_name_candidate(
+            self.region_name_text,
+            region.name or "Region 1",
+            self.region_name_entry,
+            event,
+        )
+        if candidate is None or candidate == region.name:
+            return
+
+        old_name = region.name
+        region.name = candidate
+        self._push_rename_command(
+            region_node_id(region.id),
+            "Rename Region",
+            old_name,
+            candidate,
+        )
+        self._refresh_scene_browser()
+        self.status_text.set(f"Selected: {region.name}")
 
     def _select_region_at_screen_point(self, x_position: int, y_position: int) -> None:
         mesh_object = self.app_state.mesh_object
         if mesh_object is None:
             self.status_text.set("No selection")
+            self._sync_workflow_ui()
             return
+
+        controls = self._validated_region_controls()
+        if controls is None:
+            self._sync_workflow_ui()
+            return
+        threshold_degrees, max_triangle_count = controls
 
         pick_result = self.viewport.pick_mesh_at_screen_point(int(x_position), int(y_position))
         if not bool(getattr(pick_result, "hit", False)):
-            self.status_text.set("No mesh under cursor")
+            self.status_text.set("No mesh under cursor.")
+            self._sync_workflow_ui()
             return
 
         triangle_index = getattr(pick_result, "triangle_index", None)
-        if triangle_index is None:
-            self.status_text.set("Region Select: no triangle under cursor")
+        seed_triangle_index = self._valid_region_seed_triangle_index(
+            mesh_object.display_mesh,
+            triangle_index,
+        )
+        if seed_triangle_index is None:
+            self.status_text.set("No mesh under cursor.")
+            self._sync_workflow_ui()
             return
-        try:
-            seed_triangle_index = int(triangle_index)
-        except (TypeError, ValueError):
-            self.status_text.set("Region Select: no triangle under cursor")
-            return
+        self._region_select_last_hit_triangle_index = seed_triangle_index
+
+        active_region = self.app_state.region_collection.active_region
+        name = active_region.name if active_region is not None and active_region.name else "Region 1"
 
         region = create_region_selection(
             mesh_object.display_mesh,
             seed_triangle_index,
             source_mesh_identifier=self._region_source_mesh_identifier(),
             source_mesh_name=mesh_object.name,
-            threshold_degrees=self._region_threshold_value(),
-            max_triangle_count=self._region_max_triangle_value(),
-            name="Region 1",
+            threshold_degrees=threshold_degrees,
+            max_triangle_count=max_triangle_count,
+            name=name,
         )
         if region is None:
             self.status_text.set("Region Select: no region found")
+            self._sync_workflow_ui()
             return
 
+        region.visible = True
+        region.selected = True
         self.app_state.region_collection.set_active(region)
+        self._region_select_current_seed_triangle_index = seed_triangle_index
+        self.app_state.selected_item = SELECT_REGION
+        self._clear_selection_families(keep={"regions"})
+        self._show_context(SELECT_REGION)
         self._refresh_viewport(reset_camera=False)
-        triangle_count = len(region.triangle_indices)
-        self.status_text.set(
-            f"Region Select: selected {triangle_count:,} "
-            f"{_plural_label(triangle_count, 'triangle')}"
+        self._refresh_scene_browser()
+        self.status_text.set(self._region_result_status("Selected region", region))
+        self._sync_workflow_ui()
+
+    def _handle_region_select_pointer_event(
+        self,
+        event_type: str,
+        x_position: int,
+        y_position: int,
+    ) -> bool:
+        if event_type == "left_press":
+            self._region_select_left_press_position = (int(x_position), int(y_position))
+            self._region_select_left_dragged = False
+            return True
+
+        if event_type == "motion":
+            if self._region_select_left_press_position is None:
+                return False
+            self._update_region_select_drag_state(int(x_position), int(y_position))
+            return True
+
+        if event_type == "left_release":
+            if not self._region_select_release_is_click(int(x_position), int(y_position)):
+                self.status_text.set(self._region_select_status())
+                self._sync_workflow_ui()
+                return True
+            self._select_region_at_screen_point(int(x_position), int(y_position))
+            return True
+
+        if event_type == "right_press":
+            return True
+
+        if event_type == "right_release":
+            self._show_region_select_context_menu(int(x_position), int(y_position))
+            return True
+
+        if event_type == "leave":
+            self._region_select_left_press_position = None
+            self._region_select_left_dragged = False
+            return False
+
+        return False
+
+    def _update_region_select_drag_state(self, x_position: int, y_position: int) -> None:
+        if self._region_select_left_press_position is None:
+            return
+        start_x, start_y = self._region_select_left_press_position
+        distance = abs(int(x_position) - start_x) + abs(int(y_position) - start_y)
+        if distance > 4:
+            self._region_select_left_dragged = True
+
+    def _region_select_release_is_click(self, x_position: int, y_position: int) -> bool:
+        if self._region_select_left_press_position is None:
+            return False
+        self._update_region_select_drag_state(x_position, y_position)
+        is_click = not self._region_select_left_dragged
+        self._region_select_left_press_position = None
+        self._region_select_left_dragged = False
+        return is_click
+
+    def _show_region_select_context_menu(self, x_position: int, y_position: int) -> None:
+        menu = self._build_region_select_context_menu()
+        self._region_select_context_menu = menu
+        try:
+            root_x = int(self.root.winfo_pointerx())
+            root_y = int(self.root.winfo_pointery())
+        except TclError:
+            root_x = int(x_position)
+            root_y = int(y_position)
+        try:
+            menu.tk_popup(root_x, root_y)
+        except TclError:
+            return
+        finally:
+            try:
+                menu.grab_release()
+            except TclError:
+                pass
+
+    def _build_region_select_context_menu(self) -> Menu:
+        menu = Menu(self.root, tearoff=False)
+        menu.add_command(label="Clear Region", command=self.clear_region_selection)
+        menu.add_command(label="Hide Region", command=self.hide_region_selection)
+        menu.add_command(label="Show Region", command=self.show_region_selection)
+        menu.add_command(label="Delete Region", command=self.delete_region_selection)
+        menu.add_separator()
+        menu.add_command(
+            label="Cancel Region Select",
+            command=lambda: self._exit_region_select_mode(status="Region Select cancelled"),
         )
+        active_region = self.app_state.region_collection.active_region
+        region_state = "normal" if active_region is not None else "disabled"
+        for index in range(4):
+            menu.entryconfigure(index, state=region_state)
+        return menu
 
     def _active_visible_region_selection(self) -> RegionSelection | None:
         region = self.app_state.region_collection.active_region
@@ -3896,15 +4329,33 @@ class OpenRetopWindow:
             return None
         return region
 
+    def _exit_region_select_mode(self, *, status: str | None = None) -> None:
+        self._region_select_active = False
+        self._region_select_left_press_position = None
+        self._region_select_left_dragged = False
+        self._region_select_current_seed_triangle_index = None
+        self._region_select_last_hit_triangle_index = None
+        if status is not None:
+            self.status_text.set(status)
+        self._sync_workflow_ui()
+
     def _clear_region_selection_state(self) -> None:
         self._region_select_active = False
+        self._region_select_left_press_position = None
+        self._region_select_left_dragged = False
+        self._region_select_current_seed_triangle_index = None
+        self._region_select_last_hit_triangle_index = None
         self.app_state.region_collection.clear()
 
     def _region_select_status(self) -> str:
+        return "Region Select: click a mesh area."
+
+    def _region_result_status(self, prefix: str, region: RegionSelection) -> str:
+        triangle_count = len(region.triangle_indices)
         return (
-            "Region Select: click mesh "
-            f"(threshold {self._region_threshold_value():.1f} deg, "
-            f"cap {self._region_max_triangle_value():,})"
+            f"{prefix}: {triangle_count:,} "
+            f"{_plural_label(triangle_count, 'triangle')} "
+            f"at {float(region.threshold_degrees):.1f}\u00b0."
         )
 
     def _region_source_mesh_identifier(self) -> str:
@@ -3919,10 +4370,10 @@ class OpenRetopWindow:
         try:
             raw_value = self.region_threshold_degrees.get()
         except (TclError, ValueError):
-            raw_value = DEFAULT_REGION_THRESHOLD_DEGREES
+            raw_value = self._last_valid_region_threshold
         value = self._clamped_region_threshold(raw_value)
-        if value != raw_value:
-            self.region_threshold_degrees.set(value)
+        if value != self._last_valid_region_threshold or value != raw_value:
+            self._set_region_threshold_value(value, set_status=False)
         return value
 
     @staticmethod
@@ -3933,19 +4384,117 @@ class OpenRetopWindow:
             return DEFAULT_REGION_THRESHOLD_DEGREES
         if not np.isfinite(number):
             return DEFAULT_REGION_THRESHOLD_DEGREES
-        return min(max(number, 0.0), 180.0)
+        return min(max(number, 0.0), 90.0)
 
     def _region_max_triangle_value(self) -> int:
-        try:
-            raw_value = self.region_max_triangle_count.get()
-            value = int(float(raw_value))
-        except (TclError, TypeError, ValueError):
-            raw_value = str(DEFAULT_REGION_MAX_TRIANGLES)
-            value = DEFAULT_REGION_MAX_TRIANGLES
-        value = max(1, value)
-        if str(value) != raw_value:
+        value = self._parse_region_max_triangle_input(show_error=False)
+        if value is None:
+            value = self._last_valid_region_max_triangle_count
             self.region_max_triangle_count.set(str(value))
         return value
+
+    def _set_region_threshold_value(self, value: object, *, set_status: bool) -> None:
+        threshold = self._clamped_region_threshold(value)
+        self._last_valid_region_threshold = threshold
+        self.region_threshold_degrees.set(threshold)
+        self.region_threshold_text.set(f"{threshold:.1f}")
+        self.region_threshold_display_text.set(f"{threshold:.1f} deg")
+        if set_status:
+            self.status_text.set(self._region_control_status("Region threshold", f"{threshold:.1f} degrees"))
+
+    def _set_region_max_triangle_value(self, value: object, *, set_status: bool) -> None:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = DEFAULT_REGION_MAX_TRIANGLES
+        number = max(1, number)
+        self._last_valid_region_max_triangle_count = number
+        self.region_max_triangle_count.set(str(number))
+        self.region_max_triangle_cap_text.set(f"{number:,}")
+        if set_status:
+            self.status_text.set(self._region_control_status("Region max triangles", f"{number:,}"))
+
+    def _region_control_status(self, label: str, value: str) -> str:
+        if self.app_state.region_collection.active_region is not None:
+            return f"{label}: {value}. Use Recompute Region to update the active region."
+        return f"{label}: {value}"
+
+    def _on_region_threshold_slider_changed(self, value: object) -> None:
+        self._set_region_threshold_value(value, set_status=True)
+        self._sync_workflow_ui()
+
+    def _on_region_threshold_entry_changed(self, _event: object | None = None) -> None:
+        value = self._parse_region_threshold_input(show_error=True)
+        if value is not None:
+            self._set_region_threshold_value(value, set_status=True)
+        self._sync_workflow_ui()
+
+    def _on_region_max_triangle_entry_changed(self, _event: object | None = None) -> None:
+        value = self._parse_region_max_triangle_input(show_error=True)
+        if value is not None:
+            self._set_region_max_triangle_value(value, set_status=True)
+        self._sync_workflow_ui()
+
+    def _validated_region_controls(self) -> tuple[float, int] | None:
+        threshold = self._parse_region_threshold_input(show_error=True)
+        if threshold is None:
+            return None
+        max_triangle_count = self._parse_region_max_triangle_input(show_error=True)
+        if max_triangle_count is None:
+            return None
+        self._set_region_threshold_value(threshold, set_status=False)
+        self._set_region_max_triangle_value(max_triangle_count, set_status=False)
+        return (threshold, max_triangle_count)
+
+    def _parse_region_threshold_input(self, *, show_error: bool) -> float | None:
+        try:
+            raw_value = self.region_threshold_text.get().strip()
+        except TclError:
+            raw_value = ""
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            value = float("nan")
+        if not np.isfinite(value) or value < 0.0 or value > 90.0:
+            self._set_region_threshold_value(self._last_valid_region_threshold, set_status=False)
+            if show_error:
+                self.status_text.set("Region threshold must be between 0 and 90 degrees.")
+            return None
+        return value
+
+    def _parse_region_max_triangle_input(self, *, show_error: bool) -> int | None:
+        try:
+            raw_value = self.region_max_triangle_count.get().strip().replace(",", "")
+        except TclError:
+            raw_value = ""
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
+            numeric_value = float("nan")
+        if (
+            not np.isfinite(numeric_value)
+            or numeric_value < 1.0
+            or not numeric_value.is_integer()
+        ):
+            self.region_max_triangle_count.set(str(self._last_valid_region_max_triangle_count))
+            if show_error:
+                self.status_text.set("Max triangles must be a whole number >= 1.")
+            return None
+        return int(numeric_value)
+
+    @staticmethod
+    def _valid_region_seed_triangle_index(
+        mesh: TriangleMeshData,
+        triangle_index: object,
+    ) -> int | None:
+        try:
+            seed_triangle_index = int(triangle_index)
+        except (TypeError, ValueError):
+            return None
+        triangles = np.asarray(mesh.triangles, dtype=int).reshape((-1, 3))
+        if seed_triangle_index < 0 or seed_triangle_index >= len(triangles):
+            return None
+        return seed_triangle_index
 
     def compute_section(self) -> None:
         if self.app_state.mesh_object is None:
@@ -4943,7 +5492,8 @@ class OpenRetopWindow:
         self.app_state.active_transform_mode = None
         self.app_state.active_transform_axis = None
         self._active_transform_angle_delta = None
-        self._region_select_active = False
+        if self._region_select_active:
+            self._exit_region_select_mode()
 
         (
             self._manual_curve_plane_origin,
@@ -5052,7 +5602,8 @@ class OpenRetopWindow:
 
         if self.app_state.transform_state is not None:
             self._end_active_transform(commit=False, status="Transform cancelled")
-        self._region_select_active = False
+        if self._region_select_active:
+            self._exit_region_select_mode()
         self.app_state.active_transform_mode = None
         self.app_state.active_transform_axis = None
         self._active_transform_angle_delta = None
@@ -6592,6 +7143,10 @@ class OpenRetopWindow:
             return
 
         expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
+        if any(region_id_from_node(node_id) is not None for node_id in expanded_node_ids):
+            self.frame_selected_region()
+            return
+
         bounds = self._bounds_for_node_ids(expanded_node_ids)
         if bounds is None:
             self.status_text.set("Selected geometry is unavailable")
@@ -6646,11 +7201,43 @@ class OpenRetopWindow:
             if points is not None:
                 point_sets.append(points)
 
+        region_points = self._region_frame_points(node_ids)
+        if region_points is not None:
+            point_sets.append(region_points)
+
         if not point_sets:
             return None
 
         points = np.vstack(point_sets)
         return (points.min(axis=0), points.max(axis=0))
+
+    def _region_frame_points(self, node_ids: set[str]) -> np.ndarray | None:
+        region = self.app_state.region_collection.active_region
+        mesh_object = self.app_state.mesh_object
+        if region is None or mesh_object is None:
+            return None
+        if region_node_id(region.id) not in node_ids:
+            return None
+
+        triangles = np.asarray(mesh_object.display_mesh.triangles, dtype=int).reshape((-1, 3))
+        vertices = np.asarray(mesh_object.display_mesh.vertices, dtype=float).reshape((-1, 3))
+        selected_indices = np.asarray(
+            [
+                int(index)
+                for index in region.triangle_indices
+                if 0 <= int(index) < len(triangles)
+            ],
+            dtype=int,
+        )
+        if len(selected_indices) == 0:
+            return None
+
+        selected_vertex_indices = np.unique(triangles[selected_indices].ravel())
+        points = vertices[selected_vertex_indices]
+        matrix = self._current_object_matrix()
+        homogeneous = np.column_stack((points, np.ones(len(points))))
+        transformed = (matrix @ homogeneous.T).T[:, :3]
+        return self._finite_points(transformed)
 
     def _section_plane_frame_points(self, node_ids: set[str]) -> np.ndarray | None:
         planes = [
@@ -6815,6 +7402,7 @@ class OpenRetopWindow:
     def _refresh_scene_browser(self) -> None:
         for curve in self.app_state.curve_collection.curves:
             refresh_curve_diagnostics(curve)
+        active_region = self.app_state.region_collection.active_region
         self.scene_browser.update_scene(
             has_mesh=self.app_state.mesh_object is not None,
             mesh_name=(
@@ -6844,6 +7432,13 @@ class OpenRetopWindow:
             has_curves=bool(self.app_state.curve_collection.curves),
             has_surfaces=bool(self.app_state.surface_collection.surfaces),
             selected_item=self.app_state.selected_item,
+            regions=() if active_region is None else (active_region,),
+            active_region_id=None if active_region is None else active_region.id,
+            selected_region_ids=(
+                set()
+                if active_region is None or not bool(active_region.selected)
+                else {active_region.id}
+            ),
         )
         self._sync_workflow_ui()
 
@@ -6866,6 +7461,7 @@ class OpenRetopWindow:
         self.selected_object_type_text.set(self._selected_object_type_label())
         self._sync_mesh_required_sidebar_controls(has_mesh)
         self._sync_manual_curve_panel()
+        self._sync_region_panel()
         self._update_command_strip()
         self._update_menu_availability()
 
@@ -6890,8 +7486,8 @@ class OpenRetopWindow:
             prompt = self._active_transform_status()
             hints = "Drag mouse, X/Y/Z constrain, Enter/click confirm, Esc cancel"
         elif self._region_select_active:
-            prompt = "Region Select: click mesh surface to inspect connected area."
-            hints = "Esc=cancel"
+            prompt = "Region Select: click a mesh area to grow a connected region."
+            hints = "Esc cancel, click mesh to select region."
         else:
             prompt = WORKBENCH_PROMPTS.get(self.current_workbench.get(), "Ready")
             hints = "G=move, R=rotate, F=frame, H=visibility, Del=delete"
@@ -7033,6 +7629,8 @@ class OpenRetopWindow:
             return "Curve"
         if selected_item == SELECT_SURFACE:
             return "Surface"
+        if selected_item == SELECT_REGION:
+            return "Region"
         return "(none)"
 
     def _sync_manual_curve_panel(self) -> None:
@@ -7131,7 +7729,6 @@ class OpenRetopWindow:
             if widget is not None:
                 widget.configure(state=state)
         for name in (
-            "region_select_placeholder_button",
             "boundary_from_region_placeholder_button",
             "fit_patch_from_region_placeholder_button",
         ):
@@ -7140,6 +7737,89 @@ class OpenRetopWindow:
                 widget.configure(state="disabled")
         if not has_mesh and bool(self.manual_curve_snap_to_mesh.get()):
             self.manual_curve_snap_to_mesh.set(False)
+
+    def _sync_region_panel(self) -> None:
+        has_mesh = self.app_state.mesh_object is not None
+        region = self.app_state.region_collection.active_region
+        has_region = region is not None
+        mesh_state = "normal" if has_mesh else "disabled"
+        region_state = "normal" if has_region else "disabled"
+
+        for name in (
+            "region_select_button",
+            "region_threshold_entry",
+            "region_threshold_slider",
+            "region_max_triangle_entry",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=mesh_state)
+
+        for name in (
+            "recompute_region_button",
+            "clear_region_button",
+            "hide_region_button",
+            "show_region_button",
+            "delete_region_button",
+            "region_name_entry",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=region_state)
+        done_button = getattr(self, "done_region_select_button", None)
+        if done_button is not None:
+            done_button.configure(state="normal" if self._region_select_active else "disabled")
+
+        if has_region:
+            triangle_count = len(region.triangle_indices)
+            self.region_name_text.set(region.name or "Region 1")
+            self.region_triangle_count_text.set(f"{triangle_count:,}")
+            self.region_threshold_display_text.set(
+                f"{float(region.threshold_degrees):.1f} deg"
+            )
+            self.region_max_triangle_cap_text.set(f"{int(region.max_triangle_count):,}")
+            self.region_seed_triangle_text.set(
+                "-"
+                if region.seed_triangle_index is None
+                else str(int(region.seed_triangle_index))
+            )
+            self.region_source_mesh_text.set(region.source_mesh_name or "(none)")
+            self.region_visible_text.set("Yes" if bool(region.visible) else "No")
+            if self._region_select_active:
+                state_text = "Region Select active"
+            else:
+                state_text = "Region visible" if bool(region.visible) else "Region hidden"
+            self.region_status_text.set(state_text)
+        else:
+            self.region_name_text.set("(none)")
+            self.region_triangle_count_text.set("0")
+            self.region_threshold_display_text.set(
+                f"{self._region_threshold_value():.1f} deg"
+            )
+            self.region_max_triangle_cap_text.set(f"{self._region_max_triangle_value():,}")
+            self.region_seed_triangle_text.set("-")
+            self.region_source_mesh_text.set(
+                self.app_state.mesh_object.name
+                if self.app_state.mesh_object is not None
+                else "(none)"
+            )
+            self.region_visible_text.set("No")
+            if not has_mesh:
+                self.region_status_text.set("Load a mesh to use Region Select.")
+            elif self._region_select_active:
+                self.region_status_text.set("Region Select active")
+            else:
+                self.region_status_text.set("No active region")
+
+        if self._region_select_active:
+            triangle_count = "0" if not has_region else self.region_triangle_count_text.get()
+            self.manual_curve_mode_title.set("REGION SELECT MODE")
+            self.manual_curve_mode_details.set(
+                "Click a mesh area to grow a connected region by normal angle.\n"
+                f"Threshold: {self._region_threshold_value():.1f} deg\n"
+                f"Max triangles: {self._region_max_triangle_value():,}\n"
+                f"Current triangles: {triangle_count}"
+            )
 
     def _update_menu_availability(self) -> None:
         scene_node_ids = self._scene_visibility_target_node_ids()
@@ -7388,6 +8068,9 @@ class OpenRetopWindow:
         action: str,
         node_ids: tuple[str, ...],
     ) -> None:
+        if action == "select":
+            self._select_scene_browser_nodes(node_ids)
+            return
         if action == "rename":
             self.rename_selected()
             return
@@ -7414,8 +8097,10 @@ class OpenRetopWindow:
             return
 
         expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
+        dirty_node_ids = expanded_node_ids
         if action == "show_all":
             target_node_ids = self._all_visibility_object_node_ids()
+            dirty_node_ids = target_node_ids
             before = self._visibility_snapshot(target_node_ids)
             changed_count = self._set_scene_visibility(target_node_ids, True)
             after = self._visibility_snapshot(target_node_ids)
@@ -7435,6 +8120,7 @@ class OpenRetopWindow:
             status = self._visibility_status("Shown", changed_count, "selected item")
         elif action == "hide_unselected":
             target_node_ids = self._all_visibility_object_node_ids()
+            dirty_node_ids = target_node_ids
             unselected_node_ids = target_node_ids - expanded_node_ids
             before = self._visibility_snapshot(target_node_ids)
             hidden_count = self._set_scene_visibility(unselected_node_ids, False)
@@ -7449,8 +8135,28 @@ class OpenRetopWindow:
 
         self._sync_after_scene_visibility_change()
         self.status_text.set(status)
-        if changed_count:
+        if changed_count and self._has_persistent_visibility_target(dirty_node_ids):
             self._set_project_dirty(True)
+
+    def _select_scene_browser_nodes(self, node_ids: tuple[str, ...]) -> None:
+        if not node_ids:
+            self.status_text.set("No selection")
+            return
+
+        focused_node_id = self.scene_browser.tree.focus()
+        selected_item = (
+            focused_node_id
+            if focused_node_id in node_ids
+            else node_ids[0]
+        )
+        self._on_scene_browser_selection(selected_item, node_ids)
+
+    @staticmethod
+    def _has_persistent_visibility_target(node_ids: set[str]) -> bool:
+        return any(
+            node_id != NODE_REGIONS and region_id_from_node(node_id) is None
+            for node_id in node_ids
+        )
 
     @staticmethod
     def _visibility_status(prefix: str, changed_count: int, noun: str) -> str:
@@ -7488,6 +8194,10 @@ class OpenRetopWindow:
                     surface_node_id(surface.id)
                     for surface in self.app_state.surface_collection.surfaces
                 )
+            elif node_id == NODE_REGIONS:
+                region = self.app_state.region_collection.active_region
+                if region is not None:
+                    expanded_node_ids.add(region_node_id(region.id))
             elif node_id == NODE_CURVE_GROUP_UNASSIGNED:
                 expanded_node_ids.update(
                     curve_node_id(curve.id)
@@ -7539,6 +8249,9 @@ class OpenRetopWindow:
         }
         if self.app_state.mesh_object is not None:
             node_ids.add(NODE_MESH)
+        active_region = self.app_state.region_collection.active_region
+        if active_region is not None:
+            node_ids.add(region_node_id(active_region.id))
         return node_ids
 
     def _toggle_scene_visibility(self, node_ids: set[str]) -> int:
@@ -7562,6 +8275,10 @@ class OpenRetopWindow:
             if surface_node_id(surface.id) in node_ids:
                 surface.visible = not surface.visible
                 changed_count += 1
+        active_region = self.app_state.region_collection.active_region
+        if active_region is not None and region_node_id(active_region.id) in node_ids:
+            active_region.visible = not active_region.visible
+            changed_count += 1
         return changed_count
 
     def _set_scene_visibility(self, node_ids: set[str], visible: bool) -> int:
@@ -7589,6 +8306,14 @@ class OpenRetopWindow:
             if surface_node_id(surface.id) in node_ids and surface.visible != visible:
                 surface.visible = visible
                 changed_count += 1
+        active_region = self.app_state.region_collection.active_region
+        if (
+            active_region is not None
+            and region_node_id(active_region.id) in node_ids
+            and active_region.visible != visible
+        ):
+            active_region.visible = visible
+            changed_count += 1
         return changed_count
 
     def _sync_after_scene_visibility_change(self) -> None:
@@ -7651,7 +8376,7 @@ class OpenRetopWindow:
         self.status_text.set(
             self._visibility_status("Toggled", changed_count, "selected item")
         )
-        if changed_count:
+        if changed_count and self._has_persistent_visibility_target(expanded_node_ids):
             self._set_project_dirty(True)
 
     def toggle_active_surface_visibility(self) -> None:
@@ -7721,6 +8446,9 @@ class OpenRetopWindow:
                 return {surface_node_id(surface_id) for surface_id in selected_ids}
             active_surface = self._active_surface()
             return {surface_node_id(active_surface.id)} if active_surface is not None else set()
+        if selected_item == SELECT_REGION:
+            region = self.app_state.region_collection.active_region
+            return {region_node_id(region.id)} if region is not None else set()
         return set()
 
     def _on_section_axis_changed(self, _event: object | None = None) -> None:
@@ -8209,6 +8937,9 @@ class OpenRetopWindow:
             section_plane_id = active_plane.id
             section_plane_name = active_plane.name
 
+        if self._region_select_active:
+            self._exit_region_select_mode()
+
         self.app_state.transform_state = ActiveTransformState(
             selected_item=self.app_state.selected_item,
             mode=mode,
@@ -8642,6 +9373,7 @@ class OpenRetopWindow:
             or section_result_id_from_node(node_id) is not None
             or curve_id_from_node(node_id) is not None
             or surface_id_from_node(node_id) is not None
+            or region_id_from_node(node_id) is not None
         )
 
     def _rename_entry_for_selection(self) -> ttk.Entry | None:
@@ -8656,6 +9388,11 @@ class OpenRetopWindow:
             return self.curve_name_entry
         if selected_item == SELECT_SURFACE and self._active_surface() is not None:
             return self.surface_name_entry
+        if (
+            selected_item == SELECT_REGION
+            and self.app_state.region_collection.active_region is not None
+        ):
+            return self.region_name_entry
         return None
 
     def _handle_keybind_action(self, action: str) -> None:
@@ -8686,9 +9423,7 @@ class OpenRetopWindow:
             return
 
         if self._region_select_active and key in {"Escape", "Esc"}:
-            self._region_select_active = False
-            self.status_text.set("Region Select cancelled")
-            self._sync_workflow_ui()
+            self._exit_region_select_mode(status="Region Select cancelled")
             return
 
         if key == "F":
@@ -8766,6 +9501,7 @@ class OpenRetopWindow:
             + len(delete_targets["section_results"])
             + len(delete_targets["curves"])
             + len(delete_targets["surfaces"])
+            + len(delete_targets["regions"])
         )
         if deleted_count == 0:
             if NODE_MESH in expanded_node_ids:
@@ -8786,11 +9522,14 @@ class OpenRetopWindow:
         self._sync_surface_context_from_active_surface()
         self._select_delete_fallback(delete_targets)
         self.status_text.set(
-            "Deleted selected object"
+            "Region deleted."
+            if deleted_count == 1 and delete_targets["regions"]
+            else "Deleted selected object"
             if deleted_count == 1
             else f"Deleted {deleted_count} selected objects"
         )
-        self._set_project_dirty(True)
+        if deleted_count != 1 or not delete_targets["regions"]:
+            self._set_project_dirty(True)
 
     def _delete_targets_for_node_ids(
         self,
@@ -8800,6 +9539,7 @@ class OpenRetopWindow:
         section_result_ids: set[str] = set()
         curve_ids: set[str] = set()
         surface_ids: set[str] = set()
+        region_ids: set[str] = set()
 
         for node_id in node_ids:
             plane_id = section_plane_id_from_node(node_id)
@@ -8807,6 +9547,7 @@ class OpenRetopWindow:
             curve_group_id = curve_group_id_from_node(node_id)
             curve_id = curve_id_from_node(node_id)
             surface_id = surface_id_from_node(node_id)
+            region_id = region_id_from_node(node_id)
             if node_id == NODE_SECTION_PLANES:
                 section_plane_ids.update(
                     plane.id for plane in self.app_state.section_collection.planes
@@ -8831,6 +9572,12 @@ class OpenRetopWindow:
                 )
             elif surface_id is not None:
                 surface_ids.add(surface_id)
+            elif node_id == NODE_REGIONS:
+                region = self.app_state.region_collection.active_region
+                if region is not None:
+                    region_ids.add(region.id)
+            elif region_id is not None:
+                region_ids.add(region_id)
 
         section_result_ids.update(
             result.id
@@ -8852,11 +9599,14 @@ class OpenRetopWindow:
         existing_result_ids = {result.id for result in self.app_state.section_collection.results}
         existing_curve_ids = {curve.id for curve in self.app_state.curve_collection.curves}
         existing_surface_ids = {surface.id for surface in self.app_state.surface_collection.surfaces}
+        active_region = self.app_state.region_collection.active_region
+        existing_region_ids = {active_region.id} if active_region is not None else set()
         return {
             "section_planes": section_plane_ids & existing_plane_ids,
             "section_results": section_result_ids & existing_result_ids,
             "curves": curve_ids & existing_curve_ids,
             "surfaces": surface_ids & existing_surface_ids,
+            "regions": region_ids & existing_region_ids,
         }
 
     def _apply_delete_targets(self, targets: dict[str, set[str]]) -> None:
@@ -8864,6 +9614,13 @@ class OpenRetopWindow:
         result_ids = targets["section_results"]
         curve_ids = targets["curves"]
         surface_ids = targets["surfaces"]
+        region_ids = targets["regions"]
+
+        active_region = self.app_state.region_collection.active_region
+        if active_region is not None and active_region.id in region_ids:
+            self.app_state.region_collection.clear()
+            self._region_select_current_seed_triangle_index = None
+            self._region_select_last_hit_triangle_index = None
 
         self.app_state.surface_collection.surfaces = [
             surface

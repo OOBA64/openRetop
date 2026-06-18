@@ -8,7 +8,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mesh.adjacency import build_triangle_adjacency, grow_connected_region
+from mesh.adjacency import (
+    build_triangle_adjacency,
+    cached_triangle_adjacency,
+    grow_connected_region,
+)
 from mesh.triangle_mesh import TriangleMeshData
 from regions.region_state import (
     DEFAULT_REGION_MAX_TRIANGLES,
@@ -126,6 +130,13 @@ class MeshAdjacencyTests(unittest.TestCase):
 
         self.assertEqual(adjacency, ((1,), (0,)))
 
+    def test_cached_triangle_adjacency_reuses_same_mesh_identity_and_counts(self) -> None:
+        mesh = _quad_mesh()
+        first = cached_triangle_adjacency(mesh)
+        second = cached_triangle_adjacency(mesh)
+
+        self.assertIs(first, second)
+
     def test_triangle_adjacency_on_cube_mesh(self) -> None:
         adjacency = build_triangle_adjacency(_cube_mesh())
 
@@ -175,6 +186,13 @@ class MeshAdjacencyTests(unittest.TestCase):
         self.assertEqual(result.triangle_indices, tuple())
         self.assertIsNone(region)
 
+    def test_invalid_seed_returns_empty_region(self) -> None:
+        result = grow_connected_region(_quad_mesh(), 99)
+        region = create_region_selection(_quad_mesh(), -1)
+
+        self.assertEqual(result.triangle_indices, tuple())
+        self.assertIsNone(region)
+
     def test_region_selection_does_not_alter_mesh_geometry(self) -> None:
         mesh = _coplanar_strip_mesh()
         vertices_before = mesh.vertices.copy()
@@ -188,6 +206,10 @@ class MeshAdjacencyTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(region)
+        self.assertEqual(region.metadata["seed_triangle_index"], 0)
+        self.assertEqual(region.metadata["triangle_count"], len(region.triangle_indices))
+        self.assertEqual(region.source_mesh_identifier, "sample.stl")
+        self.assertEqual(region.source_mesh_name, "sample.stl")
         np.testing.assert_allclose(mesh.vertices, vertices_before)
         np.testing.assert_array_equal(mesh.triangles, triangles_before)
 
