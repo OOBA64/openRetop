@@ -25,6 +25,14 @@ from curves.curve_state import (
     simplify_curve,
     smooth_curve,
 )
+from curves.projection import CurveProjectionResult, project_curve_points_to_mesh, project_stored_curve_to_mesh
+from curves.rebuild import CurveRebuildResult, rebuild_curve_by_arc_length, rebuild_stored_curve
+from curves.validation import (
+    CurveSurfaceReadiness,
+    estimate_curve_planarity_error,
+    validate_curve_for_fill,
+    validate_curves_for_loft,
+)
 
 __all__ = [
     "CurveCollection",
@@ -50,4 +58,14 @@ __all__ = [
     "set_selected_curves",
     "simplify_curve",
     "smooth_curve",
+    "CurveProjectionResult",
+    "project_curve_points_to_mesh",
+    "project_stored_curve_to_mesh",
+    "CurveRebuildResult",
+    "rebuild_curve_by_arc_length",
+    "rebuild_stored_curve",
+    "CurveSurfaceReadiness",
+    "estimate_curve_planarity_error",
+    "validate_curve_for_fill",
+    "validate_curves_for_loft",
 ]

@@ -129,10 +129,22 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
         command=app.smooth_selected_curve,
     )
     app.curves_menu.add_command(
+        label="Project Selected Curve to Mesh",
+        command=app.project_selected_curve_to_mesh,
+    )
+    app.curves_menu.add_command(
+        label="Rebuild Selected Curve",
+        command=app.rebuild_selected_curve,
+    )
+    app.curves_menu.add_command(
         label="Loft Between Two Curves",
         command=app.loft_between_two_curves,
     )
     app.curves_menu.add_command(label="Create Manual Curve", command=app.start_manual_curve_mode)
+    app.curves_menu.add_command(
+        label="Extract Region Boundary",
+        command=app.extract_region_boundary,
+    )
     app.curves_menu.add_checkbutton(
         label="Snap to Mesh",
         variable=app.manual_curve_snap_to_mesh,

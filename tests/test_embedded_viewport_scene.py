@@ -1629,13 +1629,22 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             source_mesh_name="sample.stl",
         )
 
-        self._set_basic_scene(viewport, mesh, region_selection=region)
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            region_selection=region,
+            region_selection_color="#FF8800",
+            region_selection_edge_color="#FFFFFF",
+            region_selection_opacity=0.62,
+        )
 
         self.assertIn("region_selection", viewport._actors_by_role)
         actor = viewport._actors_by_role["region_selection"]
         polydata = actor.GetMapper().GetInput()
         self.assertEqual(polydata.GetNumberOfCells(), 1)
-        self.assertGreater(actor.GetProperty().GetOpacity(), 0.0)
+        self.assertAlmostEqual(actor.GetProperty().GetOpacity(), 0.62)
+        self.assertTrue(np.allclose(actor.GetProperty().GetColor(), (1.0, 0.533333, 0.0)))
+        self.assertTrue(np.allclose(actor.GetProperty().GetEdgeColor(), (1.0, 1.0, 1.0)))
         self.assertTrue(actor.GetProperty().GetEdgeVisibility())
 
         self._set_basic_scene(viewport, mesh, region_selection=None)

@@ -438,6 +438,9 @@ class EmbeddedVTKViewport:
         surface_previews: Sequence[SurfacePreviewMesh] | None = None,
         active_surface_id: str | None = None,
         region_selection: RegionSelection | None = None,
+        region_selection_color: str | Sequence[float] = REGION_SELECTION_COLOR,
+        region_selection_edge_color: str | Sequence[float] = REGION_SELECTION_EDGE_COLOR,
+        region_selection_opacity: float = REGION_SELECTION_OPACITY,
         manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None = None,
         manual_curve_closed: bool = False,
         manual_curve_plane_normal: Sequence[float] | None = None,
@@ -492,6 +495,9 @@ class EmbeddedVTKViewport:
             surface_source_curve_ids=surface_source_curve_ids,
             surface_previews=surface_previews,
             region_selection=region_selection,
+            region_selection_color=region_selection_color,
+            region_selection_edge_color=region_selection_edge_color,
+            region_selection_opacity=region_selection_opacity,
             manual_curve_points=manual_curve_points,
             manual_curve_preview_valid=manual_curve_preview_valid,
             show_axis_gizmo=show_axis_gizmo,
@@ -511,7 +517,14 @@ class EmbeddedVTKViewport:
         self._update_axes_actor(show_axes)
         self._update_axis_gizmo(show_axis_gizmo)
         self._update_normal_actor(mesh, matrix, show_normals)
-        self._update_region_selection_actor(mesh, matrix, region_selection)
+        self._update_region_selection_actor(
+            mesh,
+            matrix,
+            region_selection,
+            fill_color=region_selection_color,
+            edge_color=region_selection_edge_color,
+            opacity=region_selection_opacity,
+        )
         self._update_section_plane_actors(
             mesh,
             show_section_plane=show_section_plane,
@@ -604,6 +617,9 @@ class EmbeddedVTKViewport:
         show_axis_gizmo: bool = True,
         surface_previews: Sequence[SurfacePreviewMesh] | None = None,
         region_selection: RegionSelection | None = None,
+        region_selection_color: str | Sequence[float] = REGION_SELECTION_COLOR,
+        region_selection_edge_color: str | Sequence[float] = REGION_SELECTION_EDGE_COLOR,
+        region_selection_opacity: float = REGION_SELECTION_OPACITY,
         manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None = None,
         manual_curve_preview_valid: bool = False,
     ) -> bool:
@@ -1337,6 +1353,10 @@ class EmbeddedVTKViewport:
         mesh: TriangleMeshData | None,
         matrix: np.ndarray,
         region_selection: RegionSelection | None,
+        *,
+        fill_color: str | Sequence[float],
+        edge_color: str | Sequence[float],
+        opacity: float,
     ) -> None:
         if (
             mesh is None
@@ -1347,10 +1367,25 @@ class EmbeddedVTKViewport:
             self._remove_actor("region_selection")
             return
 
-        key = _region_selection_key(mesh, region_selection)
+        fill_rgb = _rgb_color(fill_color, REGION_SELECTION_COLOR)
+        edge_rgb = _rgb_color(edge_color, REGION_SELECTION_EDGE_COLOR)
+        opacity_value = _clamped_opacity(opacity, REGION_SELECTION_OPACITY)
+        key = _region_selection_key(
+            mesh,
+            region_selection,
+            fill_rgb=fill_rgb,
+            edge_rgb=edge_rgb,
+            opacity=opacity_value,
+        )
         actor = self._actors_by_role.get("region_selection")
         if self._actor_keys.get("region_selection") != key or actor is None:
-            actor = _region_selection_actor(mesh, region_selection)
+            actor = _region_selection_actor(
+                mesh,
+                region_selection,
+                fill_color=fill_rgb,
+                edge_color=edge_rgb,
+                opacity=opacity_value,
+            )
             self._replace_actor("region_selection", actor, key=key)
 
         actor.SetUserMatrix(_vtk_matrix(matrix))
@@ -2880,6 +2915,10 @@ def _surface_preview_actor(
 def _region_selection_actor(
     mesh: TriangleMeshData,
     region_selection: RegionSelection,
+    *,
+    fill_color: tuple[float, float, float],
+    edge_color: tuple[float, float, float],
+    opacity: float,
 ) -> vtkActor:
     mapper = vtkPolyDataMapper()
     mapper.SetInputData(_region_selection_polydata(mesh, region_selection.triangle_indices))
@@ -2888,9 +2927,9 @@ def _region_selection_actor(
     actor = vtkActor()
     actor.SetMapper(mapper)
     property_ = actor.GetProperty()
-    property_.SetColor(*REGION_SELECTION_COLOR)
-    property_.SetOpacity(REGION_SELECTION_OPACITY)
-    property_.SetEdgeColor(*REGION_SELECTION_EDGE_COLOR)
+    property_.SetColor(*fill_color)
+    property_.SetOpacity(opacity)
+    property_.SetEdgeColor(*edge_color)
     property_.SetLineWidth(REGION_SELECTION_LINE_WIDTH)
     property_.SetRepresentationToSurface()
     property_.EdgeVisibilityOn()
@@ -2964,6 +3003,10 @@ def _array_key(values: Sequence[float] | np.ndarray | None) -> tuple[float, ...]
 def _region_selection_key(
     mesh: TriangleMeshData,
     region_selection: RegionSelection,
+    *,
+    fill_rgb: tuple[float, float, float],
+    edge_rgb: tuple[float, float, float],
+    opacity: float,
 ) -> tuple[object, ...]:
     return (
         "region_selection",
@@ -2972,7 +3015,45 @@ def _region_selection_key(
         tuple(int(index) for index in region_selection.triangle_indices),
         bool(region_selection.visible),
         round(float(region_selection.threshold_degrees), 6),
+        tuple(round(float(value), 6) for value in fill_rgb),
+        tuple(round(float(value), 6) for value in edge_rgb),
+        round(float(opacity), 6),
     )
+
+
+def _rgb_color(
+    value: str | Sequence[float],
+    default: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if len(normalized) == 7 and normalized.startswith("#"):
+            try:
+                return tuple(
+                    int(normalized[index : index + 2], 16) / 255.0
+                    for index in (1, 3, 5)
+                )
+            except ValueError:
+                return default
+        return default
+
+    try:
+        values = tuple(float(component) for component in value)
+    except (TypeError, ValueError):
+        return default
+    if len(values) != 3 or not all(np.isfinite(component) for component in values):
+        return default
+    return tuple(min(max(component, 0.0), 1.0) for component in values)
+
+
+def _clamped_opacity(value: float, default: float) -> float:
+    try:
+        opacity = float(value)
+    except (TypeError, ValueError):
+        opacity = default
+    if not np.isfinite(opacity):
+        opacity = default
+    return min(max(opacity, 0.05), 1.0)
 
 
 def _axis_gizmo_camera_key(

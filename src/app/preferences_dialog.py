@@ -51,6 +51,18 @@ def build_preferences_dialog(
             master=dialog,
             value=settings.display.show_viewcube,
         ),
+        "region_selection_color": StringVar(
+            master=dialog,
+            value=settings.display.region_selection_color,
+        ),
+        "region_selection_edge_color": StringVar(
+            master=dialog,
+            value=settings.display.region_selection_edge_color,
+        ),
+        "region_selection_opacity": StringVar(
+            master=dialog,
+            value=f"{float(settings.display.region_selection_opacity):.2f}",
+        ),
         "default_proxy_quality": StringVar(
             master=dialog,
             value=settings.import_settings.default_proxy_quality,
@@ -156,6 +168,25 @@ def _build_viewport_tab(
         text="Default Show View Controls",
         variable=variables["show_viewcube"],
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    ttk.Separator(tab).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 8))
+    ttk.Label(tab, text="Region Fill Color").grid(row=5, column=0, sticky="w", pady=2)
+    ttk.Entry(
+        tab,
+        textvariable=variables["region_selection_color"],
+        width=12,
+    ).grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=2)
+    ttk.Label(tab, text="Region Edge Color").grid(row=6, column=0, sticky="w", pady=2)
+    ttk.Entry(
+        tab,
+        textvariable=variables["region_selection_edge_color"],
+        width=12,
+    ).grid(row=6, column=1, sticky="ew", padx=(8, 0), pady=2)
+    ttk.Label(tab, text="Region Opacity").grid(row=7, column=0, sticky="w", pady=2)
+    ttk.Entry(
+        tab,
+        textvariable=variables["region_selection_opacity"],
+        width=12,
+    ).grid(row=7, column=1, sticky="ew", padx=(8, 0), pady=2)
 
 
 def _build_keybinds_tab(

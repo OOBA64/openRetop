@@ -25,6 +25,9 @@ from app.main_window import (
 from app.scene_browser import (
     NODE_CURVES,
     NODE_CURVE_GROUP_MANUAL,
+    NODE_CURVE_GROUP_PROJECTED,
+    NODE_CURVE_GROUP_REGION_BOUNDARIES,
+    NODE_CURVE_GROUP_REBUILT,
     NODE_CURVE_GROUP_UNASSIGNED,
     NODE_CURVE_GROUP_REPAIRED,
     NODE_EMPTY_SCENE,
@@ -121,6 +124,9 @@ class FakeMesh:
 
     def has_vertex_colors(self) -> bool:
         return False
+
+    def is_empty(self) -> bool:
+        return len(self.vertices) == 0 or len(self.triangles) == 0
 
     def paint_uniform_color(self, _color: list[float]) -> None:
         return None
@@ -533,10 +539,13 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.curves_menu.entrycget(9, "label"), "Delete Tiny Curves")
             self.assertEqual(window.curves_menu.entrycget(10, "label"), "Simplify Selected Curve")
             self.assertEqual(window.curves_menu.entrycget(11, "label"), "Smooth Selected Curve")
-            self.assertEqual(window.curves_menu.entrycget(12, "label"), "Loft Between Two Curves")
-            self.assertEqual(window.curves_menu.entrycget(13, "label"), "Create Manual Curve")
-            self.assertEqual(window.curves_menu.entrycget(14, "label"), "Snap to Mesh")
-            self.assertEqual(window.curves_menu.type(14), "checkbutton")
+            self.assertEqual(window.curves_menu.entrycget(12, "label"), "Project Selected Curve to Mesh")
+            self.assertEqual(window.curves_menu.entrycget(13, "label"), "Rebuild Selected Curve")
+            self.assertEqual(window.curves_menu.entrycget(14, "label"), "Loft Between Two Curves")
+            self.assertEqual(window.curves_menu.entrycget(15, "label"), "Create Manual Curve")
+            self.assertEqual(window.curves_menu.entrycget(16, "label"), "Extract Region Boundary")
+            self.assertEqual(window.curves_menu.entrycget(17, "label"), "Snap to Mesh")
+            self.assertEqual(window.curves_menu.type(17), "checkbutton")
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Fill Closed Curve")
             self.assertEqual(window.surfaces_menu.entrycget(1, "label"), "Loft Between Two Curves")
             self.assertEqual(window.surfaces_menu.entrycget(2, "label"), "Select Source Curves")
@@ -708,6 +717,9 @@ class MainWindowUiTests(unittest.TestCase):
         settings.display.show_normals = True
         settings.display.show_axis_gizmo = False
         settings.display.show_viewcube = False
+        settings.display.region_selection_color = "#FF8800"
+        settings.display.region_selection_edge_color = "#FFF2CC"
+        settings.display.region_selection_opacity = 0.5
         settings.import_settings.default_proxy_quality = "High"
 
         with TemporaryDirectory() as tmpdir:
@@ -745,6 +757,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window.preferences_vars["show_axes"].get())
             self.assertFalse(window.preferences_vars["show_axis_gizmo"].get())
             self.assertFalse(window.preferences_vars["show_viewcube"].get())
+            self.assertEqual(window.preferences_vars["region_selection_color"].get(), "#FF8800")
+            self.assertEqual(window.preferences_vars["region_selection_edge_color"].get(), "#FFF2CC")
+            self.assertEqual(window.preferences_vars["region_selection_opacity"].get(), "0.50")
             self.assertNotIn("show_normals", window.preferences_vars)
             self.assertNotIn("surface_preview_opacity", window.preferences_vars)
             self.assertNotIn("curve_display_thickness", window.preferences_vars)
@@ -756,6 +771,9 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(_widgets_with_text(dialog, "Default Show Axes"))
             self.assertTrue(_widgets_with_text(dialog, "Default Show Axis Gizmo"))
             self.assertTrue(_widgets_with_text(dialog, "Default Show View Controls"))
+            self.assertTrue(_widgets_with_text(dialog, "Region Fill Color"))
+            self.assertTrue(_widgets_with_text(dialog, "Region Edge Color"))
+            self.assertTrue(_widgets_with_text(dialog, "Region Opacity"))
             self.assertFalse(_widgets_with_text(dialog, "Startup Show Grid"))
             self.assertFalse(_widgets_with_text(dialog, "Startup Show Axes"))
             self.assertFalse(_widgets_with_text(dialog, "Surface preview opacity"))
@@ -821,6 +839,9 @@ class MainWindowUiTests(unittest.TestCase):
                 window.preferences_vars["remember_window_size"].set(False)
                 window.preferences_vars["keybind.toggle_visibility"].set("V")
                 window.preferences_vars["default_proxy_quality"].set("Low")
+                window.preferences_vars["region_selection_color"].set("#00ff00")
+                window.preferences_vars["region_selection_edge_color"].set("#ffffff")
+                window.preferences_vars["region_selection_opacity"].set("1.5")
                 _button_by_text(dialog, "Apply").invoke()
 
                 self.assertIsNotNone(window.preferences_dialog)
@@ -838,6 +859,9 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(window.settings.display.show_normals)
                 self.assertFalse(window.settings.display.show_axis_gizmo)
                 self.assertFalse(window.settings.display.show_viewcube)
+                self.assertEqual(window.settings.display.region_selection_color, "#00FF00")
+                self.assertEqual(window.settings.display.region_selection_edge_color, "#FFFFFF")
+                self.assertEqual(window.settings.display.region_selection_opacity, 1.0)
                 self.assertEqual(
                     window.settings.import_settings.default_proxy_quality,
                     "Low",
@@ -852,6 +876,9 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(saved_settings.display.show_normals)
                 self.assertFalse(saved_settings.display.show_axis_gizmo)
                 self.assertFalse(saved_settings.display.show_viewcube)
+                self.assertEqual(saved_settings.display.region_selection_color, "#00FF00")
+                self.assertEqual(saved_settings.display.region_selection_edge_color, "#FFFFFF")
+                self.assertEqual(saved_settings.display.region_selection_opacity, 1.0)
                 self.assertEqual(
                     saved_settings.import_settings.default_proxy_quality,
                     "Low",
@@ -902,6 +929,29 @@ class MainWindowUiTests(unittest.TestCase):
 
                 _button_by_text(dialog, "OK").invoke()
                 self.assertIsNotNone(window.preferences_dialog)
+            finally:
+                if window.preferences_dialog is not None:
+                    window._close_preferences_dialog()
+                window.root.destroy()
+
+    def test_preferences_rejects_invalid_region_hex_color(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / "settings.json"
+            with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+                window = _create_window(settings_path=settings_path)
+
+            try:
+                window.edit_menu.invoke(4)
+                dialog = window.preferences_dialog
+                self.assertIsNotNone(dialog)
+                assert dialog is not None
+
+                window.preferences_vars["region_selection_color"].set("cyan")
+                _button_by_text(dialog, "Apply").invoke()
+
+                self.assertEqual(window.status_text.get(), "Region Fill Color must be #RRGGBB.")
+                self.assertEqual(window.settings.display.region_selection_color, "#00D1FF")
+                self.assertFalse(settings_path.exists())
             finally:
                 if window.preferences_dialog is not None:
                     window._close_preferences_dialog()
@@ -2678,9 +2728,13 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Select exactly one curve to simplify")
             window.curves_menu.invoke(11)
             self.assertEqual(window.status_text.get(), "Select exactly one curve to smooth")
+            window.curves_menu.invoke(12)
+            self.assertEqual(window.status_text.get(), "Load a mesh before projecting curves.")
             window.curves_menu.invoke(13)
+            self.assertEqual(window.status_text.get(), "Select one curve to rebuild.")
+            window.curves_menu.invoke(15)
             self.assertEqual(window.status_text.get(), "Load a mesh to use Manual Curve")
-            window.curves_menu.invoke(14)
+            window.curves_menu.invoke(17)
             self.assertEqual(window.status_text.get(), "Load a mesh to use Snap to Mesh")
             window.surfaces_menu.invoke(0)
             self.assertEqual(window.status_text.get(), "No curves available")
@@ -3652,6 +3706,23 @@ class MainWindowUiTests(unittest.TestCase):
                 visible=True,
                 metadata={"creation_type": "manual", "snap_to_mesh": False},
             )
+            boundary_curve = StoredCurve(
+                id="curve-boundary",
+                name="Region Boundary 1",
+                section_result_id="",
+                plane_id="",
+                original_points=np.asarray([[0.0, 3.0, 0.0], [1.0, 3.0, 0.0]], dtype=float),
+                fitted_points=np.asarray([[0.0, 3.0, 0.0], [1.0, 3.0, 0.0]], dtype=float),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+                metadata={
+                    "creation_type": "region_boundary",
+                    "source_region_id": "region-a",
+                },
+            )
+            add_curve(window.app_state.curve_collection, boundary_curve)
             add_curve(window.app_state.curve_collection, manual_curve)
             add_curve(window.app_state.curve_collection, repaired_curve)
             add_curve(window.app_state.curve_collection, unassigned_curve)
@@ -3669,12 +3740,14 @@ class MainWindowUiTests(unittest.TestCase):
                 tree.item(curve_group_node_id(second_result.id), "text"),
                 "[H] Section: Section 2",
             )
+            self.assertEqual(tree.item(NODE_CURVE_GROUP_REGION_BOUNDARIES, "text"), "[V] Region Boundaries")
             self.assertEqual(tree.item(NODE_CURVE_GROUP_MANUAL, "text"), "[V] Manual Curves")
             self.assertEqual(tree.item(NODE_CURVE_GROUP_REPAIRED, "text"), "[H] Repaired Curves")
             self.assertEqual(tree.item(NODE_CURVE_GROUP_UNASSIGNED, "text"), "[V] Unassigned")
             self.assertEqual(
                 tree.get_children(NODE_CURVES),
                 (
+                    NODE_CURVE_GROUP_REGION_BOUNDARIES,
                     NODE_CURVE_GROUP_MANUAL,
                     NODE_CURVE_GROUP_REPAIRED,
                     curve_group_node_id(first_result.id),
@@ -7573,6 +7646,13 @@ class MainWindowUiTests(unittest.TestCase):
                 menu.entrycget(window.scene_browser._delete_selected_menu_index, "label"),
                 "Delete Children",
             )
+            self.assertEqual(
+                menu.entrycget(
+                    window.scene_browser._extract_region_boundary_menu_index,
+                    "state",
+                ),
+                "normal",
+            )
 
             window._on_scene_browser_visibility("hide_selected", (region_node,))
             self.assertFalse(region.visible)
@@ -7605,6 +7685,187 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(tree.exists(NODE_REGIONS))
             self.assertIsNone(window.viewport.scene_calls[-1]["region_selection"])
             self.assertEqual(window.status_text.get(), "Region deleted.")
+        finally:
+            window.root.destroy()
+
+    def test_extract_region_boundary_requires_mesh_and_active_region(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            self.assertEqual(
+                str(window.extract_region_boundary_button.cget("state")),
+                "disabled",
+            )
+            window.extract_region_boundary()
+            self.assertEqual(
+                window.status_text.get(),
+                "Region boundary extraction requires a loaded mesh.",
+            )
+
+            _load_sample_model(window)
+            self.assertEqual(
+                str(window.extract_region_boundary_button.cget("state")),
+                "disabled",
+            )
+            self.assertEqual(
+                str(window.select_region_boundary_curves_button.cget("state")),
+                "disabled",
+            )
+            window.extract_region_boundary()
+            self.assertEqual(window.status_text.get(), "No active region to extract.")
+        finally:
+            window.root.destroy()
+
+    def test_extract_region_boundary_creates_editable_curve_grouped_in_browser(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = _sharp_region_mesh()
+            window.region_threshold_text.set("90")
+            window._on_region_threshold_entry_changed()
+            window.viewport.mesh_pick_results.append(
+                MeshPickResult(hit=True, triangle_index=0)
+            )
+            window.start_region_select_mode()
+            _region_click(window, 20, 30)
+
+            window.extract_region_boundary()
+
+            curves = window.app_state.curve_collection.curves
+            self.assertEqual(len(curves), 1)
+            curve = curves[0]
+            region = window.app_state.region_collection.active_region
+            self.assertIsNotNone(region)
+            original_region_triangles = tuple(region.triangle_indices)
+            self.assertEqual(curve.name, "Region Boundary 1")
+            self.assertTrue(curve.is_closed)
+            self.assertEqual(curve.original_points.shape, (4, 3))
+            self.assertEqual(curve.fitted_points.shape, (4, 3))
+            self.assertEqual(curve.metadata["creation_type"], "region_boundary")
+            self.assertEqual(curve.metadata["source_region_id"], region.id)
+            self.assertEqual(curve.metadata["source_region_name"], "Region 1")
+            self.assertEqual(curve.metadata["source_mesh_name"], "sample.stl")
+            self.assertEqual(curve.metadata["curve_method"], "polyline")
+            self.assertEqual(curve.metadata["region_triangle_count"], 2)
+            self.assertEqual(curve.metadata["source_region_triangle_count"], 2)
+            self.assertEqual(curve.metadata["boundary_point_count"], 4)
+            self.assertIs(curve.metadata["boundary_closed"], True)
+            self.assertGreater(curve.metadata["boundary_perimeter"], 0.0)
+            self.assertTrue(window._is_editable_manual_curve(curve))
+            self.assertTrue(window._curve_is_closed_for_fill(curve))
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {curve.id},
+            )
+            self.assertEqual(
+                window.status_text.get(),
+                "Extracted 1 closed boundary curve.",
+            )
+            self.assertEqual(window.region_boundary_curve_count_text.get(), "1")
+            self.assertEqual(
+                str(window.extract_region_boundary_button.cget("state")),
+                "normal",
+            )
+            self.assertEqual(
+                str(window.select_region_boundary_curves_button.cget("state")),
+                "normal",
+            )
+
+            tree = window.scene_browser.tree
+            self.assertTrue(tree.exists(NODE_CURVE_GROUP_REGION_BOUNDARIES))
+            self.assertEqual(
+                tree.item(NODE_CURVE_GROUP_REGION_BOUNDARIES, "text"),
+                "[V] Region Boundaries",
+            )
+            curve_node = curve_node_id(curve.id)
+            self.assertEqual(
+                tree.item(curve_node, "text"),
+                "[V] Region Boundary 1 (boundary, closed)",
+            )
+
+            tree.selection_set(NODE_CURVE_GROUP_REGION_BOUNDARIES)
+            tree.focus(NODE_CURVE_GROUP_REGION_BOUNDARIES)
+            tree.event_generate("<<TreeviewSelect>>")
+            window.root.update()
+            self.assertEqual(window.app_state.selected_item, "curve")
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {curve.id},
+            )
+            self.assertEqual(
+                window._expanded_visibility_node_ids(
+                    (NODE_CURVE_GROUP_REGION_BOUNDARIES,)
+                ),
+                {NODE_CURVE_GROUP_REGION_BOUNDARIES, curve_node},
+            )
+
+            window.select_boundary_curves_for_active_region()
+            self.assertEqual(window.status_text.get(), "Selected 1 boundary curve.")
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {curve.id},
+            )
+
+            window.undo()
+            self.assertEqual(window.app_state.curve_collection.curves, [])
+            self.assertFalse(tree.exists(NODE_CURVE_GROUP_REGION_BOUNDARIES))
+            self.assertEqual(window.region_boundary_curve_count_text.get(), "0")
+            self.assertEqual(
+                str(window.select_region_boundary_curves_button.cget("state")),
+                "disabled",
+            )
+
+            window.redo()
+            curves = window.app_state.curve_collection.curves
+            self.assertEqual(len(curves), 1)
+            curve = curves[0]
+            self.assertTrue(tree.exists(NODE_CURVE_GROUP_REGION_BOUNDARIES))
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {curve.id},
+            )
+            self.assertEqual(window.region_boundary_curve_count_text.get(), "1")
+
+            window.start_manual_curve_edit_mode()
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window.status_text.get(), "Editing Region Boundary 1")
+            window.manual_curve_type_text.set("Smooth Curve")
+            window._on_manual_curve_type_changed()
+            window.apply_manual_curve_edits()
+
+            curve = window.app_state.curve_collection.curves[0]
+            region = window.app_state.region_collection.active_region
+            self.assertIsNotNone(region)
+            self.assertEqual(tuple(region.triangle_indices), original_region_triangles)
+            self.assertEqual(curve.metadata["creation_type"], "region_boundary")
+            self.assertEqual(curve.metadata["source_region_id"], region.id)
+            self.assertEqual(curve.metadata["source_region_name"], "Region 1")
+            self.assertEqual(curve.metadata["source_mesh_name"], "sample.stl")
+            self.assertEqual(curve.metadata["source_region_triangle_count"], 2)
+            self.assertEqual(curve.metadata["boundary_point_count"], len(curve.fitted_points))
+            self.assertIs(curve.metadata["boundary_closed"], True)
+            self.assertGreater(curve.metadata["boundary_perimeter"], 0.0)
+            self.assertEqual(curve.metadata["curve_method"], DEFAULT_MANUAL_CURVE_METHOD)
+            self.assertGreater(len(curve.fitted_points), len(curve.original_points))
+
+            window.done_manual_curve_editing()
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {curve.id},
+            )
+
+            window.fill_closed_curve()
+            surfaces = window.app_state.surface_collection.surfaces
+            self.assertEqual(len(surfaces), 1)
+            self.assertEqual(surfaces[0].surface_type, "preview_fill")
+            self.assertEqual(surfaces[0].source_curve_ids, [curve.id])
         finally:
             window.root.destroy()
 
@@ -7651,6 +7912,166 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertIsNone(window.app_state.region_collection.active_region)
             self.assertFalse(window._region_select_active)
             self.assertFalse(window.scene_browser.tree.exists(NODE_REGIONS))
+        finally:
+            window.root.destroy()
+
+    def test_project_and_rebuild_selected_curve_create_grouped_undoable_curves(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.project_selected_curve_to_mesh()
+            self.assertEqual(window.status_text.get(), "Load a mesh before projecting curves.")
+
+            _load_sample_model(window)
+            window.project_selected_curve_to_mesh()
+            self.assertEqual(window.status_text.get(), "Select one curve to project.")
+            window.rebuild_selected_curve()
+            self.assertEqual(window.status_text.get(), "Select one curve to rebuild.")
+
+            source_curve = _create_manual_curve(
+                window,
+                [
+                    (0.0, 0.0, 0.5),
+                    (0.5, 0.5, 0.75),
+                    (1.0, 0.0, 0.5),
+                ],
+            )
+            window.done_manual_curve_editing()
+            source_points = source_curve.fitted_points.copy()
+            source_metadata = dict(source_curve.metadata)
+            source_control_count = len(source_metadata["control_points"])
+
+            window.select_curve(source_curve.id)
+            window.project_selected_curve_to_mesh()
+
+            curves = window.app_state.curve_collection.curves
+            self.assertEqual(len(curves), 2)
+            projected_curve = curves[-1]
+            self.assertEqual(projected_curve.metadata["creation_type"], "projected_curve")
+            self.assertEqual(projected_curve.metadata["source_curve_id"], source_curve.id)
+            self.assertEqual(projected_curve.metadata["source_mesh_name"], "sample.stl")
+            self.assertEqual(projected_curve.metadata["projection_projected_count"], source_control_count)
+            self.assertTrue(np.allclose(source_curve.fitted_points, source_points))
+            self.assertEqual(source_curve.metadata, source_metadata)
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, projected_curve.id)
+            self.assertEqual(
+                window.app_state.curve_collection.selected_curve_ids,
+                {projected_curve.id},
+            )
+            self.assertTrue(window.scene_browser.tree.exists(NODE_CURVE_GROUP_PROJECTED))
+            self.assertEqual(
+                window.scene_browser.tree.item(curve_node_id(projected_curve.id), "text"),
+                "[V] Projected Curve 1 (projected, mesh)",
+            )
+
+            window.undo()
+            self.assertEqual(
+                [curve.id for curve in window.app_state.curve_collection.curves],
+                [source_curve.id],
+            )
+            self.assertFalse(window.scene_browser.tree.exists(NODE_CURVE_GROUP_PROJECTED))
+            window.redo()
+            projected_curve = window.app_state.curve_collection.curves[-1]
+            self.assertEqual(projected_curve.metadata["creation_type"], "projected_curve")
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, projected_curve.id)
+
+            window.rebuild_target_control_points.set("2")
+            window.rebuild_curve_type_text.set("Smooth Curve")
+            window.rebuild_sample_count.set("24")
+            window.select_curve(projected_curve.id)
+            window.rebuild_selected_curve()
+
+            rebuilt_curve = window.app_state.curve_collection.curves[-1]
+            self.assertEqual(rebuilt_curve.metadata["creation_type"], "rebuilt_curve")
+            self.assertEqual(rebuilt_curve.metadata["source_curve_id"], projected_curve.id)
+            self.assertEqual(rebuilt_curve.metadata["source_mesh_name"], "sample.stl")
+            self.assertEqual(rebuilt_curve.metadata["projection_projected_count"], source_control_count)
+            self.assertEqual(rebuilt_curve.metadata["rebuild_target_control_point_count"], 2)
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, rebuilt_curve.id)
+            self.assertTrue(window.scene_browser.tree.exists(NODE_CURVE_GROUP_REBUILT))
+            self.assertEqual(
+                window.scene_browser.tree.item(curve_node_id(rebuilt_curve.id), "text"),
+                "[V] Rebuilt Curve 1 (rebuilt, smooth)",
+            )
+
+            window.undo()
+            self.assertNotIn(
+                rebuilt_curve.id,
+                [curve.id for curve in window.app_state.curve_collection.curves],
+            )
+            window.redo()
+            self.assertIn(
+                rebuilt_curve.id,
+                [curve.id for curve in window.app_state.curve_collection.curves],
+            )
+        finally:
+            window.root.destroy()
+
+    def test_fill_and_loft_store_validation_warnings_in_surface_metadata(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            angles = np.linspace(0.0, np.pi * 2.0, 300, endpoint=False)
+            dense_points = np.column_stack(
+                (np.cos(angles), np.sin(angles), np.zeros(len(angles)))
+            )
+            dense_curve = StoredCurve(
+                id="curve-dense",
+                name="Dense Closed Curve",
+                section_result_id="",
+                plane_id="",
+                original_points=dense_points.copy(),
+                fitted_points=dense_points.copy(),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+            )
+            open_curve = StoredCurve(
+                id="curve-open",
+                name="Open Curve",
+                section_result_id="",
+                plane_id="",
+                original_points=np.asarray(
+                    [[0.0, 0.0, 0.25], [1.0, 0.0, 0.25]],
+                    dtype=float,
+                ),
+                fitted_points=np.asarray(
+                    [[0.0, 0.0, 0.25], [1.0, 0.0, 0.25]],
+                    dtype=float,
+                ),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, dense_curve)
+            add_curve(window.app_state.curve_collection, open_curve)
+
+            window.select_curve(dense_curve.id)
+            window.fill_closed_curve()
+
+            fill_surface = window.app_state.surface_collection.surfaces[-1]
+            self.assertIn(
+                "Curve has many points; rebuild it for cleaner surface inputs.",
+                fill_surface.metadata["source_curve_validation_warnings"],
+            )
+            self.assertEqual(fill_surface.metadata["source_curve_validation_errors"], [])
+            self.assertGreaterEqual(fill_surface.metadata["source_curve_planarity_error"], 0.0)
+
+            window.select_curves(
+                [dense_curve.id, open_curve.id],
+                active_curve_id=dense_curve.id,
+            )
+            window.loft_between_two_curves()
+
+            loft_surface = window.app_state.surface_collection.surfaces[-1]
+            self.assertIn(
+                "Loft uses one open curve and one closed curve.",
+                loft_surface.metadata["source_curve_validation_warnings"],
+            )
+            self.assertEqual(loft_surface.metadata["source_curve_validation_errors"], [])
         finally:
             window.root.destroy()
 

@@ -633,6 +633,161 @@ class ProjectIOTests(unittest.TestCase):
             [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         )
 
+    def test_save_load_project_preserves_region_boundary_metadata(self) -> None:
+        project = default_project_data()
+        project.curves = [
+            ProjectCurve(
+                id="curve-boundary",
+                name="Region Boundary 1",
+                section_result_id="",
+                plane_id="",
+                original_points=[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                fitted_points=[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+                visible=True,
+                metadata={
+                    "creation_type": "region_boundary",
+                    "source_region_id": "region-a",
+                    "source_region_name": "Region 1",
+                    "source_mesh_name": "sample.stl",
+                    "source_region_triangle_count": 2,
+                    "boundary_point_count": 4,
+                    "boundary_closed": True,
+                    "boundary_perimeter": 4.0,
+                    "boundary_index": 1,
+                },
+            )
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "boundary.openretop"
+            save_project(project, project_path)
+            loaded_project = load_project(project_path)
+
+        curve = loaded_project.curves[0]
+        self.assertEqual(curve.metadata["creation_type"], "region_boundary")
+        self.assertEqual(curve.metadata["source_region_id"], "region-a")
+        self.assertEqual(curve.metadata["source_region_name"], "Region 1")
+        self.assertEqual(curve.metadata["source_mesh_name"], "sample.stl")
+        self.assertEqual(curve.metadata["source_region_triangle_count"], 2)
+        self.assertEqual(curve.metadata["boundary_point_count"], 4)
+        self.assertIs(curve.metadata["boundary_closed"], True)
+        self.assertEqual(curve.metadata["boundary_perimeter"], 4.0)
+
+    def test_save_load_project_preserves_projected_and_rebuilt_metadata(self) -> None:
+        project = default_project_data()
+        project.curves = [
+            ProjectCurve(
+                id="curve-projected",
+                name="Projected Curve 1",
+                section_result_id="",
+                plane_id="",
+                original_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                fitted_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+                metadata={
+                    "creation_type": "projected_curve",
+                    "source_curve_id": "curve-boundary",
+                    "source_curve_name": "Region Boundary 1",
+                    "source_curve_creation_type": "region_boundary",
+                    "source_mesh_name": "sample.stl",
+                    "source_region_id": "region-a",
+                    "source_region_name": "Region 1",
+                    "source_region_triangle_count": 2,
+                    "projection_projected_count": 2,
+                    "projection_missed_count": 0,
+                    "projection_mean_distance": 0.125,
+                    "projection_max_distance": 0.25,
+                    "projection_warnings": [],
+                    "control_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    "curve_method": "polyline",
+                    "sample_count": 16,
+                    "snap_to_mesh": True,
+                    "snap_mode": "mesh",
+                },
+            ),
+            ProjectCurve(
+                id="curve-rebuilt",
+                name="Rebuilt Curve 1",
+                section_result_id="",
+                plane_id="",
+                original_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                fitted_points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+                visible=True,
+                metadata={
+                    "creation_type": "rebuilt_curve",
+                    "source_curve_id": "curve-projected",
+                    "source_curve_name": "Projected Curve 1",
+                    "source_curve_creation_type": "projected_curve",
+                    "source_mesh_name": "sample.stl",
+                    "projection_projected_count": 2,
+                    "projection_missed_count": 0,
+                    "projection_mean_distance": 0.125,
+                    "projection_max_distance": 0.25,
+                    "rebuild_source_point_count": 32,
+                    "rebuild_target_control_point_count": 2,
+                    "rebuild_method": "catmull_rom",
+                    "rebuild_warnings": [],
+                    "control_points": [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    "curve_method": "catmull_rom",
+                    "sample_count": 64,
+                },
+            ),
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "derived-curves.openretop"
+            save_project(project, project_path)
+            loaded_project = load_project(project_path)
+
+        projected_metadata = loaded_project.curves[0].metadata
+        self.assertEqual(projected_metadata["creation_type"], "projected_curve")
+        self.assertEqual(projected_metadata["source_curve_id"], "curve-boundary")
+        self.assertEqual(projected_metadata["source_curve_creation_type"], "region_boundary")
+        self.assertEqual(projected_metadata["source_mesh_name"], "sample.stl")
+        self.assertEqual(projected_metadata["source_region_id"], "region-a")
+        self.assertEqual(projected_metadata["source_region_name"], "Region 1")
+        self.assertEqual(projected_metadata["source_region_triangle_count"], 2)
+        self.assertEqual(projected_metadata["projection_projected_count"], 2)
+        self.assertEqual(projected_metadata["projection_missed_count"], 0)
+        self.assertEqual(projected_metadata["projection_mean_distance"], 0.125)
+        self.assertEqual(projected_metadata["projection_max_distance"], 0.25)
+        self.assertEqual(projected_metadata["control_points"], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        self.assertEqual(projected_metadata["curve_method"], "polyline")
+        self.assertEqual(projected_metadata["sample_count"], 16)
+
+        rebuilt_metadata = loaded_project.curves[1].metadata
+        self.assertEqual(rebuilt_metadata["creation_type"], "rebuilt_curve")
+        self.assertEqual(rebuilt_metadata["source_curve_id"], "curve-projected")
+        self.assertEqual(rebuilt_metadata["source_curve_creation_type"], "projected_curve")
+        self.assertEqual(rebuilt_metadata["source_mesh_name"], "sample.stl")
+        self.assertEqual(rebuilt_metadata["projection_mean_distance"], 0.125)
+        self.assertEqual(rebuilt_metadata["projection_max_distance"], 0.25)
+        self.assertEqual(rebuilt_metadata["rebuild_source_point_count"], 32)
+        self.assertEqual(rebuilt_metadata["rebuild_target_control_point_count"], 2)
+        self.assertEqual(rebuilt_metadata["rebuild_method"], "catmull_rom")
+        self.assertEqual(rebuilt_metadata["control_points"], [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        self.assertEqual(rebuilt_metadata["curve_method"], "catmull_rom")
+        self.assertEqual(rebuilt_metadata["sample_count"], 64)
+
     def test_project_from_dict_rejects_invalid_curve_points_clearly(self) -> None:
         with self.assertRaises(ValueError) as context:
             project_from_dict(

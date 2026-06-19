@@ -10,6 +10,9 @@ from pathlib import Path
 
 from mesh.display_proxy import normalize_proxy_quality
 from settings.settings_data import (
+    DEFAULT_REGION_SELECTION_EDGE_COLOR,
+    DEFAULT_REGION_SELECTION_COLOR,
+    DEFAULT_REGION_SELECTION_OPACITY,
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
@@ -61,6 +64,18 @@ def settings_to_dict(settings: AppSettings) -> dict[str, object]:
             "show_normals": bool(settings.display.show_normals),
             "show_axis_gizmo": bool(settings.display.show_axis_gizmo),
             "show_viewcube": bool(settings.display.show_viewcube),
+            "region_selection_color": _hex_color_value(
+                settings.display.region_selection_color,
+                "display.region_selection_color",
+            ),
+            "region_selection_edge_color": _hex_color_value(
+                settings.display.region_selection_edge_color,
+                "display.region_selection_edge_color",
+            ),
+            "region_selection_opacity": _region_opacity_value(
+                settings.display.region_selection_opacity,
+                "display.region_selection_opacity",
+            ),
         },
         "import": {
             "default_proxy_quality": normalize_proxy_quality(
@@ -154,6 +169,30 @@ def settings_from_dict(data: object) -> AppSettings:
                     defaults.display.show_viewcube,
                 ),
                 "display.show_viewcube",
+            ),
+            region_selection_color=_hex_color_value(
+                _nested_value(
+                    display_data,
+                    "region_selection_color",
+                    DEFAULT_REGION_SELECTION_COLOR,
+                ),
+                "display.region_selection_color",
+            ),
+            region_selection_edge_color=_hex_color_value(
+                _nested_value(
+                    display_data,
+                    "region_selection_edge_color",
+                    DEFAULT_REGION_SELECTION_EDGE_COLOR,
+                ),
+                "display.region_selection_edge_color",
+            ),
+            region_selection_opacity=_region_opacity_value(
+                _nested_value(
+                    display_data,
+                    "region_selection_opacity",
+                    DEFAULT_REGION_SELECTION_OPACITY,
+                ),
+                "display.region_selection_opacity",
             ),
         ),
         import_settings=AppImportSettings(
@@ -338,3 +377,41 @@ def _keybind_value(value: object, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} must not be empty.")
     return normalized
+
+
+def _hex_color_value(value: object, field_name: str) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        if len(normalized) != 7 or not normalized.startswith("#"):
+            raise ValueError(f"{field_name} must be a #RRGGBB color.")
+        try:
+            int(normalized[1:], 16)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be a #RRGGBB color.") from exc
+        return normalized
+
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        try:
+            components = [float(component) for component in value]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be a #RRGGBB color.") from exc
+        if not all(component == component for component in components):
+            raise ValueError(f"{field_name} must be a #RRGGBB color.")
+        if all(0.0 <= component <= 1.0 for component in components):
+            byte_values = [round(component * 255.0) for component in components]
+        elif all(0.0 <= component <= 255.0 for component in components):
+            byte_values = [round(component) for component in components]
+        else:
+            raise ValueError(f"{field_name} must be a #RRGGBB color.")
+        return "#" + "".join(f"{int(component):02X}" for component in byte_values)
+
+    raise ValueError(f"{field_name} must be a #RRGGBB color.")
+
+
+def _region_opacity_value(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a number.")
+    opacity = float(value)
+    if not opacity == opacity or opacity in {float("inf"), float("-inf")}:
+        raise ValueError(f"{field_name} must be a finite number.")
+    return min(max(opacity, 0.05), 1.0)

@@ -6,6 +6,7 @@ import copy
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, TclError, Tk, Toplevel, filedialog
 from tkinter import messagebox, simpledialog, ttk
+from typing import Sequence
 from uuid import uuid4
 
 import numpy as np
@@ -16,9 +17,15 @@ from app.menus import build_menu_bar
 from app.object_state import MeshObjectState
 from app.preferences_dialog import build_preferences_dialog
 from app.scene_browser import (
+    CURVE_GROUP_REGION_BOUNDARIES_ID,
+    CURVE_GROUP_PROJECTED_ID,
+    CURVE_GROUP_REBUILT_ID,
     CURVE_GROUP_REPAIRED_ID,
     CURVE_GROUP_MANUAL_ID,
     NODE_CURVES,
+    NODE_CURVE_GROUP_PROJECTED,
+    NODE_CURVE_GROUP_REBUILT,
+    NODE_CURVE_GROUP_REGION_BOUNDARIES,
     NODE_CURVE_GROUP_UNASSIGNED,
     NODE_CURVE_GROUP_MANUAL,
     NODE_CURVE_GROUP_REPAIRED,
@@ -102,6 +109,13 @@ from curves.manual_curve import (
     parse_manual_curve_metadata,
     should_snap_closed_to_first_point,
 )
+from curves.projection import project_stored_curve_to_mesh
+from curves.rebuild import rebuild_stored_curve
+from curves.validation import (
+    CurveSurfaceReadiness,
+    validate_curve_for_fill,
+    validate_curves_for_loft,
+)
 from geometry.curves import fit_section_polylines
 from geometry.sections import (
     AXIS_TO_INDEX,
@@ -130,7 +144,11 @@ from regions.region_state import (
     RegionSelection,
     create_region_selection,
 )
+from regions.boundary import RegionBoundaryPolyline, extract_region_boundary_polylines
 from settings.settings_data import (
+    DEFAULT_REGION_SELECTION_EDGE_COLOR,
+    DEFAULT_REGION_SELECTION_COLOR,
+    DEFAULT_REGION_SELECTION_OPACITY,
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
@@ -450,6 +468,7 @@ class OpenRetopWindow:
         self.region_source_mesh_text = StringVar(value="(none)")
         self.region_visible_text = StringVar(value="No")
         self.region_status_text = StringVar(value="No active region")
+        self.region_boundary_curve_count_text = StringVar(value="0")
         self.project_path_text = StringVar(value="Project: Untitled Project")
         self.selected_object_type_text = StringVar(value="(none)")
         self.file_name_text = StringVar(value="(none)")
@@ -494,6 +513,18 @@ class OpenRetopWindow:
         self.curve_max_error_text = StringVar(value="0.000")
         self.curve_closed_text = StringVar(value="Open")
         self.curve_tiny_text = StringVar(value="No")
+        self.curve_type_text = StringVar(value="(none)")
+        self.curve_source_text = StringVar(value="(none)")
+        self.curve_control_point_count_text = StringVar(value="0")
+        self.curve_planarity_error_text = StringVar(value="(none)")
+        self.curve_projection_mean_distance_text = StringVar(value="(none)")
+        self.curve_projection_max_distance_text = StringVar(value="(none)")
+        self.curve_surface_readiness_text = StringVar(value="Select curve(s) to validate.")
+        self.curve_surface_warnings_text = StringVar(value="(none)")
+        self.curve_surface_errors_text = StringVar(value="(none)")
+        self.rebuild_target_control_points = StringVar(value="16")
+        self.rebuild_curve_type_text = StringVar(value="Smooth Curve")
+        self.rebuild_sample_count = StringVar(value="128")
         self.surface_visible = BooleanVar(value=True)
         self.surface_name_text = StringVar(value="(none)")
         self.surface_type_text = StringVar(value="(none)")
@@ -1288,6 +1319,60 @@ class OpenRetopWindow:
             )
         )
 
+    def _push_created_curves_command(
+        self,
+        curves: Sequence[StoredCurve],
+        *,
+        command_name: str,
+    ) -> None:
+        captured_curves = [copy.deepcopy(curve) for curve in curves]
+        curve_indices = [
+            next(
+                (
+                    index
+                    for index, existing in enumerate(self.app_state.curve_collection.curves)
+                    if existing.id == curve.id
+                ),
+                len(self.app_state.curve_collection.curves),
+            )
+            for curve in captured_curves
+        ]
+        captured_ids = [curve.id for curve in captured_curves]
+        self._push_undo_command(
+            CallbackUndoCommand(
+                command_name,
+                undo_action=lambda: self._remove_created_curves_for_undo(captured_ids),
+                redo_action=lambda: self._restore_created_curves_for_undo(
+                    captured_curves,
+                    curve_indices,
+                ),
+            )
+        )
+
+    def _remove_created_curves_for_undo(self, curve_ids: Sequence[str]) -> None:
+        for curve_id in curve_ids:
+            remove_curve(self.app_state.curve_collection, curve_id)
+
+    def _restore_created_curves_for_undo(
+        self,
+        curves: Sequence[StoredCurve],
+        curve_indices: Sequence[int],
+    ) -> None:
+        restored_ids: list[str] = []
+        for curve, curve_index in zip(curves, curve_indices):
+            restored_curve = copy.deepcopy(curve)
+            self._restore_curve_at_index(restored_curve, curve_index)
+            restored_ids.append(restored_curve.id)
+        if restored_ids:
+            try:
+                set_selected_curves(
+                    self.app_state.curve_collection,
+                    restored_ids,
+                    active_curve_id=restored_ids[0],
+                )
+            except ValueError:
+                return
+
     def _push_created_surface_command(self, surface: SurfacePatch) -> None:
         surface_index = next(
             (
@@ -1328,6 +1413,7 @@ class OpenRetopWindow:
         self._sync_section_result_context_from_active_result()
         self._sync_curve_context_from_active_curve()
         self._sync_surface_context_from_active_surface()
+        self._refresh_scene_browser()
         self._refresh_viewport(reset_camera=False)
 
     def open_preferences(self) -> None:
@@ -1368,9 +1454,18 @@ class OpenRetopWindow:
         )
         try:
             keybinds = self._keybind_settings_from_preferences()
+            region_display_settings = self._region_display_settings_from_preferences()
         except ValueError as exc:
             self.status_text.set(str(exc))
             return False
+        region_selection_color, region_selection_edge_color, region_selection_opacity = (
+            region_display_settings
+        )
+        old_region_display_settings = (
+            self.settings.display.region_selection_color,
+            self.settings.display.region_selection_edge_color,
+            float(self.settings.display.region_selection_opacity),
+        )
 
         width, height = (
             self._current_window_size()
@@ -1385,6 +1480,9 @@ class OpenRetopWindow:
                 show_normals=False,
                 show_axis_gizmo=show_axis_gizmo,
                 show_viewcube=show_viewcube,
+                region_selection_color=region_selection_color,
+                region_selection_edge_color=region_selection_edge_color,
+                region_selection_opacity=region_selection_opacity,
             ),
             import_settings=AppImportSettings(
                 default_proxy_quality=proxy_quality,
@@ -1399,6 +1497,11 @@ class OpenRetopWindow:
             future=dict(self.settings.future),
         )
         self._save_app_settings()
+        if (
+            old_region_display_settings != region_display_settings
+            and self._active_visible_region_selection() is not None
+        ):
+            self._refresh_viewport(reset_camera=False)
         self.status_text.set("Preferences applied")
         return True
 
@@ -1411,6 +1514,56 @@ class OpenRetopWindow:
             values[field_name] = value
 
         return AppKeybindSettings(**values)
+
+    def _region_display_settings_from_preferences(self) -> tuple[str, str, float]:
+        fill_color = self._hex_color_from_preferences(
+            "region_selection_color",
+            "Region Fill Color",
+            DEFAULT_REGION_SELECTION_COLOR,
+        )
+        edge_color = self._hex_color_from_preferences(
+            "region_selection_edge_color",
+            "Region Edge Color",
+            DEFAULT_REGION_SELECTION_EDGE_COLOR,
+        )
+        opacity = self._opacity_from_preferences(
+            "region_selection_opacity",
+            DEFAULT_REGION_SELECTION_OPACITY,
+        )
+        return (fill_color, edge_color, opacity)
+
+    def _hex_color_from_preferences(
+        self,
+        variable_name: str,
+        label: str,
+        default: str,
+    ) -> str:
+        variable = self.preferences_vars.get(variable_name)
+        raw_value = default if variable is None else str(variable.get())
+        value = raw_value.strip().upper()
+        if len(value) != 7 or not value.startswith("#"):
+            raise ValueError(f"{label} must be #RRGGBB.")
+        try:
+            int(value[1:], 16)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be #RRGGBB.") from exc
+        if variable is not None:
+            variable.set(value)
+        return value
+
+    def _opacity_from_preferences(self, variable_name: str, default: float) -> float:
+        variable = self.preferences_vars.get(variable_name)
+        raw_value = default if variable is None else str(variable.get()).strip()
+        try:
+            opacity = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError("Region Opacity must be a number.") from None
+        if not np.isfinite(opacity):
+            raise ValueError("Region Opacity must be a number.")
+        opacity = min(max(opacity, 0.05), 1.0)
+        if variable is not None:
+            variable.set(f"{opacity:.2f}")
+        return opacity
 
     def _close_preferences_dialog(self) -> None:
         dialog = self.preferences_dialog
@@ -2262,6 +2415,73 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Mean error", self.curve_mean_error_text)
         row = self._add_info_row(parent, row, "Max error", self.curve_max_error_text)
         row = self._add_info_row(parent, row, "Tiny fragment", self.curve_tiny_text)
+        row = self._add_info_row(parent, row, "Type", self.curve_type_text)
+        row = self._add_info_row(parent, row, "Source", self.curve_source_text)
+        row = self._add_info_row(parent, row, "Control points", self.curve_control_point_count_text)
+        row = self._add_info_row(parent, row, "Planarity error", self.curve_planarity_error_text)
+        row = self._add_info_row(parent, row, "Projection mean", self.curve_projection_mean_distance_text)
+        row = self._add_info_row(parent, row, "Projection max", self.curve_projection_max_distance_text)
+        row = self._add_info_row(parent, row, "Surface readiness", self.curve_surface_readiness_text)
+        row = self._add_info_row(parent, row, "Warnings", self.curve_surface_warnings_text)
+        row = self._add_info_row(parent, row, "Errors", self.curve_surface_errors_text)
+        self.project_curve_to_mesh_button = ttk.Button(
+            parent,
+            text="Project Selected Curve to Mesh",
+            command=self.project_selected_curve_to_mesh,
+        )
+        self.project_curve_to_mesh_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.selection_buttons.append(self.project_curve_to_mesh_button)
+        row += 1
+        ttk.Label(parent, text="Target Control Points").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.rebuild_target_control_points_entry = ttk.Entry(
+            parent,
+            textvariable=self.rebuild_target_control_points,
+            width=8,
+        )
+        self.rebuild_target_control_points_entry.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+        row += 1
+        ttk.Label(parent, text="Rebuild Type").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.rebuild_curve_type_combo = ttk.Combobox(
+            parent,
+            textvariable=self.rebuild_curve_type_text,
+            values=("Smooth Curve", "Polyline"),
+            state="readonly",
+            width=14,
+        )
+        self.rebuild_curve_type_combo.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+        row += 1
+        ttk.Label(parent, text="Sample Count").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.rebuild_sample_count_entry = ttk.Entry(
+            parent,
+            textvariable=self.rebuild_sample_count,
+            width=8,
+        )
+        self.rebuild_sample_count_entry.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
+        row += 1
+        self.rebuild_curve_button = ttk.Button(
+            parent,
+            text="Rebuild Selected Curve",
+            command=self.rebuild_selected_curve,
+        )
+        self.rebuild_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.rebuild_curve_button)
+        row += 1
+        self.validate_curve_button = ttk.Button(
+            parent,
+            text="Validate Selected Curve",
+            command=self.validate_selected_curve,
+        )
+        self.validate_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.selection_buttons.append(self.validate_curve_button)
+        row += 1
+        self.validate_loft_curves_button = ttk.Button(
+            parent,
+            text="Validate Selected Curves for Loft",
+            command=self.validate_selected_curves_for_loft,
+        )
+        self.validate_loft_curves_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.selection_buttons.append(self.validate_loft_curves_button)
+        row += 1
         self.delete_curve_button = ttk.Button(
             parent,
             text="Delete Selected Curve",
@@ -2644,6 +2864,32 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.manual_project_curve_to_mesh_button = ttk.Button(
+            parent,
+            text="Project Selected Curve to Mesh",
+            command=self.project_selected_curve_to_mesh,
+        )
+        self.manual_project_curve_to_mesh_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.manual_rebuild_curve_button = ttk.Button(
+            parent,
+            text="Rebuild Selected Curve",
+            command=self.rebuild_selected_curve,
+        )
+        self.manual_rebuild_curve_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
         self.finish_manual_curve_button = ttk.Button(
             parent,
             text="Finish Curve",
@@ -2873,14 +3119,12 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Triangles", self.region_triangle_count_text)
         row = self._add_info_row(parent, row, "Seed triangle", self.region_seed_triangle_text)
         row = self._add_info_row(parent, row, "Region status", self.region_status_text)
-        row = self._add_separator(parent, row)
-        row = self._add_heading(parent, row, "Coming Later")
-        self.boundary_from_region_placeholder_button = ttk.Button(
+        self.extract_region_boundary_button = ttk.Button(
             parent,
-            text="Boundary From Region",
-            command=lambda: self._not_implemented("Boundary From Region"),
+            text="Extract Region Boundary",
+            command=self.extract_region_boundary,
         )
-        self.boundary_from_region_placeholder_button.grid(
+        self.extract_region_boundary_button.grid(
             row=row,
             column=0,
             columnspan=2,
@@ -2888,6 +3132,21 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.select_region_boundary_curves_button = ttk.Button(
+            parent,
+            text="Select Boundary Curves",
+            command=self.select_boundary_curves_for_active_region,
+        )
+        self.select_region_boundary_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Coming Later")
         self.fit_patch_from_region_placeholder_button = ttk.Button(
             parent,
             text="Fit Patch From Region",
@@ -2932,6 +3191,7 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Seed triangle", self.region_seed_triangle_text)
         row = self._add_info_row(parent, row, "Source mesh", self.region_source_mesh_text)
         row = self._add_info_row(parent, row, "Visible", self.region_visible_text)
+        row = self._add_info_row(parent, row, "Boundary curves", self.region_boundary_curve_count_text)
         row = self._add_separator(parent, row)
         row = self._add_heading(parent, row, "Hotkeys")
         ttk.Label(
@@ -3888,6 +4148,24 @@ class OpenRetopWindow:
                 for curve in self.app_state.curve_collection.curves
                 if is_repaired_curve(curve)
             ]
+        if section_result_id == CURVE_GROUP_PROJECTED_ID:
+            return [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if self._is_projected_curve(curve)
+            ]
+        if section_result_id == CURVE_GROUP_REBUILT_ID:
+            return [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if self._is_rebuilt_curve(curve)
+            ]
+        if section_result_id == CURVE_GROUP_REGION_BOUNDARIES_ID:
+            return [
+                curve.id
+                for curve in self.app_state.curve_collection.curves
+                if self._is_region_boundary_curve(curve)
+            ]
         if section_result_id == CURVE_GROUP_MANUAL_ID:
             return [
                 curve.id
@@ -3899,6 +4177,10 @@ class OpenRetopWindow:
                 curve.id
                 for curve in self.app_state.curve_collection.curves
                 if curve.section_result_id not in result_ids
+                and not is_repaired_curve(curve)
+                and not self._is_projected_curve(curve)
+                and not self._is_rebuilt_curve(curve)
+                and not self._is_region_boundary_curve(curve)
                 and not self._is_manual_or_mesh_curve(curve)
             ]
 
@@ -3906,12 +4188,33 @@ class OpenRetopWindow:
             curve.id
             for curve in self.app_state.curve_collection.curves
             if curve.section_result_id == section_result_id
+            and not self._is_projected_curve(curve)
+            and not self._is_rebuilt_curve(curve)
+            and not self._is_region_boundary_curve(curve)
             and not self._is_manual_or_mesh_curve(curve)
         ]
 
     @staticmethod
     def _is_manual_or_mesh_curve(curve: StoredCurve) -> bool:
         return is_manual_curve_like(curve)
+
+    @staticmethod
+    def _is_projected_curve(curve: StoredCurve) -> bool:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        return str(metadata.get("creation_type", "")).strip().lower() == "projected_curve"
+
+    @staticmethod
+    def _is_rebuilt_curve(curve: StoredCurve) -> bool:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        return str(metadata.get("creation_type", "")).strip().lower() == "rebuilt_curve"
+
+    @staticmethod
+    def _is_region_boundary_curve(curve: StoredCurve) -> bool:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        return (
+            str(metadata.get("creation_type", "")).strip().lower() == "region_boundary"
+            or "source_region_id" in metadata
+        )
 
     def _on_viewport_pointer_event(
         self,
@@ -4140,6 +4443,154 @@ class OpenRetopWindow:
         self._refresh_scene_browser()
         self.status_text.set(self._region_result_status("Recomputed region", region))
         self._sync_workflow_ui()
+
+    def extract_region_boundary(self) -> None:
+        mesh_object = self.app_state.mesh_object
+        region = self.app_state.region_collection.active_region
+        if mesh_object is None:
+            self.status_text.set("Region boundary extraction requires a loaded mesh.")
+            self._sync_workflow_ui()
+            return
+        if region is None:
+            self.status_text.set("No active region to extract.")
+            self._sync_workflow_ui()
+            return
+
+        boundary_mesh = mesh_object.display_mesh.copy()
+        boundary_mesh.transform(self._current_object_matrix())
+        boundaries = extract_region_boundary_polylines(boundary_mesh, region)
+        if not boundaries:
+            self.status_text.set("No boundary edges found.")
+            self._sync_workflow_ui()
+            return
+
+        names = self._region_boundary_curve_names(len(boundaries))
+        created_curves = [
+            self._stored_curve_from_region_boundary(boundary, index, name)
+            for index, (boundary, name) in enumerate(zip(boundaries, names), start=1)
+        ]
+        clear_curve_selection(self.app_state.curve_collection)
+        for curve in created_curves:
+            add_curve(self.app_state.curve_collection, curve)
+
+        created_curve_ids = [curve.id for curve in created_curves]
+        self._sync_visible_curve_results()
+        self.select_curves(created_curve_ids, active_curve_id=created_curve_ids[0])
+        self._push_created_curves_command(
+            created_curves,
+            command_name="Extract Region Boundary",
+        )
+        self._set_project_dirty(True)
+        self.status_text.set(self._region_boundary_extraction_status(created_curves))
+        self._sync_workflow_ui()
+
+    def select_boundary_curves_for_active_region(self) -> None:
+        region = self.app_state.region_collection.active_region
+        if region is None:
+            self.status_text.set("No active region to extract.")
+            self._sync_workflow_ui()
+            return
+
+        curve_ids = [curve.id for curve in self._boundary_curves_for_region(region.id)]
+        if not curve_ids:
+            self.status_text.set("No boundary curves linked to active region.")
+            self._sync_workflow_ui()
+            return
+
+        self.select_curves(curve_ids, active_curve_id=curve_ids[0])
+        self.status_text.set(
+            "Selected 1 boundary curve."
+            if len(curve_ids) == 1
+            else f"Selected {len(curve_ids)} boundary curves."
+        )
+        self._sync_workflow_ui()
+
+    def _boundary_curves_for_region(self, region_id: str) -> list[StoredCurve]:
+        return [
+            curve
+            for curve in self.app_state.curve_collection.curves
+            if self._is_region_boundary_curve(curve)
+            and str(
+                (curve.metadata if isinstance(curve.metadata, dict) else {}).get(
+                    "source_region_id",
+                    "",
+                )
+            )
+            == region_id
+        ]
+
+    def _stored_curve_from_region_boundary(
+        self,
+        boundary: RegionBoundaryPolyline,
+        index: int,
+        name: str,
+    ) -> StoredCurve:
+        region = self.app_state.region_collection.active_region
+        region_name = "" if region is None else region.name
+        points = np.asarray(boundary.points, dtype=float).reshape((-1, 3))
+        curve = build_manual_stored_curve(
+            curve_id=f"curve-{uuid4().hex}",
+            name=name,
+            control_points=points,
+            is_closed=bool(boundary.is_closed),
+            creation_type="region_boundary",
+            snap_to_mesh=False,
+            work_plane_type="mesh",
+            source_mesh_name=boundary.source_mesh_name,
+            curve_method="polyline",
+            sample_count=max(len(points), 2),
+        )
+        metadata = dict(curve.metadata)
+        metadata.update(boundary.metadata)
+        metadata.update(
+            {
+                "creation_type": "region_boundary",
+                "source_region_id": boundary.source_region_id,
+                "source_region_name": region_name,
+                "source_mesh_name": boundary.source_mesh_name,
+                "curve_method": "polyline",
+                "boundary_point_count": int(len(points)),
+                "boundary_closed": bool(boundary.is_closed),
+                "boundary_perimeter": _polyline_perimeter(
+                    points,
+                    closed=bool(boundary.is_closed),
+                ),
+                "region_triangle_count": 0
+                if region is None
+                else len(region.triangle_indices),
+                "source_region_triangle_count": 0
+                if region is None
+                else len(region.triangle_indices),
+                "boundary_index": int(index),
+            }
+        )
+        curve.metadata = metadata
+        curve.original_points = points.copy()
+        curve.fitted_points = points.copy()
+        curve.is_closed = bool(boundary.is_closed)
+        refresh_curve_diagnostics(curve)
+        return curve
+
+    def _region_boundary_curve_names(self, count: int) -> list[str]:
+        existing_names = {curve.name for curve in self.app_state.curve_collection.curves}
+        names: list[str] = []
+        index = 1
+        while len(names) < count:
+            candidate = f"Region Boundary {index}"
+            index += 1
+            if candidate in existing_names:
+                continue
+            existing_names.add(candidate)
+            names.append(candidate)
+        return names
+
+    @staticmethod
+    def _region_boundary_extraction_status(curves: Sequence[StoredCurve]) -> str:
+        count = len(curves)
+        if count == 1:
+            shape = "closed" if bool(curves[0].is_closed) else "open"
+            return f"Extracted 1 {shape} boundary curve."
+        return f"Extracted {count} boundary curves."
 
     def hide_region_highlight(self) -> None:
         self.hide_region_selection()
@@ -4781,6 +5232,15 @@ class OpenRetopWindow:
             self.curve_max_error_text.set("0.000")
             self.curve_closed_text.set("Open")
             self.curve_tiny_text.set("No")
+            self.curve_type_text.set("(none)")
+            self.curve_source_text.set("(none)")
+            self.curve_control_point_count_text.set("0")
+            self.curve_planarity_error_text.set("(none)")
+            self.curve_projection_mean_distance_text.set("(none)")
+            self.curve_projection_max_distance_text.set("(none)")
+            self.curve_surface_readiness_text.set("Select curve(s) to validate.")
+            self.curve_surface_warnings_text.set("(none)")
+            self.curve_surface_errors_text.set("(none)")
             return
 
         refresh_curve_diagnostics(active_curve)
@@ -4795,6 +5255,19 @@ class OpenRetopWindow:
         self.curve_max_error_text.set(f"{active_curve.max_error:.3f}")
         self.curve_closed_text.set("Closed" if active_curve.is_closed else "Open")
         self.curve_tiny_text.set("Yes" if active_curve.is_tiny_fragment else "No")
+        self.curve_type_text.set(self._curve_type_label(active_curve))
+        self.curve_source_text.set(self._curve_source_label(active_curve))
+        selected_curves = get_selected_curves(self.app_state.curve_collection)
+        if len(selected_curves) == 2:
+            self._set_curve_readiness_display(
+                validate_curves_for_loft(selected_curves),
+                mode="loft",
+            )
+        else:
+            self._set_curve_readiness_display(
+                [validate_curve_for_fill(active_curve)],
+                mode="fill",
+            )
 
     def _section_result_name_for_curve(self, curve: StoredCurve) -> str:
         for result in self.app_state.section_collection.results:
@@ -4807,6 +5280,114 @@ class OpenRetopWindow:
             if plane.id == curve.plane_id:
                 return f"{plane.name} ({plane.axis} = {plane.offset:.3f})"
         return "(missing)"
+
+    def _set_curve_readiness_display(
+        self,
+        readiness_items: Sequence[CurveSurfaceReadiness],
+        *,
+        mode: str,
+    ) -> None:
+        if not readiness_items:
+            self.curve_control_point_count_text.set("0")
+            self.curve_planarity_error_text.set("(none)")
+            self.curve_projection_mean_distance_text.set("(none)")
+            self.curve_projection_max_distance_text.set("(none)")
+            self.curve_surface_readiness_text.set("Select curve(s) to validate.")
+            self.curve_surface_warnings_text.set("(none)")
+            self.curve_surface_errors_text.set("(none)")
+            return
+
+        first = readiness_items[0]
+        self.curve_control_point_count_text.set(
+            "(none)"
+            if first.control_point_count is None
+            else str(int(first.control_point_count))
+        )
+        self.curve_planarity_error_text.set(self._optional_float_text(first.planarity_error))
+        self.curve_projection_mean_distance_text.set(
+            self._optional_float_text(first.mesh_projection_mean_distance)
+        )
+        self.curve_projection_max_distance_text.set(
+            self._optional_float_text(first.mesh_projection_max_distance)
+        )
+        errors = self._readiness_errors(readiness_items)
+        warnings = self._readiness_warnings(readiness_items)
+        if errors:
+            status = "Not Ready"
+        elif mode == "loft":
+            status = "Ready for Loft"
+        else:
+            status = "Ready for Fill"
+        self.curve_surface_readiness_text.set(status)
+        self.curve_surface_warnings_text.set("; ".join(warnings) if warnings else "(none)")
+        self.curve_surface_errors_text.set("; ".join(errors) if errors else "(none)")
+
+    @staticmethod
+    def _readiness_warnings(readiness_items: Sequence[CurveSurfaceReadiness]) -> list[str]:
+        warnings: list[str] = []
+        for readiness in readiness_items:
+            warnings.extend(readiness.warnings)
+        return list(dict.fromkeys(warnings))
+
+    @staticmethod
+    def _readiness_errors(readiness_items: Sequence[CurveSurfaceReadiness]) -> list[str]:
+        errors: list[str] = []
+        for readiness in readiness_items:
+            errors.extend(readiness.errors)
+        return list(dict.fromkeys(errors))
+
+    def _first_readiness_warning(
+        self,
+        readiness_items: Sequence[CurveSurfaceReadiness],
+    ) -> str | None:
+        warnings = self._readiness_warnings(readiness_items)
+        return warnings[0] if warnings else None
+
+    def _first_readiness_error(
+        self,
+        readiness_items: Sequence[CurveSurfaceReadiness],
+    ) -> str | None:
+        errors = self._readiness_errors(readiness_items)
+        return errors[0] if errors else None
+
+    @staticmethod
+    def _optional_float_text(value: float | None) -> str:
+        if value is None:
+            return "(none)"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "(none)"
+        if not np.isfinite(number):
+            return "(none)"
+        return f"{number:.3f}"
+
+    def _curve_type_label(self, curve: StoredCurve) -> str:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        creation_type = str(metadata.get("creation_type", "")).strip().lower()
+        labels = {
+            "projected_curve": "Projected",
+            "rebuilt_curve": "Rebuilt",
+            "region_boundary": "Region Boundary",
+            "manual": "Manual",
+            "curve_on_mesh": "Curve on Mesh",
+        }
+        if creation_type in labels:
+            return labels[creation_type]
+        if is_repaired_curve(curve):
+            return "Repaired/Processed"
+        if curve.section_result_id:
+            return "Section Curve"
+        return "Curve"
+
+    @staticmethod
+    def _curve_source_label(curve: StoredCurve) -> str:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        for key in ("source_curve_name", "source_region_name", "source_mesh_name"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        return "(none)"
 
     def _validated_name_candidate(
         self,
@@ -4999,6 +5580,146 @@ class OpenRetopWindow:
         )
         self._set_project_dirty(True)
 
+    def project_selected_curve_to_mesh(self) -> None:
+        mesh_object = self.app_state.mesh_object
+        if mesh_object is None:
+            self.status_text.set("Load a mesh before projecting curves.")
+            self._sync_workflow_ui()
+            return
+
+        source_curve = self._single_curve_for_surface_prep("Select one curve to project.")
+        if source_curve is None:
+            return
+
+        boundary_mesh = mesh_object.display_mesh.copy()
+        boundary_mesh.transform(self._current_object_matrix())
+        projected_curve = project_stored_curve_to_mesh(
+            source_curve,
+            boundary_mesh,
+            curve_id=f"curve-{uuid4().hex}",
+            name=self._next_derived_curve_name("Projected Curve"),
+            source_mesh_name=mesh_object.name,
+        )
+        add_curve(self.app_state.curve_collection, projected_curve)
+        self._sync_visible_curve_results()
+        self.select_curve(projected_curve.id)
+        self._push_created_curve_command(
+            projected_curve,
+            command_name="Project Curve to Mesh",
+        )
+        self.status_text.set(
+            "Projected "
+            f"{projected_curve.metadata.get('projection_projected_count', 0)} points "
+            f"to {projected_curve.name}."
+        )
+        self._set_project_dirty(True)
+        self._sync_workflow_ui()
+
+    def rebuild_selected_curve(self) -> None:
+        source_curve = self._single_curve_for_surface_prep("Select one curve to rebuild.")
+        if source_curve is None:
+            return
+
+        target_count = self._rebuild_target_control_point_count()
+        sample_count = self._rebuild_sample_count_value()
+        curve_method = self._rebuild_curve_method()
+        rebuilt_curve = rebuild_stored_curve(
+            source_curve,
+            curve_id=f"curve-{uuid4().hex}",
+            name=self._next_derived_curve_name("Rebuilt Curve"),
+            target_control_point_count=target_count,
+            curve_method=curve_method,
+            sample_count=sample_count,
+        )
+        add_curve(self.app_state.curve_collection, rebuilt_curve)
+        self._sync_visible_curve_results()
+        self.select_curve(rebuilt_curve.id)
+        self._push_created_curve_command(
+            rebuilt_curve,
+            command_name="Rebuild Curve",
+        )
+        self.status_text.set(
+            f"Rebuilt {source_curve.name} into {rebuilt_curve.name} "
+            f"({rebuilt_curve.metadata.get('rebuild_target_control_point_count', 0)} controls)."
+        )
+        self._set_project_dirty(True)
+        self._sync_workflow_ui()
+
+    def validate_selected_curve(self) -> None:
+        source_curve = self._single_curve_for_surface_prep("Select curve(s) to validate.")
+        if source_curve is None:
+            return
+
+        readiness = validate_curve_for_fill(source_curve)
+        self._set_curve_readiness_display([readiness], mode="fill")
+        if readiness.errors:
+            self.status_text.set(readiness.errors[0])
+        elif readiness.warnings:
+            self.status_text.set(readiness.warnings[0])
+        else:
+            self.status_text.set("Ready for Fill")
+        self._sync_workflow_ui()
+
+    def validate_selected_curves_for_loft(self) -> None:
+        curves = self._surface_source_curves_from_selection()
+        if not curves:
+            self.status_text.set("Select curve(s) to validate.")
+            self._sync_workflow_ui()
+            return
+
+        readiness = validate_curves_for_loft(curves)
+        self._set_curve_readiness_display(readiness, mode="loft")
+        first_error = self._first_readiness_error(readiness)
+        first_warning = self._first_readiness_warning(readiness)
+        if first_error:
+            self.status_text.set(first_error)
+        elif first_warning:
+            self.status_text.set(first_warning)
+        else:
+            self.status_text.set("Ready for Loft")
+        self._sync_workflow_ui()
+
+    def _single_curve_for_surface_prep(self, message: str) -> StoredCurve | None:
+        selected_curves = get_selected_curves(self.app_state.curve_collection)
+        if not selected_curves:
+            active_curve = self._active_curve()
+            selected_curves = [] if active_curve is None else [active_curve]
+        if len(selected_curves) != 1:
+            self.status_text.set(message)
+            self._sync_workflow_ui()
+            return None
+        return selected_curves[0]
+
+    def _rebuild_target_control_point_count(self) -> int:
+        try:
+            value = int(str(self.rebuild_target_control_points.get()).strip())
+        except (TypeError, ValueError):
+            value = 16
+        value = min(max(value, 2), 256)
+        self.rebuild_target_control_points.set(str(value))
+        return value
+
+    def _rebuild_sample_count_value(self) -> int:
+        try:
+            value = int(str(self.rebuild_sample_count.get()).strip())
+        except (TypeError, ValueError):
+            value = 128
+        value = max(value, 2)
+        self.rebuild_sample_count.set(str(value))
+        return value
+
+    def _rebuild_curve_method(self) -> str:
+        return "polyline" if self.rebuild_curve_type_text.get().strip().lower() == "polyline" else DEFAULT_MANUAL_CURVE_METHOD
+
+    def _next_derived_curve_name(self, prefix: str) -> str:
+        existing_names = {
+            curve.name for curve in self.app_state.curve_collection.curves
+        }
+        index = 1
+        while f"{prefix} {index}" in existing_names:
+            index += 1
+        return f"{prefix} {index}"
+
     def create_surface_from_curves(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
         if len(source_curves) == 1:
@@ -5023,8 +5744,10 @@ class OpenRetopWindow:
 
         source_curve = source_curves[0]
         refresh_curve_diagnostics(source_curve)
-        if not self._curve_is_closed_for_fill(source_curve):
-            self.status_text.set("Fill Closed Curve requires one closed curve")
+        readiness = validate_curve_for_fill(source_curve)
+        if readiness.errors:
+            self._set_curve_readiness_display([readiness], mode="fill")
+            self.status_text.set(readiness.errors[0])
             return
 
         self._create_surface_preview(
@@ -5034,6 +5757,7 @@ class OpenRetopWindow:
             source_label="selected_curve",
             name_prefix="Fill Surface",
             success_action="Filled",
+            validation_readiness=[readiness],
         )
 
     def loft_between_two_curves(self) -> None:
@@ -5044,11 +5768,12 @@ class OpenRetopWindow:
         if len(source_curves) != 2:
             self.status_text.set("Select exactly two curves to loft")
             return
-        for curve in source_curves:
-            refresh_curve_diagnostics(curve)
-            if curve.point_count < 2:
-                self.status_text.set("Loft Between Two Curves requires curves with at least two points")
-                return
+        readiness = validate_curves_for_loft(source_curves)
+        first_error = self._first_readiness_error(readiness)
+        if first_error:
+            self._set_curve_readiness_display(readiness, mode="loft")
+            self.status_text.set(first_error)
+            return
 
         self._create_surface_preview(
             source_curves,
@@ -5057,6 +5782,7 @@ class OpenRetopWindow:
             source_label="selected_curves",
             name_prefix="Loft Surface",
             success_action="Lofted",
+            validation_readiness=readiness,
         )
 
     def _create_surface_preview(
@@ -5068,6 +5794,7 @@ class OpenRetopWindow:
         source_label: str,
         name_prefix: str,
         success_action: str,
+        validation_readiness: Sequence[CurveSurfaceReadiness] | None = None,
     ) -> None:
         source_curve_names = [curve.name for curve in source_curves]
         metadata: dict[str, object] = {
@@ -5077,6 +5804,8 @@ class OpenRetopWindow:
             "source": source_label,
             "preview_mode": preview_mode,
         }
+        if validation_readiness is not None:
+            metadata.update(self._surface_validation_metadata(validation_readiness))
         surface = SurfacePatch(
             id=f"surface-{uuid4().hex}",
             name=self._next_surface_name(name_prefix),
@@ -5126,6 +5855,34 @@ class OpenRetopWindow:
 
         active_curve = self._active_curve()
         return [] if active_curve is None else [active_curve]
+
+    def _surface_validation_metadata(
+        self,
+        readiness_items: Sequence[CurveSurfaceReadiness],
+    ) -> dict[str, object]:
+        warnings = self._readiness_warnings(readiness_items)
+        errors = self._readiness_errors(readiness_items)
+        planarity_values = [
+            readiness.planarity_error
+            for readiness in readiness_items
+            if readiness.planarity_error is not None
+        ]
+        projection_values = [
+            readiness.mesh_projection_max_distance
+            for readiness in readiness_items
+            if readiness.mesh_projection_max_distance is not None
+        ]
+        metadata: dict[str, object] = {
+            "source_curve_validation_warnings": warnings,
+            "source_curve_validation_errors": errors,
+        }
+        if planarity_values:
+            metadata["source_curve_planarity_error"] = max(float(value) for value in planarity_values)
+        if projection_values:
+            metadata["source_curve_projection_distance"] = max(
+                float(value) for value in projection_values
+            )
+        return metadata
 
     def _next_surface_name(self, prefix: str) -> str:
         existing_names = {
@@ -5724,7 +6481,19 @@ class OpenRetopWindow:
 
     @staticmethod
     def _is_editable_manual_curve(curve: StoredCurve) -> bool:
-        return is_manual_curve_like(curve)
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        creation_type = str(metadata.get("creation_type", "")).strip().lower()
+        return bool(
+            creation_type in {
+                "manual",
+                "curve_on_mesh",
+                "region_boundary",
+                "projected_curve",
+                "rebuilt_curve",
+            }
+            or "control_points" in metadata
+            or is_manual_curve_like(curve)
+        )
 
     def _handle_manual_curve_shortcut(self, key: str) -> None:
         if self._manual_curve_edit_active:
@@ -6373,7 +7142,12 @@ class OpenRetopWindow:
         active_curve.mean_error = updated_curve.mean_error
         active_curve.max_error = updated_curve.max_error
         active_curve.is_closed = updated_curve.is_closed
-        active_curve.metadata = updated_curve.metadata
+        active_curve.metadata = self._merged_manual_curve_edit_metadata(
+            original_metadata=metadata,
+            updated_metadata=updated_curve.metadata,
+            updated_points=updated_curve.fitted_points,
+            is_closed=bool(updated_curve.is_closed),
+        )
         refresh_curve_diagnostics(active_curve)
         after_curve = copy.deepcopy(active_curve)
         self._push_undo_command(
@@ -6393,6 +7167,50 @@ class OpenRetopWindow:
         self.status_text.set("Curve edits saved")
         self._set_project_dirty(True)
         self._sync_workflow_ui()
+
+    def _merged_manual_curve_edit_metadata(
+        self,
+        *,
+        original_metadata: dict[str, object],
+        updated_metadata: dict[str, object],
+        updated_points: np.ndarray,
+        is_closed: bool,
+    ) -> dict[str, object]:
+        metadata = dict(updated_metadata)
+        creation_type = str(original_metadata.get("creation_type", "")).strip().lower()
+        if creation_type not in {"region_boundary", "projected_curve", "rebuilt_curve"}:
+            return metadata
+
+        preserve_keys = (
+            "creation_type",
+            "source_curve_id",
+            "source_curve_name",
+            "source_curve_creation_type",
+            "source_region_id",
+            "source_region_name",
+            "source_mesh_name",
+            "region_triangle_count",
+            "source_region_triangle_count",
+            "boundary_index",
+            "projection_projected_count",
+            "projection_missed_count",
+            "projection_mean_distance",
+            "projection_max_distance",
+            "projection_warnings",
+            "rebuild_source_point_count",
+            "rebuild_target_control_point_count",
+            "rebuild_method",
+            "rebuild_warnings",
+        )
+        for key in preserve_keys:
+            if key in original_metadata:
+                metadata[key] = original_metadata[key]
+        metadata["creation_type"] = creation_type
+        if creation_type == "region_boundary":
+            metadata["boundary_point_count"] = int(len(np.asarray(updated_points).reshape((-1, 3))))
+            metadata["boundary_closed"] = bool(is_closed)
+            metadata["boundary_perimeter"] = _polyline_perimeter(updated_points, closed=is_closed)
+        return metadata
 
     def _active_manual_edit_curve(self) -> StoredCurve | None:
         if self._manual_curve_edit_curve_id is None:
@@ -7354,6 +8172,9 @@ class OpenRetopWindow:
             surface_previews=surface_previews,
             active_surface_id=self.app_state.surface_collection.active_surface_id,
             region_selection=region_selection,
+            region_selection_color=self.settings.display.region_selection_color,
+            region_selection_edge_color=self.settings.display.region_selection_edge_color,
+            region_selection_opacity=self.settings.display.region_selection_opacity,
             manual_curve_points=(
                 self._manual_curve_points
                 if self._manual_curve_active
@@ -7573,6 +8394,32 @@ class OpenRetopWindow:
         widget = getattr(self, "edit_selected_curve_button", None)
         if widget is not None:
             widget.configure(state=editable_curve_state)
+        surface_prep_curve_state = (
+            "normal"
+            if has_mesh
+            and selected_curve_count == 1
+            and active_curve is not None
+            and not self._manual_curve_active
+            else "disabled"
+        )
+        for name in (
+            "project_curve_to_mesh_button",
+            "manual_project_curve_to_mesh_button",
+            "rebuild_curve_button",
+            "manual_rebuild_curve_button",
+            "rebuild_target_control_points_entry",
+            "rebuild_curve_type_combo",
+            "rebuild_sample_count_entry",
+            "validate_curve_button",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state=surface_prep_curve_state)
+        widget = getattr(self, "validate_loft_curves_button", None)
+        if widget is not None:
+            widget.configure(
+                state="normal" if has_mesh and selected_curve_count == 2 else "disabled"
+            )
         for name in ("join_curves_button", "loft_curves_button"):
             widget = getattr(self, name, None)
             if widget is not None:
@@ -7728,10 +8575,7 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state=state)
-        for name in (
-            "boundary_from_region_placeholder_button",
-            "fit_patch_from_region_placeholder_button",
-        ):
+        for name in ("fit_patch_from_region_placeholder_button",):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state="disabled")
@@ -7744,6 +8588,9 @@ class OpenRetopWindow:
         has_region = region is not None
         mesh_state = "normal" if has_mesh else "disabled"
         region_state = "normal" if has_region else "disabled"
+        boundary_curve_count = (
+            0 if region is None else len(self._boundary_curves_for_region(region.id))
+        )
 
         for name in (
             "region_select_button",
@@ -7766,6 +8613,14 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state=region_state)
+        extract_button = getattr(self, "extract_region_boundary_button", None)
+        if extract_button is not None:
+            extract_button.configure(state="normal" if has_mesh and has_region else "disabled")
+        select_boundary_button = getattr(self, "select_region_boundary_curves_button", None)
+        if select_boundary_button is not None:
+            select_boundary_button.configure(
+                state="normal" if has_mesh and has_region and boundary_curve_count > 0 else "disabled"
+            )
         done_button = getattr(self, "done_region_select_button", None)
         if done_button is not None:
             done_button.configure(state="normal" if self._region_select_active else "disabled")
@@ -7785,6 +8640,7 @@ class OpenRetopWindow:
             )
             self.region_source_mesh_text.set(region.source_mesh_name or "(none)")
             self.region_visible_text.set("Yes" if bool(region.visible) else "No")
+            self.region_boundary_curve_count_text.set(f"{boundary_curve_count:,}")
             if self._region_select_active:
                 state_text = "Region Select active"
             else:
@@ -7804,6 +8660,7 @@ class OpenRetopWindow:
                 else "(none)"
             )
             self.region_visible_text.set("No")
+            self.region_boundary_curve_count_text.set("0")
             if not has_mesh:
                 self.region_status_text.set("Load a mesh to use Region Select.")
             elif self._region_select_active:
@@ -8080,6 +8937,15 @@ class OpenRetopWindow:
         if action == "frame_selected":
             self.frame_selected()
             return
+        if action == "extract_region_boundary":
+            self.extract_region_boundary()
+            return
+        if action == "project_curve_to_mesh":
+            self.project_selected_curve_to_mesh()
+            return
+        if action == "rebuild_curve":
+            self.rebuild_selected_curve()
+            return
         if action == "select_source_curves":
             self.select_source_curves_for_active_surface(node_ids)
             return
@@ -8204,7 +9070,28 @@ class OpenRetopWindow:
                     for curve in self.app_state.curve_collection.curves
                     if curve.section_result_id not in section_result_ids
                     and not is_repaired_curve(curve)
+                    and not self._is_projected_curve(curve)
+                    and not self._is_rebuilt_curve(curve)
+                    and not self._is_region_boundary_curve(curve)
                     and not self._is_manual_or_mesh_curve(curve)
+                )
+            elif node_id == NODE_CURVE_GROUP_PROJECTED:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                    if self._is_projected_curve(curve)
+                )
+            elif node_id == NODE_CURVE_GROUP_REBUILT:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                    if self._is_rebuilt_curve(curve)
+                )
+            elif node_id == NODE_CURVE_GROUP_REGION_BOUNDARIES:
+                expanded_node_ids.update(
+                    curve_node_id(curve.id)
+                    for curve in self.app_state.curve_collection.curves
+                    if self._is_region_boundary_curve(curve)
                 )
             elif node_id == NODE_CURVE_GROUP_REPAIRED:
                 expanded_node_ids.update(
@@ -8226,6 +9113,9 @@ class OpenRetopWindow:
                         curve_node_id(curve.id)
                         for curve in self.app_state.curve_collection.curves
                         if curve.section_result_id == result.id
+                        and not self._is_projected_curve(curve)
+                        and not self._is_rebuilt_curve(curve)
+                        and not self._is_region_boundary_curve(curve)
                         and not self._is_manual_or_mesh_curve(curve)
                     )
                     break
@@ -9695,6 +10585,9 @@ class OpenRetopWindow:
                 show_normals=False,
                 show_axis_gizmo=self.settings.display.show_axis_gizmo,
                 show_viewcube=self.settings.display.show_viewcube,
+                region_selection_color=self.settings.display.region_selection_color,
+                region_selection_edge_color=self.settings.display.region_selection_edge_color,
+                region_selection_opacity=self.settings.display.region_selection_opacity,
             ),
             import_settings=AppImportSettings(
                 default_proxy_quality=normalize_proxy_quality(
@@ -9773,6 +10666,20 @@ def _format_count(value: int) -> str:
 
 def _plural_label(count: int, singular: str) -> str:
     return singular if int(count) == 1 else f"{singular}s"
+
+
+def _polyline_perimeter(points: object, *, closed: bool) -> float:
+    try:
+        point_array = np.asarray(points, dtype=float).reshape((-1, 3))
+    except (TypeError, ValueError):
+        return 0.0
+    if len(point_array) < 2:
+        return 0.0
+
+    length = float(np.linalg.norm(np.diff(point_array, axis=0), axis=1).sum())
+    if closed and len(point_array) >= 3:
+        length += float(np.linalg.norm(point_array[0] - point_array[-1]))
+    return length
 
 
 def _format_percent(value: float) -> str:

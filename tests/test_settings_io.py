@@ -9,6 +9,9 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from settings.settings_data import (
+    DEFAULT_REGION_SELECTION_EDGE_COLOR,
+    DEFAULT_REGION_SELECTION_COLOR,
+    DEFAULT_REGION_SELECTION_OPACITY,
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
@@ -34,6 +37,9 @@ def _sample_settings() -> AppSettings:
             show_normals=True,
             show_axis_gizmo=False,
             show_viewcube=False,
+            region_selection_color="#FF8800",
+            region_selection_edge_color="#FFF2CC",
+            region_selection_opacity=0.5,
         ),
         import_settings=AppImportSettings(
             default_proxy_quality="High",
@@ -72,6 +78,15 @@ class SettingsDataTests(unittest.TestCase):
         self.assertFalse(settings.display.show_normals)
         self.assertTrue(settings.display.show_axis_gizmo)
         self.assertTrue(settings.display.show_viewcube)
+        self.assertEqual(settings.display.region_selection_color, DEFAULT_REGION_SELECTION_COLOR)
+        self.assertEqual(
+            settings.display.region_selection_edge_color,
+            DEFAULT_REGION_SELECTION_EDGE_COLOR,
+        )
+        self.assertEqual(
+            settings.display.region_selection_opacity,
+            DEFAULT_REGION_SELECTION_OPACITY,
+        )
         self.assertEqual(settings.import_settings.default_proxy_quality, "Medium")
         self.assertEqual(settings.ui.window_width, 1280)
         self.assertEqual(settings.ui.window_height, 800)
@@ -114,6 +129,9 @@ class SettingsIOTests(unittest.TestCase):
                     "show_normals": True,
                     "show_axis_gizmo": False,
                     "show_viewcube": False,
+                    "region_selection_color": "#FF8800",
+                    "region_selection_edge_color": "#FFF2CC",
+                    "region_selection_opacity": 0.5,
                 },
                 "import": {
                     "default_proxy_quality": "High",
@@ -167,6 +185,15 @@ class SettingsIOTests(unittest.TestCase):
         self.assertFalse(settings.display.show_normals)
         self.assertTrue(settings.display.show_axis_gizmo)
         self.assertTrue(settings.display.show_viewcube)
+        self.assertEqual(settings.display.region_selection_color, DEFAULT_REGION_SELECTION_COLOR)
+        self.assertEqual(
+            settings.display.region_selection_edge_color,
+            DEFAULT_REGION_SELECTION_EDGE_COLOR,
+        )
+        self.assertEqual(
+            settings.display.region_selection_opacity,
+            DEFAULT_REGION_SELECTION_OPACITY,
+        )
         self.assertEqual(settings.import_settings.default_proxy_quality, "Medium")
         self.assertEqual(settings.ui.window_width, 1600)
         self.assertEqual(settings.ui.window_height, 800)
@@ -211,6 +238,33 @@ class SettingsIOTests(unittest.TestCase):
         self.assertEqual(settings.keybinds.cancel_transform, "Escape")
         self.assertEqual(settings.keybinds.delete_selected, "BackSpace")
 
+    def test_settings_from_dict_clamps_region_opacity(self) -> None:
+        low = settings_from_dict(
+            {
+                "version": SETTINGS_VERSION,
+                "display": {"region_selection_opacity": 0.0},
+            }
+        )
+        high = settings_from_dict(
+            {
+                "version": SETTINGS_VERSION,
+                "display": {"region_selection_opacity": 5.0},
+            }
+        )
+
+        self.assertEqual(low.display.region_selection_opacity, 0.05)
+        self.assertEqual(high.display.region_selection_opacity, 1.0)
+
+    def test_settings_to_dict_accepts_rgb_region_color_tuples(self) -> None:
+        settings = default_app_settings()
+        settings.display.region_selection_color = (1.0, 0.5, 0.0)  # type: ignore[assignment]
+        settings.display.region_selection_edge_color = [255, 255, 255]  # type: ignore[assignment]
+
+        data = settings_to_dict(settings)
+
+        self.assertEqual(data["display"]["region_selection_color"], "#FF8000")  # type: ignore[index]
+        self.assertEqual(data["display"]["region_selection_edge_color"], "#FFFFFF")  # type: ignore[index]
+
     def test_save_and_load_settings_round_trips_json_and_creates_file(self) -> None:
         settings = _sample_settings()
 
@@ -250,6 +304,9 @@ class SettingsIOTests(unittest.TestCase):
             {"display": {"show_grid": 1}},
             {"display": {"show_axis_gizmo": 1}},
             {"display": {"show_viewcube": 1}},
+            {"display": {"region_selection_color": "cyan"}},
+            {"display": {"region_selection_edge_color": "#12XX90"}},
+            {"display": {"region_selection_opacity": "0.5"}},
             {"import": []},
             {"import": {"default_proxy_quality": "Ultra"}},
             {"ui": []},

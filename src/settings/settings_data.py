@@ -8,6 +8,9 @@ from mesh.display_proxy import DEFAULT_PROXY_QUALITY
 
 
 SETTINGS_VERSION = 1
+DEFAULT_REGION_SELECTION_COLOR = "#00D1FF"
+DEFAULT_REGION_SELECTION_EDGE_COLOR = "#E0FFFF"
+DEFAULT_REGION_SELECTION_OPACITY = 0.34
 
 
 @dataclass
@@ -17,6 +20,9 @@ class AppDisplaySettings:
     show_normals: bool
     show_axis_gizmo: bool = True
     show_viewcube: bool = True
+    region_selection_color: str = DEFAULT_REGION_SELECTION_COLOR
+    region_selection_edge_color: str = DEFAULT_REGION_SELECTION_EDGE_COLOR
+    region_selection_opacity: float = DEFAULT_REGION_SELECTION_OPACITY
 
 
 @dataclass
@@ -67,6 +73,9 @@ def default_app_settings() -> AppSettings:
             show_normals=False,
             show_axis_gizmo=True,
             show_viewcube=True,
+            region_selection_color=DEFAULT_REGION_SELECTION_COLOR,
+            region_selection_edge_color=DEFAULT_REGION_SELECTION_EDGE_COLOR,
+            region_selection_opacity=DEFAULT_REGION_SELECTION_OPACITY,
         ),
         import_settings=AppImportSettings(
             default_proxy_quality=DEFAULT_PROXY_QUALITY,

@@ -1,1086 +1,690 @@
 ---
 
-openRetop Next Phase Instructions
-Highly Constrained Tasks 55–61
-------------------------------
+## Task 68: Surface-Ready Curve Preparation — Project, Rebuild, Validate
 
-General execution rules:
+Purpose:
+Region boundaries and manual curves now exist, but they are not yet reliable enough as surface inputs. Before adding real surface fitting, the app needs tools to project curves onto the mesh, rebuild/simplify them into cleaner control geometry, and validate whether selected curves are suitable for fill/loft/surface workflows.
 
-* Complete exactly one numbered task at a time.
-* Do not skip ahead.
-* Do not combine tasks.
-* Do not add BREP/STEP/IGES export.
-* Do not add new dependencies.
-* Do not rewrite the viewport.
-* Do not rewrite the scene browser.
-* Do not redesign the whole UI.
-* Do not rename existing public functions unless required by tests.
-* Do not remove working features.
-* Prefer small, targeted changes over architecture rewrites.
-* Use existing modules first.
-* Add new files only when explicitly requested.
-* After each task:
+This task is the bridge between:
 
-  * run pytest
-  * launch python src/main.py
-  * load a mesh
-  * verify scene browser selection still works
-  * verify project save/load still works
-  * stop
+* manual curves
+* region boundary curves
+* projected guide curves
+* future surface patch generation
 
-Current confirmed existing features:
-[x] Project system
-[x] Mesh import/display/proxy
-[x] Scene browser/outliner
-[x] Preferences/settings/keybind shell
-[x] Multiple section planes
-[x] Section plane transforms
-[x] Arbitrary section slicing
-[x] Curve diagnostics
-[x] Tiny curve detection
-[x] Curve repair: join and auto-close
-[x] Curve processing: simplify and smooth
-[x] Surface preview system
-[x] Explicit Fill Closed Curve command
-[x] Explicit Loft Between Two Curves command
-[x] Surface preview diagnostics metadata
-[x] Scene reset through New Project
-[x] Delete Mesh
-[x] Undo/Redo foundation
-[x] Basic scene browser context menu
-[x] Basic visibility hotkeys
+Do not add BREP/STEP/IGES export.
+Do not integrate pboyer/verb yet.
+Do not add full NURBS surfaces yet.
+Do not add automatic face recognition.
+Do not rewrite Region Select.
+Do not rewrite Manual Curve Edit.
+Do not replace existing Fill Closed Curve / Loft Between Two Curves.
+Do not add new dependencies.
 
-Current phase goal:
-Move from infrastructure toward usable reverse-engineering workflow without destabilizing the app.
+Current expected foundation:
+
+* Manual curves are editable.
+* Manual curve preview works.
+* Snap to Mesh exists.
+* Region Select exists.
+* Region boundaries can be extracted into editable StoredCurves.
+* Curves can already be selected, repaired, simplified, smoothed, filled, and lofted.
+* Surface preview currently supports single closed curve fill and two-curve loft only.
+
+Goal:
+The user should be able to:
+
+1. Select a manual curve, region boundary curve, or section curve.
+2. Project it onto the mesh.
+3. Rebuild it into cleaner control geometry.
+4. Validate whether it is surface-ready.
+5. Use the cleaned/projected curve for Fill Closed Curve or Loft Between Two Curves.
+6. Preserve all source metadata so future surface tools know where the curve came from.
 
 ---
 
-## Task 55: Finish scene browser parent visibility and object actions
-
-Goal:
-Make the existing scene browser behave like a reliable object manager without rewriting it.
-
-Do not add new geometry tools.
-Do not add ViewCube.
-Do not add manual curve tools.
-Do not touch surface algorithms.
-Do not rewrite SceneBrowser.
-
-Current state:
-
-* Scene browser already has individual [V]/[H] labels.
-* Individual mesh/plane/result/curve/surface nodes exist.
-* Context menu exists.
-* Multi-selection exists.
-* Parent/group nodes exist.
-* Missing: mixed-state parent labels, direct child-aware actions, and complete frame/delete behavior.
-
-Requirements:
-
-1. Parent visibility labels
-
-Add mixed visibility labels to parent/group nodes.
-
-Use these exact prefixes:
-
-* [V] = all visible
-* [H] = all hidden
-* [M] = mixed visible/hidden
-
-Apply to:
-
-* Section Planes parent
-* Section Results parent
-* Curves parent
-* each Curve group under a Section Result
-* Repaired Curves group
-* Unassigned curve group
-* Surfaces parent
-
-Examples:
-
-* [V] Section Planes
-* [M] Curves
-* [H] Repaired Curves
-* [M] Surfaces
-
-Do not use icon fonts.
-
-2. Parent visibility behavior
-
-Visibility actions on parent/group nodes must operate on their children.
-
-Rules:
-
-* Toggle Section Planes toggles all section planes.
-* Hide Section Planes hides all section planes.
-* Show Section Planes shows all section planes.
-* Isolate Section Planes hides mesh/results/curves/surfaces where supported and shows section planes.
-* Toggle Section Results toggles all section results.
-* Toggle Curves toggles all curves.
-* Toggle curve group toggles only curves in that group.
-* Toggle Surfaces toggles all surfaces.
-
-Do not make parent visibility a separate stored state.
-Parent state must be derived from children.
-
-3. Context menu labels
-
-Context menu may remain generic, but commands must use the actual selected node set.
-
-Required actions:
-
-* Rename
-* Toggle Visibility
-* Hide Selected
-* Show Selected
-* Isolate Selected
-* Delete Selected
-* Frame Selected
-
-If the existing menu does not include Show Selected, add it.
-
-Rename:
-
-* enabled only when exactly one renameable non-parent object is selected
-* disabled for parent/group nodes
-* disabled for multi-selection
-
-4. Delete behavior
-
-Delete Selected must work on:
-
-* mesh, with confirmation
-* selected section planes
-* selected section results
-* selected curves
-* selected surfaces
-* parent/group selections by expanding to child objects
-
-Dependency rules:
-
-* deleting mesh clears all scene data
-* deleting a section plane deletes dependent section results, curves, and surfaces
-* deleting a section result deletes dependent curves and surfaces
-* deleting a curve deletes dependent surfaces
-* deleting a surface deletes only that surface
-
-If undo for section plane/result/mesh delete is not safe yet:
-
-* perform the delete safely
-* show status
-* leave TODO
-* do not crash
-
-5. Frame Selected completion
-
-Current frame behavior is too narrow.
-
-Implement frame selected for:
-
-* mesh
-* active section plane
-* active section result
-* active curve
-* selected curves
-* active surface
-* selected surfaces
-
-Minimum acceptable:
-
-* calculate bounds from selected object geometry
-* call a viewport method to frame those bounds
-* if geometry is missing, show status explaining why
-
-Do not reset transforms.
-Do not change object selection.
-
-6. Undo/redo integration
-
-Use the existing UndoStack.
-
-Required undoable actions:
-
-* rename object
-* visibility toggle/hide/show
-* delete curve
-* delete surface
-
-Optional if safe:
-
-* delete section result
-* delete section plane
-
-Do not attempt undo for Delete Mesh in this task unless already straightforward.
-
-7. Tests
-
-Add/update tests for:
-
-* parent label [V]
-* parent label [H]
-* parent label [M]
-* toggling Curves parent affects all curves
-* toggling curve group affects only that group
-* Show Selected restores selected hidden children
-* Delete Selected on curve group deletes child curves
-* deleting curve deletes dependent surfaces
-* Frame Selected handles selected curve
-* rename disabled/rejected for parent node
-* visibility command can be undone/redone
-
-Acceptance:
-
-* app launches
-* parent visibility labels are correct
-* parent visibility commands affect child objects
-* Show Selected exists
-* Delete Selected works from parent/group nodes
-* Frame Selected works beyond just mesh/section plane
-* existing hotkeys still work
-* pytest passes
-
-Stop after this task.
-
----
-
-## Task 56: Curve viewport display and source-curve highlighting
-
-Goal:
-Make curves visually understandable when many generated, repaired, tiny, selected, and surface-source curves exist.
-
-Do not add new curve algorithms.
-Do not add manual curve tools.
-Do not add mesh snapping.
-Do not add region selection.
-Do not rewrite surface preview logic.
-
-Current state:
-
-* Curves already have diagnostics.
-* Tiny curves already exist.
-* Repaired curves already exist through metadata.
-* Selected/unselected curve colors exist.
-* Missing: distinct repaired/tiny/source/active styling.
-
-Requirements:
-
-1. Add curve style classification
-
-Create a small internal curve display classifier.
-
-Suggested categories:
-
-* hidden
-* normal
-* tiny
-* repaired
-* selected
-* active
-* surface_source
-* active_surface_source
-
-Priority order:
-hidden < normal < tiny < repaired < surface_source < selected < active
-
-No new dependency.
-Do not put large style logic in main_window if viewer module is a better fit.
-
-2. Viewport curve styles
-
-Viewport must visually distinguish:
-
-* normal curves
-* selected curves
-* active curve
-* repaired curves
-* tiny curves
-* curves used by the selected active surface
-
-Suggested:
-
-* normal: thin muted green/blue
-* selected: thick cyan
-* active: thick yellow/cyan or brightest available
-* repaired: orange/purple
-* tiny: muted gray/red
-* surface-source: bright secondary overlay
-
-Exact colors are less important than clear difference.
-
-3. Repaired curve detection
-
-Use existing curve metadata.
-
-A curve is repaired if:
-
-* metadata["repair_type"] is "join"
-* metadata["repair_type"] is "auto_close"
-* metadata["processing_type"] is "simplify", if present
-* metadata["processing_type"] is "smooth", if present
-
-If simplify/smooth metadata uses another key, support that key without breaking join/auto_close.
-
-4. Surface source highlighting
-
-When a surface is selected:
-
-* every curve in surface.source_curve_ids should be highlighted even if not selected
-* active/selected curve styling still wins
-* hidden source curves remain hidden
-
-Do not auto-select source curves just because the surface is selected.
-
-5. Scene browser labels
-
-Improve curve labels without clutter.
-
-Append:
-
-* (tiny)
-* (closed)
-* (repaired)
-* (manual), later if manual metadata exists
-
-Priority:
-
-* tiny first
-* repaired second
-* closed third
-
-Examples:
-
-* [V] Curve 1 (tiny)
-* [V] Joined Curve 1 (repaired)
-* [V] Curve 2 (closed)
-
-6. Add command: Select Source Curves
-
-When a surface is selected:
-
-* select all source curves
-* active curve should be the first source curve
-* status: "Selected source curves for Loft Surface 1"
-
-If no surface selected:
-
-* status: "Select a surface first."
-
-Add to:
-
-* Surfaces menu
-* scene browser context action if selected node is surface
-* surface context panel if practical
-
-7. Tests
-
-Add/update tests for:
-
-* repaired curve classified as repaired
-* tiny curve classified as tiny
-* selected curve overrides repaired style
-* active curve overrides selected style
-* selected surface highlights source curves
-* hidden source curve is not rendered
-* scene browser curve labels include repaired/tiny/closed
-* Select Source Curves selects expected curves
-
-Acceptance:
-
-* app launches
-* selected curve is visually obvious
-* active curve is visually obvious
-* repaired curves are visually distinct
-* tiny curves are visually distinct
-* selecting a surface highlights its source curves
-* Select Source Curves works
-* existing curve repair/simplify/smooth still works
-* pytest passes
-
-Stop after this task.
-
----
-
-## Task 57: Surface workflow completion without changing algorithms
-
-Goal:
-Finish the existing surface workflow using current preview algorithms.
-
-Do not add NURBS.
-Do not add BREP export.
-Do not rewrite surface_preview.py unless fixing a direct bug.
-Do not add patch networks.
-Do not change fill/loft math unless a test proves it is broken.
-
-Current state:
-
-* Fill Closed Curve exists.
-* Loft Between Two Curves exists.
-* Surface preview diagnostics exist.
-* Surface context has source curve names and metadata text.
-* Missing: source-curve workflow commands, clearer diagnostics display, surface display controls.
-
-Requirements:
-
-1. Keep current commands
-
-Do not remove:
-
-* Fill Closed Curve
-* Loft Between Two Curves
-* Create Surface From Selected Curves compatibility alias, if it exists
-
-Do not recreate these commands.
-Only fill missing workflow pieces.
-
-2. Add source curve commands
-
-Add surface-source commands:
-
-* Select Source Curves
-* Isolate Source Curves
-* Show Source Curves
-* Frame Source Curves
-
-Behavior:
-
-* require exactly one active surface
-* use surface.source_curve_ids
-* ignore missing source curves but report them in status
-* do not crash if source curves were deleted
-
-Add commands to:
-
-* Surfaces menu
-* surface context panel if practical
-* scene browser context menu when a surface node is selected if low-risk
-
-3. Surface diagnostics layout
-
-Surface context should show separate, readable fields:
-
-* Name
-* Type
-* Source curve count
-* Source curve names
-* Preview available
-* Preview reason
-* Preview warning
-* Resampled point count
-* Reversed second curve
-* Seam shift applied
-* Average pair distance
-* Max pair distance
-
-Do not replace this with one huge metadata string only.
-Keep raw metadata string optional under "Advanced/Raw metadata" if already present.
-
-4. Surface display controls
-
-Add or connect:
-
-* opacity setting
-* selected surface highlight
-* wireframe overlay toggle
-
-Constraints:
-
-* opacity must not affect mesh opacity
-* hidden surfaces are not rendered
-* selected surface remains identifiable even with low opacity
-
-If wireframe overlay is risky:
-
-* add menu/preference placeholder and TODO
-* do not fake it with broken rendering
-
-5. Surface grouping in scene browser
-
-Group surfaces by type if low-risk:
-
-Surfaces
-Fills
-Fill Surface 1
-Lofts
-Loft Surface 1
-
-If implementing grouping risks breaking selection:
-
-* do not group yet
-* instead ensure names are clear:
-
-  * Fill Surface 1
-  * Loft Surface 1
-
-6. Undo/redo
-
-Use existing undo stack.
-
-Required:
-
-* create surface undo
-* delete surface undo
-* rename surface undo
-* surface visibility undo
-
-7. Tests
-
-Add/update tests for:
-
-* Select Source Curves
-* Isolate Source Curves
-* Show Source Curves
-* Frame Source Curves
-* missing source curves handled safely
-* diagnostics fields populated from metadata
-* surface opacity value reaches viewport actor if implemented
-* create surface undo/redo
-* delete surface undo/redo
-
-Acceptance:
-
-* app launches
-* selecting a surface explains exactly what created it
-* source curve commands work
-* surface diagnostics are readable
-* surface visibility/opacity controls work or safe placeholders exist
-* fill/loft behavior does not regress
-* pytest passes
-
-Stop after this task.
-
----
-
-## Task 58: Named views and lightweight ViewCube shell
-
-Goal:
-Add practical named view navigation without destabilizing the VTK viewport.
-
-Do not rewrite camera navigation.
-Do not remove current axis gizmo.
-Do not add dependencies.
-Do not create another VTK render window.
-Do not add modeling tools.
-
-Requirements:
-
-1. Add named view commands
-
-Add commands:
-
-* Top
-* Bottom
-* Front
-* Back
-* Left
-* Right
-* Isometric
-
-Add to View menu under a clear section.
-
-2. Camera behavior
-
-Each command must:
-
-* keep current view center
-* use current view extent
-* set camera position
-* set focal point
-* set view-up
-* reset clipping range
-* request exactly one render
-* not alter mesh transform
-* not alter section planes
-* not alter curves/surfaces
-
-3. Viewport API
-
-Add a focused viewport method, for example:
-
-* set_named_view(name: str)
-  or individual methods:
-* view_top()
-* view_front()
-* view_right()
-* view_isometric()
-
-Do not put camera math directly in menu construction.
-
-4. Lightweight ViewCube shell
-
-Add a non-VTK Tk overlay or simple button panel near top-right of viewport.
-
-Minimum acceptable:
-
-* small panel with buttons:
-
-  * Top
-  * Front
-  * Right
-  * Iso
-
-Preferred:
-
-* also include Left/Back/Bottom through menu only
-
-Do not implement a true 3D cube yet.
-Do not use vtkOrientationMarkerWidget.
-
-5. Preferences
-
-Add setting:
-
-* show_viewcube: bool
-
-Preferences → Viewport:
-
-* Show ViewCube
-
-Save/load setting.
-Default: True.
-
-6. Performance constraints
-
-ViewCube shell must:
-
-* not render every mouse move
-* not create an extra VTK window
-* not interfere with picking
-* not steal keyboard shortcuts
-* not tank empty viewport performance
-
-7. Tests
-
-Add/update tests for:
-
-* named view methods change camera direction
-* named view does not change mesh transform
-* View menu contains named view commands
-* show_viewcube setting saves/loads
-* app launches with ViewCube enabled
-* app launches with ViewCube disabled
-
-Acceptance:
-
-* app launches
-* named views work from View menu
-* lightweight ViewCube shell appears if enabled
-* no blank VTK output window
-* viewport performance does not regress
-* pytest passes
-
-Stop after this task.
-
----
-
-## Task 59: Manual curve creation on active work plane
-
-Goal:
-Add the first manual reverse-engineering tool: user-created curves from placed points.
-
-Do not add mesh snapping yet.
-Do not add region selection.
-Do not add sketch constraints.
-Do not add NURBS.
-Do not add BREP export.
-
-Requirements:
-
-1. Add manual curve mode
-
-Add mode:
-
-* Curves → Create Manual Curve
-  or
-* Tools → Manual Curve
-
-When active:
-
-* status says "Manual Curve: click to place points"
-* Esc cancels
-* Enter confirms
-* Backspace deletes last pending point
-* C toggles closed/open if point count >= 3
-
-2. Work plane
-
-For this task, point placement occurs on a plane.
-
-Plane selection:
-
-* if an active section plane exists, use its origin/normal
-* otherwise use world XY
-
-Status must say:
-
-* "Manual Curve: using Section Plane 2"
-  or
-* "Manual Curve: using world XY plane"
-
-3. Viewport click projection
-
-Clicking viewport should place a point on the active work plane.
-
-Implementation:
-
-* build a ray from camera through mouse position
-* intersect ray with active work plane
-* if ray is parallel or invalid, do not add point and show status
-
-Do not require mesh picking in this task.
-
-4. Preview display
-
-While in manual curve mode:
-
-* render pending points
-* render temporary polyline
-* if closed toggle is active, show closing segment
-* status shows point count
-
-Use existing overlay systems where practical.
-Do not create permanent StoredCurve until confirmed.
-
-5. Confirm creates StoredCurve
-
-On Enter:
-
-* if fewer than 2 points and open: reject
-* if fewer than 3 points and closed: reject
-* create StoredCurve
-* name: Manual Curve 1, Manual Curve 2, etc.
-* original_points = fitted_points
-* mean_error = 0
-* max_error = 0
-* visible = True
-* selected = True
-* metadata:
-
-  * creation_type: manual
-  * work_plane_type: section_plane or world_xy
-  * source_section_plane_id if used
-  * closed: bool
-
-6. Created curve behavior
-
-Manual curves must:
-
-* appear in scene browser
-* be selectable
-* be renameable
-* hide/show
-* deleteable
-* save/load
-* be usable by Fill Closed Curve
-* be usable by Loft Between Two Curves
-
-7. Undo/redo
-
-Creating a manual curve must be undoable/redoable using existing UndoStack.
-
-8. Tests
-
-Add/update tests for:
-
-* manual curve mode starts empty
-* adding point appends pending point
-* Backspace removes last point
-* Esc cancels pending curve
-* C toggles closed only when point count >= 3
-* Enter rejects too few points
-* Enter creates StoredCurve
-* manual curve metadata is correct
-* manual curve can be used for surface creation
-* undo/redo manual curve creation
-
-Acceptance:
-
-* app launches
-* user can create manual open curve on active section plane
-* user can create manual closed curve on active section plane
-* manual curve appears in scene browser
-* manual curve renders in viewport
-* manual curve can fill/loft
-* pytest passes
-
-Stop after this task.
-
----
-
-## Task 60: Curve-on-mesh snapping for manual curves
-
-Goal:
-Allow manual curve points to snap directly onto the scan mesh.
-
-Do not add region selection.
-Do not add boundary extraction.
-Do not add face detection.
-Do not add BREP export.
-Do not implement full point editing yet.
-
-Requirements:
-
-1. Mesh picking API
-
-Add a focused mesh picking method to the viewport.
-
-Required return data:
-
-* hit: bool
-* position: np.ndarray | None
-* normal: np.ndarray | None, if available
-* triangle_index: int | None, if available
-
-Preferred:
-
-* use VTK picker/cell picker
-* do not brute-force raycast in Python over millions of triangles
-
-2. Manual curve snap mode
-
-Add toggle:
-
-* Snap to Mesh
-
-Available from:
-
-* manual curve toolbar/context
-* Curves or Tools menu
-* keyboard shortcut optional
-
-When enabled:
-
-* clicks place points on mesh hit position
-* if no mesh hit, do not add point
-* status: "No mesh under cursor"
-
-When disabled:
-
-* clicks use active work-plane placement from Task 59
-
-3. Metadata
-
-For a mesh-snapped manual curve:
-
-* metadata["creation_type"] = "curve_on_mesh"
-* metadata["snap_mode"] = "mesh"
-* metadata["source_mesh_name"] if available
-
-If per-point metadata is easy:
-
-* store hit triangle indices/normals under metadata
-  If not:
-* leave TODO and store only curve-level metadata.
-
-4. Visual feedback
-
-When Snap to Mesh is ON:
-
-* status clearly says Snap to Mesh ON
-* pending points use distinct marker or line style if practical
-* no heavy hover preview unless it is cheap
-
-5. Safe behavior
-
-Must not crash:
-
-* with no mesh loaded
-* when clicking empty background
-* when mesh actor is hidden
-* when point pick fails
-* after deleting mesh
-
-6. Tests
-
-Add/update tests for:
-
-* no hit on empty scene
-* no point added when snap is on and no hit exists
-* hit result structure exists
-* confirmed snapped curve has curve_on_mesh metadata
-* deleting mesh clears pending snapped curve mode
-* snapped manual curve save/load if project supports curve metadata
-
-Acceptance:
-
-* app launches
-* manual curve mode still works without snap
-* Snap to Mesh mode places points on mesh
-* no crash when clicking empty viewport
-* snapped curve appears as normal curve
-* snapped curve can fill/loft
-* pytest passes
-
-Stop after this task.
-
----
-
-## Task 61: Mesh region selection prototype
-
-Goal:
-Add the first smart reverse-engineering selection tool: connected triangle region selection by normal angle.
-
-Do not add automatic surface fitting.
-Do not add boundary extraction yet.
-Do not add patch generation.
-Do not add BREP export.
-Do not add dependencies.
-
-Requirements:
-
-1. Add region state module
+## Part A — Add curve projection backend
 
 Create a focused module:
 
-* src/regions/region_state.py
+src/curves/projection.py
 
-Include:
+Purpose:
+Project existing curves onto the loaded scan mesh without modifying the original curve.
 
-* RegionSelection
-* RegionCollection, if storing multiple regions
-* selected triangle indices
-* visible/selected flags
-* source mesh identifier/name
-* threshold metadata
+Required dataclasses:
 
-Keep it small.
+1. CurveProjectionResult
+   Fields:
 
-2. Add mesh adjacency module
+* projected_points: np.ndarray shape (N, 3)
+* source_points: np.ndarray shape (N, 3)
+* hit_mask: np.ndarray bool shape (N,)
+* distances: np.ndarray shape (N,)
+* triangle_indices: list[int | None]
+* normals: list[list[float] | None]
+* projected_count: int
+* missed_count: int
+* max_distance: float
+* mean_distance: float
+* warnings: list[str]
 
-Create:
+Required functions:
 
-* src/mesh/adjacency.py
-
-Responsibilities:
-
-* build triangle adjacency from mesh faces
-* cache by mesh identity/checksum if practical
-* return neighboring triangle indices
-
-Do not build adjacency on every mouse move.
-Build only when:
-
-* mesh loaded
-* first region selection requested
-* mesh changes
-
-3. Region selection mode
-
-Add tool:
-
-* Tools → Region Select
+2. project_curve_points_to_mesh(
+   points,
+   mesh,
+   *,
+   max_search_distance=None,
+   preserve_missed_points=True,
+   ) -> CurveProjectionResult
 
 Behavior:
 
-* user activates mode
-* clicks mesh
-* seed triangle selected
-* region grows through connected triangles whose normals are within threshold of seed/region normal
+* For each input point, find nearest point on mesh surface.
+* Prefer VTK cell locator / closest point behavior if already available through VTK.
+* If VTK closest-point APIs are not convenient, add a small focused nearest-triangle helper, but do not brute-force millions of triangles in Python for every interaction.
+* Projection runs as an explicit command, not continuously every mouse move.
+* If a point cannot be projected:
 
-Default threshold:
+  * if preserve_missed_points=True, keep original point
+  * mark hit_mask False
+  * record warning
+* Return projected_points with same count/order as source_points.
+* Never return NaN/inf.
+* Do not mutate source curve.
+* Do not mutate mesh.
 
-* 20 degrees
+3. project_stored_curve_to_mesh(
+   curve,
+   mesh,
+   *,
+   curve_id,
+   name,
+   source_mesh_name,
+   max_search_distance=None,
+   ) -> StoredCurve
 
-Maximum cap:
+Behavior:
 
-* 50,000 triangles default to prevent runaway selection
+* Use curve.fitted_points or control_points as source points.
+* Prefer editable control_points if available.
+* Project points to mesh.
+* Return a new StoredCurve.
+* Metadata:
 
-4. Region growing rules
-
-Initial algorithm:
-
-* BFS/queue over triangle adjacency
-* accept neighbor if normal angle <= threshold
-* stop at max triangle cap
-* only connected triangles
-* no curvature fitting yet
-
-Do not attempt body-panel intelligence yet.
-This is a prototype.
-
-5. Region display
-
-Selected region must be visible.
-
-Minimum:
-
-* overlay selected triangles with translucent color or highlighted wireframe
-* do not duplicate/rebuild full mesh every mouse move
-* update only when region selection changes
-
-6. Region controls
-
-Add simple controls:
-
-* threshold value
-* max triangle cap
-* Clear Region Selection
-* Hide Region Highlight
-* Show Region Highlight
-
-If sidebar controls are too much:
-
-* use menu commands plus constants for first version
-
-7. Stored or transient
-
-Preferred:
-
-* store one active region object in app state
-* show in scene browser under Regions
-
-Acceptable first version:
-
-* transient active region only
-* scene browser TODO
-
-If stored:
-
-* Regions
-
-  * Region 1
-
-Region should have:
-
-* name
-* triangle_indices
-* threshold_degrees
-* visible
-* selected
-
-8. Future TODOs
-
-Add TODO comments for:
-
-* add/subtract brush
-* paint region selection
-* boundary extraction
-* convert boundary to curve
-* curvature-based grow
-* patch fitting from region
-* auto face detection
-
-9. Tests
-
-Add/update tests for:
-
-* triangle adjacency on simple quad/cube mesh
-* region grow selects connected coplanar faces
-* sharp normal boundary stops growth
-* threshold affects region size
-* max triangle cap is respected
-* empty mesh returns no region
-* region selection does not alter mesh geometry
-* clearing region removes viewport highlight
+  * creation_type: "projected_curve"
+  * source_curve_id
+  * source_curve_name
+  * source_curve_creation_type if available
+  * source_mesh_name
+  * projection_projected_count
+  * projection_missed_count
+  * projection_mean_distance
+  * projection_max_distance
+  * projection_warnings
+  * control_points = projected points
+  * curve_method copied from source or "catmull_rom"
+  * sample_count copied from source
+  * snap_to_mesh = True
+  * snap_mode = "mesh"
+* Preserve closed/open state.
+* Keep projected curve editable through Manual Curve Edit mode.
 
 Acceptance:
 
-* app launches
-* Region Select mode exists
-* clicking mesh selects a connected region
-* threshold affects result
-* region highlight is visible
-* existing manual curve/section/surface workflows still work
-* pytest passes
+* Projection backend handles empty curves safely.
+* Projection backend handles missing mesh safely.
+* Projection result preserves point order.
+* Projected curve stores useful metadata.
+* Projected curve is a normal StoredCurve.
 
-Stop after this task.
+---
+
+## Part B — Add Project Selected Curve to Mesh command
+
+Add command:
+
+Project Selected Curve to Mesh
+
+Available in:
+
+* Curves workbench
+* Manual RE workbench if a curve is selected
+* scene browser curve context menu, if low-risk
+
+Behavior:
+
+* Requires loaded mesh.
+* Requires exactly one selected or active curve.
+* Rejects no curve with:
+  "Select one curve to project."
+* Rejects no mesh with:
+  "Load a mesh before projecting curves."
+* Creates a new curve.
+* Does not overwrite the source curve.
+* Selects the new projected curve.
+* Active curve = new projected curve.
+* Adds it to CurveCollection.
+* Refreshes viewport.
+* Refreshes scene browser.
+* Pushes undo command:
+  "Project Curve to Mesh"
+* Marks project dirty.
+
+Naming:
+
+* Projected Curve 1
+* Projected Curve 2
+  or:
+* <source name> Projected
+
+Use whichever is already easier, but avoid duplicate names.
+
+Scene browser grouping:
+Curves
+Projected Curves
+[V] Projected Curve 1 (projected)
+
+Grouping priority:
+
+1. Projected Curves
+2. Region Boundaries
+3. Manual Curves
+4. Repaired/Processed Curves
+5. Section Result groups
+6. Unassigned
+
+Acceptance:
+
+* User can project selected curve onto mesh.
+* Original curve remains unchanged.
+* Projected curve appears under Projected Curves.
+* Undo removes projected curve.
+* Redo restores projected curve.
+* Projected curve can be edited.
+
+---
+
+## Part C — Add curve rebuild backend
+
+Create or extend focused curve utilities:
+
+src/curves/rebuild.py
+
+Purpose:
+Reduce dense curves into cleaner control geometry for surface workflows.
+
+Required dataclass:
+
+CurveRebuildResult
+
+* control_points: np.ndarray
+* fitted_points: np.ndarray
+* source_point_count: int
+* target_control_point_count: int
+* method: str
+* is_closed: bool
+* warnings: list[str]
+
+Required functions:
+
+1. rebuild_curve_by_arc_length(
+   points,
+   *,
+   target_control_point_count,
+   is_closed,
+   curve_method="catmull_rom",
+   sample_count=128,
+   ) -> CurveRebuildResult
+
+Behavior:
+
+* Input can be dense polyline or fitted curve.
+* Resample source points by arc length to target control point count.
+* For closed curves, distribute points around loop without duplicating first point.
+* For open curves, preserve first and last points.
+* Rebuild fitted curve using existing manual_curve.sample_manual_curve().
+* Clamp target_control_point_count:
+
+  * open min 2
+  * closed min 3
+  * max 256
+* Do not mutate original curve.
+* Never return NaN/inf.
+
+2. rebuild_stored_curve(
+   curve,
+   *,
+   curve_id,
+   name,
+   target_control_point_count,
+   curve_method,
+   sample_count,
+   ) -> StoredCurve
+
+Metadata:
+
+* creation_type: "rebuilt_curve"
+* source_curve_id
+* source_curve_name
+* source_curve_creation_type if available
+* rebuild_source_point_count
+* rebuild_target_control_point_count
+* rebuild_method
+* control_points
+* curve_method
+* sample_count
+* closed
+* source metadata should be preserved under a clear prefix or copied where useful
+
+Acceptance:
+
+* Dense boundary curves can be reduced to fewer control points.
+* Open curves preserve endpoints.
+* Closed curves stay closed.
+* Rebuilt curves remain editable.
+
+---
+
+## Part D — Add Rebuild Selected Curve command
+
+Add command:
+
+Rebuild Selected Curve
+
+Available in:
+
+* Curves workbench
+* Manual RE workbench if curve selected
+* scene browser curve context menu, if low-risk
+
+UI controls:
+
+* Target Control Points
+* Curve Type:
+
+  * Smooth Curve
+  * Polyline
+* Sample Count
+
+Suggested defaults:
+
+* Target Control Points: 16
+* Curve Type: Smooth Curve
+* Sample Count: 128
+
+Behavior:
+
+* Requires exactly one selected/active curve.
+* Creates a new curve by default.
+* Does not overwrite source curve.
+* Selects new rebuilt curve.
+* Pushes undo command:
+  "Rebuild Curve"
+* Marks project dirty.
+
+Naming:
+
+* Rebuilt Curve 1
+  or:
+* <source name> Rebuilt
+
+Scene browser grouping:
+Curves
+Rebuilt Curves
+[V] Rebuilt Curve 1 (rebuilt)
+
+Grouping priority:
+
+1. Projected Curves
+2. Rebuilt Curves
+3. Region Boundaries
+4. Manual Curves
+5. Repaired/Processed Curves
+6. Section Result groups
+7. Unassigned
+
+Acceptance:
+
+* User can reduce a high-density boundary to a smaller editable smooth curve.
+* Original curve remains unchanged.
+* Rebuilt curve can be edited and used in fill/loft.
+* Undo/redo works.
+
+---
+
+## Part E — Add surface-readiness validation
+
+Create module:
+
+src/curves/validation.py
+
+Purpose:
+Report whether selected curves are suitable for fill/loft/surface preview.
+
+Required dataclass:
+
+CurveSurfaceReadiness
+
+* curve_id: str
+* curve_name: str
+* point_count: int
+* control_point_count: int | None
+* is_closed: bool
+* is_manual_like: bool
+* is_projected: bool
+* is_region_boundary: bool
+* bounding_box_size: float
+* perimeter_or_length: float
+* endpoint_gap: float
+* planarity_error: float | None
+* mesh_projection_mean_distance: float | None
+* mesh_projection_max_distance: float | None
+* warnings: list[str]
+* errors: list[str]
+
+Required functions:
+
+1. validate_curve_for_fill(curve) -> CurveSurfaceReadiness
+
+Checks:
+
+* must be closed
+* must have at least 3 usable points
+* must not be degenerate
+* should report planarity error
+* should warn if point count is extremely high
+* should warn if endpoint gap is nonzero but within tolerance
+
+2. validate_curves_for_loft(curves) -> list[CurveSurfaceReadiness]
+
+Checks:
+
+* exactly two curves preferred
+* both must have at least 2 points
+* warn if one closed and one open
+* warn if point counts differ greatly
+* warn if bounding boxes differ extremely
+* warn if source metadata suggests different source regions/meshes
+
+3. estimate_curve_planarity_error(points) -> float
+
+Behavior:
+
+* compute best-fit plane
+* return max distance from points to plane
+* handle invalid/degenerate curves safely
+
+Do not prevent operations unless truly invalid.
+Surface preview commands may still run with warnings.
+
+Acceptance:
+
+* Validation module can diagnose curve issues.
+* Does not crash on empty/invalid curves.
+* Does not mutate curves.
+
+---
+
+## Part F — Add Curve Surface Readiness UI
+
+Curves workbench should display diagnostics for active/selected curve:
+
+* Type
+* Source
+* Point count
+* Control point count
+* Closed
+* Endpoint gap
+* Length/perimeter
+* Planarity error
+* Projection mean distance, if metadata exists
+* Projection max distance, if metadata exists
+* Surface readiness:
+
+  * Ready for Fill
+  * Ready for Loft
+  * Warnings
+  * Errors
+
+Add buttons:
+
+* Validate Selected Curve
+* Validate Selected Curves for Loft
+
+Behavior:
+
+* If one curve selected:
+
+  * show fill readiness
+* If two curves selected:
+
+  * show loft readiness
+* If no curve:
+
+  * status "Select curve(s) to validate."
+
+Do not clutter the viewport.
+Keep diagnostics in sidebar/Analysis panel.
+
+Acceptance:
+
+* User can tell why a curve fails fill/loft.
+* User can tell whether a dense boundary should be rebuilt.
+* Diagnostics update after projection/rebuild/edit.
+
+---
+
+## Part G — Improve Fill/Loft preflight messages
+
+Before Fill Closed Curve:
+
+* run validate_curve_for_fill()
+* if hard errors:
+
+  * do not create surface
+  * show first hard error in status
+* if warnings:
+
+  * allow creation but store warnings in surface metadata
+
+Before Loft Between Two Curves:
+
+* run validate_curves_for_loft()
+* if hard errors:
+
+  * do not create surface
+  * show first hard error in status
+* if warnings:
+
+  * allow creation but store warnings in surface metadata
+
+Surface metadata:
+
+* source_curve_validation_warnings
+* source_curve_validation_errors
+* source_curve_planarity_error if available
+* source_curve_projection_distance if available
+
+Do not rewrite existing surface preview algorithms in this task.
+
+Acceptance:
+
+* Fill/loft failures are more explainable.
+* Surface context can show validation warnings.
+* Existing valid fill/loft still works.
+
+---
+
+## Part H — Projected/Rebuilt curve metadata preservation
+
+Every derived curve must clearly track lineage.
+
+Projected curve metadata must include:
+
+* creation_type = "projected_curve"
+* source_curve_id
+* source_curve_name
+* source_curve_creation_type
+* source_mesh_name
+* projection stats
+* control_points
+* curve_method
+* sample_count
+
+Rebuilt curve metadata must include:
+
+* creation_type = "rebuilt_curve"
+* source_curve_id
+* source_curve_name
+* source_curve_creation_type
+* rebuild_source_point_count
+* rebuild_target_control_point_count
+* rebuild_method
+* control_points
+* curve_method
+* sample_count
+
+If rebuilt from a projected curve:
+
+* preserve source_mesh_name
+* preserve projection stats under original keys or copied keys
+
+If projected from a region boundary:
+
+* preserve source_region_id
+* preserve source_region_name
+* preserve source_region_triangle_count
+
+Acceptance:
+
+* User can inspect curve origin.
+* Future surface patch tools know curve lineage.
+* Project save/load preserves metadata.
+
+---
+
+## Part I — Scene browser labels
+
+Add labels:
+
+Projected Curves:
+
+* [V] Projected Curve 1 (projected)
+* [V] Projected Curve 2 (projected, mesh)
+
+Rebuilt Curves:
+
+* [V] Rebuilt Curve 1 (rebuilt)
+* [V] Rebuilt Curve 2 (rebuilt, smooth)
+
+Boundary curves remain:
+
+* [V] Region Boundary 1 (boundary, closed)
+
+Do not show more than two tags.
+
+Priority for tags:
+
+1. projected
+2. rebuilt
+3. boundary
+4. mesh
+5. manual
+6. smooth/polyline
+7. closed/open
+8. tiny
+
+Acceptance:
+
+* Derived curves are easy to find.
+* User can distinguish projected/rebuilt/boundary/manual curves.
+
+---
+
+## Part J — Tests
+
+Add/update tests for:
+
+Projection backend:
+
+* project empty curve returns safe result
+* project curve to simple mesh returns same point count
+* projected curve metadata contains projection stats
+* missed points are preserved when enabled
+* invalid mesh handled safely
+* closed state preserved
+
+Projection UI:
+
+* Project Selected Curve to Mesh requires mesh
+* Project Selected Curve to Mesh requires one curve
+* command creates new StoredCurve
+* original curve unchanged
+* projected curve selected
+* undo removes projected curve
+* redo restores projected curve
+
+Rebuild backend:
+
+* rebuild open curve preserves endpoints
+* rebuild closed curve remains closed
+* rebuild dense curve reduces control point count
+* target count clamps safely
+* no NaN/inf output
+* metadata includes source curve info
+
+Rebuild UI:
+
+* Rebuild Selected Curve requires one curve
+* command creates new StoredCurve
+* original curve unchanged
+* rebuilt curve selected
+* undo/redo works
+
+Validation:
+
+* fill validation rejects open curve
+* fill validation accepts closed non-degenerate curve
+* validation reports planarity error
+* validation warns on very high point count
+* loft validation warns on one-open/one-closed pair
+* loft validation reports point-count mismatch
+* invalid/empty curves do not crash
+
+Fill/loft preflight:
+
+* Fill Closed Curve reports validation error clearly
+* Fill Closed Curve stores validation warnings
+* Loft Between Two Curves stores validation warnings
+* existing valid fill/loft still creates preview
+
+Scene browser:
+
+* Projected Curves group appears
+* Rebuilt Curves group appears
+* labels include projected/rebuilt tags
+* visibility/delete/select works
+
+Regression:
+
+* manual curve creation/edit still works
+* region select still works
+* region boundary extraction still works
+* surface fill/loft still works
+* project save/load preserves projected/rebuilt metadata
+
+Acceptance:
+
+* pytest passes
+* app launches
+* mesh loading works
+* user can project a curve to mesh
+* user can rebuild a dense curve into fewer control points
+* user can validate curve surface readiness
+* fill/loft status messages become clearer
+* no surface fitting yet
+* no BREP/NURBS integration yet
+
+## Stop after this task.

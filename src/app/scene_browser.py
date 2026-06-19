@@ -32,8 +32,14 @@ NODE_CURVES = "curves"
 NODE_CURVE = "curve"
 NODE_CURVE_GROUP = "curve_group"
 NODE_CURVE_GROUP_UNASSIGNED = f"{NODE_CURVE_GROUP}:unassigned"
+NODE_CURVE_GROUP_PROJECTED = f"{NODE_CURVE_GROUP}:projected"
+NODE_CURVE_GROUP_REBUILT = f"{NODE_CURVE_GROUP}:rebuilt"
+NODE_CURVE_GROUP_REGION_BOUNDARIES = f"{NODE_CURVE_GROUP}:region_boundaries"
 NODE_CURVE_GROUP_REPAIRED = f"{NODE_CURVE_GROUP}:repaired"
 NODE_CURVE_GROUP_MANUAL = f"{NODE_CURVE_GROUP}:manual"
+CURVE_GROUP_PROJECTED_ID = "__projected_curves__"
+CURVE_GROUP_REBUILT_ID = "__rebuilt_curves__"
+CURVE_GROUP_REGION_BOUNDARIES_ID = "__region_boundary_curves__"
 CURVE_GROUP_REPAIRED_ID = "__repaired_curves__"
 CURVE_GROUP_MANUAL_ID = "__manual_curves__"
 NODE_SURFACES = "surfaces"
@@ -85,6 +91,12 @@ def curve_group_id_from_node(node_id: str | None) -> str | None:
         return None
     if node_id == NODE_CURVE_GROUP_UNASSIGNED:
         return ""
+    if node_id == NODE_CURVE_GROUP_PROJECTED:
+        return CURVE_GROUP_PROJECTED_ID
+    if node_id == NODE_CURVE_GROUP_REBUILT:
+        return CURVE_GROUP_REBUILT_ID
+    if node_id == NODE_CURVE_GROUP_REGION_BOUNDARIES:
+        return CURVE_GROUP_REGION_BOUNDARIES_ID
     if node_id == NODE_CURVE_GROUP_REPAIRED:
         return CURVE_GROUP_REPAIRED_ID
     if node_id == NODE_CURVE_GROUP_MANUAL:
@@ -163,20 +175,32 @@ def _visibility_group_label(label: str, visible_values: Sequence[bool]) -> str:
 
 def _curve_display_label(curve: StoredCurve, fallback_label: str) -> str:
     label = curve.name or fallback_label
-    suffixes: list[str] = []
+    tags: list[str] = []
+    projected_curve = _is_projected_curve(curve)
+    rebuilt_curve = _is_rebuilt_curve(curve)
+    boundary_curve = _is_region_boundary_curve(curve)
     manual_curve = _is_manual_curve(curve)
-    if manual_curve:
-        source_label = "mesh" if _is_mesh_snapped_curve(curve) else "manual"
-        method_label = _manual_curve_method_label(curve)
-        suffixes.append(f"({source_label}, {method_label})")
+    if projected_curve:
+        tags.append("projected")
+        if _is_mesh_snapped_curve(curve):
+            tags.append("mesh")
+    elif rebuilt_curve:
+        tags.append("rebuilt")
+        tags.append(_manual_curve_method_label(curve))
+    elif boundary_curve:
+        tags.append("boundary")
+        tags.append("closed" if bool(curve.is_closed) else "open")
+    elif manual_curve:
+        tags.append("mesh" if _is_mesh_snapped_curve(curve) else "manual")
+        tags.append(_manual_curve_method_label(curve))
     elif is_repaired_curve(curve):
-        suffixes.append("(repaired)")
+        tags.append("repaired")
+    if not manual_curve and not boundary_curve and not rebuilt_curve and curve.is_closed:
+        tags.append("closed")
     if not manual_curve and curve.is_tiny_fragment:
-        suffixes.append("(tiny)")
-    if not manual_curve and curve.is_closed:
-        suffixes.append("(closed)")
-    suffixes = suffixes[:2]
-    return f"{label} {' '.join(suffixes)}" if suffixes else label
+        tags.append("tiny")
+    tags = list(dict.fromkeys(tags))[:2]
+    return f"{label} ({', '.join(tags)})" if tags else label
 
 
 def _region_display_label(region: RegionSelection, fallback_label: str) -> str:
@@ -187,6 +211,24 @@ def _region_display_label(region: RegionSelection, fallback_label: str) -> str:
 
 def _is_manual_curve(curve: StoredCurve) -> bool:
     return is_manual_curve_like(curve)
+
+
+def _is_projected_curve(curve: StoredCurve) -> bool:
+    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+    return str(metadata.get("creation_type", "")).strip().lower() == "projected_curve"
+
+
+def _is_rebuilt_curve(curve: StoredCurve) -> bool:
+    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+    return str(metadata.get("creation_type", "")).strip().lower() == "rebuilt_curve"
+
+
+def _is_region_boundary_curve(curve: StoredCurve) -> bool:
+    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+    return (
+        str(metadata.get("creation_type", "")).strip().lower() == "region_boundary"
+        or "source_region_id" in metadata
+    )
 
 
 def _manual_curve_method_label(curve: StoredCurve) -> str:
@@ -322,6 +364,21 @@ class SceneBrowser:
         self._context_menu.add_command(
             label="Frame Selected",
             command=lambda: self._emit_visibility_action("frame_selected"),
+        )
+        self._project_curve_menu_index = 15
+        self._context_menu.add_command(
+            label="Project Selected Curve to Mesh",
+            command=lambda: self._emit_visibility_action("project_curve_to_mesh"),
+        )
+        self._rebuild_curve_menu_index = 16
+        self._context_menu.add_command(
+            label="Rebuild Selected Curve",
+            command=lambda: self._emit_visibility_action("rebuild_curve"),
+        )
+        self._extract_region_boundary_menu_index = 17
+        self._context_menu.add_command(
+            label="Extract Region Boundary",
+            command=lambda: self._emit_visibility_action("extract_region_boundary"),
         )
 
         self.tree.insert("", "end", iid=NODE_SCENE, text="Scene", open=True)
@@ -569,9 +626,21 @@ class SceneBrowser:
 
         result_by_id = {result.id: result for result in section_results}
         curves_by_result_id: dict[str | None, list[StoredCurve]] = {}
+        projected_curves: list[StoredCurve] = []
+        rebuilt_curves: list[StoredCurve] = []
+        region_boundary_curves: list[StoredCurve] = []
         repaired_curves: list[StoredCurve] = []
         manual_curves: list[StoredCurve] = []
         for curve in curves:
+            if _is_projected_curve(curve):
+                projected_curves.append(curve)
+                continue
+            if _is_rebuilt_curve(curve):
+                rebuilt_curves.append(curve)
+                continue
+            if _is_region_boundary_curve(curve):
+                region_boundary_curves.append(curve)
+                continue
             if _is_manual_curve(curve):
                 manual_curves.append(curve)
                 continue
@@ -583,6 +652,57 @@ class SceneBrowser:
 
         current_group_ids: list[str] = []
         current_node_ids: list[str] = []
+        if projected_curves:
+            current_group_ids.append(NODE_CURVE_GROUP_PROJECTED)
+            self._ensure_node(
+                NODE_CURVE_GROUP_PROJECTED,
+                _visibility_group_label(
+                    "Projected Curves",
+                    [curve.visible for curve in projected_curves],
+                ),
+                parent=NODE_CURVES,
+                open_node=True,
+            )
+            self._sync_curve_group_nodes(
+                NODE_CURVE_GROUP_PROJECTED,
+                projected_curves,
+                current_node_ids,
+            )
+
+        if rebuilt_curves:
+            current_group_ids.append(NODE_CURVE_GROUP_REBUILT)
+            self._ensure_node(
+                NODE_CURVE_GROUP_REBUILT,
+                _visibility_group_label(
+                    "Rebuilt Curves",
+                    [curve.visible for curve in rebuilt_curves],
+                ),
+                parent=NODE_CURVES,
+                open_node=True,
+            )
+            self._sync_curve_group_nodes(
+                NODE_CURVE_GROUP_REBUILT,
+                rebuilt_curves,
+                current_node_ids,
+            )
+
+        if region_boundary_curves:
+            current_group_ids.append(NODE_CURVE_GROUP_REGION_BOUNDARIES)
+            self._ensure_node(
+                NODE_CURVE_GROUP_REGION_BOUNDARIES,
+                _visibility_group_label(
+                    "Region Boundaries",
+                    [curve.visible for curve in region_boundary_curves],
+                ),
+                parent=NODE_CURVES,
+                open_node=True,
+            )
+            self._sync_curve_group_nodes(
+                NODE_CURVE_GROUP_REGION_BOUNDARIES,
+                region_boundary_curves,
+                current_node_ids,
+            )
+
         if manual_curves:
             current_group_ids.append(NODE_CURVE_GROUP_MANUAL)
             self._ensure_node(
@@ -1024,6 +1144,13 @@ class SceneBrowser:
             selected_node_ids = self.selected_node_ids()
             selected_state = "normal" if selected_node_ids else "disabled"
             region_parent_selected = NODE_REGIONS in selected_node_ids
+            region_selected = region_parent_selected or any(
+                node_id in self._region_node_ids for node_id in selected_node_ids
+            )
+            curve_selected = any(
+                node_id in self._curve_node_ids or node_id in self._curve_group_node_ids
+                for node_id in selected_node_ids
+            )
             self._context_menu.entryconfigure(
                 self._select_menu_index,
                 state=selected_state,
@@ -1049,6 +1176,14 @@ class SceneBrowser:
                 state=source_curve_state,
             )
             self._context_menu.entryconfigure(
+                self._project_curve_menu_index,
+                state="normal" if curve_selected else "disabled",
+            )
+            self._context_menu.entryconfigure(
+                self._rebuild_curve_menu_index,
+                state="normal" if curve_selected else "disabled",
+            )
+            self._context_menu.entryconfigure(
                 self._hide_selected_menu_index,
                 label="Hide Children" if region_parent_selected else "Hide Selected",
             )
@@ -1059,6 +1194,10 @@ class SceneBrowser:
             self._context_menu.entryconfigure(
                 self._delete_selected_menu_index,
                 label="Delete Children" if region_parent_selected else "Delete Selected",
+            )
+            self._context_menu.entryconfigure(
+                self._extract_region_boundary_menu_index,
+                state="normal" if region_selected else "disabled",
             )
             try:
                 self._context_menu.tk_popup(
