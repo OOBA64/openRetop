@@ -111,6 +111,10 @@ REGION_SELECTION_COLOR = (0.0, 0.82, 1.0)
 REGION_SELECTION_EDGE_COLOR = (0.88, 1.0, 1.0)
 REGION_SELECTION_OPACITY = 0.34
 REGION_SELECTION_LINE_WIDTH = 2.4
+BREP_SURFACE_COLOR = (0.68, 0.54, 0.22)
+BREP_SURFACE_EDGE_COLOR = (0.92, 0.78, 0.36)
+BREP_SELECTED_SURFACE_COLOR = (0.0, 0.92, 0.86)
+BREP_SELECTED_SURFACE_EDGE_COLOR = (0.78, 1.0, 0.96)
 
 CURVE_DISPLAY_CATEGORY_ORDER = (
     "normal",
@@ -1421,6 +1425,7 @@ class EmbeddedVTKViewport:
                     bool(preview.selected or preview.source_surface_id == active_surface_id),
                     None if preview.opacity is None else round(float(preview.opacity), 4),
                     bool(preview.wireframe_overlay),
+                    str(getattr(preview, "display_role", "")),
                 )
                 for preview in renderable_previews
             ),
@@ -2890,7 +2895,18 @@ def _surface_preview_actor(
     actor.SetMapper(mapper)
     property_ = actor.GetProperty()
     opacity = _surface_preview_opacity(preview, selected=selected)
-    if selected:
+    display_role = str(getattr(preview, "display_role", "")).strip().lower()
+    if display_role == "brep_visual_preview" and selected:
+        property_.SetColor(*BREP_SELECTED_SURFACE_COLOR)
+        property_.SetOpacity(max(opacity, 0.5))
+        property_.SetEdgeColor(*BREP_SELECTED_SURFACE_EDGE_COLOR)
+        property_.SetLineWidth(2.8)
+    elif display_role == "brep_visual_preview":
+        property_.SetColor(*BREP_SURFACE_COLOR)
+        property_.SetOpacity(max(opacity, 0.34))
+        property_.SetEdgeColor(*BREP_SURFACE_EDGE_COLOR)
+        property_.SetLineWidth(1.6)
+    elif selected:
         property_.SetColor(0.0, 0.95, 1.0)
         property_.SetOpacity(opacity)
         property_.SetEdgeColor(0.85, 1.0, 1.0)

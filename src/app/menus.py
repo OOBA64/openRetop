@@ -155,6 +155,22 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
     app.surfaces_menu.add_command(label="Fill Closed Curve", command=app.fill_closed_curve)
     app.surfaces_menu.add_command(label="Loft Between Two Curves", command=app.loft_between_two_curves)
     app.surfaces_menu.add_command(
+        label="Create BREP Face From Closed Curve",
+        command=app.create_brep_face_from_closed_curve,
+    )
+    app.surfaces_menu.add_command(
+        label="Create BREP Loft From Two Curves",
+        command=app.create_brep_loft_from_two_curves,
+    )
+    app.surfaces_menu.add_command(
+        label="Export Selected BREP Surface to STEP",
+        command=app.export_selected_brep_surface_to_step,
+    )
+    app.surfaces_menu.add_command(
+        label="Rebuild Selected BREP Surface",
+        command=app.rebuild_selected_brep_surface,
+    )
+    app.surfaces_menu.add_command(
         label="Create Boundary Patch",
         command=app.create_boundary_patch_from_curve,
     )

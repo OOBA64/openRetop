@@ -18,6 +18,7 @@ from curves.curve_state import is_repaired_curve
 from curves.manual_curve import is_manual_curve_like
 from regions.region_state import RegionSelection
 from sections.section_state import SectionPlaneState, StoredSectionResult
+from surfaces.brep_state import BrepSurfaceRecord
 from surfaces.surface_state import SurfacePatch
 
 
@@ -43,6 +44,7 @@ CURVE_GROUP_REGION_BOUNDARIES_ID = "__region_boundary_curves__"
 CURVE_GROUP_REPAIRED_ID = "__repaired_curves__"
 CURVE_GROUP_MANUAL_ID = "__manual_curves__"
 NODE_SURFACES = "surfaces"
+NODE_BREP_SURFACES = "brep_surfaces"
 NODE_SURFACE = "surface"
 NODE_REGIONS = "regions"
 NODE_REGION = "region"
@@ -209,16 +211,27 @@ def _region_display_label(region: RegionSelection, fallback_label: str) -> str:
     return f"{label} ({triangle_count:,} tris)"
 
 
-def _surface_display_label(surface: SurfacePatch, fallback_label: str) -> str:
+SurfaceSceneRecord = SurfacePatch | BrepSurfaceRecord
+
+
+def _surface_display_label(surface: SurfaceSceneRecord, fallback_label: str) -> str:
     label = surface.name or fallback_label
     tag = _surface_preview_tag(surface)
     return f"{label} ({tag})" if tag else label
 
 
-def _surface_preview_tag(surface: SurfacePatch) -> str:
+def _surface_preview_tag(surface: SurfaceSceneRecord) -> str:
+    brep_type = str(getattr(surface, "brep_type", "")).strip().lower()
+    if brep_type == "planar_face":
+        return "planar face"
+    if brep_type == "loft_surface":
+        return "loft"
+    if brep_type:
+        return "BREP"
+
     metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
     preview_mode = str(metadata.get("preview_mode", "")).strip().lower()
-    surface_type = str(surface.surface_type).strip().lower()
+    surface_type = str(getattr(surface, "surface_type", "")).strip().lower()
     if preview_mode == "closed_curve_fill" or surface_type == "preview_fill":
         return "fill"
     if preview_mode == "two_curve_loft" or surface_type == "preview_loft":
@@ -293,6 +306,7 @@ class SceneBrowser:
         self._active_curve_node_id: str | None = None
         self._selected_curve_node_ids: set[str] = set()
         self._surface_node_ids: set[str] = set()
+        self._brep_surface_node_ids: set[str] = set()
         self._active_surface_node_id: str | None = None
         self._selected_surface_node_ids: set[str] = set()
         self._region_node_ids: set[str] = set()
@@ -403,6 +417,11 @@ class SceneBrowser:
             label="Extract Region Boundary",
             command=lambda: self._emit_visibility_action("extract_region_boundary"),
         )
+        self._export_step_menu_index = 18
+        self._context_menu.add_command(
+            label="Export STEP",
+            command=lambda: self._emit_visibility_action("export_step"),
+        )
 
         self.tree.insert("", "end", iid=NODE_SCENE, text="Scene", open=True)
 
@@ -421,7 +440,7 @@ class SceneBrowser:
         curves: Sequence[StoredCurve],
         active_curve_id: str | None,
         selected_curve_ids: set[str],
-        surfaces: Sequence[SurfacePatch],
+        surfaces: Sequence[SurfaceSceneRecord],
         active_surface_id: str | None,
         selected_surface_ids: set[str],
         has_section_result: bool,
@@ -864,36 +883,34 @@ class SceneBrowser:
 
     def _sync_surface_nodes(
         self,
-        surfaces: Sequence[SurfacePatch],
+        surfaces: Sequence[SurfaceSceneRecord],
         *,
         active_surface_id: str | None,
         selected_surface_ids: set[str],
     ) -> None:
-        self._ensure_node(
-            NODE_SURFACES,
-            _visibility_group_label(
-                "Surfaces",
-                [surface.visible for surface in surfaces],
+        preview_surfaces = [
+            surface for surface in surfaces if not isinstance(surface, BrepSurfaceRecord)
+        ]
+        brep_surfaces = [
+            surface for surface in surfaces if isinstance(surface, BrepSurfaceRecord)
+        ]
+        current_node_ids = [
+            *self._sync_surface_group_nodes(
+                NODE_SURFACES,
+                "Preview Surfaces",
+                preview_surfaces,
             ),
-            open_node=True,
-        )
-
-        current_node_ids: list[str] = []
-        for index, surface in enumerate(surfaces, start=1):
-            node_id = surface_node_id(surface.id)
-            current_node_ids.append(node_id)
-            label = _visibility_label(
-                _surface_display_label(surface, f"Surface {index}"),
-                bool(surface.visible),
-            )
-            self._ensure_node(node_id, label, parent=NODE_SURFACES)
-
+            *self._sync_surface_group_nodes(
+                NODE_BREP_SURFACES,
+                "CAD / BREP Surfaces",
+                brep_surfaces,
+            ),
+        ]
         current_node_id_set = set(current_node_ids)
-        for child_id in self.tree.get_children(NODE_SURFACES):
-            if child_id not in current_node_id_set:
-                self.tree.delete(child_id)
-
         self._surface_node_ids = current_node_id_set
+        self._brep_surface_node_ids = {
+            surface_node_id(surface.id) for surface in brep_surfaces
+        }
         self._selected_surface_node_ids = {
             surface_node_id(surface_id)
             for surface_id in selected_surface_ids
@@ -911,11 +928,48 @@ class SceneBrowser:
                 current_node_ids[0] if current_node_ids else None
             )
 
+    def _sync_surface_group_nodes(
+        self,
+        group_id: str,
+        group_label: str,
+        surfaces: Sequence[SurfaceSceneRecord],
+    ) -> list[str]:
+        if not surfaces:
+            self._remove_node(group_id)
+            return []
+
+        self._ensure_node(
+            group_id,
+            _visibility_group_label(
+                group_label,
+                [surface.visible for surface in surfaces],
+            ),
+            open_node=True,
+        )
+        current_node_ids: list[str] = []
+        for index, surface in enumerate(surfaces, start=1):
+            node_id = surface_node_id(surface.id)
+            current_node_ids.append(node_id)
+            label = _visibility_label(
+                _surface_display_label(surface, f"Surface {index}"),
+                bool(surface.visible),
+            )
+            self._ensure_node(node_id, label, parent=group_id)
+            self.tree.move(node_id, group_id, index - 1)
+
+        current_node_id_set = set(current_node_ids)
+        for child_id in self.tree.get_children(group_id):
+            if child_id not in current_node_id_set:
+                self.tree.delete(child_id)
+        return current_node_ids
+
     def _remove_surface_nodes(self) -> None:
         self._surface_node_ids = set()
+        self._brep_surface_node_ids = set()
         self._selected_surface_node_ids = set()
         self._active_surface_node_id = None
         self._remove_node(NODE_SURFACES)
+        self._remove_node(NODE_BREP_SURFACES)
 
     def _sync_region_nodes(
         self,
@@ -982,6 +1036,7 @@ class SceneBrowser:
             NODE_SECTION_RESULTS,
             NODE_CURVES,
             NODE_SURFACES,
+            NODE_BREP_SURFACES,
             NODE_REGIONS,
         )
         for index, node_id in enumerate(ordered_nodes):
@@ -1072,6 +1127,7 @@ class SceneBrowser:
             NODE_SECTION_RESULTS,
             NODE_CURVES,
             NODE_SURFACES,
+            NODE_BREP_SURFACES,
             NODE_REGIONS,
         }:
             return node_id
@@ -1113,6 +1169,7 @@ class SceneBrowser:
             NODE_SECTION_RESULTS,
             NODE_CURVES,
             NODE_SURFACES,
+            NODE_BREP_SURFACES,
             NODE_REGIONS,
         ):
             if not self.tree.exists(root_node_id):
@@ -1174,6 +1231,10 @@ class SceneBrowser:
                 node_id in self._curve_node_ids or node_id in self._curve_group_node_ids
                 for node_id in selected_node_ids
             )
+            brep_surface_selected = (
+                len(selected_node_ids) == 1
+                and selected_node_ids[0] in self._brep_surface_node_ids
+            )
             self._context_menu.entryconfigure(
                 self._select_menu_index,
                 state=selected_state,
@@ -1221,6 +1282,10 @@ class SceneBrowser:
             self._context_menu.entryconfigure(
                 self._extract_region_boundary_menu_index,
                 state="normal" if region_selected else "disabled",
+            )
+            self._context_menu.entryconfigure(
+                self._export_step_menu_index,
+                state="normal" if brep_surface_selected else "disabled",
             )
             try:
                 self._context_menu.tk_popup(

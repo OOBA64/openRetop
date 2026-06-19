@@ -22,7 +22,9 @@ from app.main_window import (
     OPEN_MODEL_MENU_INDEX,
     OpenRetopWindow,
 )
+from cad_kernel.types import CadBuildResult, StepExportResult
 from app.scene_browser import (
+    NODE_BREP_SURFACES,
     NODE_CURVES,
     NODE_CURVE_GROUP_MANUAL,
     NODE_CURVE_GROUP_PROJECTED,
@@ -548,13 +550,29 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.curves_menu.type(17), "checkbutton")
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Fill Closed Curve")
             self.assertEqual(window.surfaces_menu.entrycget(1, "label"), "Loft Between Two Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(2, "label"), "Create Boundary Patch")
-            self.assertEqual(window.surfaces_menu.entrycget(3, "label"), "Create Four-Curve Patch")
-            self.assertEqual(window.surfaces_menu.entrycget(4, "label"), "Create Curve Network Patch")
-            self.assertEqual(window.surfaces_menu.entrycget(5, "label"), "Select Source Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(6, "label"), "Isolate Source Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(7, "label"), "Show Source Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(8, "label"), "Frame Source Curves")
+            self.assertEqual(
+                window.surfaces_menu.entrycget(2, "label"),
+                "Create BREP Face From Closed Curve",
+            )
+            self.assertEqual(
+                window.surfaces_menu.entrycget(3, "label"),
+                "Create BREP Loft From Two Curves",
+            )
+            self.assertEqual(
+                window.surfaces_menu.entrycget(4, "label"),
+                "Export Selected BREP Surface to STEP",
+            )
+            self.assertEqual(
+                window.surfaces_menu.entrycget(5, "label"),
+                "Rebuild Selected BREP Surface",
+            )
+            self.assertEqual(window.surfaces_menu.entrycget(6, "label"), "Create Boundary Patch")
+            self.assertEqual(window.surfaces_menu.entrycget(7, "label"), "Create Four-Curve Patch")
+            self.assertEqual(window.surfaces_menu.entrycget(8, "label"), "Create Curve Network Patch")
+            self.assertEqual(window.surfaces_menu.entrycget(9, "label"), "Select Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(10, "label"), "Isolate Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(11, "label"), "Show Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(12, "label"), "Frame Source Curves")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
@@ -2437,6 +2455,246 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_create_brep_face_from_closed_curve_stores_runtime_object_and_undoes(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.compute_section()
+            source_curve = window.app_state.curve_collection.curves[0]
+            _make_curve_closed(source_curve)
+            window.select_curve(source_curve.id)
+            window._set_project_dirty(False)
+
+            cad_object = object()
+            result = CadBuildResult(
+                success=True,
+                cad_object=cad_object,
+                reason="created",
+                metadata={
+                    "brep_type": "planar_face",
+                    "backend": "FakeCAD",
+                    "build_method": "closed_wire_planar_face",
+                    "source_point_count": 4,
+                    "planarity_error": 0.0,
+                },
+            )
+            with patch("app.main_window.build_planar_face_from_curve", return_value=result):
+                window.surfaces_menu.invoke(2)
+
+            surfaces = window.app_state.brep_surface_collection.surfaces
+            self.assertEqual(len(surfaces), 1)
+            surface = surfaces[0]
+            self.assertEqual(surface.name, "BREP Face 1")
+            self.assertEqual(surface.brep_type, "planar_face")
+            self.assertEqual(surface.backend, "FakeCAD")
+            self.assertEqual(surface.source_curve_ids, [source_curve.id])
+            self.assertEqual(surface.metadata["source_curve_ids"], [source_curve.id])
+            self.assertEqual(surface.metadata["source_curve_names"], [source_curve.name])
+            self.assertEqual(surface.metadata["build_method"], "closed_wire_planar_face")
+            self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
+            self.assertEqual(window.app_state.brep_surface_collection.active_surface_id, surface.id)
+            self.assertEqual(window.app_state.brep_surface_collection.selected_surface_ids, {surface.id})
+            self.assertEqual(window.app_state.selected_item, "surface")
+            self.assertEqual(
+                window.status_text.get(),
+                f"Created BREP planar face from {source_curve.name}.",
+            )
+            self.assertTrue(window.project_dirty)
+
+            surface_node = surface_node_id(surface.id)
+            tree = window.scene_browser.tree
+            self.assertIn(surface_node, tree.get_children(NODE_BREP_SURFACES))
+            self.assertEqual(tree.item(surface_node, "text"), "[V] BREP Face 1 (planar face)")
+            self.assertEqual(tree.selection(), (surface_node,))
+
+            with TemporaryDirectory() as tmpdir:
+                step_path = Path(tmpdir) / "brep-face.step"
+                with (
+                    patch(
+                        "app.main_window.filedialog.asksaveasfilename",
+                        return_value=str(step_path),
+                    ) as ask_save,
+                    patch(
+                        "app.main_window.export_step",
+                        return_value=StepExportResult(
+                            success=True,
+                            path=str(step_path),
+                            reason="STEP exported.",
+                        ),
+                    ) as export_step_fn,
+                ):
+                    window.surfaces_menu.invoke(4)
+
+                ask_save.assert_called_once()
+                export_step_fn.assert_called_once_with(cad_object, step_path)
+                self.assertEqual(surface.metadata["last_export_path"], str(step_path))
+                self.assertEqual(window.status_text.get(), f"Exported STEP: {step_path}")
+
+            window.undo()
+            self.assertEqual(window.app_state.brep_surface_collection.surfaces, [])
+            self.assertNotIn(surface.id, window._brep_runtime_cache)
+            self.assertEqual(window.status_text.get(), "Undid Create BREP Surface")
+
+            window.redo()
+            self.assertEqual(
+                [surface.id for surface in window.app_state.brep_surface_collection.surfaces],
+                [surface.id],
+            )
+            self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
+            self.assertEqual(window.status_text.get(), "Redid Create BREP Surface")
+        finally:
+            window.root.destroy()
+
+    def test_create_brep_loft_from_two_curves_stores_record_and_runtime_cache(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            first_curve = StoredCurve(
+                id="curve-loft-a",
+                name="Loft A",
+                section_result_id="",
+                plane_id="",
+                original_points=np.asarray(
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    dtype=float,
+                ),
+                fitted_points=np.asarray(
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    dtype=float,
+                ),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            second_curve = StoredCurve(
+                id="curve-loft-b",
+                name="Loft B",
+                section_result_id="",
+                plane_id="",
+                original_points=np.asarray(
+                    [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]],
+                    dtype=float,
+                ),
+                fitted_points=np.asarray(
+                    [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]],
+                    dtype=float,
+                ),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=False,
+            )
+            add_curve(window.app_state.curve_collection, first_curve)
+            add_curve(window.app_state.curve_collection, second_curve)
+            window.select_curves(
+                [first_curve.id, second_curve.id],
+                active_curve_id=second_curve.id,
+            )
+
+            cad_object = object()
+            result = CadBuildResult(
+                success=True,
+                cad_object=cad_object,
+                reason="created",
+                warnings=["point counts differ"],
+                metadata={
+                    "brep_type": "loft_surface",
+                    "backend": "FakeCAD",
+                    "build_method": "two_curve_loft",
+                    "source_curve_ids": [first_curve.id, second_curve.id],
+                    "source_curve_names": [first_curve.name, second_curve.name],
+                    "source_point_counts": [2, 2],
+                },
+            )
+            with patch("app.main_window.build_loft_surface_from_curves", return_value=result):
+                window.surfaces_menu.invoke(3)
+
+            surfaces = window.app_state.brep_surface_collection.surfaces
+            self.assertEqual(len(surfaces), 1)
+            surface = surfaces[0]
+            self.assertEqual(surface.name, "BREP Loft 1")
+            self.assertEqual(surface.brep_type, "loft_surface")
+            self.assertEqual(surface.backend, "FakeCAD")
+            self.assertEqual(surface.source_curve_ids, [first_curve.id, second_curve.id])
+            self.assertEqual(surface.metadata["build_method"], "two_curve_loft")
+            self.assertEqual(surface.metadata["warnings"], ["point counts differ"])
+            self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
+            self.assertEqual(window.status_text.get(), "Created BREP loft surface from 2 curves.")
+
+            surface_node = surface_node_id(surface.id)
+            self.assertIn(
+                surface_node,
+                window.scene_browser.tree.get_children(NODE_BREP_SURFACES),
+            )
+            self.assertEqual(
+                window.scene_browser.tree.item(surface_node, "text"),
+                "[V] BREP Loft 1 (loft)",
+            )
+
+            rebuilt_cad_object = object()
+            rebuild_result = CadBuildResult(
+                success=True,
+                cad_object=rebuilt_cad_object,
+                reason="rebuilt",
+                metadata={
+                    "brep_type": "loft_surface",
+                    "backend": "FakeCAD",
+                    "build_method": "two_curve_loft",
+                    "source_curve_ids": [first_curve.id, second_curve.id],
+                },
+            )
+            window._brep_runtime_cache.pop(surface.id)
+            with patch("app.main_window.build_loft_surface_from_curves", return_value=rebuild_result):
+                window.surfaces_menu.invoke(5)
+
+            self.assertEqual(window._brep_runtime_cache[surface.id], rebuilt_cad_object)
+            self.assertEqual(surface.metadata["runtime_status"], "ready")
+            self.assertEqual(surface.metadata["build_reason"], "rebuilt")
+            self.assertEqual(window.status_text.get(), "Rebuilt BREP surface.")
+
+            window.delete_selected_surface()
+            self.assertEqual(window.app_state.brep_surface_collection.surfaces, [])
+            self.assertNotIn(surface.id, window._brep_runtime_cache)
+
+            window.undo()
+            self.assertEqual(
+                [restored.id for restored in window.app_state.brep_surface_collection.surfaces],
+                [surface.id],
+            )
+            self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
+        finally:
+            window.root.destroy()
+
+    def test_brep_surface_command_failure_does_not_create_record_or_dirty_project(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.compute_section()
+            source_curve = window.app_state.curve_collection.curves[0]
+            _make_curve_closed(source_curve)
+            window.select_curve(source_curve.id)
+            window._set_project_dirty(False)
+
+            result = CadBuildResult(
+                success=False,
+                cad_object=None,
+                reason="CAD backend rejected the curve.",
+            )
+            with patch("app.main_window.build_planar_face_from_curve", return_value=result):
+                window.create_brep_face_from_closed_curve()
+
+            self.assertEqual(window.app_state.brep_surface_collection.surfaces, [])
+            self.assertEqual(window._brep_runtime_cache, {})
+            self.assertEqual(window.status_text.get(), "CAD backend rejected the curve.")
+            self.assertFalse(window.project_dirty)
+        finally:
+            window.root.destroy()
+
     def test_undo_stack_clears_on_new_project_and_model_load(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -2748,14 +3006,22 @@ class MainWindowUiTests(unittest.TestCase):
             window.surfaces_menu.invoke(3)
             self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(4)
-            self.assertEqual(window.status_text.get(), "No curves available")
+            self.assertEqual(window.status_text.get(), "Select a BREP surface to export.")
             window.surfaces_menu.invoke(5)
-            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            self.assertEqual(window.status_text.get(), "Select a BREP surface to rebuild.")
             window.surfaces_menu.invoke(6)
-            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(7)
-            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(8)
+            self.assertEqual(window.status_text.get(), "No curves available")
+            window.surfaces_menu.invoke(9)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(10)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(11)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(12)
             self.assertEqual(window.status_text.get(), "Select a surface first.")
         finally:
             window.root.destroy()
@@ -3099,7 +3365,7 @@ class MainWindowUiTests(unittest.TestCase):
                     NODE_SURFACES,
                 ),
             )
-            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[M] Surfaces")
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[M] Preview Surfaces")
             self.assertEqual(
                 tree.get_children(NODE_SURFACES),
                 (first_surface_node, second_surface_node),
@@ -3138,7 +3404,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Selected: Patch A")
             self.assertEqual(tree.get_children(NODE_SURFACES), (first_surface_node, second_surface_node))
             self.assertEqual(tree.item(first_surface_node, "text"), "[H] Patch A")
-            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Surfaces")
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Preview Surfaces")
 
             tree.selection_set(second_surface_node)
             tree.event_generate("<<TreeviewSelect>>")
@@ -3764,7 +4030,7 @@ class MainWindowUiTests(unittest.TestCase):
                     NODE_CURVE_GROUP_UNASSIGNED,
                 ),
             )
-            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Surfaces")
+            self.assertEqual(tree.item(NODE_SURFACES, "text"), "[H] Preview Surfaces")
         finally:
             window.root.destroy()
 

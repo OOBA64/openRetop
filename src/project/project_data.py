@@ -159,6 +159,18 @@ class ProjectSurface:
 
 
 @dataclass
+class ProjectBrepSurface:
+    id: str
+    name: str
+    source_curve_ids: list[str]
+    brep_type: str
+    backend: str
+    visible: bool
+    selected: bool = False
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
 class ProjectData:
     version: int
     name: str
@@ -173,6 +185,7 @@ class ProjectData:
     section_results: list[ProjectSectionResult] = field(default_factory=list)
     curves: list[ProjectCurve] = field(default_factory=list)
     surfaces: list[ProjectSurface] = field(default_factory=list)
+    brep_surfaces: list[ProjectBrepSurface] = field(default_factory=list)
 
 
 def default_project_data() -> ProjectData:

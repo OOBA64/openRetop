@@ -22,6 +22,12 @@ from sections.section_state import (
     add_result,
     set_active_plane,
 )
+from surfaces.brep_state import (
+    BREP_TYPE_PLANAR_FACE,
+    BrepSurfaceCollection,
+    BrepSurfaceRecord,
+    add_brep_surface,
+)
 from surfaces.surface_state import SurfaceCollection, SurfacePatch, add_surface
 
 
@@ -452,6 +458,61 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(project.surfaces[0].metadata["curve_count"], 2)
         self.assertEqual(project.surfaces[1].id, "surface-b")
         self.assertFalse(project.surfaces[1].visible)
+
+    def test_project_from_app_state_exports_brep_surface_records_without_cad_objects(self) -> None:
+        brep_collection = BrepSurfaceCollection()
+        add_brep_surface(
+            brep_collection,
+            BrepSurfaceRecord(
+                id="brep-a",
+                name="BREP Face 1",
+                source_curve_ids=["curve-a"],
+                brep_type=BREP_TYPE_PLANAR_FACE,
+                backend="FakeCAD",
+                visible=False,
+                metadata={
+                    "build_method": "closed_wire_planar_face",
+                    "cad_object": object(),
+                    "warnings": ["slightly non-planar"],
+                },
+            ),
+        )
+        brep_collection.selected_surface_ids = {"brep-a"}
+
+        with self.assertRaises(ValueError):
+            project_from_app_state(
+                mesh_object=None,
+                proxy_quality="Medium",
+                show_grid=True,
+                show_axes=True,
+                show_normals=False,
+                section_axis="Z",
+                section_offset=0.0,
+                show_section_plane=False,
+                brep_surface_collection=brep_collection,
+            )
+
+        brep_collection.surfaces[0].metadata.pop("cad_object")
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            brep_surface_collection=brep_collection,
+        )
+
+        self.assertEqual(len(project.brep_surfaces), 1)
+        surface = project.brep_surfaces[0]
+        self.assertEqual(surface.id, "brep-a")
+        self.assertEqual(surface.brep_type, BREP_TYPE_PLANAR_FACE)
+        self.assertEqual(surface.backend, "FakeCAD")
+        self.assertFalse(surface.visible)
+        self.assertTrue(surface.selected)
+        self.assertEqual(surface.metadata["build_method"], "closed_wire_planar_face")
 
     def test_project_from_app_state_handles_mesh_without_file_path(self) -> None:
         mesh_object = SimpleNamespace(

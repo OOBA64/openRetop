@@ -11,6 +11,14 @@ from uuid import uuid4
 
 import numpy as np
 
+from cad_kernel.backend import (
+    build_loft_surface_from_curves,
+    build_planar_face_from_curve,
+    cad_kernel_status,
+    export_step,
+    is_cad_kernel_available,
+)
+from cad_kernel.types import CadBuildResult, curve_points_from_stored_curve
 from app.app_state import AppState
 from app.keybinds import KEYBIND_DISPLAY_ORDER, action_for_shortcut, shortcut_from_tk_event
 from app.menus import build_menu_bar
@@ -23,6 +31,7 @@ from app.scene_browser import (
     CURVE_GROUP_REPAIRED_ID,
     CURVE_GROUP_MANUAL_ID,
     NODE_CURVES,
+    NODE_BREP_SURFACES,
     NODE_CURVE_GROUP_PROJECTED,
     NODE_CURVE_GROUP_REBUILT,
     NODE_CURVE_GROUP_REGION_BOUNDARIES,
@@ -179,6 +188,18 @@ from sections.section_state import (
     set_selected_planes,
     set_selected_results,
 )
+from surfaces.brep_state import (
+    BREP_TYPE_LOFT_SURFACE,
+    BREP_TYPE_PLANAR_FACE,
+    BrepSurfaceRecord,
+    BrepSurfaceCollection,
+    add_brep_surface,
+    clear_brep_surface_selection,
+    get_active_brep_surface,
+    remove_brep_surface,
+    set_active_brep_surface,
+    set_selected_brep_surfaces,
+)
 from surfaces.surface_state import (
     SurfaceCollection,
     SurfacePatch,
@@ -224,6 +245,12 @@ WORKBENCH_NAMES = (
     "Surfaces",
     "Manual RE",
     "Analysis",
+)
+STEP_FILE_TYPES = (
+    ("STEP files", "*.step *.stp"),
+    ("STEP AP214", "*.step"),
+    ("STEP short extension", "*.stp"),
+    ("All files", "*.*"),
 )
 WORKBENCH_PROMPTS = {
     "Scene": "Open a model, adjust viewport visibility, or frame the scene.",
@@ -370,6 +397,7 @@ class OpenRetopWindow:
         self.mesh_state = MeshState()
         self.app_state = AppState()
         self.undo_stack = UndoStack()
+        self._brep_runtime_cache: dict[str, object] = {}
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
         self._active_transform_angle_delta: float | None = None
@@ -552,6 +580,14 @@ class OpenRetopWindow:
         self.surface_opacity_text = StringVar(value="0.22")
         self.surface_wireframe_overlay = BooleanVar(value=True)
         self.surface_metadata_text = StringVar(value="(none)")
+        self.cad_kernel_status_text = StringVar(value=cad_kernel_status())
+        self.brep_type_text = StringVar(value="(none)")
+        self.brep_backend_text = StringVar(value="(none)")
+        self.brep_source_curves_text = StringVar(value="(none)")
+        self.brep_build_method_text = StringVar(value="(none)")
+        self.brep_last_export_path_text = StringVar(value="(none)")
+        self.brep_build_warnings_text = StringVar(value="(none)")
+        self.brep_build_errors_text = StringVar(value="(none)")
         self.selection_buttons: list[ttk.Button] = []
         self._syncing_surface_display_controls = False
         self._sync_active_section_plane_from_controls()
@@ -631,7 +667,7 @@ class OpenRetopWindow:
             self._restore_project_controls(project)
             self._clear_undo_stack()
             self._set_project_dirty(False)
-            self.status_text.set(f"Project loaded: {project.name} ({project_path})")
+            self.status_text.set(self._project_loaded_status(project, project_path))
             return
 
         mesh_path = self._project_mesh_path(project_path, project.mesh_path)
@@ -645,7 +681,17 @@ class OpenRetopWindow:
         self._refresh_viewport(reset_camera=False)
         self._clear_undo_stack()
         self._set_project_dirty(False)
-        self.status_text.set(f"Project loaded: {project.name} ({project_path})")
+        self.status_text.set(self._project_loaded_status(project, project_path))
+
+    @staticmethod
+    def _project_loaded_status(project: ProjectData, project_path: Path) -> str:
+        status = f"Project loaded: {project.name} ({project_path})"
+        if project.brep_surfaces:
+            return (
+                f"{status}; BREP surface record loaded; "
+                "rebuild required before export."
+            )
+        return status
 
     def _project_display_name(self) -> str:
         if self.current_project_path is None:
@@ -673,6 +719,7 @@ class OpenRetopWindow:
             curve_collection=CurveCollection(),
             surface_collection=SurfaceCollection(),
         )
+        self._brep_runtime_cache.clear()
         self._last_transform_readout = None
         self._active_transform_angle_delta = None
         self._clear_manual_curve_state(reset_snap=True)
@@ -713,15 +760,17 @@ class OpenRetopWindow:
             return
 
         self._clear_scene_data(reset_camera=False)
-        if deleted_count != 1 or not delete_targets["regions"]:
-            self._set_project_dirty(True)
+        self._set_project_dirty(True)
         self.status_text.set("Mesh deleted")
 
     def _delete_mesh_confirmation_text(self) -> str:
         section_plane_count = len(self.app_state.section_collection.planes)
         section_result_count = len(self.app_state.section_collection.results)
         curve_count = len(self.app_state.curve_collection.curves)
-        surface_count = len(self.app_state.surface_collection.surfaces)
+        surface_count = (
+            len(self.app_state.surface_collection.surfaces)
+            + len(self.app_state.brep_surface_collection.surfaces)
+        )
         return (
             "Delete mesh and all generated data?\n"
             "This will remove:\n"
@@ -932,6 +981,50 @@ class OpenRetopWindow:
             surfaces=surfaces,
             active_surface_id=None,
         )
+        brep_surfaces: list[BrepSurfaceRecord] = []
+        selected_brep_ids: set[str] = set()
+        for project_surface in project.brep_surfaces:
+            metadata = dict(project_surface.metadata)
+            missing_curve_ids = [
+                curve_id
+                for curve_id in project_surface.source_curve_ids
+                if curve_id not in curve_ids
+            ]
+            if missing_curve_ids:
+                metadata["missing_curve_ids"] = missing_curve_ids
+            metadata["runtime_status"] = "rebuild_required"
+            metadata["build_reason"] = (
+                "BREP surface record loaded; rebuild required before export."
+            )
+            surface = BrepSurfaceRecord(
+                id=project_surface.id,
+                name=project_surface.name,
+                source_curve_ids=list(project_surface.source_curve_ids),
+                brep_type=project_surface.brep_type,
+                backend=project_surface.backend,
+                visible=project_surface.visible,
+                selected=bool(project_surface.selected),
+                metadata=metadata,
+            )
+            brep_surfaces.append(surface)
+            if surface.selected:
+                selected_brep_ids.add(surface.id)
+
+        self.app_state.brep_surface_collection = BrepSurfaceCollection(
+            surfaces=brep_surfaces,
+            active_surface_id=None,
+            selected_surface_ids=selected_brep_ids,
+        )
+        self._brep_runtime_cache.clear()
+        if selected_brep_ids:
+            try:
+                set_selected_brep_surfaces(
+                    self.app_state.brep_surface_collection,
+                    list(selected_brep_ids),
+                    active_surface_id=next(iter(selected_brep_ids)),
+                )
+            except ValueError:
+                clear_brep_surface_selection(self.app_state.brep_surface_collection)
         self._sync_surface_context_from_active_surface()
 
     def _set_restored_active_section_plane(
@@ -1010,6 +1103,7 @@ class OpenRetopWindow:
                 section_collection=self.app_state.section_collection,
                 curve_collection=self.app_state.curve_collection,
                 surface_collection=self.app_state.surface_collection,
+                brep_surface_collection=self.app_state.brep_surface_collection,
             )
             save_project(project, project_path)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1121,6 +1215,10 @@ class OpenRetopWindow:
                 if surface.id == surface_id:
                     surface.name = name
                     return
+            for surface in self.app_state.brep_surface_collection.surfaces:
+                if surface.id == surface_id:
+                    surface.name = name
+                    return
 
         region_id = region_id_from_node(node_id)
         active_region = self.app_state.region_collection.active_region
@@ -1182,6 +1280,10 @@ class OpenRetopWindow:
             node_id = surface_node_id(surface.id)
             if node_id in node_ids:
                 snapshot[node_id] = bool(surface.visible)
+        for surface in self.app_state.brep_surface_collection.surfaces:
+            node_id = surface_node_id(surface.id)
+            if node_id in node_ids:
+                snapshot[node_id] = bool(surface.visible)
         active_region = self.app_state.region_collection.active_region
         if active_region is not None:
             node_id = region_node_id(active_region.id)
@@ -1205,6 +1307,10 @@ class OpenRetopWindow:
             if node_id in snapshot:
                 curve.visible = bool(snapshot[node_id])
         for surface in self.app_state.surface_collection.surfaces:
+            node_id = surface_node_id(surface.id)
+            if node_id in snapshot:
+                surface.visible = bool(snapshot[node_id])
+        for surface in self.app_state.brep_surface_collection.surfaces:
             node_id = surface_node_id(surface.id)
             if node_id in snapshot:
                 surface.visible = bool(snapshot[node_id])
@@ -1232,20 +1338,32 @@ class OpenRetopWindow:
             for index, surface in enumerate(self.app_state.surface_collection.surfaces)
             if surface.id in targets["surfaces"]
         ]
-        if not deleted_curves and not deleted_surfaces:
+        deleted_brep_surfaces = [
+            (index, copy.deepcopy(surface), self._brep_runtime_cache.get(surface.id))
+            for index, surface in enumerate(
+                self.app_state.brep_surface_collection.surfaces
+            )
+            if surface.id in targets["surfaces"]
+        ]
+        if not deleted_curves and not deleted_surfaces and not deleted_brep_surfaces:
             return None
 
         curve_ids = {curve.id for _index, curve in deleted_curves}
-        surface_ids = {surface.id for _index, surface in deleted_surfaces}
+        surface_ids = {
+            surface.id for _index, surface in deleted_surfaces
+        } | {
+            surface.id for _index, surface, _cad_object in deleted_brep_surfaces
+        }
         command_name = self._delete_command_name(
             curve_count=len(deleted_curves),
-            surface_count=len(deleted_surfaces),
+            surface_count=len(deleted_surfaces) + len(deleted_brep_surfaces),
         )
         return CallbackUndoCommand(
             command_name,
             undo_action=lambda: self._restore_deleted_curves_and_surfaces(
                 deleted_curves,
                 deleted_surfaces,
+                deleted_brep_surfaces,
             ),
             redo_action=lambda: self._remove_curves_and_surfaces_for_undo(
                 curve_ids,
@@ -1269,11 +1387,18 @@ class OpenRetopWindow:
         self,
         curves: list[tuple[int, StoredCurve]],
         surfaces: list[tuple[int, SurfacePatch]],
+        brep_surfaces: list[tuple[int, BrepSurfaceRecord, object | None]],
     ) -> None:
         for index, curve in curves:
             self._restore_curve_at_index(copy.deepcopy(curve), index)
         for index, surface in surfaces:
             self._restore_surface_at_index(copy.deepcopy(surface), index)
+        for index, surface, cad_object in brep_surfaces:
+            self._restore_brep_surface_at_index(
+                copy.deepcopy(surface),
+                index,
+                cad_object,
+            )
 
     def _restore_curve_at_index(self, curve: StoredCurve, index: int) -> None:
         if any(existing.id == curve.id for existing in self.app_state.curve_collection.curves):
@@ -1293,6 +1418,28 @@ class OpenRetopWindow:
         insert_index = max(0, min(index, len(self.app_state.surface_collection.surfaces)))
         self.app_state.surface_collection.surfaces.insert(insert_index, restored)
 
+    def _restore_brep_surface_at_index(
+        self,
+        surface: BrepSurfaceRecord,
+        index: int,
+        cad_object: object | None,
+    ) -> None:
+        if any(
+            existing.id == surface.id
+            for existing in self.app_state.brep_surface_collection.surfaces
+        ):
+            return
+
+        add_brep_surface(self.app_state.brep_surface_collection, surface)
+        restored = self.app_state.brep_surface_collection.surfaces.pop()
+        insert_index = max(
+            0,
+            min(index, len(self.app_state.brep_surface_collection.surfaces)),
+        )
+        self.app_state.brep_surface_collection.surfaces.insert(insert_index, restored)
+        if cad_object is not None:
+            self._brep_runtime_cache[restored.id] = cad_object
+
     def _remove_curves_and_surfaces_for_undo(
         self,
         curve_ids: set[str],
@@ -1300,6 +1447,8 @@ class OpenRetopWindow:
     ) -> None:
         for surface_id in surface_ids:
             remove_surface(self.app_state.surface_collection, surface_id)
+            remove_brep_surface(self.app_state.brep_surface_collection, surface_id)
+            self._brep_runtime_cache.pop(surface_id, None)
         for curve_id in curve_ids:
             remove_curve(self.app_state.curve_collection, curve_id)
 
@@ -1406,6 +1555,40 @@ class OpenRetopWindow:
                 ),
             )
         )
+
+    def _push_created_brep_surface_command(
+        self,
+        surface: BrepSurfaceRecord,
+        cad_object: object | None,
+    ) -> None:
+        surface_index = next(
+            (
+                index
+                for index, existing in enumerate(
+                    self.app_state.brep_surface_collection.surfaces
+                )
+                if existing.id == surface.id
+            ),
+            len(self.app_state.brep_surface_collection.surfaces),
+        )
+        captured_surface = copy.deepcopy(surface)
+        self._push_undo_command(
+            CallbackUndoCommand(
+                "Create BREP Surface",
+                undo_action=lambda: self._remove_brep_surface_for_undo(
+                    captured_surface.id,
+                ),
+                redo_action=lambda: self._restore_brep_surface_at_index(
+                    copy.deepcopy(captured_surface),
+                    surface_index,
+                    cad_object,
+                ),
+            )
+        )
+
+    def _remove_brep_surface_for_undo(self, surface_id: str) -> None:
+        remove_brep_surface(self.app_state.brep_surface_collection, surface_id)
+        self._brep_runtime_cache.pop(surface_id, None)
 
     def _sync_after_undoable_scene_change(self) -> None:
         if (
@@ -2673,6 +2856,32 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.brep_face_button = ttk.Button(
+            parent,
+            text="Create BREP Face",
+            command=self.create_brep_face_from_closed_curve,
+        )
+        self.brep_face_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.brep_loft_button = ttk.Button(
+            parent,
+            text="Create BREP Loft",
+            command=self.create_brep_loft_from_two_curves,
+        )
+        self.brep_loft_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
         self.boundary_patch_button = ttk.Button(
             parent,
             text="Create Boundary Patch",
@@ -2827,6 +3036,81 @@ class OpenRetopWindow:
         self.surface_wireframe_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
         row = self._add_info_row(parent, row, "Raw metadata", self.surface_metadata_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "CAD / BREP Output")
+        row = self._add_info_row(parent, row, "CAD Kernel Status", self.cad_kernel_status_text)
+        self.brep_face_output_button = ttk.Button(
+            parent,
+            text="Create BREP Face From Closed Curve",
+            command=self.create_brep_face_from_closed_curve,
+        )
+        self.brep_face_output_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.brep_loft_output_button = ttk.Button(
+            parent,
+            text="Create BREP Loft From Two Curves",
+            command=self.create_brep_loft_from_two_curves,
+        )
+        self.brep_loft_output_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.export_brep_step_button = ttk.Button(
+            parent,
+            text="Export Selected BREP Surface to STEP",
+            command=self.export_selected_brep_surface_to_step,
+        )
+        self.export_brep_step_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.rebuild_brep_surface_button = ttk.Button(
+            parent,
+            text="Rebuild Selected BREP Surface",
+            command=self.rebuild_selected_brep_surface,
+        )
+        self.rebuild_brep_surface_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.delete_brep_surface_button = ttk.Button(
+            parent,
+            text="Delete Selected BREP Surface",
+            command=self.delete_selected_surface,
+        )
+        self.delete_brep_surface_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        row = self._add_info_row(parent, row, "BREP Type", self.brep_type_text)
+        row = self._add_info_row(parent, row, "Backend", self.brep_backend_text)
+        row = self._add_info_row(parent, row, "Source Curves", self.brep_source_curves_text)
+        row = self._add_info_row(parent, row, "Build Method", self.brep_build_method_text)
+        row = self._add_info_row(parent, row, "Last Export Path", self.brep_last_export_path_text)
+        row = self._add_info_row(parent, row, "Build Warnings", self.brep_build_warnings_text)
+        row = self._add_info_row(parent, row, "Build Errors/Reason", self.brep_build_errors_text)
         self.select_source_curves_button = ttk.Button(
             parent,
             text="Select Source Curves",
@@ -3474,6 +3758,10 @@ class OpenRetopWindow:
             self.app_state.surface_collection.surfaces = []
             self.app_state.surface_collection.active_surface_id = None
             self.app_state.surface_collection.selected_surface_ids.clear()
+            self.app_state.brep_surface_collection.surfaces = []
+            self.app_state.brep_surface_collection.active_surface_id = None
+            self.app_state.brep_surface_collection.selected_surface_ids.clear()
+            self._brep_runtime_cache.clear()
             self._ensure_default_section_plane()
             self._sync_active_section_plane_from_controls()
             self.section_result_text.set("Section result: none")
@@ -3740,20 +4028,129 @@ class OpenRetopWindow:
             return
 
         if surface_id is not None:
-            try:
-                set_active_surface(self.app_state.surface_collection, surface_id)
-            except ValueError:
+            if any(
+                surface.id == surface_id
+                for surface in self.app_state.surface_collection.surfaces
+            ):
+                try:
+                    set_active_surface(self.app_state.surface_collection, surface_id)
+                except ValueError:
+                    self._refresh_scene_browser()
+                    self.status_text.set("Surface not found")
+                    return
+                clear_brep_surface_selection(self.app_state.brep_surface_collection)
+            elif any(
+                surface.id == surface_id
+                for surface in self.app_state.brep_surface_collection.surfaces
+            ):
+                try:
+                    set_active_brep_surface(
+                        self.app_state.brep_surface_collection,
+                        surface_id,
+                    )
+                except ValueError:
+                    self._refresh_scene_browser()
+                    self.status_text.set("Surface not found")
+                    return
+                clear_surface_selection(self.app_state.surface_collection)
+            else:
                 self._refresh_scene_browser()
                 self.status_text.set("Surface not found")
                 return
 
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             self._set_selected_item(None, status="No selection")
             return
 
         self._sync_surface_context_from_active_surface()
         self._set_selected_item(SELECT_SURFACE, status=f"Selected: {active_surface.name}")
+
+    def select_surfaces(
+        self,
+        surface_ids: list[str],
+        *,
+        active_surface_id: str | None = None,
+    ) -> None:
+        if self.app_state.mesh_object is None:
+            self._set_selected_item(None, status="No selection")
+            return
+        if not surface_ids:
+            self.status_text.set("No surfaces available")
+            return
+
+        preview_surface_ids = {
+            surface.id for surface in self.app_state.surface_collection.surfaces
+        }
+        brep_surface_ids = {
+            surface.id
+            for surface in self.app_state.brep_surface_collection.surfaces
+        }
+        preview_ids = [
+            surface_id for surface_id in surface_ids if surface_id in preview_surface_ids
+        ]
+        brep_ids = [
+            surface_id for surface_id in surface_ids if surface_id in brep_surface_ids
+        ]
+        if len(preview_ids) + len(brep_ids) != len(surface_ids):
+            self._refresh_scene_browser()
+            self.status_text.set("Surface not found")
+            return
+
+        active_surface_candidate = (
+            active_surface_id
+            if active_surface_id in surface_ids
+            else surface_ids[0]
+        )
+        try:
+            if preview_ids:
+                set_selected_surfaces(
+                    self.app_state.surface_collection,
+                    preview_ids,
+                    active_surface_id=(
+                        active_surface_candidate
+                        if active_surface_candidate in preview_ids
+                        else preview_ids[0]
+                    ),
+                )
+            else:
+                clear_surface_selection(self.app_state.surface_collection)
+            if brep_ids:
+                set_selected_brep_surfaces(
+                    self.app_state.brep_surface_collection,
+                    brep_ids,
+                    active_surface_id=(
+                        active_surface_candidate
+                        if active_surface_candidate in brep_ids
+                        else brep_ids[0]
+                    ),
+                )
+            else:
+                clear_brep_surface_selection(self.app_state.brep_surface_collection)
+        except ValueError:
+            self._refresh_scene_browser()
+            self.status_text.set("Surface not found")
+            return
+
+        if preview_ids and brep_ids:
+            if active_surface_candidate in preview_ids:
+                self.app_state.brep_surface_collection.active_surface_id = None
+            elif active_surface_candidate in brep_ids:
+                self.app_state.surface_collection.active_surface_id = None
+
+        active_surface = self._active_surface_record()
+        if active_surface is None:
+            self._set_selected_item(None, status="No selection")
+            return
+
+        self._sync_surface_context_from_active_surface()
+        count = len(self._selected_surface_ids_for_scene())
+        status = (
+            f"Selected: {active_surface.name}"
+            if count == 1
+            else f"Selected: {count} surfaces"
+        )
+        self._set_selected_item(SELECT_SURFACE, status=status)
 
     def select_region(self, region_id: str | None = None) -> None:
         if self.app_state.mesh_object is None:
@@ -3772,44 +4169,6 @@ class OpenRetopWindow:
         region.selected = True
         self._set_selected_item(SELECT_REGION, status=f"Selected: {region.name or 'Region 1'}")
         self._sync_region_panel()
-
-    def select_surfaces(
-        self,
-        surface_ids: list[str],
-        *,
-        active_surface_id: str | None = None,
-    ) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-        if not surface_ids:
-            self.status_text.set("No surfaces available")
-            return
-
-        try:
-            set_selected_surfaces(
-                self.app_state.surface_collection,
-                surface_ids,
-                active_surface_id=active_surface_id,
-            )
-        except ValueError:
-            self._refresh_scene_browser()
-            self.status_text.set("Surface not found")
-            return
-
-        active_surface = self._active_surface()
-        if active_surface is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        self._sync_surface_context_from_active_surface()
-        count = len(self.app_state.surface_collection.selected_surface_ids)
-        status = (
-            f"Selected: {active_surface.name}"
-            if count == 1
-            else f"Selected: {count} surfaces"
-        )
-        self._set_selected_item(SELECT_SURFACE, status=status)
 
     def select_source_curves_for_active_surface(
         self,
@@ -3925,10 +4284,10 @@ class OpenRetopWindow:
     def _surface_for_source_curve_selection(
         self,
         node_ids: tuple[str, ...],
-    ) -> SurfacePatch | None:
+    ) -> SurfacePatch | BrepSurfaceRecord | None:
         surface_by_id = {
             surface.id: surface
-            for surface in self.app_state.surface_collection.surfaces
+            for surface in self._surface_records_for_scene()
         }
         selected_surface_ids = {
             surface_id
@@ -3945,18 +4304,18 @@ class OpenRetopWindow:
             if surface_id is not None and surface_id in surface_by_id:
                 return surface_by_id[surface_id]
 
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if (
             self.app_state.selected_item == SELECT_SURFACE
             and active_surface is not None
-            and self.app_state.surface_collection.selected_surface_ids == {active_surface.id}
+            and self._selected_surface_ids_for_scene() == {active_surface.id}
         ):
             return active_surface
         return None
 
     def _source_curves_for_surface(
         self,
-        surface: SurfacePatch,
+        surface: SurfacePatch | BrepSurfaceRecord,
     ) -> tuple[list[StoredCurve], list[str]]:
         curve_by_id = {
             curve.id: curve
@@ -3987,7 +4346,7 @@ class OpenRetopWindow:
 
     def _source_curve_missing_status(
         self,
-        surface: SurfacePatch,
+        surface: SurfacePatch | BrepSurfaceRecord,
         missing_curve_ids: list[str],
     ) -> str:
         suffix = self._missing_source_curve_suffix(missing_curve_ids)
@@ -4067,6 +4426,7 @@ class OpenRetopWindow:
             clear_curve_selection(self.app_state.curve_collection)
         if "surfaces" not in keep:
             clear_surface_selection(self.app_state.surface_collection)
+            clear_brep_surface_selection(self.app_state.brep_surface_collection)
         if "regions" not in keep:
             active_region = self.app_state.region_collection.active_region
             if active_region is not None:
@@ -4144,11 +4504,22 @@ class OpenRetopWindow:
             else:
                 self.status_text.set("No curves available")
         elif selected_item == NODE_SURFACES:
-            surface_ids = [surface.id for surface in self.app_state.surface_collection.surfaces]
+            surface_ids = [
+                surface.id for surface in self.app_state.surface_collection.surfaces
+            ]
             if surface_ids:
                 self.select_surfaces(surface_ids, active_surface_id=surface_ids[0])
             else:
                 self.status_text.set("No surfaces available")
+        elif selected_item == NODE_BREP_SURFACES:
+            surface_ids = [
+                surface.id
+                for surface in self.app_state.brep_surface_collection.surfaces
+            ]
+            if surface_ids:
+                self.select_surfaces(surface_ids, active_surface_id=surface_ids[0])
+            else:
+                self.status_text.set("No BREP surfaces available")
         elif selected_item == NODE_SECTION_PLANES:
             plane_ids = [plane.id for plane in self.app_state.section_collection.planes]
             if plane_ids:
@@ -5117,6 +5488,11 @@ class OpenRetopWindow:
         self.app_state.curve_collection.selected_curve_ids.clear()
         self.app_state.surface_collection.surfaces = []
         self.app_state.surface_collection.active_surface_id = None
+        self.app_state.surface_collection.selected_surface_ids.clear()
+        self.app_state.brep_surface_collection.surfaces = []
+        self.app_state.brep_surface_collection.active_surface_id = None
+        self.app_state.brep_surface_collection.selected_surface_ids.clear()
+        self._brep_runtime_cache.clear()
         self._set_display_section_result(None)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("All section results cleared")
@@ -5854,6 +6230,178 @@ class OpenRetopWindow:
             validation_readiness=readiness,
         )
 
+    def create_brep_face_from_closed_curve(self) -> None:
+        source_curves = self._surface_source_curves_from_selection()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        if len(source_curves) != 1:
+            self.status_text.set("Select exactly one closed curve for BREP face")
+            return
+
+        source_curve = source_curves[0]
+        try:
+            curve_input = curve_points_from_stored_curve(source_curve)
+        except ValueError as exc:
+            self.status_text.set(str(exc))
+            return
+
+        result = build_planar_face_from_curve(curve_input)
+        if not self._brep_build_succeeded(result):
+            self.status_text.set(result.reason)
+            return
+
+        surface = self._create_brep_surface_record(
+            name_prefix="BREP Face",
+            source_curves=[source_curve],
+            build_result=result,
+            fallback_brep_type=BREP_TYPE_PLANAR_FACE,
+        )
+        self._finish_created_brep_surface(
+            surface,
+            result,
+            status=f"Created BREP planar face from {source_curve.name}.",
+        )
+
+    def create_brep_loft_from_two_curves(self) -> None:
+        source_curves = self._surface_source_curves_from_selection()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        if len(source_curves) != 2:
+            self.status_text.set("Select exactly two curves for BREP loft")
+            return
+
+        try:
+            first_curve_input = curve_points_from_stored_curve(source_curves[0])
+            second_curve_input = curve_points_from_stored_curve(source_curves[1])
+        except ValueError as exc:
+            self.status_text.set(str(exc))
+            return
+
+        result = build_loft_surface_from_curves(first_curve_input, second_curve_input)
+        if not self._brep_build_succeeded(result):
+            self.status_text.set(result.reason)
+            return
+
+        surface = self._create_brep_surface_record(
+            name_prefix="BREP Loft",
+            source_curves=source_curves,
+            build_result=result,
+            fallback_brep_type=BREP_TYPE_LOFT_SURFACE,
+        )
+        self._finish_created_brep_surface(
+            surface,
+            result,
+            status="Created BREP loft surface from 2 curves.",
+        )
+
+    def export_selected_brep_surface_to_step(self) -> None:
+        surface = self._selected_single_brep_surface()
+        if surface is None:
+            self.status_text.set("Select a BREP surface to export.")
+            return
+
+        cad_object = self._brep_runtime_cache.get(surface.id)
+        if cad_object is None:
+            if not is_cad_kernel_available():
+                self.status_text.set("CAD kernel unavailable; cannot export STEP.")
+                return
+            self.status_text.set(
+                "BREP surface record loaded; rebuild required before export."
+            )
+            return
+
+        selected_path = filedialog.asksaveasfilename(
+            title="Export Selected BREP Surface to STEP",
+            defaultextension=".step",
+            filetypes=STEP_FILE_TYPES,
+        )
+        if not selected_path:
+            self.status_text.set("STEP export cancelled.")
+            return
+
+        result = export_step(cad_object, Path(selected_path))
+        if not result.success:
+            self.status_text.set(result.reason)
+            return
+
+        assert result.path is not None
+        surface.metadata["last_export_path"] = result.path
+        surface.metadata["last_export_reason"] = result.reason
+        self._sync_surface_context_from_active_surface()
+        self._refresh_scene_browser()
+        self.status_text.set(f"Exported STEP: {result.path}")
+        self._set_project_dirty(True)
+
+    def rebuild_selected_brep_surface(self) -> None:
+        surface = self._selected_single_brep_surface()
+        if surface is None:
+            self.status_text.set("Select a BREP surface to rebuild.")
+            return
+
+        result = self._rebuild_brep_surface(surface)
+        if not result.success or result.cad_object is None:
+            surface.metadata["build_reason"] = result.reason
+            if result.warnings:
+                surface.metadata["warnings"] = list(result.warnings)
+            self._sync_surface_context_from_active_surface()
+            self.status_text.set(result.reason)
+            return
+
+        self._brep_runtime_cache[surface.id] = result.cad_object
+        surface.backend = str(result.metadata.get("backend", surface.backend))
+        surface.metadata.update(result.metadata)
+        surface.metadata["warnings"] = list(result.warnings)
+        surface.metadata["runtime_status"] = "ready"
+        surface.metadata["build_reason"] = result.reason
+        self._sync_surface_context_from_active_surface()
+        self._refresh_scene_browser()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Rebuilt BREP surface.")
+        self._set_project_dirty(True)
+
+    def _rebuild_brep_surface(self, surface: BrepSurfaceRecord) -> CadBuildResult:
+        source_curves, missing_curve_ids = self._source_curves_for_surface(surface)
+        if missing_curve_ids:
+            return CadBuildResult(
+                success=False,
+                cad_object=None,
+                reason=self._source_curve_missing_status(surface, missing_curve_ids),
+            )
+
+        try:
+            curve_inputs = [
+                curve_points_from_stored_curve(curve)
+                for curve in source_curves
+            ]
+        except ValueError as exc:
+            return CadBuildResult(success=False, cad_object=None, reason=str(exc))
+
+        if surface.brep_type == BREP_TYPE_PLANAR_FACE:
+            if len(curve_inputs) != 1:
+                return CadBuildResult(
+                    success=False,
+                    cad_object=None,
+                    reason="Planar BREP face rebuild requires one source curve.",
+                )
+            return build_planar_face_from_curve(curve_inputs[0])
+
+        if surface.brep_type == BREP_TYPE_LOFT_SURFACE:
+            if len(curve_inputs) != 2:
+                return CadBuildResult(
+                    success=False,
+                    cad_object=None,
+                    reason="Loft BREP surface rebuild requires two source curves.",
+                )
+            return build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
+
+        return CadBuildResult(
+            success=False,
+            cad_object=None,
+            reason=f"Cannot rebuild unsupported BREP type: {surface.brep_type}",
+        )
+
     def create_boundary_patch_from_curve(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
         if not self.app_state.curve_collection.curves:
@@ -6020,6 +6568,52 @@ class OpenRetopWindow:
         self._sync_surface_context_from_active_surface()
         curve_label = "curve" if len(source_curves) == 1 else "curves"
         status = f"{success_action} {surface.name} from {len(source_curves)} {curve_label}"
+        self._set_selected_item(SELECT_SURFACE, status=status)
+        self._set_project_dirty(True)
+
+    @staticmethod
+    def _brep_build_succeeded(result: CadBuildResult) -> bool:
+        return bool(result.success and result.cad_object is not None)
+
+    def _create_brep_surface_record(
+        self,
+        *,
+        name_prefix: str,
+        source_curves: Sequence[StoredCurve],
+        build_result: CadBuildResult,
+        fallback_brep_type: str,
+    ) -> BrepSurfaceRecord:
+        metadata = dict(build_result.metadata)
+        if build_result.warnings:
+            metadata["warnings"] = list(build_result.warnings)
+        metadata.update(self._surface_source_lineage_metadata(source_curves))
+        metadata["source_curve_ids"] = [curve.id for curve in source_curves]
+        metadata["source_curve_names"] = [curve.name for curve in source_curves]
+        metadata["source_curve_count"] = len(source_curves)
+        metadata["runtime_status"] = "ready"
+        metadata["build_reason"] = build_result.reason
+        return BrepSurfaceRecord(
+            id=f"brep-{uuid4().hex}",
+            name=self._next_brep_surface_name(name_prefix),
+            source_curve_ids=[curve.id for curve in source_curves],
+            brep_type=str(metadata.get("brep_type", fallback_brep_type)),
+            backend=str(metadata.get("backend", "")),
+            metadata=metadata,
+        )
+
+    def _finish_created_brep_surface(
+        self,
+        surface: BrepSurfaceRecord,
+        build_result: CadBuildResult,
+        *,
+        status: str,
+    ) -> None:
+        add_brep_surface(self.app_state.brep_surface_collection, surface)
+        set_active_brep_surface(self.app_state.brep_surface_collection, surface.id)
+        self._brep_runtime_cache[surface.id] = build_result.cad_object
+        self._push_created_brep_surface_command(surface, build_result.cad_object)
+        clear_surface_selection(self.app_state.surface_collection)
+        self._sync_surface_context_from_active_surface()
         self._set_selected_item(SELECT_SURFACE, status=status)
         self._set_project_dirty(True)
 
@@ -6312,6 +6906,16 @@ class OpenRetopWindow:
     def _next_surface_name(self, prefix: str) -> str:
         existing_names = {
             surface.name for surface in self.app_state.surface_collection.surfaces
+        }
+        index = 1
+        while f"{prefix} {index}" in existing_names:
+            index += 1
+        return f"{prefix} {index}"
+
+    def _next_brep_surface_name(self, prefix: str) -> str:
+        existing_names = {
+            surface.name
+            for surface in self.app_state.brep_surface_collection.surfaces
         }
         index = 1
         while f"{prefix} {index}" in existing_names:
@@ -7907,6 +8511,58 @@ class OpenRetopWindow:
     def _active_surface(self) -> SurfacePatch | None:
         return get_active_surface(self.app_state.surface_collection)
 
+    def _active_brep_surface(self) -> BrepSurfaceRecord | None:
+        return get_active_brep_surface(self.app_state.brep_surface_collection)
+
+    def _selected_single_brep_surface(self) -> BrepSurfaceRecord | None:
+        if self.app_state.selected_item != SELECT_SURFACE:
+            return None
+        if self.app_state.surface_collection.selected_surface_ids:
+            return None
+        selected_ids = set(self.app_state.brep_surface_collection.selected_surface_ids)
+        if len(selected_ids) != 1:
+            return None
+        surface_id = next(iter(selected_ids))
+        for surface in self.app_state.brep_surface_collection.surfaces:
+            if surface.id == surface_id:
+                return surface
+        return None
+
+    def _active_surface_record(self) -> SurfacePatch | BrepSurfaceRecord | None:
+        active_preview = self._active_surface()
+        if (
+            active_preview is not None
+            and active_preview.id
+            in self.app_state.surface_collection.selected_surface_ids
+        ):
+            return active_preview
+
+        active_brep = self._active_brep_surface()
+        if (
+            active_brep is not None
+            and active_brep.id
+            in self.app_state.brep_surface_collection.selected_surface_ids
+        ):
+            return active_brep
+
+        return active_preview if active_preview is not None else active_brep
+
+    def _surface_records_for_scene(self) -> list[SurfacePatch | BrepSurfaceRecord]:
+        return [
+            *self.app_state.surface_collection.surfaces,
+            *self.app_state.brep_surface_collection.surfaces,
+        ]
+
+    def _active_surface_id_for_scene(self) -> str | None:
+        active_record = self._active_surface_record()
+        return None if active_record is None else active_record.id
+
+    def _selected_surface_ids_for_scene(self) -> set[str]:
+        return (
+            set(self.app_state.surface_collection.selected_surface_ids)
+            | set(self.app_state.brep_surface_collection.selected_surface_ids)
+        )
+
     def _build_visible_surface_previews(self) -> list[SurfacePreviewMesh]:
         previews: list[SurfacePreviewMesh] = []
         curves = self.app_state.curve_collection.curves
@@ -7926,11 +8582,78 @@ class OpenRetopWindow:
                         wireframe_overlay=self._surface_wireframe_overlay(surface),
                     )
                 )
+        previews.extend(self._build_visible_brep_surface_previews())
+        return previews
+
+    def _build_visible_brep_surface_previews(self) -> list[SurfacePreviewMesh]:
+        previews: list[SurfacePreviewMesh] = []
+        curves = self.app_state.curve_collection.curves
+        for surface in self.app_state.brep_surface_collection.surfaces:
+            if not surface.visible:
+                continue
+
+            preview_surface = SurfacePatch(
+                id=surface.id,
+                name=surface.name,
+                source_curve_ids=list(surface.source_curve_ids),
+                surface_type=(
+                    "preview_loft"
+                    if surface.brep_type == BREP_TYPE_LOFT_SURFACE
+                    else "preview_fill"
+                ),
+                visible=surface.visible,
+                selected=surface.selected,
+                metadata={
+                    **surface.metadata,
+                    "preview_mode": (
+                        TWO_CURVE_LOFT
+                        if surface.brep_type == BREP_TYPE_LOFT_SURFACE
+                        else CLOSED_CURVE_FILL
+                    ),
+                },
+            )
+            preview = build_surface_preview_mesh(preview_surface, curves)
+            if preview is None:
+                continue
+            previews.append(
+                SurfacePreviewMesh(
+                    vertices=preview.vertices,
+                    faces=preview.faces,
+                    source_surface_id=preview.source_surface_id,
+                    selected=bool(surface.selected),
+                    opacity=self._surface_display_opacity(surface),
+                    wireframe_overlay=self._surface_wireframe_overlay(surface),
+                    display_role="brep_visual_preview",
+                )
+            )
         return previews
 
     def _clear_surfaces_for_curve_ids(self, curve_ids: list[str]) -> None:
+        curve_id_set = {str(curve_id) for curve_id in curve_ids}
         for curve_id in curve_ids:
             clear_surfaces_for_curve(self.app_state.surface_collection, curve_id)
+        removed_brep_ids = {
+            surface.id
+            for surface in self.app_state.brep_surface_collection.surfaces
+            if any(
+                str(source_curve_id) in curve_id_set
+                for source_curve_id in surface.source_curve_ids
+            )
+        }
+        if not removed_brep_ids:
+            return
+        self.app_state.brep_surface_collection.surfaces = [
+            surface
+            for surface in self.app_state.brep_surface_collection.surfaces
+            if surface.id not in removed_brep_ids
+        ]
+        self.app_state.brep_surface_collection.selected_surface_ids.difference_update(
+            removed_brep_ids
+        )
+        if self.app_state.brep_surface_collection.active_surface_id in removed_brep_ids:
+            self.app_state.brep_surface_collection.active_surface_id = None
+        for surface_id in removed_brep_ids:
+            self._brep_runtime_cache.pop(surface_id, None)
 
     def hide_selected_curves(self) -> None:
         selected_ids = set(self.app_state.curve_collection.selected_curve_ids)
@@ -8086,7 +8809,7 @@ class OpenRetopWindow:
         return get_tiny_curves(self.app_state.curve_collection)
 
     def _sync_surface_context_from_active_surface(self) -> None:
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             self._syncing_surface_display_controls = True
             try:
@@ -8112,6 +8835,13 @@ class OpenRetopWindow:
                 self.surface_opacity_text.set(f"{SURFACE_PREVIEW_DEFAULT_OPACITY:.2f}")
                 self.surface_wireframe_overlay.set(True)
                 self.surface_metadata_text.set("(none)")
+                self.brep_type_text.set("(none)")
+                self.brep_backend_text.set("(none)")
+                self.brep_source_curves_text.set("(none)")
+                self.brep_build_method_text.set("(none)")
+                self.brep_last_export_path_text.set("(none)")
+                self.brep_build_warnings_text.set("(none)")
+                self.brep_build_errors_text.set("(none)")
             finally:
                 self._syncing_surface_display_controls = False
             return
@@ -8122,9 +8852,17 @@ class OpenRetopWindow:
         try:
             self.surface_visible.set(bool(active_surface.visible))
             self.surface_name_text.set(active_surface.name)
-            self.surface_type_text.set(active_surface.surface_type)
+            self.surface_type_text.set(
+                str(
+                    getattr(
+                        active_surface,
+                        "surface_type",
+                        getattr(active_surface, "brep_type", "(none)"),
+                    )
+                )
+            )
             self.surface_preview_mode_text.set(
-                str(metadata.get("preview_mode") or "(none)")
+                str(metadata.get("preview_mode") or metadata.get("build_method") or "(none)")
             )
             self.surface_source_curve_count_text.set(str(len(active_surface.source_curve_ids)))
             self.surface_source_curve_names_text.set(
@@ -8177,11 +8915,37 @@ class OpenRetopWindow:
             self.surface_opacity_text.set(f"{opacity:.2f}")
             self.surface_wireframe_overlay.set(self._surface_wireframe_overlay(active_surface))
             self.surface_metadata_text.set(self._surface_metadata_summary(metadata))
+            if isinstance(active_surface, BrepSurfaceRecord):
+                self.brep_type_text.set(active_surface.brep_type)
+                self.brep_backend_text.set(active_surface.backend or "(none)")
+                self.brep_source_curves_text.set(
+                    self._surface_source_curve_names_summary(active_surface)
+                )
+                self.brep_build_method_text.set(
+                    str(metadata.get("build_method") or "(none)")
+                )
+                self.brep_last_export_path_text.set(
+                    str(metadata.get("last_export_path") or "(none)")
+                )
+                self.brep_build_warnings_text.set(
+                    self._surface_metadata_list_text(metadata.get("warnings"))
+                )
+                self.brep_build_errors_text.set(
+                    str(metadata.get("build_reason") or metadata.get("runtime_status") or "(none)")
+                )
+            else:
+                self.brep_type_text.set("(none)")
+                self.brep_backend_text.set("(none)")
+                self.brep_source_curves_text.set("(none)")
+                self.brep_build_method_text.set("(none)")
+                self.brep_last_export_path_text.set("(none)")
+                self.brep_build_warnings_text.set("(none)")
+                self.brep_build_errors_text.set("(none)")
         finally:
             self._syncing_surface_display_controls = False
 
     def _on_surface_name_changed(self, event: object | None = None) -> None:
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             return
 
@@ -8259,7 +9023,7 @@ class OpenRetopWindow:
             return str(value)
 
     @staticmethod
-    def _surface_display_opacity(surface: SurfacePatch) -> float:
+    def _surface_display_opacity(surface: SurfacePatch | BrepSurfaceRecord) -> float:
         metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
         value = metadata.get("display_opacity", metadata.get("opacity", SURFACE_PREVIEW_DEFAULT_OPACITY))
         try:
@@ -8271,11 +9035,14 @@ class OpenRetopWindow:
         return min(max(opacity, 0.05), 1.0)
 
     @staticmethod
-    def _surface_wireframe_overlay(surface: SurfacePatch) -> bool:
+    def _surface_wireframe_overlay(surface: SurfacePatch | BrepSurfaceRecord) -> bool:
         metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
         return bool(metadata.get("wireframe_overlay", True))
 
-    def _surface_source_curve_names_summary(self, surface: SurfacePatch) -> str:
+    def _surface_source_curve_names_summary(
+        self,
+        surface: SurfacePatch | BrepSurfaceRecord,
+    ) -> str:
         curves_by_id = {
             curve.id: curve for curve in self.app_state.curve_collection.curves
         }
@@ -8305,7 +9072,7 @@ class OpenRetopWindow:
         if self._syncing_surface_display_controls:
             return
 
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             return
 
@@ -8327,7 +9094,7 @@ class OpenRetopWindow:
         if self._syncing_surface_display_controls:
             return
 
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             return
 
@@ -8338,7 +9105,7 @@ class OpenRetopWindow:
         self._set_project_dirty(True)
 
     def _on_surface_visibility_changed(self) -> None:
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             self.status_text.set("No selection")
             return
@@ -8353,7 +9120,7 @@ class OpenRetopWindow:
         self._set_project_dirty(True)
 
     def delete_selected_surface(self) -> None:
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             self.status_text.set("No selection")
             return
@@ -8481,6 +9248,7 @@ class OpenRetopWindow:
                 point_sets.append(points)
 
         curves = self.app_state.curve_collection.curves
+        curve_by_id = {curve.id: curve for curve in curves}
         for surface in self.app_state.surface_collection.surfaces:
             if surface_node_id(surface.id) not in node_ids:
                 continue
@@ -8490,6 +9258,16 @@ class OpenRetopWindow:
             points = self._finite_points(preview.vertices)
             if points is not None:
                 point_sets.append(points)
+        for surface in self.app_state.brep_surface_collection.surfaces:
+            if surface_node_id(surface.id) not in node_ids:
+                continue
+            for curve_id in surface.source_curve_ids:
+                curve = curve_by_id.get(str(curve_id))
+                if curve is None:
+                    continue
+                points = self._finite_points(curve.fitted_points)
+                if points is not None:
+                    point_sets.append(points)
 
         region_points = self._region_frame_points(node_ids)
         if region_points is not None:
@@ -8642,7 +9420,7 @@ class OpenRetopWindow:
             active_curve_id=self.app_state.curve_collection.active_curve_id,
             surface_source_curve_ids=surface_source_curve_ids,
             surface_previews=surface_previews,
-            active_surface_id=self.app_state.surface_collection.active_surface_id,
+            active_surface_id=self._active_surface_id_for_scene(),
             region_selection=region_selection,
             region_selection_color=self.settings.display.region_selection_color,
             region_selection_edge_color=self.settings.display.region_selection_edge_color,
@@ -8686,7 +9464,7 @@ class OpenRetopWindow:
         if self.app_state.selected_item != SELECT_SURFACE:
             return ()
 
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             return ()
 
@@ -8717,13 +9495,13 @@ class OpenRetopWindow:
             curves=self.app_state.curve_collection.curves,
             active_curve_id=self.app_state.curve_collection.active_curve_id,
             selected_curve_ids=self.app_state.curve_collection.selected_curve_ids,
-            surfaces=self.app_state.surface_collection.surfaces,
-            active_surface_id=self.app_state.surface_collection.active_surface_id,
-            selected_surface_ids=self.app_state.surface_collection.selected_surface_ids,
+            surfaces=self._surface_records_for_scene(),
+            active_surface_id=self._active_surface_id_for_scene(),
+            selected_surface_ids=self._selected_surface_ids_for_scene(),
             has_section_result=bool(self.app_state.section_collection.results)
             or self.app_state.section_result is not None,
             has_curves=bool(self.app_state.curve_collection.curves),
-            has_surfaces=bool(self.app_state.surface_collection.surfaces),
+            has_surfaces=bool(self._surface_records_for_scene()),
             selected_item=self.app_state.selected_item,
             regions=() if active_region is None else (active_region,),
             active_region_id=None if active_region is None else active_region.id,
@@ -8788,11 +9566,14 @@ class OpenRetopWindow:
         self.hotkey_hint_text.set(hints)
 
     def _sync_mesh_required_sidebar_controls(self, has_mesh: bool) -> None:
+        cad_available = is_cad_kernel_available()
+        self.cad_kernel_status_text.set(cad_kernel_status())
         mesh_state = "normal" if has_mesh else "disabled"
         selected_curve_count = len(self.app_state.curve_collection.selected_curve_ids)
         has_curves = bool(self.app_state.curve_collection.curves)
         has_selected_curve = selected_curve_count > 0 and has_mesh
-        has_active_surface = self._active_surface() is not None and has_mesh
+        has_active_surface = self._active_surface_record() is not None and has_mesh
+        has_active_brep_surface = self._selected_single_brep_surface() is not None and has_mesh
         has_section_results = bool(self.app_state.section_collection.results)
         selected_model = self.app_state.selected_item == SELECT_MODEL and has_mesh
         has_section_planes = bool(self.app_state.section_collection.planes)
@@ -8892,6 +9673,24 @@ class OpenRetopWindow:
             widget.configure(
                 state="normal" if has_mesh and selected_curve_count == 2 else "disabled"
             )
+        widget = getattr(self, "brep_loft_button", None)
+        if widget is not None:
+            widget.configure(
+                state=(
+                    "normal"
+                    if has_mesh and cad_available and selected_curve_count == 2
+                    else "disabled"
+                )
+            )
+        widget = getattr(self, "brep_loft_output_button", None)
+        if widget is not None:
+            widget.configure(
+                state=(
+                    "normal"
+                    if has_mesh and cad_available and selected_curve_count == 2
+                    else "disabled"
+                )
+            )
         for name in ("join_curves_button", "loft_curves_button"):
             widget = getattr(self, name, None)
             if widget is not None:
@@ -8900,6 +9699,16 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state="normal" if has_mesh and selected_curve_count == 1 else "disabled")
+        for name in ("brep_face_button", "brep_face_output_button"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(
+                    state=(
+                        "normal"
+                        if has_mesh and cad_available and selected_curve_count == 1
+                        else "disabled"
+                    )
+                )
         widget = getattr(self, "four_curve_patch_button", None)
         if widget is not None:
             widget.configure(
@@ -8933,6 +9742,16 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state="normal" if has_active_surface else "disabled")
+        for name in (
+            "export_brep_step_button",
+            "rebuild_brep_surface_button",
+            "delete_brep_surface_button",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(
+                    state="normal" if has_active_brep_surface else "disabled"
+                )
 
     def _current_mode_label(self) -> str:
         if self._manual_curve_edit_active:
@@ -9428,6 +10247,10 @@ class OpenRetopWindow:
         if action == "rebuild_curve":
             self.rebuild_selected_curve()
             return
+        if action == "export_step":
+            self._select_scene_browser_nodes(node_ids)
+            self.export_selected_brep_surface_to_step()
+            return
         if action == "select_source_curves":
             self.select_source_curves_for_active_surface(node_ids)
             return
@@ -9542,6 +10365,11 @@ class OpenRetopWindow:
                     surface_node_id(surface.id)
                     for surface in self.app_state.surface_collection.surfaces
                 )
+            elif node_id == NODE_BREP_SURFACES:
+                expanded_node_ids.update(
+                    surface_node_id(surface.id)
+                    for surface in self.app_state.brep_surface_collection.surfaces
+                )
             elif node_id == NODE_REGIONS:
                 region = self.app_state.region_collection.active_region
                 if region is not None:
@@ -9618,6 +10446,10 @@ class OpenRetopWindow:
                 surface_node_id(surface.id)
                 for surface in self.app_state.surface_collection.surfaces
             ),
+            *(
+                surface_node_id(surface.id)
+                for surface in self.app_state.brep_surface_collection.surfaces
+            ),
         }
         if self.app_state.mesh_object is not None:
             node_ids.add(NODE_MESH)
@@ -9644,6 +10476,10 @@ class OpenRetopWindow:
                 curve.visible = not curve.visible
                 changed_count += 1
         for surface in self.app_state.surface_collection.surfaces:
+            if surface_node_id(surface.id) in node_ids:
+                surface.visible = not surface.visible
+                changed_count += 1
+        for surface in self.app_state.brep_surface_collection.surfaces:
             if surface_node_id(surface.id) in node_ids:
                 surface.visible = not surface.visible
                 changed_count += 1
@@ -9675,6 +10511,10 @@ class OpenRetopWindow:
                 curve.visible = visible
                 changed_count += 1
         for surface in self.app_state.surface_collection.surfaces:
+            if surface_node_id(surface.id) in node_ids and surface.visible != visible:
+                surface.visible = visible
+                changed_count += 1
+        for surface in self.app_state.brep_surface_collection.surfaces:
             if surface_node_id(surface.id) in node_ids and surface.visible != visible:
                 surface.visible = visible
                 changed_count += 1
@@ -9752,7 +10592,7 @@ class OpenRetopWindow:
             self._set_project_dirty(True)
 
     def toggle_active_surface_visibility(self) -> None:
-        active_surface = self._active_surface()
+        active_surface = self._active_surface_record()
         if active_surface is None:
             self.status_text.set("No selection")
             return
@@ -9813,10 +10653,10 @@ class OpenRetopWindow:
                 for curve_id in self.app_state.curve_collection.selected_curve_ids
             }
         if selected_item == SELECT_SURFACE:
-            selected_ids = set(self.app_state.surface_collection.selected_surface_ids)
+            selected_ids = self._selected_surface_ids_for_scene()
             if selected_ids:
                 return {surface_node_id(surface_id) for surface_id in selected_ids}
-            active_surface = self._active_surface()
+            active_surface = self._active_surface_record()
             return {surface_node_id(active_surface.id)} if active_surface is not None else set()
         if selected_item == SELECT_REGION:
             region = self.app_state.region_collection.active_region
@@ -9980,6 +10820,7 @@ class OpenRetopWindow:
             self.app_state.section_collection.results
             or self.app_state.curve_collection.curves
             or self.app_state.surface_collection.surfaces
+            or self.app_state.brep_surface_collection.surfaces
         )
 
     def _model_transform_status(self, default_status: str) -> str:
@@ -10758,7 +11599,7 @@ class OpenRetopWindow:
             return self.section_result_name_entry
         if selected_item == SELECT_CURVE and self._active_curve() is not None:
             return self.curve_name_entry
-        if selected_item == SELECT_SURFACE and self._active_surface() is not None:
+        if selected_item == SELECT_SURFACE and self._active_surface_record() is not None:
             return self.surface_name_entry
         if (
             selected_item == SELECT_REGION
@@ -10942,6 +11783,11 @@ class OpenRetopWindow:
                 surface_ids.update(
                     surface.id for surface in self.app_state.surface_collection.surfaces
                 )
+            elif node_id == NODE_BREP_SURFACES:
+                surface_ids.update(
+                    surface.id
+                    for surface in self.app_state.brep_surface_collection.surfaces
+                )
             elif surface_id is not None:
                 surface_ids.add(surface_id)
             elif node_id == NODE_REGIONS:
@@ -10966,11 +11812,20 @@ class OpenRetopWindow:
             for surface in self.app_state.surface_collection.surfaces
             if any(curve_id in curve_ids for curve_id in surface.source_curve_ids)
         )
+        surface_ids.update(
+            surface.id
+            for surface in self.app_state.brep_surface_collection.surfaces
+            if any(curve_id in curve_ids for curve_id in surface.source_curve_ids)
+        )
 
         existing_plane_ids = {plane.id for plane in self.app_state.section_collection.planes}
         existing_result_ids = {result.id for result in self.app_state.section_collection.results}
         existing_curve_ids = {curve.id for curve in self.app_state.curve_collection.curves}
-        existing_surface_ids = {surface.id for surface in self.app_state.surface_collection.surfaces}
+        existing_surface_ids = {
+            surface.id for surface in self.app_state.surface_collection.surfaces
+        } | {
+            surface.id for surface in self.app_state.brep_surface_collection.surfaces
+        }
         active_region = self.app_state.region_collection.active_region
         existing_region_ids = {active_region.id} if active_region is not None else set()
         return {
@@ -11003,6 +11858,19 @@ class OpenRetopWindow:
         if self.app_state.surface_collection.active_surface_id in surface_ids:
             self.app_state.surface_collection.active_surface_id = None
 
+        self.app_state.brep_surface_collection.surfaces = [
+            surface
+            for surface in self.app_state.brep_surface_collection.surfaces
+            if surface.id not in surface_ids
+        ]
+        self.app_state.brep_surface_collection.selected_surface_ids.difference_update(
+            surface_ids
+        )
+        if self.app_state.brep_surface_collection.active_surface_id in surface_ids:
+            self.app_state.brep_surface_collection.active_surface_id = None
+        for surface_id in surface_ids:
+            self._brep_runtime_cache.pop(surface_id, None)
+
         self.app_state.curve_collection.curves = [
             curve
             for curve in self.app_state.curve_collection.curves
@@ -11034,6 +11902,9 @@ class OpenRetopWindow:
     def _select_delete_fallback(self, targets: dict[str, set[str]]) -> None:
         if targets["surfaces"] and self.app_state.surface_collection.surfaces:
             self.select_surface(self.app_state.surface_collection.surfaces[0].id)
+            return
+        if targets["surfaces"] and self.app_state.brep_surface_collection.surfaces:
+            self.select_surface(self.app_state.brep_surface_collection.surfaces[0].id)
             return
         if targets["curves"] and self.app_state.curve_collection.curves:
             curve_id = self.app_state.curve_collection.curves[0].id

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from project.project_data import (
     PROJECT_VERSION,
+    ProjectBrepSurface,
     ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
@@ -131,6 +132,22 @@ def _sample_project() -> ProjectData:
                 metadata={"curve_count": 1, "source": "selected_curve"},
             ),
         ],
+        brep_surfaces=[
+            ProjectBrepSurface(
+                id="brep-a",
+                name="BREP Face 1",
+                source_curve_ids=["curve-a"],
+                brep_type="planar_face",
+                backend="FakeCAD",
+                visible=True,
+                selected=True,
+                metadata={
+                    "build_method": "closed_wire_planar_face",
+                    "source_curve_names": ["Section 1 Curve 1"],
+                    "warnings": ["slightly non-planar"],
+                },
+            ),
+        ],
     )
 
 
@@ -156,6 +173,7 @@ class ProjectDataTests(unittest.TestCase):
         self.assertIsNone(project.active_section_plane_id)
         self.assertEqual(project.curves, [])
         self.assertEqual(project.surfaces, [])
+        self.assertEqual(project.brep_surfaces, [])
 
     def test_default_project_data_uses_fresh_mutable_values(self) -> None:
         project = default_project_data()
@@ -305,6 +323,22 @@ class ProjectIOTests(unittest.TestCase):
                         "metadata": {
                             "curve_count": 1,
                             "source": "selected_curve",
+                        },
+                    },
+                ],
+                "brep_surfaces": [
+                    {
+                        "id": "brep-a",
+                        "name": "BREP Face 1",
+                        "source_curve_ids": ["curve-a"],
+                        "brep_type": "planar_face",
+                        "backend": "FakeCAD",
+                        "visible": True,
+                        "selected": True,
+                        "metadata": {
+                            "build_method": "closed_wire_planar_face",
+                            "source_curve_names": ["Section 1 Curve 1"],
+                            "warnings": ["slightly non-planar"],
                         },
                     },
                 ],
@@ -851,6 +885,47 @@ class ProjectIOTests(unittest.TestCase):
             ],
         )
 
+    def test_project_from_dict_parses_brep_surfaces(self) -> None:
+        project = project_from_dict(
+            {
+                "version": PROJECT_VERSION,
+                "brep_surfaces": [
+                    {
+                        "id": "brep-a",
+                        "name": "BREP Face 1",
+                        "source_curve_ids": ["curve-a"],
+                        "brep_type": "planar_face",
+                        "backend": "FakeCAD",
+                        "visible": False,
+                        "selected": True,
+                        "metadata": {
+                            "build_method": "closed_wire_planar_face",
+                            "last_export_path": "face.step",
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(
+            project.brep_surfaces,
+            [
+                ProjectBrepSurface(
+                    id="brep-a",
+                    name="BREP Face 1",
+                    source_curve_ids=["curve-a"],
+                    brep_type="planar_face",
+                    backend="FakeCAD",
+                    visible=False,
+                    selected=True,
+                    metadata={
+                        "build_method": "closed_wire_planar_face",
+                        "last_export_path": "face.step",
+                    },
+                ),
+            ],
+        )
+
     def test_save_load_project_preserves_patch_surface_metadata(self) -> None:
         project = default_project_data()
         project.surfaces = [
@@ -905,6 +980,37 @@ class ProjectIOTests(unittest.TestCase):
         self.assertEqual(metadata["grid_u_count"], 8)
         self.assertEqual(metadata["grid_v_count"], 6)
         self.assertEqual(metadata["curve_order"], ["bottom", "right", "top", "left"])
+
+    def test_save_load_project_preserves_brep_records(self) -> None:
+        project = default_project_data()
+        project.brep_surfaces = [
+            ProjectBrepSurface(
+                id="brep-face",
+                name="BREP Face 1",
+                source_curve_ids=["curve-a"],
+                brep_type="planar_face",
+                backend="FakeCAD",
+                visible=True,
+                selected=False,
+                metadata={
+                    "build_method": "closed_wire_planar_face",
+                    "runtime_status": "ready",
+                    "source_point_count": 4,
+                },
+            )
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "brep.openretop"
+            save_project(project, project_path)
+            loaded_project = load_project(project_path)
+
+        self.assertEqual(len(loaded_project.brep_surfaces), 1)
+        surface = loaded_project.brep_surfaces[0]
+        self.assertEqual(surface.id, "brep-face")
+        self.assertEqual(surface.brep_type, "planar_face")
+        self.assertEqual(surface.backend, "FakeCAD")
+        self.assertEqual(surface.metadata["build_method"], "closed_wire_planar_face")
 
     def test_project_from_dict_rejects_invalid_surface_shape_clearly(self) -> None:
         with self.assertRaises(ValueError) as context:

@@ -49,6 +49,7 @@ class SurfacePreviewMesh:
     selected: bool = False
     opacity: float | None = None
     wireframe_overlay: bool = True
+    display_role: str = "preview_surface"
 
     def __post_init__(self) -> None:
         object.__setattr__(

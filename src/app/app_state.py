@@ -16,6 +16,7 @@ from sections.section_state import (
     add_plane,
     create_default_section_plane,
 )
+from surfaces.brep_state import BrepSurfaceCollection
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -41,6 +42,9 @@ class AppState:
     )
     curve_collection: CurveCollection = field(default_factory=CurveCollection)
     surface_collection: SurfaceCollection = field(default_factory=SurfaceCollection)
+    brep_surface_collection: BrepSurfaceCollection = field(
+        default_factory=BrepSurfaceCollection
+    )
     region_collection: RegionCollection = field(default_factory=RegionCollection)
 
     def clear_selection(self) -> None:
@@ -52,6 +56,7 @@ class AppState:
         self.section_collection.selected_result_ids.clear()
         self.curve_collection.selected_curve_ids.clear()
         self.surface_collection.selected_surface_ids.clear()
+        self.brep_surface_collection.selected_surface_ids.clear()
         for plane in self.section_collection.planes:
             plane.selected = False
         for result in self.section_collection.results:
@@ -59,6 +64,8 @@ class AppState:
         for curve in self.curve_collection.curves:
             curve.selected = False
         for surface in self.surface_collection.surfaces:
+            surface.selected = False
+        for surface in self.brep_surface_collection.surfaces:
             surface.selected = False
 
     def clear_sections(self) -> None:
@@ -73,3 +80,6 @@ class AppState:
         self.surface_collection.surfaces = []
         self.surface_collection.active_surface_id = None
         self.surface_collection.selected_surface_ids.clear()
+        self.brep_surface_collection.surfaces = []
+        self.brep_surface_collection.active_surface_id = None
+        self.brep_surface_collection.selected_surface_ids.clear()

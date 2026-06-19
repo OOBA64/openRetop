@@ -8,6 +8,7 @@ from typing import Any
 from curves.curve_state import CurveCollection, refresh_curve_diagnostics
 from curves.manual_curve import ensure_manual_curve_storage
 from project.project_data import (
+    ProjectBrepSurface,
     ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
@@ -19,6 +20,7 @@ from project.project_data import (
     default_project_data,
 )
 from sections.section_state import SectionCollection, plane_normal, plane_origin
+from surfaces.brep_state import BrepSurfaceCollection
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -35,6 +37,7 @@ def project_from_app_state(
     section_collection: SectionCollection | None = None,
     curve_collection: CurveCollection | None = None,
     surface_collection: SurfaceCollection | None = None,
+    brep_surface_collection: BrepSurfaceCollection | None = None,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
@@ -54,6 +57,7 @@ def project_from_app_state(
     )
     curves = _curves_from_collection(curve_collection)
     surfaces = _surfaces_from_collection(surface_collection)
+    brep_surfaces = _brep_surfaces_from_collection(brep_surface_collection)
 
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
@@ -99,6 +103,7 @@ def project_from_app_state(
         section_results=section_results,
         curves=curves,
         surfaces=surfaces,
+        brep_surfaces=brep_surfaces,
     )
 
 
@@ -280,6 +285,32 @@ def _surfaces_from_collection(
             ),
         )
         for surface in surface_collection.surfaces
+    ]
+
+
+def _brep_surfaces_from_collection(
+    brep_surface_collection: BrepSurfaceCollection | None,
+) -> list[ProjectBrepSurface]:
+    if brep_surface_collection is None:
+        return []
+
+    return [
+        ProjectBrepSurface(
+            id=str(surface.id),
+            name=str(surface.name),
+            source_curve_ids=[
+                str(curve_id) for curve_id in surface.source_curve_ids
+            ],
+            brep_type=str(surface.brep_type),
+            backend=str(surface.backend),
+            visible=bool(surface.visible),
+            selected=surface.id in brep_surface_collection.selected_surface_ids,
+            metadata=_metadata_from_value(
+                surface.metadata,
+                "brep_surface_collection.surface.metadata",
+            ),
+        )
+        for surface in brep_surface_collection.surfaces
     ]
 
 

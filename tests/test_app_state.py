@@ -23,7 +23,18 @@ from geometry.sections import SectionResult
 from mesh.display_proxy import DEFAULT_PROXY_QUALITY
 from mesh.triangle_mesh import TriangleMeshData
 from regions.region_state import RegionCollection
-from sections.section_state import SectionCollection, StoredSectionResult, plane_normal, plane_origin
+from sections.section_state import (
+    SectionCollection,
+    StoredSectionResult,
+    plane_normal,
+    plane_origin,
+)
+from surfaces.brep_state import (
+    BREP_TYPE_PLANAR_FACE,
+    BrepSurfaceCollection,
+    BrepSurfaceRecord,
+    add_brep_surface,
+)
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -103,6 +114,13 @@ class AppStateTests(unittest.TestCase):
         self.assertIsNot(state.surface_collection, other_state.surface_collection)
         self.assertEqual(state.surface_collection.surfaces, [])
         self.assertIsNone(state.surface_collection.active_surface_id)
+        self.assertIsInstance(state.brep_surface_collection, BrepSurfaceCollection)
+        self.assertIsNot(
+            state.brep_surface_collection,
+            other_state.brep_surface_collection,
+        )
+        self.assertEqual(state.brep_surface_collection.surfaces, [])
+        self.assertIsNone(state.brep_surface_collection.active_surface_id)
         self.assertIsInstance(state.region_collection, RegionCollection)
         self.assertIsNot(state.region_collection, other_state.region_collection)
         self.assertIsNone(state.region_collection.active_region)
@@ -145,6 +163,24 @@ class AppStateTests(unittest.TestCase):
         self.assertIs(state.section_result, section_result)
         self.assertEqual(state.curve_results, [curve_result])
 
+    def test_clear_selection_clears_brep_selection_flags(self) -> None:
+        state = AppState(selected_item=SELECT_SURFACE)
+        surface = BrepSurfaceRecord(
+            id="brep-1",
+            name="BREP 1",
+            source_curve_ids=["curve-1"],
+            brep_type=BREP_TYPE_PLANAR_FACE,
+            backend="mock",
+        )
+        add_brep_surface(state.brep_surface_collection, surface)
+
+        state.clear_selection()
+
+        self.assertIsNone(state.selected_item)
+        self.assertEqual(state.brep_surface_collection.selected_surface_ids, set())
+        self.assertFalse(surface.selected)
+        self.assertEqual(state.brep_surface_collection.active_surface_id, surface.id)
+
     def test_clear_sections_resets_only_section_results(self) -> None:
         mesh_object = _mesh_object()
         transform_state = _transform_state()
@@ -169,8 +205,27 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(state.curve_results, [])
         self.assertEqual(state.curve_collection.curves, [])
         self.assertIsNone(state.curve_collection.active_curve_id)
+        self.assertEqual(state.brep_surface_collection.surfaces, [])
+        self.assertIsNone(state.brep_surface_collection.active_surface_id)
         self.assertEqual(len(state.section_collection.planes), 1)
         self.assertEqual(state.section_collection.results, [])
+
+    def test_clear_sections_clears_brep_surface_collection(self) -> None:
+        state = AppState()
+        surface = BrepSurfaceRecord(
+            id="brep-1",
+            name="BREP 1",
+            source_curve_ids=["curve-1"],
+            brep_type=BREP_TYPE_PLANAR_FACE,
+            backend="mock",
+        )
+        add_brep_surface(state.brep_surface_collection, surface)
+
+        state.clear_sections()
+
+        self.assertEqual(state.brep_surface_collection.surfaces, [])
+        self.assertIsNone(state.brep_surface_collection.active_surface_id)
+        self.assertEqual(state.brep_surface_collection.selected_surface_ids, set())
 
     def test_clear_sections_clears_section_collection_results_without_removing_planes(self) -> None:
         state = AppState()

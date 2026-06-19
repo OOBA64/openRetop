@@ -9,6 +9,7 @@ from pathlib import Path
 
 from project.project_data import (
     PROJECT_VERSION,
+    ProjectBrepSurface,
     ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
@@ -155,6 +156,22 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             }
             for index, surface in enumerate(project.surfaces)
         ],
+        "brep_surfaces": [
+            {
+                "id": surface.id,
+                "name": surface.name,
+                "source_curve_ids": list(surface.source_curve_ids),
+                "brep_type": surface.brep_type,
+                "backend": surface.backend,
+                "visible": bool(surface.visible),
+                "selected": bool(surface.selected),
+                "metadata": _metadata_dict_value(
+                    surface.metadata,
+                    f"brep_surfaces[{index}].metadata",
+                ),
+            }
+            for index, surface in enumerate(project.brep_surfaces)
+        ],
     }
 
 
@@ -244,6 +261,9 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
     )
     curves = _curves_value(data.get("curves", defaults.curves))
     surfaces = _surfaces_value(data.get("surfaces", defaults.surfaces))
+    brep_surfaces = _brep_surfaces_value(
+        data.get("brep_surfaces", defaults.brep_surfaces)
+    )
     return ProjectData(
         version=version,
         name=name,
@@ -258,6 +278,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         section_results=section_results,
         curves=curves,
         surfaces=surfaces,
+        brep_surfaces=brep_surfaces,
     )
 
 
@@ -644,6 +665,64 @@ def _surfaces_value(value: object) -> list[ProjectSurface]:
                 visible=_bool_value(
                     _nested_value(surface_data, "visible", True),
                     f"{field_prefix}.visible",
+                ),
+                metadata=_metadata_dict_value(
+                    _nested_value(surface_data, "metadata", {}),
+                    f"{field_prefix}.metadata",
+                ),
+            )
+        )
+
+    return surfaces
+
+
+def _brep_surfaces_value(value: object) -> list[ProjectBrepSurface]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("brep_surfaces must be a list.")
+
+    surfaces: list[ProjectBrepSurface] = []
+    seen_ids: set[str] = set()
+    for index, raw_surface in enumerate(value):
+        field_prefix = f"brep_surfaces[{index}]"
+        surface_data = _mapping_value(raw_surface, field_prefix)
+        surface_id = _string_value(
+            _nested_value(surface_data, "id", ""),
+            f"{field_prefix}.id",
+        )
+        if not surface_id:
+            raise ValueError(f"{field_prefix}.id must not be empty.")
+        if surface_id in seen_ids:
+            raise ValueError(f"{field_prefix}.id must be unique.")
+        seen_ids.add(surface_id)
+
+        surfaces.append(
+            ProjectBrepSurface(
+                id=surface_id,
+                name=_string_value(
+                    _nested_value(surface_data, "name", f"BREP Surface {index + 1}"),
+                    f"{field_prefix}.name",
+                ),
+                source_curve_ids=_string_list_value(
+                    _nested_value(surface_data, "source_curve_ids", []),
+                    f"{field_prefix}.source_curve_ids",
+                ),
+                brep_type=_string_value(
+                    _nested_value(surface_data, "brep_type", "unknown"),
+                    f"{field_prefix}.brep_type",
+                ),
+                backend=_string_value(
+                    _nested_value(surface_data, "backend", ""),
+                    f"{field_prefix}.backend",
+                ),
+                visible=_bool_value(
+                    _nested_value(surface_data, "visible", True),
+                    f"{field_prefix}.visible",
+                ),
+                selected=_bool_value(
+                    _nested_value(surface_data, "selected", False),
+                    f"{field_prefix}.selected",
                 ),
                 metadata=_metadata_dict_value(
                     _nested_value(surface_data, "metadata", {}),
