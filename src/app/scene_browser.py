@@ -209,6 +209,29 @@ def _region_display_label(region: RegionSelection, fallback_label: str) -> str:
     return f"{label} ({triangle_count:,} tris)"
 
 
+def _surface_display_label(surface: SurfacePatch, fallback_label: str) -> str:
+    label = surface.name or fallback_label
+    tag = _surface_preview_tag(surface)
+    return f"{label} ({tag})" if tag else label
+
+
+def _surface_preview_tag(surface: SurfacePatch) -> str:
+    metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
+    preview_mode = str(metadata.get("preview_mode", "")).strip().lower()
+    surface_type = str(surface.surface_type).strip().lower()
+    if preview_mode == "closed_curve_fill" or surface_type == "preview_fill":
+        return "fill"
+    if preview_mode == "two_curve_loft" or surface_type == "preview_loft":
+        return "loft"
+    if preview_mode == "boundary_patch" or surface_type == "preview_boundary_patch":
+        return "boundary patch"
+    if preview_mode == "four_curve_patch" or surface_type == "preview_four_curve_patch":
+        return "4-curve patch"
+    if preview_mode == "curve_network_patch" or surface_type == "preview_curve_network_patch":
+        return "network patch"
+    return ""
+
+
 def _is_manual_curve(curve: StoredCurve) -> bool:
     return is_manual_curve_like(curve)
 
@@ -860,7 +883,7 @@ class SceneBrowser:
             node_id = surface_node_id(surface.id)
             current_node_ids.append(node_id)
             label = _visibility_label(
-                surface.name or f"Surface {index}",
+                _surface_display_label(surface, f"Surface {index}"),
                 bool(surface.visible),
             )
             self._ensure_node(node_id, label, parent=NODE_SURFACES)

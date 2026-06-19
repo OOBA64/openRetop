@@ -851,6 +851,61 @@ class ProjectIOTests(unittest.TestCase):
             ],
         )
 
+    def test_save_load_project_preserves_patch_surface_metadata(self) -> None:
+        project = default_project_data()
+        project.surfaces = [
+            ProjectSurface(
+                id="surface-patch",
+                name="Four-Curve Patch 1",
+                source_curve_ids=["bottom", "right", "top", "left"],
+                surface_type="preview_four_curve_patch",
+                visible=True,
+                metadata={
+                    "preview_mode": "four_curve_patch",
+                    "source_curve_count": 4,
+                    "source_curve_ids": ["bottom", "right", "top", "left"],
+                    "source_curve_names": ["Bottom", "Right", "Top", "Left"],
+                    "source_curve_creation_types": [
+                        "rebuilt_curve",
+                        "rebuilt_curve",
+                        "rebuilt_curve",
+                        "rebuilt_curve",
+                    ],
+                    "source_curve_tags": ["rebuilt", "smooth"],
+                    "source_region_ids": ["region-a"],
+                    "source_mesh_names": ["scan.stl"],
+                    "preview_available": True,
+                    "preview_reason": "four-curve patch preview generated",
+                    "preview_warning": "Curve order inferred from scene order; inspect patch.",
+                    "source_curve_validation_warnings": [
+                        "Curve order inferred from scene order; inspect patch.",
+                    ],
+                    "source_curve_validation_errors": [],
+                    "curve_order": ["bottom", "right", "top", "left"],
+                    "grid_u_count": 8,
+                    "grid_v_count": 6,
+                    "average_corner_gap": 0.01,
+                    "max_corner_gap": 0.02,
+                },
+            )
+        ]
+
+        with TemporaryDirectory() as tmpdir:
+            project_path = Path(tmpdir) / "patch-surface.openretop"
+            save_project(project, project_path)
+            loaded_project = load_project(project_path)
+
+        metadata = loaded_project.surfaces[0].metadata
+        self.assertEqual(metadata["preview_mode"], "four_curve_patch")
+        self.assertEqual(metadata["source_curve_ids"], ["bottom", "right", "top", "left"])
+        self.assertEqual(metadata["source_curve_tags"], ["rebuilt", "smooth"])
+        self.assertEqual(metadata["source_region_ids"], ["region-a"])
+        self.assertEqual(metadata["source_mesh_names"], ["scan.stl"])
+        self.assertEqual(metadata["preview_available"], True)
+        self.assertEqual(metadata["grid_u_count"], 8)
+        self.assertEqual(metadata["grid_v_count"], 6)
+        self.assertEqual(metadata["curve_order"], ["bottom", "right", "top", "left"])
+
     def test_project_from_dict_rejects_invalid_surface_shape_clearly(self) -> None:
         with self.assertRaises(ValueError) as context:
             project_from_dict(

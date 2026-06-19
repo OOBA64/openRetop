@@ -155,6 +155,18 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
     app.surfaces_menu.add_command(label="Fill Closed Curve", command=app.fill_closed_curve)
     app.surfaces_menu.add_command(label="Loft Between Two Curves", command=app.loft_between_two_curves)
     app.surfaces_menu.add_command(
+        label="Create Boundary Patch",
+        command=app.create_boundary_patch_from_curve,
+    )
+    app.surfaces_menu.add_command(
+        label="Create Four-Curve Patch",
+        command=app.create_four_curve_patch,
+    )
+    app.surfaces_menu.add_command(
+        label="Create Curve Network Patch",
+        command=app.create_curve_network_patch,
+    )
+    app.surfaces_menu.add_command(
         label="Select Source Curves",
         command=app.select_source_curves_for_active_surface,
     )

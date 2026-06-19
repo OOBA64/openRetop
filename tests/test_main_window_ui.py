@@ -548,10 +548,13 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.curves_menu.type(17), "checkbutton")
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Fill Closed Curve")
             self.assertEqual(window.surfaces_menu.entrycget(1, "label"), "Loft Between Two Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(2, "label"), "Select Source Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(3, "label"), "Isolate Source Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(4, "label"), "Show Source Curves")
-            self.assertEqual(window.surfaces_menu.entrycget(5, "label"), "Frame Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(2, "label"), "Create Boundary Patch")
+            self.assertEqual(window.surfaces_menu.entrycget(3, "label"), "Create Four-Curve Patch")
+            self.assertEqual(window.surfaces_menu.entrycget(4, "label"), "Create Curve Network Patch")
+            self.assertEqual(window.surfaces_menu.entrycget(5, "label"), "Select Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(6, "label"), "Isolate Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(7, "label"), "Show Source Curves")
+            self.assertEqual(window.surfaces_menu.entrycget(8, "label"), "Frame Source Curves")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
@@ -2741,12 +2744,18 @@ class MainWindowUiTests(unittest.TestCase):
             window.surfaces_menu.invoke(1)
             self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(2)
-            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(3)
-            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(4)
-            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            self.assertEqual(window.status_text.get(), "No curves available")
             window.surfaces_menu.invoke(5)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(6)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(7)
+            self.assertEqual(window.status_text.get(), "Select a surface first.")
+            window.surfaces_menu.invoke(8)
             self.assertEqual(window.status_text.get(), "Select a surface first.")
         finally:
             window.root.destroy()
@@ -3217,7 +3226,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(surface.visible)
             self.assertTrue(stored_result.visible)
             self.assertEqual(tree.item(curve_node, "text"), "[H] Section 1 Curve 1")
-            self.assertEqual(tree.item(surface_node, "text"), "[H] Surface 1")
+            self.assertEqual(tree.item(surface_node, "text"), "[H] Surface 1 (fill)")
             self.assertEqual(window.app_state.curve_results, [])
             self.assertEqual(window.viewport.scene_calls[-1]["surface_previews"], [])
             self.assertTrue(window.project_dirty)
@@ -3230,7 +3239,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(source_curve.visible)
             self.assertTrue(surface.visible)
             self.assertEqual(tree.item(curve_node, "text"), "[V] Section 1 Curve 1")
-            self.assertEqual(tree.item(surface_node, "text"), "[V] Surface 1")
+            self.assertEqual(tree.item(surface_node, "text"), "[V] Surface 1 (fill)")
 
             window._on_scene_browser_visibility("hide_unselected", (curve_node,))
 
@@ -3247,7 +3256,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(surface.visible)
             self.assertIs(window.viewport.scene_calls[-1]["section_result"], stored_result.result)
             self.assertEqual(tree.item(section_result_node, "text"), "[V] Section 1")
-            self.assertEqual(tree.item(surface_node, "text"), "[V] Surface 1")
+            self.assertEqual(tree.item(surface_node, "text"), "[V] Surface 1 (fill)")
         finally:
             window.root.destroy()
 
@@ -3327,7 +3336,7 @@ class MainWindowUiTests(unittest.TestCase):
             window._on_surface_name_changed()
 
             self.assertEqual(surface.name, "Preview Surface")
-            self.assertEqual(tree.item(surface_node, "text"), "[V] Preview Surface")
+            self.assertEqual(tree.item(surface_node, "text"), "[V] Preview Surface (fill)")
         finally:
             window.root.destroy()
 
@@ -4432,6 +4441,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.surface_context_frame.winfo_manager(), "grid")
             self.assertEqual(window.surface_name_text.get(), "Fill Surface 1")
             self.assertEqual(window.surface_type_text.get(), "preview_fill")
+            self.assertEqual(window.surface_preview_mode_text.get(), "closed_curve_fill")
             self.assertEqual(window.surface_source_curve_count_text.get(), "1")
             self.assertEqual(window.surface_source_curve_names_text.get(), source_curve.name)
             self.assertEqual(window.surface_preview_available_text.get(), "Yes")
@@ -4440,11 +4450,15 @@ class MainWindowUiTests(unittest.TestCase):
                 window.surface_preview_warning_text.get(),
                 "Fan fill preview may be inaccurate for concave curves",
             )
+            self.assertEqual(window.surface_grid_size_text.get(), "(none)")
+            self.assertEqual(window.surface_planarity_error_text.get(), "0.000")
             self.assertEqual(window.surface_resampled_point_count_text.get(), "(none)")
             self.assertEqual(window.surface_reversed_second_curve_text.get(), "(none)")
             self.assertEqual(window.surface_seam_shift_applied_text.get(), "(none)")
             self.assertEqual(window.surface_average_pair_distance_text.get(), "(none)")
             self.assertEqual(window.surface_max_pair_distance_text.get(), "(none)")
+            self.assertEqual(window.surface_validation_warnings_text.get(), "(none)")
+            self.assertEqual(window.surface_validation_errors_text.get(), "(none)")
             self.assertEqual(window.surface_opacity_text.get(), "0.22")
             self.assertTrue(window.surface_wireframe_overlay.get())
             self.assertIn("curve_count=1", window.surface_metadata_text.get())
@@ -4469,7 +4483,7 @@ class MainWindowUiTests(unittest.TestCase):
             tree = window.scene_browser.tree
             surface_node = surface_node_id(surface.id)
             self.assertEqual(tree.get_children(NODE_SURFACES), (surface_node,))
-            self.assertEqual(tree.item(surface_node, "text"), "[V] Fill Surface 1")
+            self.assertEqual(tree.item(surface_node, "text"), "[V] Fill Surface 1 (fill)")
             self.assertEqual(tree.selection(), (surface_node,))
         finally:
             window.root.destroy()
@@ -4573,6 +4587,188 @@ class MainWindowUiTests(unittest.TestCase):
                 "Select exactly two curves to loft",
             )
             self.assertEqual(len(window.app_state.surface_collection.surfaces), 2)
+        finally:
+            window.root.destroy()
+
+    def test_patch_surface_commands_create_diagnostics_and_undoable_surfaces(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            boundary_curve = StoredCurve(
+                id="curve-boundary",
+                name="Boundary Curve",
+                section_result_id="",
+                plane_id="",
+                original_points=np.asarray(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                    ],
+                    dtype=float,
+                ),
+                fitted_points=np.asarray(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                    ],
+                    dtype=float,
+                ),
+                mean_error=0.0,
+                max_error=0.0,
+                is_closed=True,
+                metadata={
+                    "creation_type": "region_boundary",
+                    "source_region_id": "region-a",
+                    "source_mesh_name": "sample.stl",
+                },
+            )
+            add_curve(window.app_state.curve_collection, boundary_curve)
+            window.select_curve(boundary_curve.id)
+
+            window.create_boundary_patch_from_curve()
+
+            boundary_surface = window.app_state.surface_collection.surfaces[-1]
+            self.assertEqual(boundary_surface.name, "Boundary Patch 1")
+            self.assertEqual(boundary_surface.surface_type, "preview_boundary_patch")
+            self.assertEqual(boundary_surface.source_curve_ids, [boundary_curve.id])
+            self.assertEqual(boundary_surface.metadata["preview_mode"], "boundary_patch")
+            self.assertEqual(boundary_surface.metadata["boundary_curve_id"], boundary_curve.id)
+            self.assertEqual(boundary_surface.metadata["source_region_ids"], ["region-a"])
+            self.assertEqual(boundary_surface.metadata["source_mesh_names"], ["sample.stl"])
+            self.assertTrue(boundary_surface.metadata["preview_available"])
+            self.assertEqual(boundary_surface.metadata["triangulation_method"], "ear_clipping")
+            self.assertEqual(window.surface_preview_mode_text.get(), "boundary_patch")
+            self.assertEqual(window.surface_planarity_error_text.get(), "0.000")
+            self.assertEqual(
+                window.scene_browser.tree.item(surface_node_id(boundary_surface.id), "text"),
+                "[V] Boundary Patch 1 (boundary patch)",
+            )
+
+            window.undo()
+            self.assertNotIn(
+                boundary_surface.id,
+                [surface.id for surface in window.app_state.surface_collection.surfaces],
+            )
+            window.redo()
+            self.assertIn(
+                boundary_surface.id,
+                [surface.id for surface in window.app_state.surface_collection.surfaces],
+            )
+
+            patch_curves = [
+                StoredCurve(
+                    id="curve-bottom",
+                    name="Bottom",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=float),
+                    fitted_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=float),
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                    metadata={"creation_type": "rebuilt_curve", "curve_method": "catmull_rom"},
+                ),
+                StoredCurve(
+                    id="curve-right",
+                    name="Right",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=np.asarray([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=float),
+                    fitted_points=np.asarray([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=float),
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                    metadata={"creation_type": "rebuilt_curve", "curve_method": "catmull_rom"},
+                ),
+                StoredCurve(
+                    id="curve-top",
+                    name="Top",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=np.asarray([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=float),
+                    fitted_points=np.asarray([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=float),
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                    metadata={"creation_type": "rebuilt_curve", "curve_method": "catmull_rom"},
+                ),
+                StoredCurve(
+                    id="curve-left",
+                    name="Left",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=np.asarray([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=float),
+                    fitted_points=np.asarray([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=float),
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                    metadata={"creation_type": "rebuilt_curve", "curve_method": "catmull_rom"},
+                ),
+            ]
+            for curve in patch_curves:
+                add_curve(window.app_state.curve_collection, curve)
+            window.select_curves([curve.id for curve in patch_curves], active_curve_id=patch_curves[0].id)
+
+            window.create_four_curve_patch()
+
+            four_curve_surface = window.app_state.surface_collection.surfaces[-1]
+            self.assertEqual(four_curve_surface.name, "Four-Curve Patch 1")
+            self.assertEqual(four_curve_surface.surface_type, "preview_four_curve_patch")
+            self.assertEqual(four_curve_surface.metadata["preview_mode"], "four_curve_patch")
+            self.assertEqual(four_curve_surface.metadata["curve_order"], [curve.id for curve in patch_curves])
+            self.assertEqual(four_curve_surface.metadata["grid_u_count"], 2)
+            self.assertEqual(four_curve_surface.metadata["grid_v_count"], 2)
+            self.assertIn(
+                "Curve order inferred from scene order; inspect patch.",
+                four_curve_surface.metadata["source_curve_validation_warnings"],
+            )
+            self.assertEqual(window.surface_grid_size_text.get(), "2 x 2")
+            self.assertEqual(
+                window.scene_browser.tree.item(surface_node_id(four_curve_surface.id), "text"),
+                "[V] Four-Curve Patch 1 (4-curve patch)",
+            )
+            window.undo()
+            self.assertNotIn(
+                four_curve_surface.id,
+                [surface.id for surface in window.app_state.surface_collection.surfaces],
+            )
+            window.redo()
+            self.assertIn(
+                four_curve_surface.id,
+                [surface.id for surface in window.app_state.surface_collection.surfaces],
+            )
+
+            network_curves = patch_curves[:3]
+            window.select_curves([curve.id for curve in network_curves], active_curve_id=network_curves[0].id)
+            window.create_curve_network_patch()
+
+            network_surface = window.app_state.surface_collection.surfaces[-1]
+            self.assertEqual(network_surface.name, "Network Patch 1")
+            self.assertEqual(network_surface.surface_type, "preview_curve_network_patch")
+            self.assertEqual(network_surface.metadata["preview_mode"], "curve_network_patch")
+            self.assertEqual(network_surface.metadata["network_curve_count"], 3)
+            self.assertEqual(network_surface.metadata["strip_count"], 2)
+            self.assertEqual(network_surface.metadata["resampled_point_count"], 2)
+            self.assertEqual(
+                window.scene_browser.tree.item(surface_node_id(network_surface.id), "text"),
+                "[V] Network Patch 1 (network patch)",
+            )
+            window.undo()
+            self.assertNotIn(
+                network_surface.id,
+                [surface.id for surface in window.app_state.surface_collection.surfaces],
+            )
+            window.redo()
+            self.assertIn(
+                network_surface.id,
+                [surface.id for surface in window.app_state.surface_collection.surfaces],
+            )
         finally:
             window.root.destroy()
 

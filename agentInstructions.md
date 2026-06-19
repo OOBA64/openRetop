@@ -1,690 +1,616 @@
 ---
 
-## Task 68: Surface-Ready Curve Preparation — Project, Rebuild, Validate
+## Task 69: Surface Patch Preview From Prepared Curves
 
 Purpose:
-Region boundaries and manual curves now exist, but they are not yet reliable enough as surface inputs. Before adding real surface fitting, the app needs tools to project curves onto the mesh, rebuild/simplify them into cleaner control geometry, and validate whether selected curves are suitable for fill/loft/surface workflows.
+The app can now create, edit, project, rebuild, validate, and organize curves. The next step is to create better surface previews from prepared curves, especially region boundaries, projected guide curves, and rebuilt curves.
 
-This task is the bridge between:
-
-* manual curves
-* region boundary curves
-* projected guide curves
-* future surface patch generation
+This task improves the surface workflow while staying preview-only.
 
 Do not add BREP/STEP/IGES export.
 Do not integrate pboyer/verb yet.
 Do not add full NURBS surfaces yet.
 Do not add automatic face recognition.
-Do not rewrite Region Select.
-Do not rewrite Manual Curve Edit.
-Do not replace existing Fill Closed Curve / Loft Between Two Curves.
+Do not add boolean/solid modeling.
+Do not rewrite the existing surface collection.
+Do not remove existing Fill Closed Curve or Loft Between Two Curves.
 Do not add new dependencies.
-
-Current expected foundation:
-
-* Manual curves are editable.
-* Manual curve preview works.
-* Snap to Mesh exists.
-* Region Select exists.
-* Region boundaries can be extracted into editable StoredCurves.
-* Curves can already be selected, repaired, simplified, smoothed, filled, and lofted.
-* Surface preview currently supports single closed curve fill and two-curve loft only.
 
 Goal:
 The user should be able to:
 
-1. Select a manual curve, region boundary curve, or section curve.
-2. Project it onto the mesh.
-3. Rebuild it into cleaner control geometry.
-4. Validate whether it is surface-ready.
-5. Use the cleaned/projected curve for Fill Closed Curve or Loft Between Two Curves.
-6. Preserve all source metadata so future surface tools know where the curve came from.
+1. Select clean prepared curves.
+2. Choose a surface preview type.
+3. Generate a surface patch preview.
+4. See diagnostics explaining quality problems.
+5. Adjust source curves and regenerate.
+6. Use this as the first practical scan-to-surface workflow.
 
 ---
 
-## Part A — Add curve projection backend
+## Current repo foundation to preserve
 
-Create a focused module:
+Existing:
 
-src/curves/projection.py
+* Manual curves are editable.
+* Region boundaries can become editable curves.
+* Projected curves exist.
+* Rebuilt curves exist.
+* Curve validation exists.
+* Surface previews exist.
+* Fill Closed Curve exists.
+* Loft Between Two Curves exists.
+* Surface opacity/wireframe controls exist.
+* Surface source curve metadata exists.
+* Scene browser supports curve grouping and surface grouping.
+
+Current limitation:
+
+* Single closed curve fill is a simple fan fill.
+* Two-curve loft is available but limited.
+* No four-boundary patch preview exists.
+* No curve-network patch preview exists.
+* No surface-from-region-boundary workflow exists beyond manually selecting curves.
+
+---
+
+## Part A — Add surface preview modes
+
+Extend surface preview support to handle multiple preview modes:
+
+Existing modes:
+
+* closed_curve_fill
+* two_curve_loft
+
+New modes:
+
+* boundary_patch
+* four_curve_patch
+* curve_network_patch
+
+Definitions:
+
+1. boundary_patch
+   Input:
+
+* one closed curve
 
 Purpose:
-Project existing curves onto the loaded scan mesh without modifying the original curve.
 
-Required dataclasses:
-
-1. CurveProjectionResult
-   Fields:
-
-* projected_points: np.ndarray shape (N, 3)
-* source_points: np.ndarray shape (N, 3)
-* hit_mask: np.ndarray bool shape (N,)
-* distances: np.ndarray shape (N,)
-* triangle_indices: list[int | None]
-* normals: list[list[float] | None]
-* projected_count: int
-* missed_count: int
-* max_distance: float
-* mean_distance: float
-* warnings: list[str]
-
-Required functions:
-
-2. project_curve_points_to_mesh(
-   points,
-   mesh,
-   *,
-   max_search_distance=None,
-   preserve_missed_points=True,
-   ) -> CurveProjectionResult
+* creates a better preview from one closed boundary curve than the current naive fan fill where practical
 
 Behavior:
 
-* For each input point, find nearest point on mesh surface.
-* Prefer VTK cell locator / closest point behavior if already available through VTK.
-* If VTK closest-point APIs are not convenient, add a small focused nearest-triangle helper, but do not brute-force millions of triangles in Python for every interaction.
-* Projection runs as an explicit command, not continuously every mouse move.
-* If a point cannot be projected:
-
-  * if preserve_missed_points=True, keep original point
-  * mark hit_mask False
-  * record warning
-* Return projected_points with same count/order as source_points.
-* Never return NaN/inf.
-* Do not mutate source curve.
-* Do not mutate mesh.
-
-3. project_stored_curve_to_mesh(
-   curve,
-   mesh,
-   *,
-   curve_id,
-   name,
-   source_mesh_name,
-   max_search_distance=None,
-   ) -> StoredCurve
-
-Behavior:
-
-* Use curve.fitted_points or control_points as source points.
-* Prefer editable control_points if available.
-* Project points to mesh.
-* Return a new StoredCurve.
-* Metadata:
-
-  * creation_type: "projected_curve"
-  * source_curve_id
-  * source_curve_name
-  * source_curve_creation_type if available
-  * source_mesh_name
-  * projection_projected_count
-  * projection_missed_count
-  * projection_mean_distance
-  * projection_max_distance
-  * projection_warnings
-  * control_points = projected points
-  * curve_method copied from source or "catmull_rom"
-  * sample_count copied from source
-  * snap_to_mesh = True
-  * snap_mode = "mesh"
-* Preserve closed/open state.
-* Keep projected curve editable through Manual Curve Edit mode.
-
-Acceptance:
-
-* Projection backend handles empty curves safely.
-* Projection backend handles missing mesh safely.
-* Projection result preserves point order.
-* Projected curve stores useful metadata.
-* Projected curve is a normal StoredCurve.
-
----
-
-## Part B — Add Project Selected Curve to Mesh command
-
-Add command:
-
-Project Selected Curve to Mesh
-
-Available in:
-
-* Curves workbench
-* Manual RE workbench if a curve is selected
-* scene browser curve context menu, if low-risk
-
-Behavior:
-
-* Requires loaded mesh.
-* Requires exactly one selected or active curve.
-* Rejects no curve with:
-  "Select one curve to project."
-* Rejects no mesh with:
-  "Load a mesh before projecting curves."
-* Creates a new curve.
-* Does not overwrite the source curve.
-* Selects the new projected curve.
-* Active curve = new projected curve.
-* Adds it to CurveCollection.
-* Refreshes viewport.
-* Refreshes scene browser.
-* Pushes undo command:
-  "Project Curve to Mesh"
-* Marks project dirty.
-
-Naming:
-
-* Projected Curve 1
-* Projected Curve 2
-  or:
-* <source name> Projected
-
-Use whichever is already easier, but avoid duplicate names.
-
-Scene browser grouping:
-Curves
-Projected Curves
-[V] Projected Curve 1 (projected)
-
-Grouping priority:
-
-1. Projected Curves
-2. Region Boundaries
-3. Manual Curves
-4. Repaired/Processed Curves
-5. Section Result groups
-6. Unassigned
-
-Acceptance:
-
-* User can project selected curve onto mesh.
-* Original curve remains unchanged.
-* Projected curve appears under Projected Curves.
-* Undo removes projected curve.
-* Redo restores projected curve.
-* Projected curve can be edited.
-
----
-
-## Part C — Add curve rebuild backend
-
-Create or extend focused curve utilities:
-
-src/curves/rebuild.py
-
-Purpose:
-Reduce dense curves into cleaner control geometry for surface workflows.
-
-Required dataclass:
-
-CurveRebuildResult
-
-* control_points: np.ndarray
-* fitted_points: np.ndarray
-* source_point_count: int
-* target_control_point_count: int
-* method: str
-* is_closed: bool
-* warnings: list[str]
-
-Required functions:
-
-1. rebuild_curve_by_arc_length(
-   points,
-   *,
-   target_control_point_count,
-   is_closed,
-   curve_method="catmull_rom",
-   sample_count=128,
-   ) -> CurveRebuildResult
-
-Behavior:
-
-* Input can be dense polyline or fitted curve.
-* Resample source points by arc length to target control point count.
-* For closed curves, distribute points around loop without duplicating first point.
-* For open curves, preserve first and last points.
-* Rebuild fitted curve using existing manual_curve.sample_manual_curve().
-* Clamp target_control_point_count:
-
-  * open min 2
-  * closed min 3
-  * max 256
-* Do not mutate original curve.
-* Never return NaN/inf.
-
-2. rebuild_stored_curve(
-   curve,
-   *,
-   curve_id,
-   name,
-   target_control_point_count,
-   curve_method,
-   sample_count,
-   ) -> StoredCurve
-
-Metadata:
-
-* creation_type: "rebuilt_curve"
-* source_curve_id
-* source_curve_name
-* source_curve_creation_type if available
-* rebuild_source_point_count
-* rebuild_target_control_point_count
-* rebuild_method
-* control_points
-* curve_method
-* sample_count
-* closed
-* source metadata should be preserved under a clear prefix or copied where useful
-
-Acceptance:
-
-* Dense boundary curves can be reduced to fewer control points.
-* Open curves preserve endpoints.
-* Closed curves stay closed.
-* Rebuilt curves remain editable.
-
----
-
-## Part D — Add Rebuild Selected Curve command
-
-Add command:
-
-Rebuild Selected Curve
-
-Available in:
-
-* Curves workbench
-* Manual RE workbench if curve selected
-* scene browser curve context menu, if low-risk
-
-UI controls:
-
-* Target Control Points
-* Curve Type:
-
-  * Smooth Curve
-  * Polyline
-* Sample Count
-
-Suggested defaults:
-
-* Target Control Points: 16
-* Curve Type: Smooth Curve
-* Sample Count: 128
-
-Behavior:
-
-* Requires exactly one selected/active curve.
-* Creates a new curve by default.
-* Does not overwrite source curve.
-* Selects new rebuilt curve.
-* Pushes undo command:
-  "Rebuild Curve"
-* Marks project dirty.
-
-Naming:
-
-* Rebuilt Curve 1
-  or:
-* <source name> Rebuilt
-
-Scene browser grouping:
-Curves
-Rebuilt Curves
-[V] Rebuilt Curve 1 (rebuilt)
-
-Grouping priority:
-
-1. Projected Curves
-2. Rebuilt Curves
-3. Region Boundaries
-4. Manual Curves
-5. Repaired/Processed Curves
-6. Section Result groups
-7. Unassigned
-
-Acceptance:
-
-* User can reduce a high-density boundary to a smaller editable smooth curve.
-* Original curve remains unchanged.
-* Rebuilt curve can be edited and used in fill/loft.
-* Undo/redo works.
-
----
-
-## Part E — Add surface-readiness validation
-
-Create module:
-
-src/curves/validation.py
-
-Purpose:
-Report whether selected curves are suitable for fill/loft/surface preview.
-
-Required dataclass:
-
-CurveSurfaceReadiness
-
-* curve_id: str
-* curve_name: str
-* point_count: int
-* control_point_count: int | None
-* is_closed: bool
-* is_manual_like: bool
-* is_projected: bool
-* is_region_boundary: bool
-* bounding_box_size: float
-* perimeter_or_length: float
-* endpoint_gap: float
-* planarity_error: float | None
-* mesh_projection_mean_distance: float | None
-* mesh_projection_max_distance: float | None
-* warnings: list[str]
-* errors: list[str]
-
-Required functions:
-
-1. validate_curve_for_fill(curve) -> CurveSurfaceReadiness
-
-Checks:
-
-* must be closed
-* must have at least 3 usable points
-* must not be degenerate
-* should report planarity error
-* should warn if point count is extremely high
-* should warn if endpoint gap is nonzero but within tolerance
-
-2. validate_curves_for_loft(curves) -> list[CurveSurfaceReadiness]
-
-Checks:
-
-* exactly two curves preferred
-* both must have at least 2 points
-* warn if one closed and one open
-* warn if point counts differ greatly
-* warn if bounding boxes differ extremely
-* warn if source metadata suggests different source regions/meshes
-
-3. estimate_curve_planarity_error(points) -> float
-
-Behavior:
-
+* use current fan fill as fallback
 * compute best-fit plane
-* return max distance from points to plane
-* handle invalid/degenerate curves safely
+* project boundary to local 2D plane
+* attempt simple polygon triangulation if feasible
+* if triangulation is too risky or fails, fall back to fan fill
+* report warning if fallback is used
 
-Do not prevent operations unless truly invalid.
-Surface preview commands may still run with warnings.
+Do not spend excessive time on perfect triangulation.
+Do not add dependencies.
+Concave curves may still be imperfect, but diagnostics must say so.
 
-Acceptance:
+2. four_curve_patch
+   Input:
 
-* Validation module can diagnose curve issues.
-* Does not crash on empty/invalid curves.
-* Does not mutate curves.
+* exactly four open or closed boundary/guide curves
 
----
+Purpose:
 
-## Part F — Add Curve Surface Readiness UI
-
-Curves workbench should display diagnostics for active/selected curve:
-
-* Type
-* Source
-* Point count
-* Control point count
-* Closed
-* Endpoint gap
-* Length/perimeter
-* Planarity error
-* Projection mean distance, if metadata exists
-* Projection max distance, if metadata exists
-* Surface readiness:
-
-  * Ready for Fill
-  * Ready for Loft
-  * Warnings
-  * Errors
-
-Add buttons:
-
-* Validate Selected Curve
-* Validate Selected Curves for Loft
+* creates a Coons-style surface preview from four ordered boundary curves
 
 Behavior:
 
-* If one curve selected:
+* resample each curve to a common count
+* infer/validate curve order if possible
+* if order cannot be inferred reliably, use selection order
+* build a Coons-style bilinear blended grid
+* triangulate grid into preview mesh
+* store diagnostics
 
-  * show fill readiness
-* If two curves selected:
+This is a preview mesh, not a real NURBS surface.
 
-  * show loft readiness
-* If no curve:
+3. curve_network_patch
+   Input:
 
-  * status "Select curve(s) to validate."
+* three or more curves
 
-Do not clutter the viewport.
-Keep diagnostics in sidebar/Analysis panel.
+Purpose:
 
-Acceptance:
+* early preview of a surface patch from multiple guide curves
 
-* User can tell why a curve fails fill/loft.
-* User can tell whether a dense boundary should be rebuilt.
-* Diagnostics update after projection/rebuild/edit.
+Behavior:
 
----
+* for now, support a conservative case:
 
-## Part G — Improve Fill/Loft preflight messages
+  * multiple roughly parallel guide curves
+  * resample all to common count
+  * stitch adjacent curves like loft strips
+* if curves are not compatible:
 
-Before Fill Closed Curve:
+  * return preview unavailable with clear reason
 
-* run validate_curve_for_fill()
-* if hard errors:
-
-  * do not create surface
-  * show first hard error in status
-* if warnings:
-
-  * allow creation but store warnings in surface metadata
-
-Before Loft Between Two Curves:
-
-* run validate_curves_for_loft()
-* if hard errors:
-
-  * do not create surface
-  * show first hard error in status
-* if warnings:
-
-  * allow creation but store warnings in surface metadata
-
-Surface metadata:
-
-* source_curve_validation_warnings
-* source_curve_validation_errors
-* source_curve_planarity_error if available
-* source_curve_projection_distance if available
-
-Do not rewrite existing surface preview algorithms in this task.
-
-Acceptance:
-
-* Fill/loft failures are more explainable.
-* Surface context can show validation warnings.
-* Existing valid fill/loft still works.
+Do not attempt arbitrary network solving yet.
 
 ---
 
-## Part H — Projected/Rebuilt curve metadata preservation
+## Part B — Surface preview backend changes
 
-Every derived curve must clearly track lineage.
+Modify or extend:
 
-Projected curve metadata must include:
+src/surfaces/surface_preview.py
 
-* creation_type = "projected_curve"
-* source_curve_id
-* source_curve_name
-* source_curve_creation_type
-* source_mesh_name
-* projection stats
-* control_points
-* curve_method
-* sample_count
+Add:
 
-Rebuilt curve metadata must include:
+SurfacePreviewMode constants or equivalent:
 
-* creation_type = "rebuilt_curve"
-* source_curve_id
-* source_curve_name
-* source_curve_creation_type
-* rebuild_source_point_count
-* rebuild_target_control_point_count
-* rebuild_method
-* control_points
-* curve_method
-* sample_count
+* CLOSED_CURVE_FILL
+* TWO_CURVE_LOFT
+* BOUNDARY_PATCH
+* FOUR_CURVE_PATCH
+* CURVE_NETWORK_PATCH
 
-If rebuilt from a projected curve:
+Add helper functions:
 
-* preserve source_mesh_name
-* preserve projection stats under original keys or copied keys
+1. build_boundary_patch_preview(surface, curve)
 
-If projected from a region boundary:
+Return:
 
-* preserve source_region_id
-* preserve source_region_name
-* preserve source_region_triangle_count
+* SurfacePreviewBuildResult
+
+Should:
+
+* validate curve is closed
+* clean points
+* estimate planarity
+* project to local plane
+* attempt triangulation or fan fallback
+* store diagnostics:
+
+  * preview_mode
+  * source_curve_count
+  * input_point_count
+  * planarity_error
+  * triangulation_method
+  * warning if fallback used
+
+2. build_four_curve_patch_preview(surface, curves)
+
+Return:
+
+* SurfacePreviewBuildResult
+
+Should:
+
+* require exactly four curves
+* clean/resample curves
+* align endpoints where practical
+* build a rectangular grid
+* triangulate grid cells
+* store diagnostics:
+
+  * preview_mode
+  * source_curve_count
+  * grid_u_count
+  * grid_v_count
+  * average_corner_gap
+  * max_corner_gap
+  * seam_reversal_applied flags if used
+  * warning if curve order is uncertain
+
+3. build_curve_network_patch_preview(surface, curves)
+
+Return:
+
+* SurfacePreviewBuildResult
+
+Should:
+
+* require at least three curves
+* resample all curves to same point count
+* stitch adjacent curves into strips
+* store diagnostics:
+
+  * preview_mode
+  * source_curve_count
+  * resampled_point_count
+  * strip_count
+  * average_pair_distance
+  * max_pair_distance
+  * warning if curve spacing varies heavily
+
+Rules:
+
+* never mutate source curves
+* never crash on invalid curves
+* return preview unavailable with reason instead of throwing
+* keep mesh output as SurfacePreviewMesh
+* keep existing build_surface_preview() public API if possible
 
 Acceptance:
 
-* User can inspect curve origin.
-* Future surface patch tools know curve lineage.
-* Project save/load preserves metadata.
+* one-curve fill still works
+* two-curve loft still works
+* four selected curves can generate preview patch
+* compatible multi-curve network can generate stitched preview
+* incompatible curves fail with clear reason
+
+---
+
+## Part C — Add surface creation commands
+
+Add commands:
+
+1. Create Boundary Patch From Curve
+   Input:
+
+* exactly one selected closed curve
+
+Creates:
+
+* SurfacePatch with surface_type="preview_boundary_patch"
+* preview_mode="boundary_patch"
+
+2. Create Four-Curve Patch
+   Input:
+
+* exactly four selected curves
+
+Creates:
+
+* SurfacePatch with surface_type="preview_four_curve_patch"
+* preview_mode="four_curve_patch"
+
+3. Create Curve Network Patch
+   Input:
+
+* three or more selected curves
+
+Creates:
+
+* SurfacePatch with surface_type="preview_curve_network_patch"
+* preview_mode="curve_network_patch"
+
+Keep existing:
+
+* Fill Closed Curve
+* Loft Between Two Curves
+
+Do not remove old commands.
+The new commands should be explicit, not hidden behind one overloaded button only.
+
+Acceptance:
+
+* commands are available from Surfaces workbench
+* commands validate selection count
+* commands create SurfacePatch objects
+* surfaces appear in scene browser
+* surface previews render in viewport
+* undo/redo works with created surfaces
+
+---
+
+## Part D — Surfaces workbench UI
+
+Update Surfaces workbench to expose clear surface workflows:
+
+Primary buttons:
+
+* Fill Closed Curve
+* Loft Between Two Curves
+* Create Boundary Patch
+* Create Four-Curve Patch
+* Create Curve Network Patch
+
+Source tools:
+
+* Select Source Curves
+* Isolate Source Curves
+* Show Source Curves
+* Frame Source Curves
+
+Diagnostics:
+
+* Surface type
+* Preview mode
+* Source curve count
+* Preview available
+* Preview reason
+* Warning
+* Grid size, if available
+* Planarity error, if available
+* Average pair distance, if available
+* Max pair distance, if available
+* Raw metadata remains available but should not be the only readable diagnostics
+
+Controls:
+
+* Opacity
+* Wireframe overlay
+* Delete Surface
+* Deselect
+
+Disabled states:
+
+* Create Boundary Patch disabled or fails gracefully unless one curve selected
+* Create Four-Curve Patch disabled or fails gracefully unless four curves selected
+* Create Curve Network Patch disabled or fails gracefully unless three or more curves selected
+
+Acceptance:
+
+* user can find new surface commands without top-menu hunting
+* surface diagnostics are readable
+* failed previews explain why
+
+---
+
+## Part E — Selection-order handling
+
+Four-curve patches depend on curve order.
+
+Implement simple selection-order support if already possible.
+
+If current selection system does not preserve order:
+
+* use scene browser order or curve collection order
+* store warning:
+  "Curve order inferred from scene order; inspect patch."
+
+Add optional buttons later if needed:
+
+* Move Source Curve Up
+* Move Source Curve Down
+
+Do not implement complex source-order editor in this task unless low-risk.
+
+For now:
+
+* create patch
+* if twisted, diagnostics should tell user to reorder/select differently in future task
+
+Acceptance:
+
+* four-curve command works predictably enough for simple test cases
+* uncertain ordering is documented in metadata warning
+* no silent bad patch without warning
+
+---
+
+## Part F — Surface metadata lineage
+
+Every surface created in this task must store:
+
+* preview_mode
+* source_curve_count
+* source_curve_ids
+* source_curve_names
+* source_curve_creation_types
+* source_curve_tags if available
+* source_region_ids if curves came from regions
+* source_mesh_names if available
+* preview_available
+* preview_reason
+* preview_warning
+* validation warnings/errors from source curves
+
+For boundary patch:
+
+* boundary_curve_id
+* boundary_curve_name
+* planarity_error
+* triangulation_method
+
+For four-curve patch:
+
+* curve_order
+* grid_u_count
+* grid_v_count
+* average_corner_gap
+* max_corner_gap
+
+For curve network patch:
+
+* network_curve_count
+* resampled_point_count
+* strip_count
+* average_pair_distance
+* max_pair_distance
+
+Acceptance:
+
+* user can inspect where surface came from
+* future export/fitting task can reuse metadata
+* project save/load preserves metadata
+
+---
+
+## Part G — Surface preview quality safeguards
+
+Add validation before creating surface preview:
+
+For boundary patch:
+
+* require one closed curve
+* require at least 3 usable points
+* warn if planarity error is high
+* warn if point count is very high and curve should be rebuilt
+
+For four-curve patch:
+
+* require four curves
+* require each curve has at least 2 usable points
+* warn if endpoint gaps between curves are large
+* warn if curves come from different source regions/meshes
+* warn if one curve is closed and others are open
+
+For curve network patch:
+
+* require at least three curves
+* require all curves have at least 2 usable points
+* warn if curve spacing varies heavily
+* warn if curve point counts differ heavily before resampling
+
+Do not make warnings fatal unless geometry is impossible.
+Fatal errors:
+
+* no usable points
+* too few curves
+* degenerate source curve
+* grid generation fails
+
+Acceptance:
+
+* invalid inputs fail cleanly
+* questionable inputs generate warnings
+* warnings are visible in surface context
+
+---
+
+## Part H — Better surface preview visuals
+
+Surface preview should remain visually distinct but not overpower the mesh.
+
+Requirements:
+
+* selected surface uses existing selected color style
+* unselected preview is darker/subtle
+* wireframe overlay remains useful
+* boundary/four-curve/network previews should show mesh grid/wireframe if enabled
+* opacity should apply consistently
+* surface updates when opacity/wireframe changes
+
+Optional:
+
+* show source curves highlighted while surface selected
+* existing source curve highlighting should continue working
+
+Acceptance:
+
+* new patches are visually readable
+* source curves remain understandable
+* opacity/wireframe controls still work
 
 ---
 
 ## Part I — Scene browser labels
 
-Add labels:
+Surface labels should distinguish preview type:
 
-Projected Curves:
+Examples:
 
-* [V] Projected Curve 1 (projected)
-* [V] Projected Curve 2 (projected, mesh)
-
-Rebuilt Curves:
-
-* [V] Rebuilt Curve 1 (rebuilt)
-* [V] Rebuilt Curve 2 (rebuilt, smooth)
-
-Boundary curves remain:
-
-* [V] Region Boundary 1 (boundary, closed)
+* [V] Fill Surface 1 (fill)
+* [V] Loft Surface 1 (loft)
+* [V] Boundary Patch 1 (boundary patch)
+* [V] Four-Curve Patch 1 (4-curve patch)
+* [V] Network Patch 1 (network patch)
 
 Do not show more than two tags.
 
-Priority for tags:
-
-1. projected
-2. rebuilt
-3. boundary
-4. mesh
-5. manual
-6. smooth/polyline
-7. closed/open
-8. tiny
+Surface group remains:
+Surfaces
+[V] Boundary Patch 1 (boundary patch)
 
 Acceptance:
 
-* Derived curves are easy to find.
-* User can distinguish projected/rebuilt/boundary/manual curves.
+* user can identify surface preview type from scene browser
+* visibility/delete/select still works
 
 ---
 
-## Part J — Tests
+## Part J — Undo/redo
+
+All new surface creation commands must be undoable.
+
+Undo:
+
+* removes created surface
+* refreshes scene browser
+* refreshes viewport
+* restores selection fallback
+
+Redo:
+
+* restores surface
+* refreshes scene browser
+* refreshes viewport
+
+Use existing created-surface undo pathway if present.
+
+Acceptance:
+
+* Create patch
+* Undo removes it
+* Redo restores it
+* project dirty state updates correctly
+
+---
+
+## Part K — Tests
 
 Add/update tests for:
 
-Projection backend:
+Surface preview backend:
 
-* project empty curve returns safe result
-* project curve to simple mesh returns same point count
-* projected curve metadata contains projection stats
-* missed points are preserved when enabled
-* invalid mesh handled safely
-* closed state preserved
+* boundary patch rejects open curve
+* boundary patch accepts closed curve
+* boundary patch returns preview mesh
+* boundary patch stores planarity diagnostics
+* four-curve patch rejects wrong curve count
+* four-curve patch accepts simple rectangular four-curve input
+* four-curve patch creates grid mesh
+* curve network patch rejects fewer than three curves
+* curve network patch accepts compatible parallel curves
+* curve network patch creates strip mesh
+* invalid curves do not crash
+* warnings stored in result diagnostics
 
-Projection UI:
+Surface creation commands:
 
-* Project Selected Curve to Mesh requires mesh
-* Project Selected Curve to Mesh requires one curve
-* command creates new StoredCurve
-* original curve unchanged
-* projected curve selected
-* undo removes projected curve
-* redo restores projected curve
+* Create Boundary Patch requires one closed curve
+* Create Boundary Patch creates SurfacePatch
+* Create Four-Curve Patch requires four curves
+* Create Four-Curve Patch creates SurfacePatch
+* Create Curve Network Patch requires at least three curves
+* Create Curve Network Patch creates SurfacePatch
+* all commands store source_curve_ids
+* all commands store preview_mode
+* undo/redo works for each new surface type
 
-Rebuild backend:
+UI/workbench:
 
-* rebuild open curve preserves endpoints
-* rebuild closed curve remains closed
-* rebuild dense curve reduces control point count
-* target count clamps safely
-* no NaN/inf output
-* metadata includes source curve info
-
-Rebuild UI:
-
-* Rebuild Selected Curve requires one curve
-* command creates new StoredCurve
-* original curve unchanged
-* rebuilt curve selected
-* undo/redo works
-
-Validation:
-
-* fill validation rejects open curve
-* fill validation accepts closed non-degenerate curve
-* validation reports planarity error
-* validation warns on very high point count
-* loft validation warns on one-open/one-closed pair
-* loft validation reports point-count mismatch
-* invalid/empty curves do not crash
-
-Fill/loft preflight:
-
-* Fill Closed Curve reports validation error clearly
-* Fill Closed Curve stores validation warnings
-* Loft Between Two Curves stores validation warnings
-* existing valid fill/loft still creates preview
+* Surfaces workbench shows new buttons
+* disabled/failure states are clear
+* diagnostics update for selected surface
+* opacity/wireframe controls still work
 
 Scene browser:
 
-* Projected Curves group appears
-* Rebuilt Curves group appears
-* labels include projected/rebuilt tags
-* visibility/delete/select works
+* surface labels include fill/loft/boundary patch/4-curve patch/network patch tags
+* selecting surface shows source curves
+* delete surface works
 
 Regression:
 
-* manual curve creation/edit still works
-* region select still works
-* region boundary extraction still works
-* surface fill/loft still works
-* project save/load preserves projected/rebuilt metadata
+* existing Fill Closed Curve still works
+* existing Loft Between Two Curves still works
+* manual curve edit still works
+* projected curves still work
+* rebuilt curves still work
+* region boundary curves still work
+* project save/load still works
 
 Acceptance:
 
 * pytest passes
 * app launches
-* mesh loading works
-* user can project a curve to mesh
-* user can rebuild a dense curve into fewer control points
-* user can validate curve surface readiness
-* fill/loft status messages become clearer
-* no surface fitting yet
-* no BREP/NURBS integration yet
+* user can create boundary patch preview
+* user can create four-curve patch preview
+* user can create curve-network patch preview
+* source curves remain selectable/highlightable
+* no BREP/NURBS export yet
+* no pboyer/verb integration yet
 
 ## Stop after this task.

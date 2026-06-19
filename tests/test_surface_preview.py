@@ -10,9 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from curves.curve_state import StoredCurve
 from surfaces.surface_preview import (
+    BOUNDARY_PATCH,
+    CLOSED_CURVE_FILL,
+    CURVE_NETWORK_PATCH,
+    FOUR_CURVE_PATCH,
     FAN_FILL_WARNING,
     LOFT_PAIR_DISTANCE_WARNING,
     SurfacePreviewMesh,
+    build_boundary_patch_preview,
+    build_curve_network_patch_preview,
+    build_four_curve_patch_preview,
     build_surface_preview,
     build_surface_preview_mesh,
 )
@@ -43,12 +50,16 @@ def _surface(
     source_curve_ids: list[str],
     *,
     surface_id: str = "surface-1",
+    surface_type: str = "placeholder",
+    preview_mode: str | None = None,
 ) -> SurfacePatch:
+    metadata = {} if preview_mode is None else {"preview_mode": preview_mode}
     return SurfacePatch(
         id=surface_id,
         name="Surface 1",
         source_curve_ids=source_curve_ids,
-        surface_type="placeholder",
+        surface_type=surface_type,
+        metadata=metadata,
     )
 
 
@@ -369,6 +380,149 @@ class SurfacePreviewTests(unittest.TestCase):
         self.assertFalse(result.preview_available)
         self.assertIsNone(result.mesh)
         self.assertEqual(result.reason, "preview unavailable: unsupported curve count")
+
+    def test_boundary_patch_rejects_open_curve(self) -> None:
+        curve = _curve(
+            "curve-open",
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)],
+            is_closed=False,
+        )
+
+        result = build_boundary_patch_preview(
+            _surface([curve.id], preview_mode=BOUNDARY_PATCH),
+            curve,
+        )
+
+        self.assertFalse(result.preview_available)
+        self.assertIsNone(result.mesh)
+        self.assertEqual(result.reason, "boundary patch requires one closed curve")
+
+    def test_boundary_patch_accepts_closed_curve_with_planarity_diagnostics(self) -> None:
+        curve = _curve(
+            "curve-boundary",
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+            ],
+            is_closed=True,
+        )
+
+        result = build_surface_preview(
+            _surface([curve.id], surface_type="preview_boundary_patch"),
+            [curve],
+        )
+
+        self.assertTrue(result.preview_available)
+        self.assertEqual(result.reason, "boundary patch preview generated")
+        self.assertEqual(result.diagnostics["preview_mode"], BOUNDARY_PATCH)
+        self.assertEqual(result.diagnostics["source_curve_count"], 1)
+        self.assertEqual(result.diagnostics["input_point_count"], 4)
+        self.assertEqual(result.diagnostics["planarity_error"], 0.0)
+        self.assertEqual(result.diagnostics["triangulation_method"], "ear_clipping")
+        self.assertIsInstance(result.mesh, SurfacePreviewMesh)
+        assert result.mesh is not None
+        self.assertEqual(result.mesh.vertices.shape, (4, 3))
+        self.assertEqual(result.mesh.faces.shape, (2, 3))
+
+    def test_four_curve_patch_rejects_wrong_curve_count(self) -> None:
+        curves = [
+            _curve("curve-a", [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], is_closed=False),
+            _curve("curve-b", [(1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], is_closed=False),
+            _curve("curve-c", [(0.0, 1.0, 0.0), (1.0, 1.0, 0.0)], is_closed=False),
+        ]
+
+        result = build_four_curve_patch_preview(
+            _surface([curve.id for curve in curves], preview_mode=FOUR_CURVE_PATCH),
+            curves,
+        )
+
+        self.assertFalse(result.preview_available)
+        self.assertEqual(result.reason, "four-curve patch requires exactly four curves")
+
+    def test_four_curve_patch_accepts_rectangular_input_and_creates_grid(self) -> None:
+        curves = [
+            _curve("bottom", [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], is_closed=False),
+            _curve("right", [(1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], is_closed=False),
+            _curve("top", [(0.0, 1.0, 0.0), (1.0, 1.0, 0.0)], is_closed=False),
+            _curve("left", [(0.0, 0.0, 0.0), (0.0, 1.0, 0.0)], is_closed=False),
+        ]
+
+        result = build_surface_preview(
+            _surface([curve.id for curve in curves], preview_mode=FOUR_CURVE_PATCH),
+            curves,
+        )
+
+        self.assertTrue(result.preview_available)
+        self.assertEqual(result.reason, "four-curve patch preview generated")
+        self.assertEqual(result.warning, "Curve order inferred from scene order; inspect patch.")
+        self.assertEqual(result.diagnostics["grid_u_count"], 2)
+        self.assertEqual(result.diagnostics["grid_v_count"], 2)
+        self.assertEqual(result.diagnostics["max_corner_gap"], 0.0)
+        assert result.mesh is not None
+        self.assertEqual(result.mesh.vertices.shape, (4, 3))
+        self.assertEqual(result.mesh.faces.shape, (2, 3))
+
+    def test_curve_network_patch_rejects_fewer_than_three_curves(self) -> None:
+        curves = [
+            _curve("curve-a", [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], is_closed=False),
+            _curve("curve-b", [(0.0, 1.0, 0.0), (1.0, 1.0, 0.0)], is_closed=False),
+        ]
+
+        result = build_curve_network_patch_preview(
+            _surface([curve.id for curve in curves], preview_mode=CURVE_NETWORK_PATCH),
+            curves,
+        )
+
+        self.assertFalse(result.preview_available)
+        self.assertEqual(result.reason, "curve network patch requires at least three curves")
+
+    def test_curve_network_patch_accepts_parallel_curves_and_creates_strips(self) -> None:
+        curves = [
+            _curve(
+                f"curve-{index}",
+                [(0.0, float(index), 0.0), (0.5, float(index), 0.0), (1.0, float(index), 0.0)],
+                is_closed=False,
+            )
+            for index in range(3)
+        ]
+
+        result = build_surface_preview(
+            _surface([curve.id for curve in curves], preview_mode=CURVE_NETWORK_PATCH),
+            curves,
+        )
+
+        self.assertTrue(result.preview_available)
+        self.assertEqual(result.reason, "curve network patch preview generated")
+        self.assertEqual(result.diagnostics["preview_mode"], CURVE_NETWORK_PATCH)
+        self.assertEqual(result.diagnostics["network_curve_count"], 3)
+        self.assertEqual(result.diagnostics["strip_count"], 2)
+        self.assertEqual(result.diagnostics["resampled_point_count"], 3)
+        self.assertEqual(result.diagnostics["average_pair_distance"], 1.0)
+        self.assertEqual(result.diagnostics["max_pair_distance"], 1.0)
+        assert result.mesh is not None
+        self.assertEqual(result.mesh.vertices.shape, (9, 3))
+        self.assertEqual(result.mesh.faces.shape, (8, 3))
+
+    def test_curve_network_patch_stores_spacing_warning(self) -> None:
+        curves = [
+            _curve("curve-a", [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], is_closed=False),
+            _curve("curve-b", [(0.0, 0.2, 0.0), (1.0, 0.2, 0.0)], is_closed=False),
+            _curve("curve-c", [(0.0, 5.0, 0.0), (1.0, 5.0, 0.0)], is_closed=False),
+        ]
+
+        result = build_surface_preview(
+            _surface([curve.id for curve in curves], preview_mode=CURVE_NETWORK_PATCH),
+            curves,
+        )
+
+        self.assertTrue(result.preview_available)
+        self.assertEqual(result.warning, "Curve network spacing varies heavily; inspect patch.")
+        self.assertIn(
+            "Curve network spacing varies heavily; inspect patch.",
+            result.diagnostics["warnings"],
+        )
 
 
 if __name__ == "__main__":

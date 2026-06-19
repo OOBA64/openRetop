@@ -191,7 +191,12 @@ from surfaces.surface_state import (
     set_selected_surfaces,
 )
 from surfaces.surface_preview import (
+    BOUNDARY_PATCH,
+    CURVE_NETWORK_PATCH,
+    FOUR_CURVE_PATCH,
     SurfacePreviewMesh,
+    TWO_CURVE_LOFT,
+    CLOSED_CURVE_FILL,
     build_surface_preview,
     build_surface_preview_mesh,
 )
@@ -528,16 +533,21 @@ class OpenRetopWindow:
         self.surface_visible = BooleanVar(value=True)
         self.surface_name_text = StringVar(value="(none)")
         self.surface_type_text = StringVar(value="(none)")
+        self.surface_preview_mode_text = StringVar(value="(none)")
         self.surface_source_curve_count_text = StringVar(value="0")
         self.surface_source_curve_names_text = StringVar(value="(none)")
         self.surface_preview_available_text = StringVar(value="(none)")
         self.surface_preview_reason_text = StringVar(value="(none)")
         self.surface_preview_warning_text = StringVar(value="(none)")
+        self.surface_grid_size_text = StringVar(value="(none)")
+        self.surface_planarity_error_text = StringVar(value="(none)")
         self.surface_resampled_point_count_text = StringVar(value="(none)")
         self.surface_reversed_second_curve_text = StringVar(value="(none)")
         self.surface_seam_shift_applied_text = StringVar(value="(none)")
         self.surface_average_pair_distance_text = StringVar(value="(none)")
         self.surface_max_pair_distance_text = StringVar(value="(none)")
+        self.surface_validation_warnings_text = StringVar(value="(none)")
+        self.surface_validation_errors_text = StringVar(value="(none)")
         self.surface_opacity = DoubleVar(value=0.22)
         self.surface_opacity_text = StringVar(value="0.22")
         self.surface_wireframe_overlay = BooleanVar(value=True)
@@ -2663,6 +2673,45 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.boundary_patch_button = ttk.Button(
+            parent,
+            text="Create Boundary Patch",
+            command=self.create_boundary_patch_from_curve,
+        )
+        self.boundary_patch_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.four_curve_patch_button = ttk.Button(
+            parent,
+            text="Create Four-Curve Patch",
+            command=self.create_four_curve_patch,
+        )
+        self.four_curve_patch_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.curve_network_patch_button = ttk.Button(
+            parent,
+            text="Create Curve Network Patch",
+            command=self.create_curve_network_patch,
+        )
+        self.curve_network_patch_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
         self.surface_visible_check = ttk.Checkbutton(
             parent,
             text="Visible",
@@ -2678,6 +2727,7 @@ class OpenRetopWindow:
             self._on_surface_name_changed,
         )
         row = self._add_info_row(parent, row, "Type", self.surface_type_text)
+        row = self._add_info_row(parent, row, "Preview mode", self.surface_preview_mode_text)
         row = self._add_info_row(
             parent,
             row,
@@ -2702,6 +2752,13 @@ class OpenRetopWindow:
             row,
             "Preview warning",
             self.surface_preview_warning_text,
+        )
+        row = self._add_info_row(parent, row, "Grid size", self.surface_grid_size_text)
+        row = self._add_info_row(
+            parent,
+            row,
+            "Planarity error",
+            self.surface_planarity_error_text,
         )
         row = self._add_info_row(
             parent,
@@ -2732,6 +2789,18 @@ class OpenRetopWindow:
             row,
             "Max pair distance",
             self.surface_max_pair_distance_text,
+        )
+        row = self._add_info_row(
+            parent,
+            row,
+            "Validation warnings",
+            self.surface_validation_warnings_text,
+        )
+        row = self._add_info_row(
+            parent,
+            row,
+            "Validation errors",
+            self.surface_validation_errors_text,
         )
         row = self._add_info_row(parent, row, "Opacity", self.surface_opacity_text)
         self.surface_opacity_slider = ttk.Scale(
@@ -5753,7 +5822,7 @@ class OpenRetopWindow:
         self._create_surface_preview(
             source_curves,
             surface_type="preview_fill",
-            preview_mode="closed_curve_fill",
+            preview_mode=CLOSED_CURVE_FILL,
             source_label="selected_curve",
             name_prefix="Fill Surface",
             success_action="Filled",
@@ -5778,11 +5847,93 @@ class OpenRetopWindow:
         self._create_surface_preview(
             source_curves,
             surface_type="preview_loft",
-            preview_mode="two_curve_loft",
+            preview_mode=TWO_CURVE_LOFT,
             source_label="selected_curves",
             name_prefix="Loft Surface",
             success_action="Lofted",
             validation_readiness=readiness,
+        )
+
+    def create_boundary_patch_from_curve(self) -> None:
+        source_curves = self._surface_source_curves_from_selection()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        if len(source_curves) != 1:
+            self.status_text.set("Create Boundary Patch requires one closed curve.")
+            return
+
+        readiness = validate_curve_for_fill(source_curves[0])
+        if readiness.errors:
+            self._set_curve_readiness_display([readiness], mode="fill")
+            if not readiness.is_closed:
+                self.status_text.set("Create Boundary Patch requires one closed curve.")
+            else:
+                self.status_text.set(readiness.errors[0])
+            return
+
+        source_curve = source_curves[0]
+        self._create_surface_preview(
+            source_curves,
+            surface_type="preview_boundary_patch",
+            preview_mode=BOUNDARY_PATCH,
+            source_label="selected_curve",
+            name_prefix="Boundary Patch",
+            success_action="Created",
+            validation_readiness=[readiness],
+            extra_metadata={
+                "boundary_curve_id": source_curve.id,
+                "boundary_curve_name": source_curve.name,
+            },
+        )
+
+    def create_four_curve_patch(self) -> None:
+        source_curves = self._surface_source_curves_from_selection()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        warnings, errors = self._surface_patch_validation_messages(
+            source_curves,
+            preview_mode=FOUR_CURVE_PATCH,
+        )
+        if errors:
+            self.status_text.set(errors[0])
+            return
+
+        self._create_surface_preview(
+            source_curves,
+            surface_type="preview_four_curve_patch",
+            preview_mode=FOUR_CURVE_PATCH,
+            source_label="selected_curves",
+            name_prefix="Four-Curve Patch",
+            success_action="Created",
+            validation_warnings=warnings,
+            validation_errors=errors,
+            extra_metadata={"curve_order": [curve.id for curve in source_curves]},
+        )
+
+    def create_curve_network_patch(self) -> None:
+        source_curves = self._surface_source_curves_from_selection()
+        if not self.app_state.curve_collection.curves:
+            self.status_text.set("No curves available")
+            return
+        warnings, errors = self._surface_patch_validation_messages(
+            source_curves,
+            preview_mode=CURVE_NETWORK_PATCH,
+        )
+        if errors:
+            self.status_text.set(errors[0])
+            return
+
+        self._create_surface_preview(
+            source_curves,
+            surface_type="preview_curve_network_patch",
+            preview_mode=CURVE_NETWORK_PATCH,
+            source_label="selected_curves",
+            name_prefix="Network Patch",
+            success_action="Created",
+            validation_warnings=warnings,
+            validation_errors=errors,
         )
 
     def _create_surface_preview(
@@ -5795,17 +5946,36 @@ class OpenRetopWindow:
         name_prefix: str,
         success_action: str,
         validation_readiness: Sequence[CurveSurfaceReadiness] | None = None,
+        validation_warnings: Sequence[str] | None = None,
+        validation_errors: Sequence[str] | None = None,
+        extra_metadata: dict[str, object] | None = None,
     ) -> None:
         source_curve_names = [curve.name for curve in source_curves]
         metadata: dict[str, object] = {
             "curve_count": len(source_curves),
             "source_curve_count": len(source_curves),
+            "source_curve_ids": [curve.id for curve in source_curves],
             "source_curve_names": source_curve_names,
             "source": source_label,
             "preview_mode": preview_mode,
+            "source_curve_validation_warnings": [],
+            "source_curve_validation_errors": [],
         }
+        metadata.update(self._surface_source_lineage_metadata(source_curves))
         if validation_readiness is not None:
             metadata.update(self._surface_validation_metadata(validation_readiness))
+        if validation_warnings:
+            metadata["source_curve_validation_warnings"] = self._merged_metadata_strings(
+                metadata.get("source_curve_validation_warnings"),
+                validation_warnings,
+            )
+        if validation_errors:
+            metadata["source_curve_validation_errors"] = self._merged_metadata_strings(
+                metadata.get("source_curve_validation_errors"),
+                validation_errors,
+            )
+        if extra_metadata:
+            metadata.update(extra_metadata)
         surface = SurfacePatch(
             id=f"surface-{uuid4().hex}",
             name=self._next_surface_name(name_prefix),
@@ -5834,8 +6004,13 @@ class OpenRetopWindow:
         surface.metadata["preview_available"] = bool(preview_result.preview_available)
         surface.metadata["preview_reason"] = preview_result.reason
         surface.metadata.update(preview_result.diagnostics)
-        if preview_result.warning:
-            surface.metadata["preview_warning"] = preview_result.warning
+        surface.metadata["preview_warning"] = preview_result.warning or ""
+        backend_warnings = preview_result.diagnostics.get("warnings")
+        if isinstance(backend_warnings, list):
+            surface.metadata["source_curve_validation_warnings"] = self._merged_metadata_strings(
+                surface.metadata.get("source_curve_validation_warnings"),
+                backend_warnings,
+            )
         if preview_result.mesh is None:
             self.status_text.set(f"Surface preview unavailable: {preview_result.reason}")
             return
@@ -5855,6 +6030,256 @@ class OpenRetopWindow:
 
         active_curve = self._active_curve()
         return [] if active_curve is None else [active_curve]
+
+    def _surface_patch_validation_messages(
+        self,
+        curves: Sequence[StoredCurve],
+        *,
+        preview_mode: str,
+    ) -> tuple[list[str], list[str]]:
+        warnings: list[str] = []
+        errors: list[str] = []
+        if preview_mode == FOUR_CURVE_PATCH and len(curves) != 4:
+            errors.append("Select exactly four curves for a four-curve patch.")
+        if preview_mode == CURVE_NETWORK_PATCH and len(curves) < 3:
+            errors.append("Select at least three curves for a curve network patch.")
+        if errors:
+            return warnings, errors
+
+        curve_points: list[np.ndarray] = []
+        for curve in curves:
+            points = self._surface_patch_curve_points(curve)
+            if len(points) < 2:
+                errors.append(f"{curve.name} has too few usable points.")
+                continue
+            if self._surface_patch_curve_length(points) <= 1e-8:
+                errors.append(f"{curve.name} is degenerate.")
+                continue
+            curve_points.append(points)
+        if errors:
+            return warnings, errors
+
+        warnings.extend(self._surface_source_mismatch_warnings(curves))
+        closed_values = [self._curve_is_closed_for_fill(curve) for curve in curves]
+        if any(closed_values) and not all(closed_values):
+            warnings.append("Surface patch mixes open and closed curves.")
+
+        point_counts = [len(points) for points in curve_points]
+        if point_counts and self._surface_count_ratio(min(point_counts), max(point_counts)) > 3.0:
+            warnings.append("Surface patch source curves have very different point counts.")
+
+        if preview_mode == FOUR_CURVE_PATCH:
+            warnings.append("Curve order inferred from scene order; inspect patch.")
+            corner_gaps = self._four_curve_corner_gaps(curve_points)
+            if corner_gaps:
+                average_length = max(
+                    float(
+                        np.mean(
+                            [
+                                self._surface_patch_curve_length(points)
+                                for points in curve_points
+                            ]
+                        )
+                    ),
+                    1e-8,
+                )
+                if max(corner_gaps) > average_length * 0.25:
+                    warnings.append("Four-curve patch endpoint gaps are large.")
+
+        if preview_mode == CURVE_NETWORK_PATCH:
+            spacing_ratio = self._curve_network_spacing_ratio(curve_points)
+            if spacing_ratio > 3.0:
+                warnings.append("Curve network spacing varies heavily; inspect patch.")
+
+        return list(dict.fromkeys(warnings)), []
+
+    @staticmethod
+    def _surface_patch_curve_points(curve: StoredCurve) -> np.ndarray:
+        try:
+            points = np.asarray(curve.fitted_points, dtype=float)
+        except (TypeError, ValueError):
+            return np.zeros((0, 3), dtype=float)
+        if points.size == 0:
+            return np.zeros((0, 3), dtype=float)
+        try:
+            points = points.reshape((-1, 3))
+        except ValueError:
+            return np.zeros((0, 3), dtype=float)
+        points = points[np.all(np.isfinite(points), axis=1)]
+        if len(points) <= 1:
+            return points.astype(float, copy=True)
+        cleaned = [points[0]]
+        for point in points[1:]:
+            if np.linalg.norm(point - cleaned[-1]) > 1e-8:
+                cleaned.append(point)
+        if len(cleaned) > 1 and np.linalg.norm(cleaned[0] - cleaned[-1]) <= 1e-8:
+            cleaned.pop()
+        return np.asarray(cleaned, dtype=float).reshape((-1, 3))
+
+    @staticmethod
+    def _surface_patch_curve_length(points: np.ndarray) -> float:
+        if len(points) < 2:
+            return 0.0
+        return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+
+    @staticmethod
+    def _surface_count_ratio(first: int | float, second: int | float) -> float:
+        smaller = max(min(float(first), float(second)), 1e-8)
+        larger = max(float(first), float(second), 1e-8)
+        return larger / smaller
+
+    @staticmethod
+    def _four_curve_corner_gaps(curve_points: Sequence[np.ndarray]) -> list[float]:
+        if len(curve_points) != 4:
+            return []
+        bottom, right, top, left = curve_points
+        return [
+            float(np.linalg.norm(bottom[0] - left[0])),
+            float(np.linalg.norm(bottom[-1] - right[0])),
+            float(min(np.linalg.norm(top[0] - left[-1]), np.linalg.norm(top[-1] - left[-1]))),
+            float(min(np.linalg.norm(top[-1] - right[-1]), np.linalg.norm(top[0] - right[-1]))),
+        ]
+
+    def _curve_network_spacing_ratio(self, curve_points: Sequence[np.ndarray]) -> float:
+        if len(curve_points) < 2:
+            return 1.0
+        target_count = min(max(max(len(points) for points in curve_points), 2), 64)
+        resampled: list[np.ndarray] = []
+        for points in curve_points:
+            candidate = self._resample_surface_patch_points(points, target_count)
+            if candidate is None:
+                return 1.0
+            if resampled:
+                direct = float(np.mean(np.linalg.norm(resampled[-1] - candidate, axis=1)))
+                reversed_candidate = candidate[::-1]
+                reversed_distance = float(
+                    np.mean(np.linalg.norm(resampled[-1] - reversed_candidate, axis=1))
+                )
+                if reversed_distance < direct:
+                    candidate = reversed_candidate
+            resampled.append(candidate)
+        strip_distances = [
+            float(np.mean(np.linalg.norm(first - second, axis=1)))
+            for first, second in zip(resampled, resampled[1:])
+        ]
+        if not strip_distances:
+            return 1.0
+        return self._surface_count_ratio(min(strip_distances), max(strip_distances))
+
+    @staticmethod
+    def _resample_surface_patch_points(
+        points: np.ndarray,
+        target_count: int,
+    ) -> np.ndarray | None:
+        if len(points) == target_count:
+            return points.copy()
+        segment_lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+        total_length = float(np.sum(segment_lengths))
+        if total_length <= 1e-8:
+            return None
+        cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+        distances = np.linspace(0.0, total_length, target_count)
+        segment_indices = np.searchsorted(cumulative, distances, side="right") - 1
+        segment_indices = np.clip(segment_indices, 0, len(segment_lengths) - 1)
+        local_lengths = segment_lengths[segment_indices].reshape((-1, 1))
+        fractions = np.divide(
+            (distances - cumulative[segment_indices]).reshape((-1, 1)),
+            local_lengths,
+            out=np.zeros((len(distances), 1), dtype=float),
+            where=local_lengths > 1e-8,
+        )
+        lower = segment_indices
+        upper = np.minimum(segment_indices + 1, len(points) - 1)
+        resampled = points[lower] * (1.0 - fractions) + points[upper] * fractions
+        resampled[0] = points[0]
+        resampled[-1] = points[-1]
+        return resampled
+
+    @staticmethod
+    def _surface_source_mismatch_warnings(curves: Sequence[StoredCurve]) -> list[str]:
+        warnings: list[str] = []
+        mesh_names: set[str] = set()
+        region_ids: set[str] = set()
+        for curve in curves:
+            metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+            mesh_name = metadata.get("source_mesh_name")
+            region_id = metadata.get("source_region_id")
+            if mesh_name:
+                mesh_names.add(str(mesh_name))
+            if region_id:
+                region_ids.add(str(region_id))
+        if len(mesh_names) > 1:
+            warnings.append("Surface source curves come from different source meshes.")
+        if len(region_ids) > 1:
+            warnings.append("Surface source curves come from different source regions.")
+        return warnings
+
+    def _surface_source_lineage_metadata(
+        self,
+        source_curves: Sequence[StoredCurve],
+    ) -> dict[str, object]:
+        creation_types: list[str] = []
+        tags: list[str] = []
+        region_ids: list[str] = []
+        mesh_names: list[str] = []
+        for curve in source_curves:
+            metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+            creation_type = str(metadata.get("creation_type", "")).strip()
+            creation_types.append(creation_type)
+            tags.extend(self._surface_source_curve_tags(curve))
+            region_id = metadata.get("source_region_id")
+            mesh_name = metadata.get("source_mesh_name")
+            if region_id:
+                region_ids.append(str(region_id))
+            if mesh_name:
+                mesh_names.append(str(mesh_name))
+        lineage: dict[str, object] = {
+            "source_curve_creation_types": creation_types,
+            "source_curve_tags": list(dict.fromkeys(tags)),
+        }
+        if region_ids:
+            lineage["source_region_ids"] = list(dict.fromkeys(region_ids))
+        if mesh_names:
+            lineage["source_mesh_names"] = list(dict.fromkeys(mesh_names))
+        return lineage
+
+    @staticmethod
+    def _surface_source_curve_tags(curve: StoredCurve) -> list[str]:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        explicit_tags = metadata.get("source_curve_tags", metadata.get("tags"))
+        tags: list[str] = []
+        if isinstance(explicit_tags, list):
+            tags.extend(str(tag) for tag in explicit_tags if str(tag))
+        creation_type = str(metadata.get("creation_type", "")).strip().lower()
+        if creation_type == "projected_curve":
+            tags.append("projected")
+        elif creation_type == "rebuilt_curve":
+            tags.append("rebuilt")
+        elif creation_type == "region_boundary" or "source_region_id" in metadata:
+            tags.append("boundary")
+        elif creation_type in {"manual", "curve_on_mesh"}:
+            tags.append("manual")
+        if str(metadata.get("snap_mode", "")).strip().lower() == "mesh" or metadata.get("snap_to_mesh"):
+            tags.append("mesh")
+        curve_method = str(metadata.get("curve_method", "")).strip().lower()
+        if curve_method == "polyline":
+            tags.append("polyline")
+        elif curve_method:
+            tags.append("smooth")
+        return list(dict.fromkeys(tags))
+
+    @staticmethod
+    def _merged_metadata_strings(
+        existing: object,
+        additions: Sequence[object],
+    ) -> list[str]:
+        values: list[str] = []
+        if isinstance(existing, list):
+            values.extend(str(value) for value in existing if str(value))
+        elif existing:
+            values.append(str(existing))
+        values.extend(str(value) for value in additions if str(value))
+        return list(dict.fromkeys(values))
 
     def _surface_validation_metadata(
         self,
@@ -7668,16 +8093,21 @@ class OpenRetopWindow:
                 self.surface_visible.set(False)
                 self.surface_name_text.set("(none)")
                 self.surface_type_text.set("(none)")
+                self.surface_preview_mode_text.set("(none)")
                 self.surface_source_curve_count_text.set("0")
                 self.surface_source_curve_names_text.set("(none)")
                 self.surface_preview_available_text.set("(none)")
                 self.surface_preview_reason_text.set("(none)")
                 self.surface_preview_warning_text.set("(none)")
+                self.surface_grid_size_text.set("(none)")
+                self.surface_planarity_error_text.set("(none)")
                 self.surface_resampled_point_count_text.set("(none)")
                 self.surface_reversed_second_curve_text.set("(none)")
                 self.surface_seam_shift_applied_text.set("(none)")
                 self.surface_average_pair_distance_text.set("(none)")
                 self.surface_max_pair_distance_text.set("(none)")
+                self.surface_validation_warnings_text.set("(none)")
+                self.surface_validation_errors_text.set("(none)")
                 self.surface_opacity.set(SURFACE_PREVIEW_DEFAULT_OPACITY)
                 self.surface_opacity_text.set(f"{SURFACE_PREVIEW_DEFAULT_OPACITY:.2f}")
                 self.surface_wireframe_overlay.set(True)
@@ -7693,6 +8123,9 @@ class OpenRetopWindow:
             self.surface_visible.set(bool(active_surface.visible))
             self.surface_name_text.set(active_surface.name)
             self.surface_type_text.set(active_surface.surface_type)
+            self.surface_preview_mode_text.set(
+                str(metadata.get("preview_mode") or "(none)")
+            )
             self.surface_source_curve_count_text.set(str(len(active_surface.source_curve_ids)))
             self.surface_source_curve_names_text.set(
                 self._surface_source_curve_names_summary(active_surface)
@@ -7705,6 +8138,15 @@ class OpenRetopWindow:
             )
             self.surface_preview_warning_text.set(
                 str(metadata.get("preview_warning") or "(none)")
+            )
+            self.surface_grid_size_text.set(self._surface_grid_size_text(metadata))
+            self.surface_planarity_error_text.set(
+                self._surface_metadata_float_text(
+                    metadata,
+                    "planarity_error"
+                    if "planarity_error" in metadata
+                    else "source_curve_planarity_error",
+                )
             )
             self.surface_resampled_point_count_text.set(
                 self._surface_metadata_int_text(metadata, "resampled_point_count")
@@ -7720,6 +8162,16 @@ class OpenRetopWindow:
             )
             self.surface_max_pair_distance_text.set(
                 self._surface_metadata_float_text(metadata, "max_pair_distance")
+            )
+            self.surface_validation_warnings_text.set(
+                self._surface_metadata_list_text(
+                    metadata.get("source_curve_validation_warnings")
+                )
+            )
+            self.surface_validation_errors_text.set(
+                self._surface_metadata_list_text(
+                    metadata.get("source_curve_validation_errors")
+                )
             )
             self.surface_opacity.set(opacity)
             self.surface_opacity_text.set(f"{opacity:.2f}")
@@ -7759,6 +8211,26 @@ class OpenRetopWindow:
         if "preview_available" not in metadata:
             return "(unknown)"
         return "Yes" if bool(metadata["preview_available"]) else "No"
+
+    @staticmethod
+    def _surface_grid_size_text(metadata: dict[str, object]) -> str:
+        u_count = metadata.get("grid_u_count")
+        v_count = metadata.get("grid_v_count")
+        if u_count is None or v_count is None:
+            return "(none)"
+        try:
+            return f"{int(u_count)} x {int(v_count)}"
+        except (TypeError, ValueError):
+            return f"{u_count} x {v_count}"
+
+    @staticmethod
+    def _surface_metadata_list_text(value: object) -> str:
+        if isinstance(value, list):
+            items = [str(item) for item in value if str(item)]
+            return "; ".join(items) if items else "(none)"
+        if value:
+            return str(value)
+        return "(none)"
 
     @staticmethod
     def _surface_metadata_int_text(metadata: dict[str, object], key: str) -> str:
@@ -8424,10 +8896,20 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state="normal" if has_mesh and selected_curve_count >= 2 else "disabled")
-        for name in ("fill_closed_curve_button",):
+        for name in ("fill_closed_curve_button", "boundary_patch_button"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state="normal" if has_mesh and selected_curve_count == 1 else "disabled")
+        widget = getattr(self, "four_curve_patch_button", None)
+        if widget is not None:
+            widget.configure(
+                state="normal" if has_mesh and selected_curve_count == 4 else "disabled"
+            )
+        widget = getattr(self, "curve_network_patch_button", None)
+        if widget is not None:
+            widget.configure(
+                state="normal" if has_mesh and selected_curve_count >= 3 else "disabled"
+            )
         for name in (
             "show_all_curves_button",
             "select_tiny_curves_button",
