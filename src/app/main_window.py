@@ -18,7 +18,7 @@ from cad_kernel.backend import (
     export_step,
     is_cad_kernel_available,
 )
-from cad_kernel.types import CadBuildResult, curve_points_from_stored_curve
+from cad_kernel.types import CadBuildResult, CadCurveInput, curve_points_from_stored_curve
 from app.app_state import AppState
 from app.keybinds import KEYBIND_DISPLAY_ORDER, action_for_shortcut, shortcut_from_tk_event
 from app.menus import build_menu_bar
@@ -154,6 +154,11 @@ from regions.region_state import (
     create_region_selection,
 )
 from regions.boundary import RegionBoundaryPolyline, extract_region_boundary_polylines
+from regions.primitive_fit import (
+    RegionPlaneFitResult,
+    fit_plane_to_region,
+    project_region_boundary_to_plane,
+)
 from settings.settings_data import (
     DEFAULT_REGION_SELECTION_EDGE_COLOR,
     DEFAULT_REGION_SELECTION_COLOR,
@@ -584,7 +589,12 @@ class OpenRetopWindow:
         self.brep_type_text = StringVar(value="(none)")
         self.brep_backend_text = StringVar(value="(none)")
         self.brep_source_curves_text = StringVar(value="(none)")
+        self.brep_source_text = StringVar(value="(none)")
         self.brep_build_method_text = StringVar(value="(none)")
+        self.brep_plane_fit_rms_text = StringVar(value="(none)")
+        self.brep_plane_fit_max_text = StringVar(value="(none)")
+        self.brep_region_triangle_count_text = StringVar(value="(none)")
+        self.brep_boundary_point_count_text = StringVar(value="(none)")
         self.brep_last_export_path_text = StringVar(value="(none)")
         self.brep_build_warnings_text = StringVar(value="(none)")
         self.brep_build_errors_text = StringVar(value="(none)")
@@ -3039,6 +3049,19 @@ class OpenRetopWindow:
         row = self._add_separator(parent, row)
         row = self._add_heading(parent, row, "CAD / BREP Output")
         row = self._add_info_row(parent, row, "CAD Kernel Status", self.cad_kernel_status_text)
+        self.brep_region_face_output_button = ttk.Button(
+            parent,
+            text="Create BREP Face From Selected Region",
+            command=self.create_brep_face_from_selected_region,
+        )
+        self.brep_region_face_output_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
         self.brep_face_output_button = ttk.Button(
             parent,
             text="Create BREP Face From Closed Curve",
@@ -3106,8 +3129,23 @@ class OpenRetopWindow:
         row += 1
         row = self._add_info_row(parent, row, "BREP Type", self.brep_type_text)
         row = self._add_info_row(parent, row, "Backend", self.brep_backend_text)
+        row = self._add_info_row(parent, row, "BREP Source", self.brep_source_text)
         row = self._add_info_row(parent, row, "Source Curves", self.brep_source_curves_text)
         row = self._add_info_row(parent, row, "Build Method", self.brep_build_method_text)
+        row = self._add_info_row(parent, row, "Plane Fit RMS", self.brep_plane_fit_rms_text)
+        row = self._add_info_row(parent, row, "Plane Fit Max", self.brep_plane_fit_max_text)
+        row = self._add_info_row(
+            parent,
+            row,
+            "Region Triangle Count",
+            self.brep_region_triangle_count_text,
+        )
+        row = self._add_info_row(
+            parent,
+            row,
+            "Boundary Point Count",
+            self.brep_boundary_point_count_text,
+        )
         row = self._add_info_row(parent, row, "Last Export Path", self.brep_last_export_path_text)
         row = self._add_info_row(parent, row, "Build Warnings", self.brep_build_warnings_text)
         row = self._add_info_row(parent, row, "Build Errors/Reason", self.brep_build_errors_text)
@@ -3498,14 +3536,12 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
-        row = self._add_separator(parent, row)
-        row = self._add_heading(parent, row, "Coming Later")
-        self.fit_patch_from_region_placeholder_button = ttk.Button(
+        self.create_region_brep_face_button = ttk.Button(
             parent,
-            text="Fit Patch From Region",
-            command=lambda: self._not_implemented("Fit Patch From Region"),
+            text="Create BREP Face From Region",
+            command=self.create_brep_face_from_selected_region,
         )
-        self.fit_patch_from_region_placeholder_button.grid(
+        self.create_region_brep_face_button.grid(
             row=row,
             column=0,
             columnspan=2,
@@ -4989,6 +5025,7 @@ class OpenRetopWindow:
                 "source_region_name": region_name,
                 "source_mesh_name": boundary.source_mesh_name,
                 "curve_method": "polyline",
+                "source_curve_tags": ["region_boundary"],
                 "boundary_point_count": int(len(points)),
                 "boundary_closed": bool(boundary.is_closed),
                 "boundary_perimeter": _polyline_perimeter(
@@ -6263,6 +6300,218 @@ class OpenRetopWindow:
             status=f"Created BREP planar face from {source_curve.name}.",
         )
 
+    def create_brep_face_from_selected_region(self) -> None:
+        mesh_object = self.app_state.mesh_object
+        region = self.app_state.region_collection.active_region
+        if mesh_object is None:
+            self.status_text.set("Load a mesh before creating BREP from region.")
+            self._sync_workflow_ui()
+            return
+        if region is None:
+            self.status_text.set("Select a region first.")
+            self._sync_workflow_ui()
+            return
+        if not is_cad_kernel_available():
+            self.status_text.set(cad_kernel_status())
+            self._sync_workflow_ui()
+            return
+
+        region_mesh = mesh_object.display_mesh.copy()
+        region_mesh.transform(self._current_object_matrix())
+        plane_fit = fit_plane_to_region(region_mesh, region)
+        if not plane_fit.success:
+            self.status_text.set(plane_fit.reason)
+            self._sync_workflow_ui()
+            return
+
+        boundary_curve = self._reusable_closed_region_boundary_curve(region.id)
+        created_boundary_curve = False
+        boundary_warnings: list[str] = []
+        if boundary_curve is not None:
+            try:
+                boundary_input = curve_points_from_stored_curve(boundary_curve)
+                boundary_points = boundary_input.points
+            except ValueError:
+                boundary_curve = None
+
+        if boundary_curve is None:
+            boundaries = extract_region_boundary_polylines(region_mesh, region)
+            closed_boundaries = [
+                boundary
+                for boundary in boundaries
+                if boundary.is_closed and len(boundary.points) >= 3
+            ]
+            if not closed_boundaries:
+                self.status_text.set(
+                    "Could not extract a closed boundary from selected region."
+                )
+                self._sync_workflow_ui()
+                return
+            closed_boundaries.sort(
+                key=lambda item: float(item.metadata.get("boundary_perimeter", 0.0)),
+                reverse=True,
+            )
+            boundary = closed_boundaries[0]
+            boundary_points = boundary.points
+            if len(closed_boundaries) > 1:
+                boundary_warnings.append(
+                    "Region has multiple closed boundaries; used the outermost boundary."
+                )
+        else:
+            boundary = None
+
+        try:
+            projected_points = project_region_boundary_to_plane(
+                boundary_points,
+                plane_fit,
+            )
+        except ValueError as exc:
+            self.status_text.set(str(exc))
+            self._sync_workflow_ui()
+            return
+
+        if boundary_curve is None:
+            assert boundary is not None
+            projected_metadata = dict(boundary.metadata)
+            projected_metadata.update(
+                {
+                    "projected_to_plane": True,
+                    "plane_fit_origin": plane_fit.origin.tolist(),
+                    "plane_fit_normal": plane_fit.normal.tolist(),
+                }
+            )
+            projected_boundary = RegionBoundaryPolyline(
+                points=projected_points,
+                is_closed=True,
+                source_region_id=region.id,
+                source_mesh_name=region.source_mesh_name or mesh_object.name,
+                metadata=projected_metadata,
+            )
+            boundary_curve = self._stored_curve_from_region_boundary(
+                projected_boundary,
+                1,
+                self._unique_region_boundary_name(region),
+            )
+            created_boundary_curve = True
+
+        curve_input = CadCurveInput(
+            points=projected_points,
+            is_closed=True,
+            name=boundary_curve.name,
+            curve_id=boundary_curve.id,
+            metadata={
+                "source_point_count": int(len(projected_points)),
+                "clean_point_count": int(len(projected_points)),
+                "source_region_id": region.id,
+                "planarity_tolerance": max(float(np.ptp(projected_points, axis=0).max()) * 1e-9, 1e-9),
+            },
+        )
+        result = build_planar_face_from_curve(curve_input)
+        if not self._brep_build_succeeded(result):
+            self.status_text.set(result.reason)
+            self._sync_workflow_ui()
+            return
+
+        if created_boundary_curve:
+            add_curve(self.app_state.curve_collection, boundary_curve)
+            self._sync_visible_curve_results()
+            self._push_created_curves_command(
+                [boundary_curve],
+                command_name="Create Region BREP Boundary",
+            )
+
+        surface = self._create_brep_surface_record(
+            name_prefix="Region Plane",
+            source_curves=[boundary_curve],
+            build_result=result,
+            fallback_brep_type=BREP_TYPE_PLANAR_FACE,
+        )
+        warnings = self._merged_metadata_strings(result.warnings, boundary_warnings)
+        surface.metadata.update(
+            self._region_plane_brep_metadata(
+                plane_fit,
+                region=region,
+                source_mesh_name=region.source_mesh_name or mesh_object.name,
+                boundary_curve=boundary_curve,
+                boundary_point_count=len(projected_points),
+                backend=surface.backend,
+                warnings=warnings,
+            )
+        )
+        self._finish_created_brep_surface(
+            surface,
+            result,
+            status=(
+                "Created BREP planar face from region: "
+                f"RMS {plane_fit.rms_error:.6g}, Max {plane_fit.max_error:.6g}."
+            ),
+        )
+
+    def _reusable_closed_region_boundary_curve(
+        self,
+        region_id: str,
+    ) -> StoredCurve | None:
+        for curve in self._boundary_curves_for_region(region_id):
+            refresh_curve_diagnostics(curve)
+            if not bool(curve.is_closed):
+                continue
+            try:
+                curve_input = curve_points_from_stored_curve(curve)
+            except ValueError:
+                continue
+            if len(curve_input.points) >= 3:
+                return curve
+        return None
+
+    def _unique_region_boundary_name(self, region: RegionSelection) -> str:
+        base_name = f"{region.name or 'Region'} Boundary"
+        existing_names = {
+            curve.name for curve in self.app_state.curve_collection.curves
+        }
+        if base_name not in existing_names:
+            return base_name
+        index = 2
+        while f"{base_name} {index}" in existing_names:
+            index += 1
+        return f"{base_name} {index}"
+
+    @staticmethod
+    def _region_plane_brep_metadata(
+        plane_fit: RegionPlaneFitResult,
+        *,
+        region: RegionSelection,
+        source_mesh_name: str,
+        boundary_curve: StoredCurve | None,
+        boundary_curve_id: str = "",
+        boundary_point_count: int,
+        backend: str,
+        warnings: Sequence[str],
+    ) -> dict[str, object]:
+        resolved_boundary_curve_id = (
+            boundary_curve.id if boundary_curve is not None else boundary_curve_id
+        )
+        return {
+            "brep_type": BREP_TYPE_PLANAR_FACE,
+            "creation_type": "region_plane_fit_brep",
+            "source_region_id": region.id,
+            "source_region_name": region.name,
+            "source_region_triangle_count": int(plane_fit.triangle_count),
+            "source_mesh_name": source_mesh_name,
+            "boundary_curve_id": resolved_boundary_curve_id,
+            "boundary_point_count": int(boundary_point_count),
+            "plane_fit_origin": plane_fit.origin.tolist(),
+            "plane_fit_normal": plane_fit.normal.tolist(),
+            "plane_fit_u_axis": plane_fit.u_axis.tolist(),
+            "plane_fit_v_axis": plane_fit.v_axis.tolist(),
+            "plane_fit_rms_error": float(plane_fit.rms_error),
+            "plane_fit_max_error": float(plane_fit.max_error),
+            "plane_fit_sample_count": int(plane_fit.sample_count),
+            "cad_build_method": "region_boundary_projected_to_best_fit_plane",
+            "build_method": "region_boundary_projected_to_best_fit_plane",
+            "backend": backend,
+            "warnings": list(warnings),
+        }
+
     def create_brep_loft_from_two_curves(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
         if not self.app_state.curve_collection.curves:
@@ -6340,6 +6589,10 @@ class OpenRetopWindow:
             self.status_text.set("Select a BREP surface to rebuild.")
             return
 
+        region_derived = (
+            str(surface.metadata.get("creation_type", ""))
+            == "region_plane_fit_brep"
+        )
         result = self._rebuild_brep_surface(surface)
         if not result.success or result.cad_object is None:
             surface.metadata["build_reason"] = result.reason
@@ -6358,10 +6611,20 @@ class OpenRetopWindow:
         self._sync_surface_context_from_active_surface()
         self._refresh_scene_browser()
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Rebuilt BREP surface.")
+        self.status_text.set(
+            "Rebuilt BREP planar face from region metadata."
+            if region_derived
+            else "Rebuilt BREP surface."
+        )
         self._set_project_dirty(True)
 
     def _rebuild_brep_surface(self, surface: BrepSurfaceRecord) -> CadBuildResult:
+        if (
+            str(surface.metadata.get("creation_type", ""))
+            == "region_plane_fit_brep"
+        ):
+            return self._rebuild_region_plane_brep_surface(surface)
+
         source_curves, missing_curve_ids = self._source_curves_for_surface(surface)
         if missing_curve_ids:
             return CadBuildResult(
@@ -6400,6 +6663,219 @@ class OpenRetopWindow:
             success=False,
             cad_object=None,
             reason=f"Cannot rebuild unsupported BREP type: {surface.brep_type}",
+        )
+
+    def _rebuild_region_plane_brep_surface(
+        self,
+        surface: BrepSurfaceRecord,
+    ) -> CadBuildResult:
+        metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
+        source_region_id = str(metadata.get("source_region_id", "") or "")
+        active_region = self.app_state.region_collection.active_region
+        source_region = (
+            active_region
+            if active_region is not None and active_region.id == source_region_id
+            else None
+        )
+        boundary_curve = self._boundary_curve_for_region_brep(surface)
+
+        mesh_object = self.app_state.mesh_object
+        if source_region is not None and mesh_object is not None:
+            region_mesh = mesh_object.display_mesh.copy()
+            region_mesh.transform(self._current_object_matrix())
+            plane_fit = fit_plane_to_region(region_mesh, source_region)
+            if not plane_fit.success:
+                return CadBuildResult(
+                    success=False,
+                    cad_object=None,
+                    reason=plane_fit.reason,
+                )
+            boundaries = extract_region_boundary_polylines(region_mesh, source_region)
+            closed_boundaries = [
+                boundary
+                for boundary in boundaries
+                if boundary.is_closed and len(boundary.points) >= 3
+            ]
+            if not closed_boundaries:
+                return CadBuildResult(
+                    success=False,
+                    cad_object=None,
+                    reason="Could not extract a closed boundary from selected region.",
+                )
+            closed_boundaries.sort(
+                key=lambda item: float(item.metadata.get("boundary_perimeter", 0.0)),
+                reverse=True,
+            )
+            try:
+                projected_points = project_region_boundary_to_plane(
+                    closed_boundaries[0].points,
+                    plane_fit,
+                )
+            except ValueError as exc:
+                return CadBuildResult(success=False, cad_object=None, reason=str(exc))
+            curve_id = (
+                boundary_curve.id
+                if boundary_curve is not None
+                else str(metadata.get("boundary_curve_id", "") or "")
+            )
+            curve_name = (
+                boundary_curve.name
+                if boundary_curve is not None
+                else f"{source_region.name or 'Region'} Boundary"
+            )
+            result = build_planar_face_from_curve(
+                CadCurveInput(
+                    points=projected_points,
+                    is_closed=True,
+                    name=curve_name,
+                    curve_id=curve_id,
+                    metadata={"source_point_count": int(len(projected_points))},
+                )
+            )
+            result.metadata.update(
+                self._region_plane_brep_metadata(
+                    plane_fit,
+                    region=source_region,
+                    source_mesh_name=source_region.source_mesh_name or mesh_object.name,
+                    boundary_curve=boundary_curve,
+                    boundary_curve_id=curve_id,
+                    boundary_point_count=len(projected_points),
+                    backend=str(result.metadata.get("backend", surface.backend)),
+                    warnings=self._merged_metadata_strings(
+                        metadata.get("warnings"),
+                        result.warnings,
+                    ),
+                )
+            )
+            result.warnings = self._merged_metadata_strings(
+                metadata.get("warnings"),
+                result.warnings,
+            )
+            return result
+
+        if boundary_curve is None:
+            return CadBuildResult(
+                success=False,
+                cad_object=None,
+                reason="Cannot rebuild BREP: missing source region and boundary curve.",
+            )
+
+        plane_fit = self._region_plane_fit_from_metadata(surface)
+        if plane_fit is None:
+            return CadBuildResult(
+                success=False,
+                cad_object=None,
+                reason="Cannot rebuild BREP: stored plane metadata is invalid.",
+            )
+        try:
+            boundary_input = curve_points_from_stored_curve(boundary_curve)
+            if not boundary_input.is_closed:
+                return CadBuildResult(
+                    success=False,
+                    cad_object=None,
+                    reason="Cannot rebuild BREP: boundary curve is not closed.",
+                )
+            projected_points = project_region_boundary_to_plane(
+                boundary_input.points,
+                plane_fit,
+            )
+        except ValueError as exc:
+            return CadBuildResult(success=False, cad_object=None, reason=str(exc))
+
+        result = build_planar_face_from_curve(
+            CadCurveInput(
+                points=projected_points,
+                is_closed=True,
+                name=boundary_curve.name,
+                curve_id=boundary_curve.id,
+                metadata={"source_point_count": int(len(projected_points))},
+            )
+        )
+        result.metadata.update(
+            {
+                "brep_type": BREP_TYPE_PLANAR_FACE,
+                "creation_type": "region_plane_fit_brep",
+                "source_region_id": source_region_id,
+                "source_region_name": str(metadata.get("source_region_name", "")),
+                "source_region_triangle_count": int(
+                    metadata.get("source_region_triangle_count", 0)
+                ),
+                "source_mesh_name": str(metadata.get("source_mesh_name", "")),
+                "boundary_curve_id": boundary_curve.id,
+                "boundary_point_count": int(len(projected_points)),
+                "plane_fit_origin": plane_fit.origin.tolist(),
+                "plane_fit_normal": plane_fit.normal.tolist(),
+                "plane_fit_u_axis": plane_fit.u_axis.tolist(),
+                "plane_fit_v_axis": plane_fit.v_axis.tolist(),
+                "plane_fit_rms_error": float(plane_fit.rms_error),
+                "plane_fit_max_error": float(plane_fit.max_error),
+                "plane_fit_sample_count": int(plane_fit.sample_count),
+                "cad_build_method": "region_boundary_projected_to_best_fit_plane",
+                "build_method": "region_boundary_projected_to_best_fit_plane",
+            }
+        )
+        result.warnings = self._merged_metadata_strings(
+            metadata.get("warnings"),
+            result.warnings,
+        )
+        result.metadata["warnings"] = list(result.warnings)
+        return result
+
+    def _boundary_curve_for_region_brep(
+        self,
+        surface: BrepSurfaceRecord,
+    ) -> StoredCurve | None:
+        metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
+        candidate_ids = [
+            str(metadata.get("boundary_curve_id", "") or ""),
+            *[str(curve_id) for curve_id in surface.source_curve_ids],
+        ]
+        curve_by_id = {
+            curve.id: curve for curve in self.app_state.curve_collection.curves
+        }
+        for curve_id in candidate_ids:
+            curve = curve_by_id.get(curve_id)
+            if curve is not None:
+                return curve
+        return None
+
+    @staticmethod
+    def _region_plane_fit_from_metadata(
+        surface: BrepSurfaceRecord,
+    ) -> RegionPlaneFitResult | None:
+        metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
+        try:
+            origin = np.asarray(metadata["plane_fit_origin"], dtype=float).reshape((3,))
+            normal = np.asarray(metadata["plane_fit_normal"], dtype=float).reshape((3,))
+            u_axis = np.asarray(metadata["plane_fit_u_axis"], dtype=float).reshape((3,))
+            v_axis = np.asarray(metadata["plane_fit_v_axis"], dtype=float).reshape((3,))
+            rms_error = float(metadata["plane_fit_rms_error"])
+            max_error = float(metadata["plane_fit_max_error"])
+            sample_count = int(metadata["plane_fit_sample_count"])
+            triangle_count = int(metadata.get("source_region_triangle_count", 0))
+        except (KeyError, TypeError, ValueError):
+            return None
+        values = np.concatenate((origin, normal, u_axis, v_axis))
+        normal_length = float(np.linalg.norm(normal))
+        if not np.all(np.isfinite(values)) or normal_length <= 0.0:
+            return None
+        normal = normal / normal_length
+        if not np.isfinite(rms_error) or not np.isfinite(max_error):
+            return None
+        return RegionPlaneFitResult(
+            success=True,
+            reason="Plane fit restored from BREP metadata.",
+            origin=origin,
+            normal=normal,
+            u_axis=u_axis,
+            v_axis=v_axis,
+            rms_error=rms_error,
+            max_error=max_error,
+            sample_count=sample_count,
+            triangle_count=triangle_count,
+            region_id=str(metadata.get("source_region_id", "")),
+            region_name=str(metadata.get("source_region_name", "")),
+            metadata={"restored_from_brep_metadata": True},
         )
 
     def create_boundary_patch_from_curve(self) -> None:
@@ -8612,7 +9088,27 @@ class OpenRetopWindow:
                     ),
                 },
             )
-            preview = build_surface_preview_mesh(preview_surface, curves)
+            preview_curves = curves
+            if str(surface.metadata.get("creation_type", "")) == "region_plane_fit_brep":
+                plane_fit = self._region_plane_fit_from_metadata(surface)
+                if plane_fit is not None:
+                    preview_curves = []
+                    source_curve_ids = set(surface.source_curve_ids)
+                    for curve in curves:
+                        if curve.id not in source_curve_ids:
+                            preview_curves.append(curve)
+                            continue
+                        display_curve = copy.deepcopy(curve)
+                        try:
+                            display_curve.fitted_points = project_region_boundary_to_plane(
+                                display_curve.fitted_points,
+                                plane_fit,
+                            )
+                            display_curve.original_points = display_curve.fitted_points.copy()
+                        except ValueError:
+                            pass
+                        preview_curves.append(display_curve)
+            preview = build_surface_preview_mesh(preview_surface, preview_curves)
             if preview is None:
                 continue
             previews.append(
@@ -8837,8 +9333,13 @@ class OpenRetopWindow:
                 self.surface_metadata_text.set("(none)")
                 self.brep_type_text.set("(none)")
                 self.brep_backend_text.set("(none)")
+                self.brep_source_text.set("(none)")
                 self.brep_source_curves_text.set("(none)")
                 self.brep_build_method_text.set("(none)")
+                self.brep_plane_fit_rms_text.set("(none)")
+                self.brep_plane_fit_max_text.set("(none)")
+                self.brep_region_triangle_count_text.set("(none)")
+                self.brep_boundary_point_count_text.set("(none)")
                 self.brep_last_export_path_text.set("(none)")
                 self.brep_build_warnings_text.set("(none)")
                 self.brep_build_errors_text.set("(none)")
@@ -8918,11 +9419,34 @@ class OpenRetopWindow:
             if isinstance(active_surface, BrepSurfaceRecord):
                 self.brep_type_text.set(active_surface.brep_type)
                 self.brep_backend_text.set(active_surface.backend or "(none)")
+                creation_type = str(metadata.get("creation_type", ""))
+                if creation_type == "region_plane_fit_brep":
+                    brep_source = "region"
+                elif active_surface.brep_type == BREP_TYPE_LOFT_SURFACE:
+                    brep_source = "loft"
+                else:
+                    brep_source = "curve"
+                self.brep_source_text.set(brep_source)
                 self.brep_source_curves_text.set(
                     self._surface_source_curve_names_summary(active_surface)
                 )
                 self.brep_build_method_text.set(
                     str(metadata.get("build_method") or "(none)")
+                )
+                self.brep_plane_fit_rms_text.set(
+                    self._surface_metadata_float_text(metadata, "plane_fit_rms_error")
+                )
+                self.brep_plane_fit_max_text.set(
+                    self._surface_metadata_float_text(metadata, "plane_fit_max_error")
+                )
+                self.brep_region_triangle_count_text.set(
+                    self._surface_metadata_int_text(
+                        metadata,
+                        "source_region_triangle_count",
+                    )
+                )
+                self.brep_boundary_point_count_text.set(
+                    self._surface_metadata_int_text(metadata, "boundary_point_count")
                 )
                 self.brep_last_export_path_text.set(
                     str(metadata.get("last_export_path") or "(none)")
@@ -8936,8 +9460,13 @@ class OpenRetopWindow:
             else:
                 self.brep_type_text.set("(none)")
                 self.brep_backend_text.set("(none)")
+                self.brep_source_text.set("(none)")
                 self.brep_source_curves_text.set("(none)")
                 self.brep_build_method_text.set("(none)")
+                self.brep_plane_fit_rms_text.set("(none)")
+                self.brep_plane_fit_max_text.set("(none)")
+                self.brep_region_triangle_count_text.set("(none)")
+                self.brep_boundary_point_count_text.set("(none)")
                 self.brep_last_export_path_text.set("(none)")
                 self.brep_build_warnings_text.set("(none)")
                 self.brep_build_errors_text.set("(none)")
@@ -9699,16 +10228,33 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state="normal" if has_mesh and selected_curve_count == 1 else "disabled")
+        has_selected_closed_curve = (
+            has_mesh
+            and selected_curve_count == 1
+            and active_curve is not None
+            and self._curve_is_closed_for_fill(active_curve)
+        )
         for name in ("brep_face_button", "brep_face_output_button"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(
                     state=(
                         "normal"
-                        if has_mesh and cad_available and selected_curve_count == 1
+                        if cad_available and has_selected_closed_curve
                         else "disabled"
                     )
                 )
+        widget = getattr(self, "brep_region_face_output_button", None)
+        if widget is not None:
+            widget.configure(
+                state=(
+                    "normal"
+                    if has_mesh
+                    and cad_available
+                    and self.app_state.region_collection.active_region is not None
+                    else "disabled"
+                )
+            )
         widget = getattr(self, "four_curve_patch_button", None)
         if widget is not None:
             widget.configure(
@@ -9876,10 +10422,6 @@ class OpenRetopWindow:
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.configure(state=state)
-        for name in ("fit_patch_from_region_placeholder_button",):
-            widget = getattr(self, name, None)
-            if widget is not None:
-                widget.configure(state="disabled")
         if not has_mesh and bool(self.manual_curve_snap_to_mesh.get()):
             self.manual_curve_snap_to_mesh.set(False)
 
@@ -9917,6 +10459,15 @@ class OpenRetopWindow:
         extract_button = getattr(self, "extract_region_boundary_button", None)
         if extract_button is not None:
             extract_button.configure(state="normal" if has_mesh and has_region else "disabled")
+        create_brep_button = getattr(self, "create_region_brep_face_button", None)
+        if create_brep_button is not None:
+            create_brep_button.configure(
+                state=(
+                    "normal"
+                    if has_mesh and has_region and is_cad_kernel_available()
+                    else "disabled"
+                )
+            )
         select_boundary_button = getattr(self, "select_region_boundary_curves_button", None)
         if select_boundary_button is not None:
             select_boundary_button.configure(
@@ -10250,6 +10801,10 @@ class OpenRetopWindow:
         if action == "export_step":
             self._select_scene_browser_nodes(node_ids)
             self.export_selected_brep_surface_to_step()
+            return
+        if action == "rebuild_brep":
+            self._select_scene_browser_nodes(node_ids)
+            self.rebuild_selected_brep_surface()
             return
         if action == "select_source_curves":
             self.select_source_curves_for_active_surface(node_ids)

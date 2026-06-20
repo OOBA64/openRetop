@@ -1,674 +1,501 @@
 ---
 
-## Task 70: CAD Kernel / BREP Foundation — Real Surface Export Prototype
+## Task 71: Region to Analytic BREP Surface — Plane Fit First
 
 Purpose:
-The current surface tools create viewport preview meshes, not actual CAD geometry. This makes region selection, boundary extraction, curve rebuilding, and surface previews feel mostly useless because the output is still just mesh-like visualization.
+Region Select currently highlights/copies mesh information. That is not useful enough. The app now has a CAD kernel foundation, so Region Select must become a path to real CAD surfaces.
 
-This task adds the first real CAD/BREP foundation.
+This task converts a selected mesh region into a real analytic BREP surface. Start with planar surface fitting. Do not attempt full automatic surfacing yet.
 
-The goal is not to make the entire app a mature CAD system yet. The goal is to prove that openRetop can convert selected prepared curves into actual CAD-kernel-backed surfaces and export them as STEP.
+Primary workflow:
+selected mesh region
+→ fit best-fit analytic plane
+→ project region boundary onto that plane
+→ build real BREP planar face
+→ export STEP
 
-This is the first task where adding a CAD kernel dependency is allowed, but it must be isolated and optional.
-
----
-
-## High-level goal
-
-User workflow after this task:
-
-1. Load scan mesh.
-2. Create/edit/project/rebuild curves.
-3. Select a clean closed curve or two compatible curves.
-4. Create a BREP surface.
-5. See it listed as a CAD/BREP surface, not just preview.
-6. Export selected BREP surface to STEP.
-7. Open the STEP in CAD software.
-
-Minimum useful output:
-
-* planar closed-curve face to STEP
-* two-curve loft surface to STEP if feasible
-* if loft is too risky, complete planar face export first
+This turns Region Select into a real scan-to-CAD operation.
 
 ---
 
-## Do not do these yet
+## Current repo foundation to preserve
 
-Do not add automatic face recognition.
-Do not add full solid modeling.
-Do not add fillets.
-Do not add trims beyond simple closed boundary if not supported by the chosen backend.
-Do not add automatic region-to-solid.
-Do not remove existing preview surfaces.
-Do not rewrite the UI.
-Do not rewrite all curve tools.
-Do not integrate pboyer/verb as a runtime dependency.
-Do not attempt to write a full BREP kernel from scratch.
+Existing:
+
+* Region Select exists.
+* RegionSelection stores selected triangle indices.
+* Region boundary extraction exists or should already exist from Task 67.
+* BREP backend exists in cad_kernel.
+* build_planar_face_from_curve() exists.
+* STEP export exists.
+* BrepSurfaceRecord / BrepSurfaceCollection exist.
+* Surfaces workbench has CAD / BREP Output controls.
+
+Use these systems.
+
+Do not rewrite Region Select.
+Do not rewrite the CAD kernel layer.
+Do not remove preview surfaces.
+Do not add another surface collection.
+Do not add full NURBS fitting yet.
+Do not add cylinder/cone/sphere yet unless plane is fully working.
+Do not add new dependencies beyond CadQuery/OCP support already started.
 
 ---
 
-## Part A — Choose and isolate CAD kernel dependency
+## Part A — Add CadQuery to requirements
 
-A real BREP/STEP workflow needs a CAD kernel.
+Update requirements.txt:
 
-Preferred direction:
+* add cadquery
 
-* Use an OpenCascade-based Python package if available in the environment.
-* Acceptable options:
+Reason:
+The app now has CAD/BREP features. A clean install must be able to use them.
 
-  * OCP
-  * pythonocc-core
-  * CadQuery only if it can expose/export the needed underlying BREP cleanly
+If you want to keep CAD optional:
 
-Do not scatter CAD-kernel imports throughout the app.
+* make it clear in comments/docs
+* but still provide an install path
 
-Create a new isolated package:
+Recommended:
+requirements.txt:
 
-src/cad_kernel/
+* cadquery
 
-Suggested files:
+or optional file:
+requirements-cad.txt:
 
-* src/cad_kernel/**init**.py
-* src/cad_kernel/backend.py
-* src/cad_kernel/types.py
-* src/cad_kernel/occ_backend.py
-* src/cad_kernel/export_step.py
+* cadquery
 
-Rules:
-
-* Main app code must import only from cad_kernel.backend/types.
-* OpenCascade/OCP/pythonocc-specific imports must live only in occ_backend.py/export_step.py.
-* If the CAD dependency is missing, the app must still launch.
-* BREP commands should show disabled/unavailable status instead of crashing.
-* Tests that require CAD kernel should skip cleanly if backend is unavailable.
-
-Add helper:
-
-is_cad_kernel_available() -> bool
-
-Add helper:
-
-cad_kernel_status() -> str
-
-Examples:
-
-* "CAD kernel available: OCP"
-* "CAD kernel unavailable: install OCP/pythonocc-core to enable BREP export"
+If using optional file, document:
+python -m pip install -r requirements-cad.txt
 
 Acceptance:
 
-* App launches without CAD kernel installed.
-* App exposes clear status if BREP backend is unavailable.
-* No top-level import crash.
+* clean environment can install CAD support
+* app still degrades gracefully if CAD kernel is missing
+* no import crash if cadquery is absent
 
 ---
 
-## Part B — Add internal CAD surface state
-
-Current SurfacePatch only tracks metadata and source curve IDs. Add a lightweight CAD/BREP state layer without destroying existing preview surfaces.
-
-Create or extend:
-
-src/surfaces/brep_state.py
-
-Dataclasses:
-
-1. BrepSurfaceRecord
-
-Fields:
-
-* id: str
-* name: str
-* source_curve_ids: list[str]
-* brep_type: str
-* backend: str
-* visible: bool = True
-* selected: bool = False
-* metadata: dict[str, object] = field(default_factory=dict)
-
-brep_type values:
-
-* "planar_face"
-* "loft_surface"
-* "unknown"
-
-2. BrepSurfaceCollection
-
-Fields:
-
-* surfaces: list[BrepSurfaceRecord]
-* active_surface_id: str | None
-* selected_surface_ids: set[str]
-
-Functions:
-
-* add_brep_surface()
-* remove_brep_surface()
-* get_active_brep_surface()
-* set_active_brep_surface()
-* set_selected_brep_surfaces()
-* clear_brep_surface_selection()
-* get_visible_brep_surfaces()
-
-Important:
-
-* Do not store raw CAD kernel objects directly in the project JSON unless safely serializable.
-* Store enough metadata/source IDs to rebuild/export during the session.
-* For this task, session-only CAD object cache is acceptable.
-
-Add app-state storage:
-
-* app_state.brep_surface_collection
-* optional cad runtime cache:
-
-  * self._brep_runtime_cache: dict[str, object]
-
-Acceptance:
-
-* BREP surfaces are separate from preview surfaces.
-* Existing preview SurfaceCollection still works.
-* BREP records can be selected/deleted/listed.
-
----
-
-## Part C — Add BREP backend types
+## Part B — Add region primitive fitting module
 
 Create:
 
-src/cad_kernel/types.py
+src/regions/primitive_fit.py
 
-Dataclasses:
+Purpose:
+Fit analytic primitives to selected region triangles.
 
-1. CadBuildResult
+Add dataclasses:
 
-* success: bool
-* cad_object: object | None
-* reason: str
-* warnings: list[str]
-* metadata: dict[str, object]
+1. RegionPlaneFitResult
 
-2. StepExportResult
+Fields:
 
 * success: bool
-* path: str | None
 * reason: str
-* warnings: list[str]
-
-3. CadCurveInput
-
-* points: np.ndarray
-* is_closed: bool
-* name: str
-* curve_id: str
+* origin: np.ndarray
+* normal: np.ndarray
+* u_axis: np.ndarray
+* v_axis: np.ndarray
+* rms_error: float
+* max_error: float
+* sample_count: int
+* triangle_count: int
+* region_id: str
+* region_name: str
 * metadata: dict[str, object]
 
-Utility:
+Add function:
 
-* clean_cad_curve_points(points, closed) -> np.ndarray
-* curve_points_from_stored_curve(curve) -> CadCurveInput
-
-Rules:
-
-* Use fitted_points for generated CAD shape unless control_points are more appropriate.
-* Remove exact duplicate consecutive points.
-* For closed curves, do not require duplicate final point unless backend needs it.
-* Never pass NaN/inf to CAD kernel.
-
-Acceptance:
-
-* CAD backend receives clean curve inputs.
-* Invalid curves fail with useful messages.
-
----
-
-## Part D — Build planar BREP face from one closed curve
-
-Add backend function:
-
-build_planar_face_from_curve(curve_input: CadCurveInput) -> CadBuildResult
-
-Input:
-
-* one closed curve
-
-Required validation:
-
-* curve must be closed
-* at least 3 valid points
-* curve must not be degenerate
-* estimate best-fit plane
-* planarity error must be within tolerance
-
-Suggested tolerance:
-
-* model-relative where possible
-* fallback absolute tolerance if no model extent available
-* start with lenient warning threshold, strict failure only for clearly non-planar/degenerate curves
-
-Build behavior:
-
-* Convert curve points into CAD wire/edge representation.
-* Build planar face from closed wire.
-* Store metadata:
-
-  * brep_type = "planar_face"
-  * source_curve_id
-  * source_curve_name
-  * source_point_count
-  * planarity_error
-  * backend
-  * build_method = "closed_wire_planar_face"
-
-If CAD backend cannot make the face:
-
-* return failure result with reason
-* do not crash
-
-Acceptance:
-
-* simple square closed curve creates BREP face
-* triangle closed curve creates BREP face
-* open curve is rejected
-* non-planar curve is rejected or warned depending severity
-* no app crash on invalid input
-
----
-
-## Part E — Build loft BREP surface from two curves
-
-Add backend function:
-
-build_loft_surface_from_curves(
-first_curve: CadCurveInput,
-second_curve: CadCurveInput,
-) -> CadBuildResult
-
-Input:
-
-* exactly two curves
-
-Required validation:
-
-* both curves have at least 2 valid points
-* both should be open or both closed; warn/reject mixed if backend fails
-* resample/rebuild consistency should happen before this command, not inside heavy backend
-* preserve curve order
-
-Build behavior:
-
-* Convert both curves into CAD wires/edges.
-* Attempt loft surface.
-* If closed curves work, support closed loft.
-* If only open loft is stable, support open loft first and return clear failure for closed loft.
-
-Metadata:
-
-* brep_type = "loft_surface"
-* source_curve_ids
-* source_curve_names
-* source_point_counts
-* backend
-* build_method = "two_curve_loft"
-* warnings from validation
-
-If loft fails:
-
-* return failure with reason
-* do not create broken BREP record
-
-Acceptance:
-
-* two simple parallel open curves create a loft BREP surface
-* invalid pair fails clearly
-* no crash on mixed open/closed curves
-* metadata records source curves
-
----
-
-## Part F — Add BREP creation commands
-
-Add commands:
-
-1. Create BREP Face From Closed Curve
-
-Input:
-
-* exactly one selected closed curve
+fit_plane_to_region(
+mesh: TriangleMeshData,
+region: RegionSelection,
+) -> RegionPlaneFitResult
 
 Behavior:
 
-* validates curve
-* calls build_planar_face_from_curve()
-* creates BrepSurfaceRecord
-* stores runtime CAD object in cache
-* selects BREP surface
-* refreshes scene browser
-* refreshes viewport if BREP preview display exists
-* status:
-  "Created BREP planar face from <curve name>."
+* collect vertices from selected region triangles
+* ignore invalid triangle indices
+* deduplicate points by vertex index where possible
+* compute best-fit plane using PCA/SVD
+* origin = centroid
+* normal = least-variance axis
+* u_axis/v_axis = stable orthonormal plane basis
+* compute signed distances from points to plane
+* compute rms_error and max_error
+* return failure if:
 
-2. Create BREP Loft From Two Curves
+  * no mesh
+  * no valid triangles
+  * fewer than 3 usable non-collinear points
+  * degenerate region
+* do not mutate mesh
+* do not mutate region
 
-Input:
+Tolerance:
 
-* exactly two selected curves
-
-Behavior:
-
-* validates curves
-* calls build_loft_surface_from_curves()
-* creates BrepSurfaceRecord
-* stores runtime CAD object in cache
-* selects BREP surface
-* refreshes scene browser
-* status:
-  "Created BREP loft surface from 2 curves."
-
-Failure behavior:
-
-* show status with reason
-* do not create record
-* do not mark project dirty unless object was created
-
-Undo/redo:
-
-* created BREP surfaces should be undoable
-* undo removes record and runtime object
-* redo restores record and rebuilds or restores runtime object if practical
-* if redo cannot restore runtime object, rebuild from source curves
+* do not hard-fail slightly noisy scans
+* store error metrics instead
+* let user decide if fit is acceptable
 
 Acceptance:
 
-* BREP face command works on clean closed curve
-* BREP loft command works on simple compatible curve pair
-* failure states are clear
-* undo/redo works
+* planar triangle patch fits successfully
+* noisy planar patch reports nonzero RMS/max error
+* invalid region fails clearly
+* degenerate region fails clearly
 
 ---
 
-## Part G — STEP export for selected BREP surface
+## Part C — Add region boundary projection to fitted plane
+
+Add function:
+
+project_region_boundary_to_plane(
+boundary_points,
+plane_fit: RegionPlaneFitResult,
+*,
+preserve_original_order=True,
+) -> np.ndarray
+
+Behavior:
+
+* project each boundary point onto fitted plane
+* preserve boundary ordering
+* preserve closed/open state separately
+* return Nx3 projected boundary points
+* never return NaN/inf
+
+Projection formula:
+point_projected = point - dot(point - origin, normal) * normal
+
+Also add:
+
+region_plane_fit_error_summary(plane_fit) -> str
+
+Examples:
+
+* "Plane fit: RMS 0.018 mm, Max 0.064 mm"
+* use app/model units generically if unit system is unknown
+
+Acceptance:
+
+* boundary points are flattened onto best-fit plane
+* output point count equals input point count
+* order is preserved
+
+---
+
+## Part D — Build BREP planar face from active region
 
 Add command:
 
-Export Selected BREP Surface to STEP
+Create BREP Face From Selected Region
+
+Available in:
+
+* Manual RE workbench, under Region Selection
+* Surfaces workbench, under CAD / BREP Output
 
 Behavior:
 
-* requires one selected BREP surface
-* opens save-file dialog with .step / .stp
-* calls export_step_selected_brep()
-* writes STEP file
-* status:
-  "Exported STEP: <path>"
-* if no BREP selected:
-  "Select a BREP surface to export."
-* if CAD backend unavailable:
-  "CAD kernel unavailable; cannot export STEP."
+1. Require loaded mesh.
+2. Require active region.
+3. Fit plane to active region.
+4. Extract or reuse active region boundary curve.
+5. Project boundary curve points onto fitted plane.
+6. Build a closed CadCurveInput from projected boundary points.
+7. Call build_planar_face_from_curve().
+8. Create BrepSurfaceRecord.
+9. Store runtime CAD object in BREP runtime cache.
+10. Select created BREP surface.
+11. Refresh scene browser.
+12. Refresh viewport.
+13. Mark project dirty.
+14. Status:
+    "Created BREP planar face from region: RMS <value>, Max <value>."
 
-Add backend helper:
+Failure behavior:
 
-export_step(cad_object, path) -> StepExportResult
+* no mesh:
+  "Load a mesh before creating BREP from region."
+* no active region:
+  "Select a region first."
+* boundary extraction fails:
+  "Could not extract a closed boundary from selected region."
+* CAD kernel unavailable:
+  existing CAD kernel unavailable message
+* CAD face fails:
+  show CAD build result reason
 
-Rules:
+Important:
 
-* Do not export preview mesh as STEP and pretend it is BREP.
-* Only export real CAD-kernel object.
-* If only mesh export is possible, fail clearly.
+* Do not create a mesh preview and call it BREP.
+* The BREP object must come from the CAD kernel.
+* The exported STEP must use the CAD object, not the preview mesh.
 
 Acceptance:
 
-* created planar BREP face exports to STEP
-* exported file is non-empty
-* invalid path fails clearly
-* no crash if backend unavailable
+* active planar region creates a BREP planar face
+* created face exports to STEP
+* invalid/non-boundary region fails clearly
+* no crash
 
 ---
 
-## Part H — Viewport display of BREP surfaces
+## Part E — Store region-to-BREP lineage metadata
 
-Minimal display is acceptable.
+BREP record metadata must include:
 
-Option 1, preferred:
+* brep_type = "planar_face"
+* creation_type = "region_plane_fit_brep"
+* source_region_id
+* source_region_name
+* source_region_triangle_count
+* source_mesh_name
+* boundary_curve_id if boundary curve was created/reused
+* boundary_point_count
+* plane_fit_origin
+* plane_fit_normal
+* plane_fit_u_axis
+* plane_fit_v_axis
+* plane_fit_rms_error
+* plane_fit_max_error
+* plane_fit_sample_count
+* cad_build_method = "region_boundary_projected_to_best_fit_plane"
+* backend
+* warnings
 
-* tessellate CAD object through CAD backend or available triangulation
-* convert to SurfacePreviewMesh-like display
-* display in viewport with a distinct BREP color
+If a boundary curve is auto-created:
 
-Option 2:
+* name it clearly:
+  "<Region Name> Boundary"
+* tag it as region_boundary
+* select BREP surface after creation, not boundary curve
 
-* reuse existing preview mesh generated from source curves for display
-* clearly label it as BREP record with preview display
-* do not claim preview mesh is the exported geometry
+Acceptance:
 
-Rules:
+* user can inspect how BREP was created
+* future rebuild/export can reconstruct the BREP
+* metadata survives project save/load
 
-* BREP object is source of truth for export.
-* Preview display is only visual.
-* BREP surface should appear visually distinct from mesh scan and preview surfaces.
+---
+
+## Part F — Rebuild region BREP after project load
+
+Existing BREP records may persist without raw CAD objects.
+
+Extend Rebuild Selected BREP Surface to support:
+
+creation_type == "region_plane_fit_brep"
+
+Behavior:
+
+* find source region if still present
+* if source region missing but boundary curve exists:
+
+  * rebuild from stored boundary curve and stored plane metadata
+* if both missing:
+
+  * fail clearly:
+    "Cannot rebuild BREP: missing source region and boundary curve."
+* rebuild CAD object
+* update runtime cache
+* status:
+  "Rebuilt BREP planar face from region metadata."
+
+Acceptance:
+
+* saved project with region BREP loads safely
+* user can rebuild BREP if source data exists
+* no raw CAD object is serialized
+
+---
+
+## Part G — Viewport display for region-derived BREP
+
+The viewport should visually distinguish:
+
+* scan mesh
+* selected region highlight
+* preview surfaces
+* real BREP surfaces
+
+For region-derived BREP:
+
+* use existing BREP display path if present
+* if not present, create tessellated display from CAD object if easy
+* fallback: display projected boundary and planar filled preview mesh, but label it as display preview only
+
+Important:
+
+* visual preview is not the exported object
+* STEP export must use runtime CAD object
 
 Suggested visual:
 
-* BREP surface: muted gold or blue-green
-* selected BREP: brighter cyan/gold
-* wireframe overlay optional
+* BREP planar face: gold/amber translucent
+* selected BREP: brighter gold/cyan edge
+* source boundary curve: optional highlight
 
 Acceptance:
 
-* user can see that BREP surface was created
-* BREP surface does not look identical to region highlight
-* selected BREP is visually identifiable
+* user can see the created BREP face
+* it does not look identical to the original selected region
+* selecting BREP surface updates diagnostics
 
 ---
 
-## Part I — Scene browser integration
+## Part H — UI additions
 
-Add scene browser group:
+Manual RE / Region Selection section:
 
-CAD / BREP Surfaces
-[V] BREP Face 1 (planar face)
-[V] BREP Loft 1 (loft)
+* Create BREP Face From Region
+* Export Selected BREP Surface to STEP, optional if not too cluttered
 
-Do not mix BREP surfaces under normal preview Surfaces unless clearly tagged.
+Surfaces / CAD-BREP Output section:
 
-If simpler:
-Surfaces
-Preview Surfaces
-CAD / BREP Surfaces
+* Create BREP Face From Selected Region
+* Create BREP Face From Closed Curve
+* Create BREP Loft From Two Curves
+* Rebuild Selected BREP Surface
+* Export Selected BREP Surface to STEP
 
-Actions:
+Diagnostics:
+
+* Plane fit RMS
+* Plane fit max error
+* Region triangle count
+* Boundary point count
+* BREP source:
+
+  * curve
+  * region
+  * loft
+* CAD kernel status
+
+Button enable/failure states:
+
+* Create BREP Face From Region requires mesh and active region
+* Export STEP requires selected BREP
+* Face From Closed Curve requires one selected closed curve
+* Loft requires two selected curves
+
+Acceptance:
+
+* region-to-BREP workflow is discoverable
+* status messages are specific
+* no confusing silent failures
+
+---
+
+## Part I — Scene browser
+
+Under CAD / BREP Surfaces:
+
+Examples:
+
+* [V] Region Plane 1 (planar face)
+* [V] BREP Face 1 (curve face)
+* [V] BREP Loft 1 (loft)
+
+Labels should distinguish source:
+
+* region plane
+* curve face
+* loft
+
+Do not show more than two tags.
+
+Suggested labels:
+
+* Region Plane 1 (region, planar)
+* BREP Face 1 (curve, planar)
+* BREP Loft 1 (loft)
+
+Context actions:
 
 * Select
 * Rename
 * Toggle Visibility
-* Hide Selected
-* Show Selected
-* Delete Selected
-* Frame Selected
 * Export STEP
-
-Labels:
-
-* [V] BREP Face 1 (planar face)
-* [V] BREP Loft 1 (loft)
+* Rebuild BREP
+* Delete
 
 Acceptance:
 
-* BREP surfaces are easy to distinguish from preview surfaces.
-* Export STEP is discoverable from selected BREP surface.
+* user can tell a region-derived CAD face apart from a curve-derived face
+* BREP export is easy to find
 
 ---
 
-## Part J — UI/workbench integration
+## Part J — Tests
 
-Surfaces workbench should add a new section:
+Add/update tests:
 
-CAD / BREP Output
+Region primitive fit:
 
-Controls:
+* planar region fits successfully
+* noisy planar region reports RMS/max error
+* invalid triangle indices ignored
+* empty region fails clearly
+* degenerate/collinear region fails clearly
+* normal is unit length
+* u/v/normal are orthonormal
 
-* CAD Kernel Status
-* Create BREP Face From Closed Curve
-* Create BREP Loft From Two Curves
-* Export Selected BREP Surface to STEP
-* Delete Selected BREP Surface
+Boundary projection:
 
-Diagnostics:
+* boundary projects onto plane
+* point count preserved
+* no NaN/inf
+* projected points have near-zero plane distance
 
-* BREP Type
-* Backend
-* Source Curves
-* Build Method
-* Last Export Path
-* Build Warnings
-* Build Errors/Reason
+Region-to-BREP command:
 
-Disabled states:
+* fails with no mesh
+* fails with no active region
+* fails with invalid region
+* succeeds on simple planar selected region if CAD kernel available
+* creates BrepSurfaceRecord
+* stores runtime CAD object
+* metadata includes source_region_id
+* metadata includes plane fit RMS/max
+* selected BREP surface updates UI
+* export STEP writes non-empty file if backend available
 
-* BREP creation disabled if CAD kernel unavailable
-* STEP export disabled if no BREP selected
-* Loft disabled unless two curves selected
-* Face disabled unless one curve selected
+Rebuild:
 
-Do not make this top-menu-only.
-It must be visible in the Surfaces workbench.
-
-Acceptance:
-
-* User can find BREP tools
-* User can see backend availability
-* User can export without guessing
-
----
-
-## Part K — Project persistence
-
-For this task, persist BREP records but not raw CAD kernel objects.
-
-Project JSON should save:
-
-* BrepSurfaceRecord fields
-* source curve IDs
-* metadata
-* brep_type
-* backend
-* name
-* visibility
-* selection if existing convention supports it
-
-On project load:
-
-* restore BREP records
-* runtime CAD object cache starts empty
-* show status/metadata:
-  "BREP surface record loaded; rebuild required before export."
-* optional:
-
-  * auto-rebuild BREP objects from source curves if CAD kernel available
-
-Required command:
-
-* Rebuild Selected BREP Surface
-
-Behavior:
-
-* uses metadata/source curves
-* rebuilds runtime CAD object
-* updates cache
-* status:
-  "Rebuilt BREP surface."
-
-Acceptance:
-
-* project save/load does not crash
-* BREP records survive reload
-* user can rebuild/export after reload if source curves still exist
-
----
-
-## Part L — Tests
-
-Add/update tests.
-
-CAD kernel availability:
-
-* app imports with no CAD kernel
-* is_cad_kernel_available returns bool
-* unavailable backend gives safe failure message
-* BREP commands fail gracefully when backend missing
-
-CAD types:
-
-* clean curve points removes duplicate consecutive points
-* closed curve handling does not duplicate endpoint unnecessarily
-* invalid points are rejected safely
-
-Planar face backend:
-
-* open curve rejected
-* too-few-points curve rejected
-* degenerate curve rejected
-* square closed curve builds if CAD backend available
-* build result metadata includes brep_type/build_method
-
-Loft backend:
-
-* one curve rejected
-* invalid pair rejected
-* simple two-curve loft builds if CAD backend available
-* metadata includes source curve IDs/names
-
-Commands:
-
-* Create BREP Face requires one selected curve
-* Create BREP Loft requires two selected curves
-* successful command creates BrepSurfaceRecord
-* runtime cache stores CAD object
-* undo removes BREP record/cache object
-* redo restores or rebuilds
-* delete removes BREP record/cache object
-
-STEP export:
-
-* export requires selected BREP surface
-* export unavailable without backend
-* export writes non-empty file if backend available
-* failed export does not crash
+* region-derived BREP rebuilds from active/source data
+* missing source region fails clearly
+* project save/load preserves BREP record metadata
 
 Scene browser:
 
-* CAD / BREP Surfaces group appears
-* BREP surface labels include planar face/loft
+* region-derived BREP appears under CAD / BREP Surfaces
+* label includes region/planar
+* delete removes record and cache
 * visibility toggle works
-* delete works
-* export action discoverable if implemented in context menu
-
-Project persistence:
-
-* BREP records save
-* BREP records load
-* raw CAD object is not serialized
-* rebuild after load works if backend available
 
 Regression:
 
-* app launches
-* mesh loading works
-* manual curves still work
+* curve-derived BREP face still works
+* BREP loft still works
+* preview surfaces still work
 * region select still works
 * boundary extraction still works
+* manual curves still work
 * projected/rebuilt curves still work
-* preview surfaces still work
-* existing fill/loft preview still works
+* app launches without CAD kernel
 
 Acceptance:
 
 * pytest passes
-* app launches without CAD kernel
-* app uses CAD kernel if installed
-* user can create at least one real BREP planar face from a clean closed curve
-* user can export that BREP face as STEP
-* no mesh preview is falsely labeled as BREP
-* BREP tools are isolated from preview tools
+* app launches
+* selected planar region can become a real BREP face
+* BREP face can export as STEP
+* region select now produces actual CAD output
+* no cylinder/cone/freeform yet
 
 ## Stop after this task.

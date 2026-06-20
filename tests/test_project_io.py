@@ -993,9 +993,18 @@ class ProjectIOTests(unittest.TestCase):
                 visible=True,
                 selected=False,
                 metadata={
-                    "build_method": "closed_wire_planar_face",
+                    "creation_type": "region_plane_fit_brep",
+                    "build_method": "region_boundary_projected_to_best_fit_plane",
                     "runtime_status": "ready",
                     "source_point_count": 4,
+                    "source_region_id": "region-a",
+                    "boundary_curve_id": "curve-a",
+                    "plane_fit_origin": [0.0, 0.0, 0.0],
+                    "plane_fit_normal": [0.0, 0.0, 1.0],
+                    "plane_fit_u_axis": [1.0, 0.0, 0.0],
+                    "plane_fit_v_axis": [0.0, 1.0, 0.0],
+                    "plane_fit_rms_error": 0.018,
+                    "plane_fit_max_error": 0.064,
                 },
             )
         ]
@@ -1010,7 +1019,12 @@ class ProjectIOTests(unittest.TestCase):
         self.assertEqual(surface.id, "brep-face")
         self.assertEqual(surface.brep_type, "planar_face")
         self.assertEqual(surface.backend, "FakeCAD")
-        self.assertEqual(surface.metadata["build_method"], "closed_wire_planar_face")
+        self.assertEqual(surface.metadata["creation_type"], "region_plane_fit_brep")
+        self.assertEqual(surface.metadata["source_region_id"], "region-a")
+        self.assertEqual(surface.metadata["boundary_curve_id"], "curve-a")
+        self.assertEqual(surface.metadata["plane_fit_normal"], [0.0, 0.0, 1.0])
+        self.assertEqual(surface.metadata["plane_fit_rms_error"], 0.018)
+        self.assertEqual(surface.metadata["plane_fit_max_error"], 0.064)
 
     def test_project_from_dict_rejects_invalid_surface_shape_clearly(self) -> None:
         with self.assertRaises(ValueError) as context:

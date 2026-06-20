@@ -222,14 +222,16 @@ def _surface_display_label(surface: SurfaceSceneRecord, fallback_label: str) -> 
 
 def _surface_preview_tag(surface: SurfaceSceneRecord) -> str:
     brep_type = str(getattr(surface, "brep_type", "")).strip().lower()
+    metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
     if brep_type == "planar_face":
-        return "planar face"
+        if str(metadata.get("creation_type", "")) == "region_plane_fit_brep":
+            return "region, planar"
+        return "curve, planar"
     if brep_type == "loft_surface":
         return "loft"
     if brep_type:
         return "BREP"
 
-    metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
     preview_mode = str(metadata.get("preview_mode", "")).strip().lower()
     surface_type = str(getattr(surface, "surface_type", "")).strip().lower()
     if preview_mode == "closed_curve_fill" or surface_type == "preview_fill":
@@ -421,6 +423,11 @@ class SceneBrowser:
         self._context_menu.add_command(
             label="Export STEP",
             command=lambda: self._emit_visibility_action("export_step"),
+        )
+        self._rebuild_brep_surface_menu_index = 19
+        self._context_menu.add_command(
+            label="Rebuild BREP",
+            command=lambda: self._emit_visibility_action("rebuild_brep"),
         )
 
         self.tree.insert("", "end", iid=NODE_SCENE, text="Scene", open=True)
@@ -1285,6 +1292,10 @@ class SceneBrowser:
             )
             self._context_menu.entryconfigure(
                 self._export_step_menu_index,
+                state="normal" if brep_surface_selected else "disabled",
+            )
+            self._context_menu.entryconfigure(
+                self._rebuild_brep_surface_menu_index,
                 state="normal" if brep_surface_selected else "disabled",
             )
             try:

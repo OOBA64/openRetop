@@ -203,6 +203,10 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
         label="Toggle Surface Visibility",
         command=app.toggle_active_surface_visibility,
     )
+    app.surfaces_menu.add_command(
+        label="Create BREP Face From Selected Region",
+        command=app.create_brep_face_from_selected_region,
+    )
 
     app.tools_menu = Menu(app.root, tearoff=False)
     app.tools_menu.add_command(label="Select Model", command=app.select_model)

@@ -63,6 +63,7 @@ from project.project_data import (
     default_project_data,
 )
 from project.project_io import load_project, save_project
+from regions.region_state import RegionSelection
 from settings.settings_data import default_app_settings
 from settings.settings_io import load_settings, save_settings
 from sections.section_state import (
@@ -75,6 +76,7 @@ from sections.section_state import (
     set_plane_origin_normal,
 )
 from surfaces.surface_state import SurfacePatch, add_surface
+from surfaces.brep_state import BrepSurfaceRecord, add_brep_surface
 from viewer.embedded_viewport import MeshPickResult
 
 
@@ -573,6 +575,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.surfaces_menu.entrycget(10, "label"), "Isolate Source Curves")
             self.assertEqual(window.surfaces_menu.entrycget(11, "label"), "Show Source Curves")
             self.assertEqual(window.surfaces_menu.entrycget(12, "label"), "Frame Source Curves")
+            self.assertEqual(
+                window.surfaces_menu.entrycget(15, "label"),
+                "Create BREP Face From Selected Region",
+            )
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
@@ -2506,7 +2512,7 @@ class MainWindowUiTests(unittest.TestCase):
             surface_node = surface_node_id(surface.id)
             tree = window.scene_browser.tree
             self.assertIn(surface_node, tree.get_children(NODE_BREP_SURFACES))
-            self.assertEqual(tree.item(surface_node, "text"), "[V] BREP Face 1 (planar face)")
+            self.assertEqual(tree.item(surface_node, "text"), "[V] BREP Face 1 (curve, planar)")
             self.assertEqual(tree.selection(), (surface_node,))
 
             with TemporaryDirectory() as tmpdir:
@@ -2665,6 +2671,155 @@ class MainWindowUiTests(unittest.TestCase):
                 [surface.id],
             )
             self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
+        finally:
+            window.root.destroy()
+
+    def test_create_region_brep_requires_mesh_and_active_region(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.create_brep_face_from_selected_region()
+            self.assertEqual(
+                window.status_text.get(),
+                "Load a mesh before creating BREP from region.",
+            )
+
+            _load_sample_model(window)
+            window.create_brep_face_from_selected_region()
+            self.assertEqual(window.status_text.get(), "Select a region first.")
+            self.assertEqual(window.app_state.brep_surface_collection.surfaces, [])
+        finally:
+            window.root.destroy()
+
+    def test_create_and_rebuild_region_brep_preserves_lineage(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = TriangleMeshData(
+                vertices=np.asarray(
+                    [
+                        [0.0, 0.0, 0.01],
+                        [2.0, 0.0, -0.01],
+                        [2.0, 1.0, 0.02],
+                        [0.0, 1.0, -0.02],
+                    ],
+                    dtype=float,
+                ),
+                triangles=np.asarray([[0, 1, 2], [0, 2, 3]], dtype=int),
+            )
+            region = RegionSelection(
+                id="region-plane",
+                name="Cheek",
+                triangle_indices=(0, 1),
+                source_mesh_identifier="sample.stl",
+                source_mesh_name="sample.stl",
+            )
+            window.app_state.region_collection.set_active(region)
+
+            cad_object = object()
+            create_result = CadBuildResult(
+                success=True,
+                cad_object=cad_object,
+                reason="created",
+                metadata={
+                    "brep_type": "planar_face",
+                    "backend": "FakeCAD",
+                    "build_method": "closed_wire_planar_face",
+                },
+            )
+            with (
+                patch("app.main_window.is_cad_kernel_available", return_value=True),
+                patch(
+                    "app.main_window.build_planar_face_from_curve",
+                    return_value=create_result,
+                ) as build_face,
+            ):
+                window.create_brep_face_from_selected_region()
+
+            build_input = build_face.call_args.args[0]
+            self.assertTrue(build_input.is_closed)
+            self.assertEqual(build_input.points.shape, (4, 3))
+            surfaces = window.app_state.brep_surface_collection.surfaces
+            self.assertEqual(len(surfaces), 1)
+            surface = surfaces[0]
+            self.assertEqual(surface.name, "Region Plane 1")
+            self.assertEqual(surface.source_curve_ids, [build_input.curve_id])
+            self.assertEqual(surface.metadata["creation_type"], "region_plane_fit_brep")
+            self.assertEqual(surface.metadata["source_region_id"], region.id)
+            self.assertEqual(surface.metadata["source_region_triangle_count"], 2)
+            self.assertEqual(surface.metadata["boundary_point_count"], 4)
+            self.assertIn("plane_fit_rms_error", surface.metadata)
+            self.assertIn("plane_fit_max_error", surface.metadata)
+            self.assertEqual(
+                surface.metadata["cad_build_method"],
+                "region_boundary_projected_to_best_fit_plane",
+            )
+            self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
+            self.assertEqual(window.brep_source_text.get(), "region")
+
+            boundary_curve = window.app_state.curve_collection.curves[0]
+            self.assertEqual(boundary_curve.name, "Cheek Boundary")
+            self.assertEqual(boundary_curve.metadata["creation_type"], "region_boundary")
+            surface_node = surface_node_id(surface.id)
+            self.assertEqual(
+                window.scene_browser.tree.item(surface_node, "text"),
+                "[V] Region Plane 1 (region, planar)",
+            )
+
+            window.app_state.region_collection.clear()
+            window._brep_runtime_cache.clear()
+            rebuilt_object = object()
+            rebuild_result = CadBuildResult(
+                success=True,
+                cad_object=rebuilt_object,
+                reason="rebuilt",
+                metadata={"backend": "FakeCAD", "brep_type": "planar_face"},
+            )
+            with patch(
+                "app.main_window.build_planar_face_from_curve",
+                return_value=rebuild_result,
+            ):
+                window.rebuild_selected_brep_surface()
+
+            self.assertEqual(window._brep_runtime_cache[surface.id], rebuilt_object)
+            self.assertEqual(
+                window.status_text.get(),
+                "Rebuilt BREP planar face from region metadata.",
+            )
+        finally:
+            window.root.destroy()
+
+    def test_rebuild_region_brep_fails_when_sources_are_missing(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            surface = BrepSurfaceRecord(
+                id="brep-region-missing",
+                name="Region Plane 1",
+                source_curve_ids=["missing-boundary"],
+                brep_type="planar_face",
+                backend="FakeCAD",
+                metadata={
+                    "creation_type": "region_plane_fit_brep",
+                    "source_region_id": "missing-region",
+                    "boundary_curve_id": "missing-boundary",
+                },
+            )
+            add_brep_surface(window.app_state.brep_surface_collection, surface)
+            window.select_surface(surface.id)
+
+            window.rebuild_selected_brep_surface()
+
+            self.assertEqual(
+                window.status_text.get(),
+                "Cannot rebuild BREP: missing source region and boundary curve.",
+            )
+            self.assertNotIn(surface.id, window._brep_runtime_cache)
         finally:
             window.root.destroy()
 
