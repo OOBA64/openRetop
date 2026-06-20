@@ -5,11 +5,14 @@ from __future__ import annotations
 from functools import lru_cache
 
 from cad_kernel.occ_backend import (
+    build_loft_from_wires_with_backend,
     build_loft_surface_with_backend,
+    build_planar_face_from_wire_with_backend,
     build_planar_face_with_backend,
     detect_cad_kernel_backend,
     import_cad_backend,
 )
+from cad_kernel.curve_wire import build_cad_wire_from_curve
 from cad_kernel.export_step import export_step
 from cad_kernel.types import (
     CadBuildResult,
@@ -173,6 +176,121 @@ def build_loft_surface_from_curves(
         success=True,
         cad_object=cad_object,
         reason="Loft BREP surface built.",
+        warnings=warnings,
+        metadata=metadata,
+    )
+
+
+def build_planar_face_from_cad_wire(
+    wire: object,
+    *,
+    source_metadata: dict[str, object] | None = None,
+) -> CadBuildResult:
+    metadata = {
+        "brep_type": "planar_face",
+        "build_method": "segment_aware_cad_wire_planar_face",
+        **(source_metadata or {}),
+    }
+    info = cad_kernel_info()
+    metadata["backend"] = info.backend_name
+    if not info.available:
+        return CadBuildResult(False, None, info.status, metadata=metadata)
+    try:
+        cad_object = build_planar_face_from_wire_with_backend(
+            import_cad_backend(),
+            wire,
+        )
+    except Exception as exc:
+        return CadBuildResult(
+            False,
+            None,
+            f"CAD kernel failed to build planar face from wire: {exc}",
+            metadata=metadata,
+        )
+    return CadBuildResult(
+        True,
+        cad_object,
+        "Planar BREP face built from CAD wire.",
+        metadata=metadata,
+    )
+
+
+def build_loft_surface_from_cad_wires(
+    wires: list[object],
+    *,
+    closed_profiles: bool,
+    cap_start: bool = False,
+    cap_end: bool = False,
+    create_solid_if_closed: bool = False,
+    ruled: bool = False,
+    source_metadata: dict[str, object] | None = None,
+) -> CadBuildResult:
+    metadata = {
+        "brep_type": "loft_surface",
+        "build_method": "editable_loft_from_cad_wires",
+        "wire_count": len(wires),
+        "closed_profiles": bool(closed_profiles),
+        "cap_start": bool(cap_start),
+        "cap_end": bool(cap_end),
+        "create_solid_if_closed": bool(create_solid_if_closed),
+        "ruled": bool(ruled),
+        **(source_metadata or {}),
+    }
+    if len(wires) < 2:
+        return CadBuildResult(
+            False,
+            None,
+            "Editable loft requires at least two CAD wires.",
+            metadata=metadata,
+        )
+    if len(wires) > 2:
+        return CadBuildResult(
+            False,
+            None,
+            "Multi-section editable loft not implemented yet.",
+            metadata=metadata,
+        )
+    if not closed_profiles and (cap_start or cap_end or create_solid_if_closed):
+        return CadBuildResult(
+            False,
+            None,
+            "Open curve loft creates an open sheet. Use four-boundary patch or add rails to close sides.",
+            metadata=metadata,
+        )
+    info = cad_kernel_info()
+    metadata["backend"] = info.backend_name
+    if not info.available:
+        return CadBuildResult(False, None, info.status, metadata=metadata)
+    warnings: list[str] = []
+    if not closed_profiles:
+        warnings.append(
+            "Open curve loft creates an open sheet. Use four-boundary patch or add rails to close sides."
+        )
+    try:
+        cad_object, backend_metadata, backend_warnings = build_loft_from_wires_with_backend(
+            import_cad_backend(),
+            wires,
+            closed_profiles=closed_profiles,
+            cap_start=cap_start,
+            cap_end=cap_end,
+            create_solid_if_closed=create_solid_if_closed,
+            ruled=ruled,
+        )
+        metadata.update(backend_metadata)
+        warnings.extend(backend_warnings)
+    except Exception as exc:
+        return CadBuildResult(
+            False,
+            None,
+            f"CAD kernel failed to build editable loft: {exc}",
+            warnings=warnings,
+            metadata=metadata,
+        )
+    metadata["warnings"] = list(warnings)
+    return CadBuildResult(
+        True,
+        cad_object,
+        "Editable BREP loft built from CAD wires.",
         warnings=warnings,
         metadata=metadata,
     )

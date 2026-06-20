@@ -11,8 +11,13 @@ import numpy as np
 
 from curves.curve_state import is_repaired_curve
 from curves.manual_curve import (
+    CURVE_POINT_CORNER,
     DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+    MANUAL_CURVE_METHOD_HYBRID,
+    ManualCurveControlDataV2,
+    ManualCurvePoint,
     sample_manual_curve,
+    sample_hybrid_manual_curve,
 )
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult
@@ -89,6 +94,7 @@ SELECTED_CURVE_LINE_WIDTH = 4.6
 ACTIVE_CURVE_COLOR = (1.0, 0.92, 0.12)
 ACTIVE_CURVE_LINE_WIDTH = 5.4
 MANUAL_CURVE_POINT_COLOR = (1.0, 1.0, 1.0)
+MANUAL_CURVE_CORNER_POINT_COLOR = (1.0, 0.55, 0.12)
 MANUAL_CURVE_FIRST_POINT_COLOR = (0.96, 0.98, 1.0)
 MANUAL_CURVE_SELECTED_POINT_COLOR = (0.35, 0.95, 1.0)
 MANUAL_CURVE_POLYLINE_COLOR = (1.0, 1.0, 1.0)
@@ -446,6 +452,7 @@ class EmbeddedVTKViewport:
         region_selection_edge_color: str | Sequence[float] = REGION_SELECTION_EDGE_COLOR,
         region_selection_opacity: float = REGION_SELECTION_OPACITY,
         manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None = None,
+        manual_curve_point_types: Sequence[str] | None = None,
         manual_curve_closed: bool = False,
         manual_curve_plane_normal: Sequence[float] | None = None,
         manual_curve_snap_to_mesh: bool = False,
@@ -560,6 +567,7 @@ class EmbeddedVTKViewport:
         )
         self._update_manual_curve_preview_actor(
             manual_curve_points,
+            point_types=manual_curve_point_types,
             closed=manual_curve_closed,
             plane_normal=manual_curve_plane_normal,
             snap_to_mesh=manual_curve_snap_to_mesh,
@@ -1273,6 +1281,7 @@ class EmbeddedVTKViewport:
         self,
         manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None,
         *,
+        point_types: Sequence[str] | None,
         closed: bool,
         plane_normal: Sequence[float] | None,
         snap_to_mesh: bool,
@@ -1296,6 +1305,7 @@ class EmbeddedVTKViewport:
             snap_to_mesh=snap_to_mesh,
             reference_extent=self._view_extent,
             curve_method=curve_method,
+            point_types=point_types,
             sample_count=sample_count,
             preview_point=preview,
             preview_valid=preview_valid,
@@ -1328,6 +1338,7 @@ class EmbeddedVTKViewport:
         point_key = (
             "manual_curve_control_points",
             _array_key(control_points),
+            tuple(point_types or ()),
             bool(snap_to_mesh),
             None if selected_control_point_index is None else int(selected_control_point_index),
             _array_key(preview) if has_preview else None,
@@ -1339,6 +1350,7 @@ class EmbeddedVTKViewport:
         if self._group_keys.get("manual_curve_control_points") != point_key:
             point_actors = _manual_curve_control_point_actors(
                 control_points,
+                point_types=point_types,
                 reference_extent=self._view_extent,
                 snap_to_mesh=snap_to_mesh,
                 selected_index=selected_control_point_index,
@@ -2403,6 +2415,7 @@ def _manual_curve_preview_geometries(
     snap_to_mesh: bool,
     reference_extent: float,
     curve_method: str,
+    point_types: Sequence[str] | None,
     sample_count: int,
     preview_point: np.ndarray,
     preview_valid: bool,
@@ -2434,12 +2447,29 @@ def _manual_curve_preview_geometries(
             )
         )
         line_widths.append(MANUAL_CURVE_POINT_LINE_WIDTH)
-        sampled_points = sample_manual_curve(
-            points,
-            is_closed=bool(closed),
-            method=curve_method,
-            sample_count=sample_count,
-        )
+        if str(curve_method).strip().lower() == MANUAL_CURVE_METHOD_HYBRID:
+            types = list(point_types or ())
+            sampled_points = sample_hybrid_manual_curve(
+                ManualCurveControlDataV2(
+                    points=[
+                        ManualCurvePoint(
+                            position=point,
+                            point_type=types[index] if index < len(types) else "smooth",
+                        )
+                        for index, point in enumerate(points)
+                    ],
+                    is_closed=bool(closed),
+                    curve_method=MANUAL_CURVE_METHOD_HYBRID,
+                    sample_count=sample_count,
+                )
+            )
+        else:
+            sampled_points = sample_manual_curve(
+                points,
+                is_closed=bool(closed),
+                method=curve_method,
+                sample_count=sample_count,
+            )
         if len(sampled_points) >= 2:
             geometries.append(
                 _manual_curve_polyline_geometry(
@@ -2471,6 +2501,7 @@ def _manual_curve_preview_geometries(
         bool(snap_to_mesh),
         _array_key(normal),
         str(curve_method).strip().lower(),
+        tuple(point_types or ()),
         int(sample_count),
         _array_key(preview) if len(preview) else None,
         bool(preview_valid),
@@ -2522,6 +2553,7 @@ def _manual_curve_preview_point_array(
 def _manual_curve_control_point_actors(
     points: Sequence[Sequence[float]] | np.ndarray,
     *,
+    point_types: Sequence[str] | None,
     reference_extent: float,
     snap_to_mesh: bool,
     selected_index: int | None,
@@ -2539,6 +2571,7 @@ def _manual_curve_control_point_actors(
 
     selected = _valid_manual_curve_selected_index(selected_index, point_count=len(point_array))
     normal_indices: list[int] = []
+    corner_indices: list[int] = []
     first_indices: list[int] = []
     selected_indices: list[int] = []
     closure_indices: list[int] = []
@@ -2549,6 +2582,8 @@ def _manual_curve_control_point_actors(
             selected_indices.append(index)
         elif index == 0:
             first_indices.append(index)
+        elif index < len(point_types or ()) and point_types[index] == CURVE_POINT_CORNER:
+            corner_indices.append(index)
         else:
             normal_indices.append(index)
 
@@ -2560,6 +2595,7 @@ def _manual_curve_control_point_actors(
     preview_radius = _manual_curve_control_point_radius(reference_extent, preview=True)
     for indices, color, radius in (
         (normal_indices, normal_color, normal_radius),
+        (corner_indices, MANUAL_CURVE_CORNER_POINT_COLOR, normal_radius * 1.12),
         (first_indices, MANUAL_CURVE_FIRST_POINT_COLOR, first_radius),
         (selected_indices, MANUAL_CURVE_SELECTED_POINT_COLOR, selected_radius),
         (closure_indices, MANUAL_CURVE_PREVIEW_POINT_COLOR, preview_radius),

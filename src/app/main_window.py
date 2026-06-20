@@ -12,7 +12,10 @@ from uuid import uuid4
 import numpy as np
 
 from cad_kernel.backend import (
+    build_cad_wire_from_curve,
+    build_loft_surface_from_cad_wires,
     build_loft_surface_from_curves,
+    build_planar_face_from_cad_wire,
     build_planar_face_from_curve,
     cad_kernel_status,
     export_step,
@@ -108,14 +111,26 @@ from curves.curve_state import (
     smooth_curve,
 )
 from curves.manual_curve import (
+    CURVE_POINT_CORNER,
+    CURVE_POINT_SMOOTH,
+    DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
     DEFAULT_MANUAL_CURVE_METHOD,
     DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+    MANUAL_CURVE_METHOD_CATMULL_ROM,
+    MANUAL_CURVE_METHOD_HYBRID,
+    MANUAL_CURVE_METHOD_POLYLINE,
     ManualCurveControlData,
+    ManualCurveControlDataV2,
+    ManualCurvePoint,
+    auto_detect_manual_curve_corners,
     build_manual_stored_curve,
     ensure_manual_curve_storage,
+    hybrid_curve_diagnostics,
     is_manual_curve_like,
     manual_curve_close_threshold,
     parse_manual_curve_metadata,
+    parse_manual_curve_metadata_v2,
+    sample_hybrid_manual_curve,
     should_snap_closed_to_first_point,
 )
 from curves.projection import project_stored_curve_to_mesh
@@ -204,6 +219,21 @@ from surfaces.brep_state import (
     remove_brep_surface,
     set_active_brep_surface,
     set_selected_brep_surfaces,
+)
+from surfaces.loft_feature import (
+    LoftFeatureCollection,
+    LoftFeatureOptions,
+    LoftFeatureRecord,
+    add_loft_feature,
+    loft_feature_for_brep_surface,
+    mark_loft_features_dirty_for_curve,
+    remove_loft_feature,
+)
+from surfaces.four_boundary_feature import (
+    FourBoundaryPatchFeatureCollection,
+    FourBoundaryPatchFeatureRecord,
+    add_four_boundary_feature,
+    mark_four_boundary_features_dirty_for_curve,
 )
 from surfaces.surface_state import (
     SurfaceCollection,
@@ -408,6 +438,7 @@ class OpenRetopWindow:
         self._active_transform_angle_delta: float | None = None
         self._manual_curve_active = False
         self._manual_curve_points: list[np.ndarray] = []
+        self._manual_curve_point_types: list[str] = []
         self._manual_curve_closed = False
         self._manual_curve_plane_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
         self._manual_curve_plane_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
@@ -428,6 +459,7 @@ class OpenRetopWindow:
         self._manual_curve_insert_point_active = False
         self._manual_curve_curve_method = DEFAULT_MANUAL_CURVE_METHOD
         self._manual_curve_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
+        self._loft_rebuild_counter = 0
         self._manual_curve_left_press_position: tuple[int, int] | None = None
         self._manual_curve_left_dragged = False
         self._manual_curve_context_menu: Menu | None = None
@@ -461,6 +493,14 @@ class OpenRetopWindow:
         self.show_normals = BooleanVar(value=False)
         self.show_section_plane = BooleanVar(value=False)
         self.manual_curve_snap_to_mesh = BooleanVar(value=False)
+        self.manual_curve_auto_detect_corners = BooleanVar(value=True)
+        self.manual_curve_preserve_corners = BooleanVar(value=True)
+        self.manual_curve_placement_text = StringVar(value="Work Plane")
+        self.manual_curve_next_point_type_text = StringVar(value="Smooth")
+        self.manual_curve_selected_point_type_text = StringVar(value="(none)")
+        self.manual_curve_corner_threshold_text = StringVar(
+            value=f"{DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES:.0f}"
+        )
         self.region_threshold_degrees = DoubleVar(value=DEFAULT_REGION_THRESHOLD_DEGREES)
         self.region_threshold_text = StringVar(value=f"{DEFAULT_REGION_THRESHOLD_DEGREES:.1f}")
         self.region_max_triangle_count = StringVar(value=str(DEFAULT_REGION_MAX_TRIANGLES))
@@ -598,6 +638,19 @@ class OpenRetopWindow:
         self.brep_last_export_path_text = StringVar(value="(none)")
         self.brep_build_warnings_text = StringVar(value="(none)")
         self.brep_build_errors_text = StringVar(value="(none)")
+        self.loft_feature_name_text = StringVar(value="(none)")
+        self.loft_feature_source_curves_text = StringVar(value="(none)")
+        self.loft_feature_curve_count_text = StringVar(value="0")
+        self.loft_preserve_corners = BooleanVar(value=True)
+        self.loft_match_directions = BooleanVar(value=True)
+        self.loft_align_closed_seams = BooleanVar(value=True)
+        self.loft_cap_start = BooleanVar(value=False)
+        self.loft_cap_end = BooleanVar(value=False)
+        self.loft_create_solid = BooleanVar(value=False)
+        self.loft_ruled = BooleanVar(value=False)
+        self.loft_rebuild_on_source_edit = BooleanVar(value=True)
+        self.loft_last_build_status_text = StringVar(value="(none)")
+        self.loft_last_build_warnings_text = StringVar(value="(none)")
         self.selection_buttons: list[ttk.Button] = []
         self._syncing_surface_display_controls = False
         self._sync_active_section_plane_from_controls()
@@ -1035,6 +1088,63 @@ class OpenRetopWindow:
                 )
             except ValueError:
                 clear_brep_surface_selection(self.app_state.brep_surface_collection)
+        loft_features: list[LoftFeatureRecord] = []
+        for project_feature in project.loft_features:
+            options = project_feature.options
+            loft_features.append(
+                LoftFeatureRecord(
+                    id=project_feature.id,
+                    name=project_feature.name,
+                    options=LoftFeatureOptions(
+                        source_curve_ids=list(options.get("source_curve_ids", [])),
+                        source_order_locked=bool(options.get("source_order_locked", True)),
+                        use_cad_wires=bool(options.get("use_cad_wires", True)),
+                        match_curve_directions=bool(options.get("match_curve_directions", True)),
+                        align_closed_curve_seams=bool(options.get("align_closed_curve_seams", True)),
+                        preserve_corners=bool(options.get("preserve_corners", True)),
+                        cap_start=bool(options.get("cap_start", False)),
+                        cap_end=bool(options.get("cap_end", False)),
+                        create_solid_if_closed=bool(options.get("create_solid_if_closed", False)),
+                        ruled=bool(options.get("ruled", False)),
+                        smoothing=str(options.get("smoothing", "normal")),
+                        rebuild_on_source_edit=bool(options.get("rebuild_on_source_edit", True)),
+                        metadata=dict(options.get("metadata", {}))
+                        if isinstance(options.get("metadata"), dict)
+                        else {},
+                    ),
+                    brep_surface_id=project_feature.brep_surface_id,
+                    preview_surface_id=project_feature.preview_surface_id,
+                    last_build_success=project_feature.last_build_success,
+                    last_build_reason=project_feature.last_build_reason,
+                    last_build_warnings=list(project_feature.last_build_warnings),
+                    metadata=dict(project_feature.metadata),
+                )
+            )
+        self.app_state.loft_feature_collection = LoftFeatureCollection(
+            features=loft_features,
+            active_feature_id=loft_features[0].id if loft_features else None,
+        )
+        four_boundary_features = [
+            FourBoundaryPatchFeatureRecord(
+                id=feature.id,
+                name=feature.name,
+                source_curve_ids=list(feature.source_curve_ids),
+                preserve_corners=feature.preserve_corners,
+                match_directions=feature.match_directions,
+                fill_method=feature.fill_method,
+                brep_surface_id=feature.brep_surface_id,
+                preview_surface_id=feature.preview_surface_id,
+                last_build_status=feature.last_build_status,
+                metadata=dict(feature.metadata),
+            )
+            for feature in project.four_boundary_patch_features
+        ]
+        self.app_state.four_boundary_feature_collection = FourBoundaryPatchFeatureCollection(
+            features=four_boundary_features,
+            active_feature_id=(
+                four_boundary_features[0].id if four_boundary_features else None
+            ),
+        )
         self._sync_surface_context_from_active_surface()
 
     def _set_restored_active_section_plane(
@@ -1114,6 +1224,8 @@ class OpenRetopWindow:
                 curve_collection=self.app_state.curve_collection,
                 surface_collection=self.app_state.surface_collection,
                 brep_surface_collection=self.app_state.brep_surface_collection,
+                loft_feature_collection=self.app_state.loft_feature_collection,
+                four_boundary_feature_collection=self.app_state.four_boundary_feature_collection,
             )
             save_project(project, project_path)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1601,6 +1713,29 @@ class OpenRetopWindow:
         self._brep_runtime_cache.pop(surface_id, None)
 
     def _sync_after_undoable_scene_change(self) -> None:
+        existing_brep_ids = {
+            surface.id for surface in self.app_state.brep_surface_collection.surfaces
+        }
+        existing_preview_ids = {
+            surface.id for surface in self.app_state.surface_collection.surfaces
+        }
+        self.app_state.loft_feature_collection.features = [
+            feature
+            for feature in self.app_state.loft_feature_collection.features
+            if feature.brep_surface_id is None or feature.brep_surface_id in existing_brep_ids
+        ]
+        self.app_state.four_boundary_feature_collection.features = [
+            feature
+            for feature in self.app_state.four_boundary_feature_collection.features
+            if (
+                feature.preview_surface_id is None
+                or feature.preview_surface_id in existing_preview_ids
+            )
+            and (
+                feature.brep_surface_id is None
+                or feature.brep_surface_id in existing_brep_ids
+            )
+        ]
         if (
             self._manual_curve_edit_active
             and self._active_manual_edit_curve() is None
@@ -3088,6 +3223,19 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.editable_brep_loft_button = ttk.Button(
+            parent,
+            text="Create Editable BREP Loft From Curves",
+            command=self.create_editable_brep_loft_from_curves,
+        )
+        self.editable_brep_loft_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
         self.export_brep_step_button = ttk.Button(
             parent,
             text="Export Selected BREP Surface to STEP",
@@ -3149,6 +3297,88 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Last Export Path", self.brep_last_export_path_text)
         row = self._add_info_row(parent, row, "Build Warnings", self.brep_build_warnings_text)
         row = self._add_info_row(parent, row, "Build Errors/Reason", self.brep_build_errors_text)
+        row = self._add_separator(parent, row)
+        row = self._add_heading(parent, row, "Editable Loft Feature")
+        ttk.Label(parent, text="Loft Name").grid(row=row, column=0, sticky="w")
+        self.loft_feature_name_entry = ttk.Entry(
+            parent,
+            textvariable=self.loft_feature_name_text,
+        )
+        self.loft_feature_name_entry.grid(row=row, column=1, sticky="ew", padx=(8, 0))
+        self.loft_feature_name_entry.bind(
+            "<FocusOut>",
+            lambda _event: self._on_loft_feature_options_changed(),
+        )
+        row += 1
+        row = self._add_info_row(parent, row, "Source Curves", self.loft_feature_source_curves_text)
+        row = self._add_info_row(parent, row, "Curve Count", self.loft_feature_curve_count_text)
+        for label, variable in (
+            ("Preserve Corners", self.loft_preserve_corners),
+            ("Match Directions", self.loft_match_directions),
+            ("Align Closed Seams", self.loft_align_closed_seams),
+            ("Cap Start", self.loft_cap_start),
+            ("Cap End", self.loft_cap_end),
+            ("Create Solid if Closed", self.loft_create_solid),
+            ("Ruled", self.loft_ruled),
+            ("Rebuild on Source Edit", self.loft_rebuild_on_source_edit),
+        ):
+            check = ttk.Checkbutton(
+                parent,
+                text=label,
+                variable=variable,
+                command=self._on_loft_feature_options_changed,
+            )
+            check.grid(row=row, column=0, columnspan=2, sticky="w")
+            row += 1
+        row = self._add_info_row(parent, row, "Last Build Status", self.loft_last_build_status_text)
+        row = self._add_info_row(parent, row, "Last Build Warnings", self.loft_last_build_warnings_text)
+        self.rebuild_loft_feature_button = ttk.Button(
+            parent,
+            text="Rebuild Loft",
+            command=self.rebuild_selected_loft_feature,
+        )
+        self.rebuild_loft_feature_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.edit_loft_source_curve_button = ttk.Button(
+            parent,
+            text="Edit Source Curve",
+            command=self.edit_first_source_curve_for_active_loft,
+        )
+        self.edit_loft_source_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.reverse_loft_source_curve_button = ttk.Button(
+            parent,
+            text="Reverse Selected Source Curve Direction",
+            command=self.reverse_selected_loft_source_curve_direction,
+        )
+        self.reverse_loft_source_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.move_loft_source_up_button = ttk.Button(
+            parent,
+            text="Move Source Curve Up",
+            command=self.move_selected_loft_source_curve_up,
+        )
+        self.move_loft_source_up_button.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        self.move_loft_source_down_button = ttk.Button(
+            parent,
+            text="Move Source Curve Down",
+            command=self.move_selected_loft_source_curve_down,
+        )
+        self.move_loft_source_down_button.grid(row=row, column=1, sticky="ew", pady=(4, 0), padx=(8, 0))
+        row += 1
+        self.duplicate_loft_feature_button = ttk.Button(
+            parent,
+            text="Duplicate Loft Feature",
+            command=self.duplicate_selected_loft_feature,
+        )
+        self.duplicate_loft_feature_button.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        self.delete_loft_feature_button = ttk.Button(
+            parent,
+            text="Delete Loft Feature",
+            command=self.delete_selected_loft_feature,
+        )
+        self.delete_loft_feature_button.grid(row=row, column=1, sticky="ew", pady=(4, 0), padx=(8, 0))
+        row += 1
         self.select_source_curves_button = ttk.Button(
             parent,
             text="Select Source Curves",
@@ -3387,11 +3617,30 @@ class OpenRetopWindow:
         self.manual_curve_type_combo = ttk.Combobox(
             parent,
             textvariable=self.manual_curve_type_text,
-            values=("Smooth Curve", "Polyline"),
+            values=("Smooth", "Polyline", "Hybrid"),
             state="readonly",
         )
         self.manual_curve_type_combo.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
         self.manual_curve_type_combo.bind("<<ComboboxSelected>>", self._on_manual_curve_type_changed)
+        row += 1
+        ttk.Label(parent, text="Point Placement").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.manual_curve_placement_combo = ttk.Combobox(
+            parent,
+            textvariable=self.manual_curve_placement_text,
+            values=("Snap to Mesh", "Work Plane", "Free 3D"),
+            state="readonly",
+        )
+        self.manual_curve_placement_combo.grid(
+            row=row,
+            column=1,
+            sticky="ew",
+            pady=(6, 0),
+            padx=(8, 0),
+        )
+        self.manual_curve_placement_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_manual_curve_placement_changed,
+        )
         row += 1
         self.manual_curve_snap_check = ttk.Checkbutton(
             parent,
@@ -3400,6 +3649,66 @@ class OpenRetopWindow:
             command=self._on_manual_curve_snap_to_mesh_changed,
         )
         self.manual_curve_snap_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        row += 1
+        self.manual_curve_auto_corner_check = ttk.Checkbutton(
+            parent,
+            text="Auto corner detection",
+            variable=self.manual_curve_auto_detect_corners,
+        )
+        self.manual_curve_auto_corner_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        self.manual_curve_preserve_corners_check = ttk.Checkbutton(
+            parent,
+            text="Preserve sharp corners",
+            variable=self.manual_curve_preserve_corners,
+        )
+        self.manual_curve_preserve_corners_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        row = self._add_info_row(
+            parent,
+            row,
+            "Selected Point Type",
+            self.manual_curve_selected_point_type_text,
+        )
+        self.set_point_smooth_button = ttk.Button(
+            parent,
+            text="Set Selected Point Smooth",
+            command=self.set_selected_manual_curve_point_smooth,
+        )
+        self.set_point_smooth_button.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        self.set_point_corner_button = ttk.Button(
+            parent,
+            text="Set Selected Point Corner",
+            command=self.set_selected_manual_curve_point_corner,
+        )
+        self.set_point_corner_button.grid(row=row, column=1, sticky="ew", pady=(4, 0), padx=(8, 0))
+        row += 1
+        self.toggle_point_type_button = ttk.Button(
+            parent,
+            text="Toggle Selected Point Smooth/Corner",
+            command=self.toggle_selected_manual_curve_point_type,
+        )
+        self.toggle_point_type_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.auto_detect_corners_button = ttk.Button(
+            parent,
+            text="Auto Detect Corners",
+            command=self.auto_detect_manual_curve_corners,
+        )
+        self.auto_detect_corners_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        row += 1
+        self.smooth_selected_span_button = ttk.Button(
+            parent,
+            text="Smooth Selected Span",
+            command=self.smooth_selected_manual_curve_span,
+        )
+        self.smooth_selected_span_button.grid(row=row, column=0, sticky="ew", pady=(4, 0))
+        self.straighten_selected_span_button = ttk.Button(
+            parent,
+            text="Straighten Selected Span",
+            command=self.straighten_selected_manual_curve_span,
+        )
+        self.straighten_selected_span_button.grid(row=row, column=1, sticky="ew", pady=(4, 0), padx=(8, 0))
         row += 1
         ttk.Label(
             parent,
@@ -3529,6 +3838,19 @@ class OpenRetopWindow:
             command=self.select_boundary_curves_for_active_region,
         )
         self.select_region_boundary_curves_button.grid(
+            row=row,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4, 0),
+        )
+        row += 1
+        self.convert_boundary_hybrid_button = ttk.Button(
+            parent,
+            text="Convert Boundary to Hybrid Guide Curve",
+            command=self.convert_boundary_to_hybrid_guide_curve,
+        )
+        self.convert_boundary_hybrid_button.grid(
             row=row,
             column=0,
             columnspan=2,
@@ -3713,7 +4035,7 @@ class OpenRetopWindow:
         if shortcut is None:
             return
 
-        if self._manual_curve_active and shortcut in {"Backspace", "C", "Enter", "Esc"}:
+        if self._manual_curve_active and shortcut in {"Backspace", "C", "S", "Enter", "Esc"}:
             self._handle_shortcut(shortcut)
             return
 
@@ -3797,6 +4119,8 @@ class OpenRetopWindow:
             self.app_state.brep_surface_collection.surfaces = []
             self.app_state.brep_surface_collection.active_surface_id = None
             self.app_state.brep_surface_collection.selected_surface_ids.clear()
+            self.app_state.loft_feature_collection = LoftFeatureCollection()
+            self.app_state.four_boundary_feature_collection = FourBoundaryPatchFeatureCollection()
             self._brep_runtime_cache.clear()
             self._ensure_default_section_plane()
             self._sync_active_section_plane_from_controls()
@@ -4981,6 +5305,69 @@ class OpenRetopWindow:
         )
         self._sync_workflow_ui()
 
+    def convert_boundary_to_hybrid_guide_curve(self) -> None:
+        source_curve = self._active_curve()
+        if source_curve is None or not self._is_region_boundary_curve(source_curve):
+            self.status_text.set("Select a region boundary curve to convert.")
+            return
+        control_data = parse_manual_curve_metadata_v2(source_curve)
+        if control_data is None:
+            points = self._finite_points(source_curve.fitted_points)
+            if points is None:
+                self.status_text.set("Selected boundary curve has no usable points.")
+                return
+            control_data = ManualCurveControlDataV2(
+                points=[ManualCurvePoint(position=point) for point in points],
+                is_closed=bool(source_curve.is_closed),
+                curve_method=MANUAL_CURVE_METHOD_HYBRID,
+                sample_count=DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+            )
+        if len(control_data.points) > 64:
+            sample_indices = np.linspace(
+                0,
+                len(control_data.points) - 1,
+                64,
+                dtype=int,
+            )
+            control_data.points = [
+                copy.deepcopy(control_data.points[int(index)])
+                for index in sample_indices
+            ]
+        control_data.curve_method = MANUAL_CURVE_METHOD_HYBRID
+        control_data = auto_detect_manual_curve_corners(control_data)
+        guide = build_manual_stored_curve(
+            curve_id=f"curve-{uuid4().hex}",
+            name=self._next_derived_curve_name(f"{source_curve.name} Guide"),
+            control_points=control_data.control_points,
+            is_closed=control_data.is_closed,
+            creation_type="hybrid_region_guide",
+            snap_to_mesh=bool(source_curve.metadata.get("snap_to_mesh", False)),
+            work_plane_type=str(source_curve.metadata.get("work_plane_type", "mesh")),
+            source_mesh_name=source_curve.metadata.get("source_mesh_name"),
+            curve_method=MANUAL_CURVE_METHOD_HYBRID,
+            sample_count=control_data.sample_count,
+            point_types=[point.point_type for point in control_data.points],
+            corner_angle_threshold_degrees=control_data.corner_angle_threshold_degrees,
+            preserve_corners=True,
+        )
+        guide.metadata.update(
+            {
+                "source_curve_id": source_curve.id,
+                "source_region_id": source_curve.metadata.get("source_region_id", ""),
+                "source_region_name": source_curve.metadata.get("source_region_name", ""),
+                "source_curve_tags": ["region_boundary", "hybrid_guide"],
+            }
+        )
+        add_curve(self.app_state.curve_collection, guide)
+        self._sync_visible_curve_results()
+        self.select_curve(guide.id)
+        self._push_created_curve_command(
+            guide,
+            command_name="Convert Boundary to Hybrid Guide Curve",
+        )
+        self.status_text.set(f"Created hybrid guide curve: {guide.name}")
+        self._set_project_dirty(True)
+
     def _boundary_curves_for_region(self, region_id: str) -> list[StoredCurve]:
         return [
             curve
@@ -5529,6 +5916,8 @@ class OpenRetopWindow:
         self.app_state.brep_surface_collection.surfaces = []
         self.app_state.brep_surface_collection.active_surface_id = None
         self.app_state.brep_surface_collection.selected_surface_ids.clear()
+        self.app_state.loft_feature_collection = LoftFeatureCollection()
+        self.app_state.four_boundary_feature_collection = FourBoundaryPatchFeatureCollection()
         self._brep_runtime_cache.clear()
         self._set_display_section_result(None)
         self._refresh_viewport(reset_camera=False)
@@ -6232,7 +6621,7 @@ class OpenRetopWindow:
             self.status_text.set(readiness.errors[0])
             return
 
-        self._create_surface_preview(
+        surface = self._create_surface_preview(
             source_curves,
             surface_type="preview_fill",
             preview_mode=CLOSED_CURVE_FILL,
@@ -6283,7 +6672,24 @@ class OpenRetopWindow:
             self.status_text.set(str(exc))
             return
 
-        result = build_planar_face_from_curve(curve_input)
+        wire_result = build_cad_wire_from_curve(source_curve)
+        if wire_result.success and wire_result.cad_object is not None:
+            result = build_planar_face_from_cad_wire(
+                wire_result.cad_object,
+                source_metadata=dict(wire_result.metadata),
+            )
+            result.warnings = self._merged_metadata_strings(
+                wire_result.warnings,
+                result.warnings,
+            )
+        else:
+            result = build_planar_face_from_curve(curve_input)
+            if result.success and parse_manual_curve_metadata_v2(source_curve) is not None:
+                result.warnings = self._merged_metadata_strings(
+                    result.warnings,
+                    ["Used sampled curve fallback; inspect sharp corners."],
+                )
+                result.metadata["cad_wire_fallback_reason"] = wire_result.reason
         if not self._brep_build_succeeded(result):
             self.status_text.set(result.reason)
             return
@@ -6297,7 +6703,11 @@ class OpenRetopWindow:
         self._finish_created_brep_surface(
             surface,
             result,
-            status=f"Created BREP planar face from {source_curve.name}.",
+            status=(
+                "Used sampled curve fallback; inspect sharp corners."
+                if "Used sampled curve fallback; inspect sharp corners." in result.warnings
+                else f"Created BREP planar face from {source_curve.name}."
+            ),
         )
 
     def create_brep_face_from_selected_region(self) -> None:
@@ -6528,7 +6938,29 @@ class OpenRetopWindow:
             self.status_text.set(str(exc))
             return
 
-        result = build_loft_surface_from_curves(first_curve_input, second_curve_input)
+        wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
+        if all(result.success and result.cad_object is not None for result in wire_results):
+            result = build_loft_surface_from_cad_wires(
+                [wire_result.cad_object for wire_result in wire_results],
+                closed_profiles=bool(first_curve_input.is_closed and second_curve_input.is_closed),
+                source_metadata={
+                    "source_curve_ids": [curve.id for curve in source_curves],
+                    "cad_wire_metadata": [wire_result.metadata for wire_result in wire_results],
+                },
+            )
+        else:
+            result = build_loft_surface_from_curves(first_curve_input, second_curve_input)
+            if result.success and any(
+                parse_manual_curve_metadata_v2(curve) is not None
+                for curve in source_curves
+            ):
+                result.warnings = self._merged_metadata_strings(
+                    result.warnings,
+                    ["Used sampled curve fallback; inspect sharp corners."],
+                )
+                result.metadata["cad_wire_fallback_reasons"] = [
+                    wire_result.reason for wire_result in wire_results if not wire_result.success
+                ]
         if not self._brep_build_succeeded(result):
             self.status_text.set(result.reason)
             return
@@ -6542,8 +6974,257 @@ class OpenRetopWindow:
         self._finish_created_brep_surface(
             surface,
             result,
-            status="Created BREP loft surface from 2 curves.",
+            status=(
+                "Used sampled curve fallback; inspect sharp corners."
+                if "Used sampled curve fallback; inspect sharp corners." in result.warnings
+                else "Created BREP loft surface from 2 curves."
+            ),
         )
+
+    def create_editable_brep_loft_from_curves(self) -> None:
+        source_curves = self._surface_source_curves_from_selection()
+        if len(source_curves) < 2:
+            self.status_text.set("Select at least two curves for editable BREP loft.")
+            return
+        if len(source_curves) > 2:
+            self.status_text.set("Multi-section editable loft not implemented yet.")
+            return
+        options = LoftFeatureOptions(
+            source_curve_ids=[curve.id for curve in source_curves],
+            preserve_corners=bool(self.loft_preserve_corners.get()),
+            match_curve_directions=bool(self.loft_match_directions.get()),
+            align_closed_curve_seams=bool(self.loft_align_closed_seams.get()),
+            cap_start=bool(self.loft_cap_start.get()),
+            cap_end=bool(self.loft_cap_end.get()),
+            create_solid_if_closed=bool(self.loft_create_solid.get()),
+            ruled=bool(self.loft_ruled.get()),
+            smoothing="ruled" if bool(self.loft_ruled.get()) else "normal",
+            rebuild_on_source_edit=bool(self.loft_rebuild_on_source_edit.get()),
+        )
+        self._create_editable_loft_feature_from_options(options)
+
+    def _create_editable_loft_feature_from_options(
+        self,
+        options: LoftFeatureOptions,
+        *,
+        name: str | None = None,
+    ) -> LoftFeatureRecord | None:
+        feature = LoftFeatureRecord(
+            id=f"loft-feature-{uuid4().hex}",
+            name=name or self._next_loft_feature_name(),
+            options=copy.deepcopy(options),
+            last_build_reason="Build pending.",
+            metadata={"loft_feature_dirty": True, "last_rebuild_session": 0},
+        )
+        source_curves, missing_ids = self._curves_for_ids(feature.options.source_curve_ids)
+        if missing_ids:
+            feature.last_build_reason = f"Missing loft source curve: {missing_ids[0]}"
+            self.status_text.set(feature.last_build_reason)
+            return None
+        result = self._build_editable_loft_feature(feature, source_curves)
+        feature.last_build_success = result.success and result.cad_object is not None
+        feature.last_build_reason = result.reason
+        feature.last_build_warnings = list(result.warnings)
+        if not feature.last_build_success:
+            self.status_text.set(result.reason)
+            return None
+
+        surface = self._create_brep_surface_record(
+            name_prefix="Editable BREP Loft",
+            source_curves=source_curves,
+            build_result=result,
+            fallback_brep_type=BREP_TYPE_LOFT_SURFACE,
+        )
+        feature.brep_surface_id = surface.id
+        feature.metadata["loft_feature_dirty"] = False
+        surface.metadata.update(
+            {
+                "creation_type": "editable_loft_feature",
+                "loft_feature_id": feature.id,
+                "loft_feature_dirty": False,
+                "editable_feature": True,
+            }
+        )
+        add_loft_feature(self.app_state.loft_feature_collection, feature)
+        open_sheet_warning = next(
+            (
+                warning
+                for warning in result.warnings
+                if "open sheet" in warning.lower()
+            ),
+            None,
+        )
+        self._finish_created_brep_surface(
+            surface,
+            result,
+            status=(
+                f"Created editable BREP loft: {feature.name}. {open_sheet_warning}"
+                if open_sheet_warning
+                else f"Created editable BREP loft: {feature.name}."
+            ),
+        )
+        return feature
+
+    def _build_editable_loft_feature(
+        self,
+        feature: LoftFeatureRecord,
+        source_curves: Sequence[StoredCurve],
+    ) -> CadBuildResult:
+        if len(source_curves) > 2:
+            return CadBuildResult(
+                success=False,
+                cad_object=None,
+                reason="Multi-section editable loft not implemented yet.",
+            )
+        if len(source_curves) < 2:
+            return CadBuildResult(False, None, "Editable loft requires at least two curves.")
+        source_curves = self._prepared_loft_source_curves(feature, source_curves)
+        closed_values = [bool(curve.is_closed) for curve in source_curves]
+        if any(closed_values) and not all(closed_values):
+            return CadBuildResult(
+                False,
+                None,
+                "Editable loft requires source curves to be consistently open or closed.",
+            )
+        if not all(closed_values) and (
+            feature.options.cap_start
+            or feature.options.cap_end
+            or feature.options.create_solid_if_closed
+        ):
+            return CadBuildResult(
+                False,
+                None,
+                "Open curve loft creates an open sheet. Use four-boundary patch or add rails to close sides.",
+            )
+
+        wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
+        if feature.options.use_cad_wires and all(
+            result.success and result.cad_object is not None for result in wire_results
+        ):
+            result = build_loft_surface_from_cad_wires(
+                [wire_result.cad_object for wire_result in wire_results],
+                closed_profiles=all(closed_values),
+                cap_start=feature.options.cap_start,
+                cap_end=feature.options.cap_end,
+                create_solid_if_closed=feature.options.create_solid_if_closed,
+                ruled=feature.options.ruled,
+                source_metadata={
+                    "loft_feature_id": feature.id,
+                    "source_curve_ids": list(feature.options.source_curve_ids),
+                    "preserve_corners": feature.options.preserve_corners,
+                    "match_curve_directions": feature.options.match_curve_directions,
+                    "align_closed_curve_seams": feature.options.align_closed_curve_seams,
+                    "cad_wire_metadata": [wire_result.metadata for wire_result in wire_results],
+                },
+            )
+            result.warnings = self._merged_metadata_strings(
+                [warning for wire_result in wire_results for warning in wire_result.warnings],
+                result.warnings,
+            )
+            return result
+
+        try:
+            curve_inputs = [curve_points_from_stored_curve(curve) for curve in source_curves]
+        except ValueError as exc:
+            return CadBuildResult(False, None, str(exc))
+        result = build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
+        if result.success:
+            result.warnings = self._merged_metadata_strings(
+                result.warnings,
+                ["Used sampled curve fallback; inspect sharp corners."],
+            )
+            result.metadata.update(
+                {
+                    "loft_feature_id": feature.id,
+                    "source_curve_ids": list(feature.options.source_curve_ids),
+                    "loft_result_type": "closed_shell" if all(closed_values) else "open_sheet",
+                    "cad_wire_fallback_reasons": [
+                        wire_result.reason for wire_result in wire_results if not wire_result.success
+                    ],
+                }
+            )
+        return result
+
+    def _prepared_loft_source_curves(
+        self,
+        feature: LoftFeatureRecord,
+        source_curves: Sequence[StoredCurve],
+    ) -> list[StoredCurve]:
+        prepared = [copy.deepcopy(curve) for curve in source_curves]
+        if len(prepared) < 2:
+            return prepared
+        reference_points = np.asarray(prepared[0].fitted_points, dtype=float).reshape((-1, 3))
+        for index in range(1, len(prepared)):
+            curve = prepared[index]
+            points = np.asarray(curve.fitted_points, dtype=float).reshape((-1, 3))
+            if len(reference_points) < 2 or len(points) < 2:
+                continue
+            if feature.options.match_curve_directions:
+                direct = float(
+                    np.linalg.norm(reference_points[0] - points[0])
+                    + np.linalg.norm(reference_points[-1] - points[-1])
+                )
+                reversed_distance = float(
+                    np.linalg.norm(reference_points[0] - points[-1])
+                    + np.linalg.norm(reference_points[-1] - points[0])
+                )
+                if reversed_distance < direct:
+                    self._reverse_curve_geometry_in_place(curve)
+                    points = np.asarray(curve.fitted_points, dtype=float).reshape((-1, 3))
+            if feature.options.align_closed_curve_seams and curve.is_closed:
+                controls = parse_manual_curve_metadata_v2(curve)
+                if controls is not None and controls.points:
+                    target = reference_points[0]
+                    seam_index = int(
+                        np.argmin(
+                            np.linalg.norm(controls.control_points - target, axis=1)
+                        )
+                    )
+                    controls.points = controls.points[seam_index:] + controls.points[:seam_index]
+                    curve.metadata["control_points"] = controls.control_points.tolist()
+                    curve.metadata["control_points_v2"] = [
+                        {
+                            "position": point.position.tolist(),
+                            "point_type": point.point_type,
+                            "weight": point.weight,
+                            "tangent_in": None if point.tangent_in is None else point.tangent_in.tolist(),
+                            "tangent_out": None if point.tangent_out is None else point.tangent_out.tolist(),
+                            "snap_triangle_index": point.snap_triangle_index,
+                            "snap_normal": point.snap_normal,
+                            "metadata": dict(point.metadata),
+                        }
+                        for point in controls.points
+                    ]
+                    curve.metadata["point_types"] = [point.point_type for point in controls.points]
+                    curve.fitted_points = sample_hybrid_manual_curve(controls)
+        return prepared
+
+    @staticmethod
+    def _reverse_curve_geometry_in_place(curve: StoredCurve) -> None:
+        curve.original_points = np.asarray(curve.original_points, dtype=float)[::-1].copy()
+        curve.fitted_points = np.asarray(curve.fitted_points, dtype=float)[::-1].copy()
+        metadata = dict(curve.metadata)
+        for key in ("control_points", "control_points_v2", "point_types", "snap_triangle_indices", "snap_normals"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                metadata[key] = list(reversed(value))
+        curve.metadata = metadata
+
+    def _curves_for_ids(
+        self,
+        curve_ids: Sequence[str],
+    ) -> tuple[list[StoredCurve], list[str]]:
+        curves_by_id = {curve.id: curve for curve in self.app_state.curve_collection.curves}
+        curves = [curves_by_id[curve_id] for curve_id in curve_ids if curve_id in curves_by_id]
+        missing = [curve_id for curve_id in curve_ids if curve_id not in curves_by_id]
+        return curves, missing
+
+    def _next_loft_feature_name(self) -> str:
+        existing = {feature.name for feature in self.app_state.loft_feature_collection.features}
+        index = 1
+        while f"Editable Loft {index}" in existing:
+            index += 1
+        return f"Editable Loft {index}"
 
     def export_selected_brep_surface_to_step(self) -> None:
         surface = self._selected_single_brep_surface()
@@ -6588,6 +7269,12 @@ class OpenRetopWindow:
         if surface is None:
             self.status_text.set("Select a BREP surface to rebuild.")
             return
+        if loft_feature_for_brep_surface(
+            self.app_state.loft_feature_collection,
+            surface.id,
+        ) is not None:
+            self.rebuild_selected_loft_feature()
+            return
 
         region_derived = (
             str(surface.metadata.get("creation_type", ""))
@@ -6618,7 +7305,207 @@ class OpenRetopWindow:
         )
         self._set_project_dirty(True)
 
+    def _active_loft_feature(self) -> LoftFeatureRecord | None:
+        surface = self._selected_single_brep_surface()
+        if surface is None:
+            return None
+        return loft_feature_for_brep_surface(
+            self.app_state.loft_feature_collection,
+            surface.id,
+        )
+
+    def rebuild_selected_loft_feature(self) -> None:
+        feature = self._active_loft_feature()
+        if feature is None:
+            self.status_text.set("Select an editable loft feature to rebuild.")
+            return
+        source_curves, missing = self._curves_for_ids(feature.options.source_curve_ids)
+        if missing:
+            self.status_text.set(f"Missing loft source curve: {missing[0]}")
+            return
+        result = self._build_editable_loft_feature(feature, source_curves)
+        feature.last_build_success = result.success and result.cad_object is not None
+        feature.last_build_reason = result.reason
+        feature.last_build_warnings = list(result.warnings)
+        surface = self._brep_surface_by_id(feature.brep_surface_id)
+        if not feature.last_build_success or surface is None:
+            feature.metadata["loft_feature_dirty"] = True
+            self.status_text.set(result.reason)
+            self._sync_surface_context_from_active_surface()
+            return
+        self._loft_rebuild_counter += 1
+        feature.metadata["loft_feature_dirty"] = False
+        feature.metadata["last_rebuild_session"] = self._loft_rebuild_counter
+        self._brep_runtime_cache[surface.id] = result.cad_object
+        surface.backend = str(result.metadata.get("backend", surface.backend))
+        surface.source_curve_ids = list(feature.options.source_curve_ids)
+        surface.metadata.update(result.metadata)
+        surface.metadata.update(
+            {
+                "loft_feature_id": feature.id,
+                "loft_feature_dirty": False,
+                "runtime_status": "ready",
+                "build_reason": result.reason,
+                "warnings": list(result.warnings),
+            }
+        )
+        self._sync_surface_context_from_active_surface()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Rebuilt editable BREP loft from source curves.")
+        self._set_project_dirty(True)
+
+    def _brep_surface_by_id(self, surface_id: str | None) -> BrepSurfaceRecord | None:
+        if surface_id is None:
+            return None
+        return next(
+            (
+                surface
+                for surface in self.app_state.brep_surface_collection.surfaces
+                if surface.id == surface_id
+            ),
+            None,
+        )
+
+    def _on_loft_feature_options_changed(self) -> None:
+        feature = self._active_loft_feature()
+        if feature is None:
+            return
+        feature.name = self.loft_feature_name_text.get().strip() or feature.name
+        feature.options.preserve_corners = bool(self.loft_preserve_corners.get())
+        feature.options.match_curve_directions = bool(self.loft_match_directions.get())
+        feature.options.align_closed_curve_seams = bool(self.loft_align_closed_seams.get())
+        feature.options.cap_start = bool(self.loft_cap_start.get())
+        feature.options.cap_end = bool(self.loft_cap_end.get())
+        feature.options.create_solid_if_closed = bool(self.loft_create_solid.get())
+        feature.options.ruled = bool(self.loft_ruled.get())
+        feature.options.smoothing = "ruled" if feature.options.ruled else "normal"
+        feature.options.rebuild_on_source_edit = bool(self.loft_rebuild_on_source_edit.get())
+        feature.metadata["loft_feature_dirty"] = True
+        surface = self._brep_surface_by_id(feature.brep_surface_id)
+        if surface is not None:
+            surface.metadata["loft_feature_dirty"] = True
+        self.status_text.set("Loft options changed; rebuild loft.")
+        self._set_project_dirty(True)
+
+    def reverse_selected_loft_source_curve_direction(self) -> None:
+        feature = self._active_loft_feature()
+        if feature is None:
+            self.status_text.set("Select an editable loft feature first.")
+            return
+        curve_id = self._selected_loft_source_curve_id(feature)
+        curves, missing = self._curves_for_ids([curve_id])
+        if missing or not curves:
+            self.status_text.set("Loft source curve is missing.")
+            return
+        curve = curves[0]
+        curve.original_points = np.asarray(curve.original_points, dtype=float)[::-1].copy()
+        curve.fitted_points = np.asarray(curve.fitted_points, dtype=float)[::-1].copy()
+        metadata = dict(curve.metadata)
+        for key in ("control_points", "control_points_v2", "point_types", "snap_triangle_indices", "snap_normals"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                metadata[key] = list(reversed(value))
+        metadata["curve_direction_reversed"] = not bool(
+            metadata.get("curve_direction_reversed", False)
+        )
+        metadata["source_curve_revision"] = int(metadata.get("source_curve_revision", 0)) + 1
+        curve.metadata = metadata
+        refresh_curve_diagnostics(curve)
+        mark_loft_features_dirty_for_curve(self.app_state.loft_feature_collection, curve.id)
+        self.status_text.set("Reversed loft source curve direction; rebuild loft.")
+        self._refresh_viewport(reset_camera=False)
+        self._set_project_dirty(True)
+
+    def edit_first_source_curve_for_active_loft(self) -> None:
+        feature = self._active_loft_feature()
+        if feature is None or not feature.options.source_curve_ids:
+            self.status_text.set("Select an editable loft feature first.")
+            return
+        curve_id = self._selected_loft_source_curve_id(feature)
+        try:
+            self.select_curve(curve_id)
+        except ValueError:
+            self.status_text.set("Loft source curve is missing.")
+            return
+        self.start_manual_curve_edit_mode()
+
+    def move_selected_loft_source_curve_up(self) -> None:
+        self._move_selected_loft_source_curve(-1)
+
+    def move_selected_loft_source_curve_down(self) -> None:
+        self._move_selected_loft_source_curve(1)
+
+    def _move_selected_loft_source_curve(self, offset: int) -> None:
+        feature = self._active_loft_feature()
+        if feature is None:
+            self.status_text.set("Select an editable loft feature first.")
+            return
+        curve_id = self._selected_loft_source_curve_id(feature)
+        index = feature.options.source_curve_ids.index(curve_id)
+        target = min(max(index + int(offset), 0), len(feature.options.source_curve_ids) - 1)
+        if target == index:
+            self.status_text.set("Source curve is already at that end of the loft order.")
+            return
+        feature.options.source_curve_ids[index], feature.options.source_curve_ids[target] = (
+            feature.options.source_curve_ids[target],
+            feature.options.source_curve_ids[index],
+        )
+        feature.metadata["loft_feature_dirty"] = True
+        surface = self._brep_surface_by_id(feature.brep_surface_id)
+        if surface is not None:
+            surface.source_curve_ids = list(feature.options.source_curve_ids)
+            surface.metadata["loft_feature_dirty"] = True
+        self._sync_surface_context_from_active_surface()
+        self.status_text.set("Reordered loft source curves; rebuild loft.")
+        self._set_project_dirty(True)
+
+    def _selected_loft_source_curve_id(self, feature: LoftFeatureRecord) -> str:
+        active_curve = self._active_curve()
+        if active_curve is not None and active_curve.id in feature.options.source_curve_ids:
+            return active_curve.id
+        return feature.options.source_curve_ids[0]
+
+    def duplicate_selected_loft_feature(self) -> None:
+        feature = self._active_loft_feature()
+        if feature is None:
+            self.status_text.set("Select an editable loft feature to duplicate.")
+            return
+        self._create_editable_loft_feature_from_options(
+            copy.deepcopy(feature.options),
+            name=f"{feature.name} Copy",
+        )
+
+    def delete_selected_loft_feature(self) -> None:
+        feature = self._active_loft_feature()
+        if feature is None:
+            self.status_text.set("Select an editable loft feature to delete.")
+            return
+        surface_id = feature.brep_surface_id
+        remove_loft_feature(self.app_state.loft_feature_collection, feature.id)
+        if surface_id is not None:
+            remove_brep_surface(self.app_state.brep_surface_collection, surface_id)
+            self._brep_runtime_cache.pop(surface_id, None)
+        self._sync_surface_context_from_active_surface()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Deleted editable loft feature.")
+        self._set_project_dirty(True)
+
     def _rebuild_brep_surface(self, surface: BrepSurfaceRecord) -> CadBuildResult:
+        loft_feature = loft_feature_for_brep_surface(
+            self.app_state.loft_feature_collection,
+            surface.id,
+        )
+        if loft_feature is not None:
+            source_curves, missing = self._curves_for_ids(
+                loft_feature.options.source_curve_ids
+            )
+            if missing:
+                return CadBuildResult(
+                    False,
+                    None,
+                    f"Missing loft source curve: {missing[0]}",
+                )
+            return self._build_editable_loft_feature(loft_feature, source_curves)
         if (
             str(surface.metadata.get("creation_type", ""))
             == "region_plane_fit_brep"
@@ -6648,7 +7535,19 @@ class OpenRetopWindow:
                     cad_object=None,
                     reason="Planar BREP face rebuild requires one source curve.",
                 )
-            return build_planar_face_from_curve(curve_inputs[0])
+            wire_result = build_cad_wire_from_curve(source_curves[0])
+            if wire_result.success and wire_result.cad_object is not None:
+                return build_planar_face_from_cad_wire(
+                    wire_result.cad_object,
+                    source_metadata=dict(wire_result.metadata),
+                )
+            result = build_planar_face_from_curve(curve_inputs[0])
+            if result.success and parse_manual_curve_metadata_v2(source_curves[0]) is not None:
+                result.warnings = self._merged_metadata_strings(
+                    result.warnings,
+                    ["Used sampled curve fallback; inspect sharp corners."],
+                )
+            return result
 
         if surface.brep_type == BREP_TYPE_LOFT_SURFACE:
             if len(curve_inputs) != 2:
@@ -6657,7 +7556,27 @@ class OpenRetopWindow:
                     cad_object=None,
                     reason="Loft BREP surface rebuild requires two source curves.",
                 )
-            return build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
+            wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
+            if all(item.success and item.cad_object is not None for item in wire_results):
+                return build_loft_surface_from_cad_wires(
+                    [item.cad_object for item in wire_results],
+                    closed_profiles=bool(
+                        curve_inputs[0].is_closed and curve_inputs[1].is_closed
+                    ),
+                    source_metadata={
+                        "source_curve_ids": [curve.id for curve in source_curves]
+                    },
+                )
+            result = build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
+            if result.success and any(
+                parse_manual_curve_metadata_v2(curve) is not None
+                for curve in source_curves
+            ):
+                result.warnings = self._merged_metadata_strings(
+                    result.warnings,
+                    ["Used sampled curve fallback; inspect sharp corners."],
+                )
+            return result
 
         return CadBuildResult(
             success=False,
@@ -6924,7 +7843,7 @@ class OpenRetopWindow:
             self.status_text.set(errors[0])
             return
 
-        self._create_surface_preview(
+        surface = self._create_surface_preview(
             source_curves,
             surface_type="preview_four_curve_patch",
             preview_mode=FOUR_CURVE_PATCH,
@@ -6935,6 +7854,24 @@ class OpenRetopWindow:
             validation_errors=errors,
             extra_metadata={"curve_order": [curve.id for curve in source_curves]},
         )
+        if surface is not None:
+            feature = FourBoundaryPatchFeatureRecord(
+                id=f"four-boundary-feature-{uuid4().hex}",
+                name=surface.name,
+                source_curve_ids=[curve.id for curve in source_curves],
+                preserve_corners=True,
+                match_directions=True,
+                fill_method="coons_preview",
+                preview_surface_id=surface.id,
+                last_build_status="Four-boundary patch preview built.",
+                metadata={"four_boundary_feature_dirty": False},
+            )
+            add_four_boundary_feature(
+                self.app_state.four_boundary_feature_collection,
+                feature,
+            )
+            surface.metadata["four_boundary_feature_id"] = feature.id
+            surface.metadata["editable_feature"] = True
 
     def create_curve_network_patch(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
@@ -6973,7 +7910,7 @@ class OpenRetopWindow:
         validation_warnings: Sequence[str] | None = None,
         validation_errors: Sequence[str] | None = None,
         extra_metadata: dict[str, object] | None = None,
-    ) -> None:
+    ) -> SurfacePatch | None:
         source_curve_names = [curve.name for curve in source_curves]
         metadata: dict[str, object] = {
             "curve_count": len(source_curves),
@@ -7037,7 +7974,7 @@ class OpenRetopWindow:
             )
         if preview_result.mesh is None:
             self.status_text.set(f"Surface preview unavailable: {preview_result.reason}")
-            return
+            return None
 
         add_surface(self.app_state.surface_collection, surface)
         self._push_created_surface_command(surface)
@@ -7045,6 +7982,40 @@ class OpenRetopWindow:
         curve_label = "curve" if len(source_curves) == 1 else "curves"
         status = f"{success_action} {surface.name} from {len(source_curves)} {curve_label}"
         self._set_selected_item(SELECT_SURFACE, status=status)
+        self._set_project_dirty(True)
+        return surface
+
+    def rebuild_selected_four_boundary_patch_feature(self) -> None:
+        active_surface = self._active_surface()
+        if active_surface is None:
+            self.status_text.set("Select a four-boundary patch feature to rebuild.")
+            return
+        feature = next(
+            (
+                item
+                for item in self.app_state.four_boundary_feature_collection.features
+                if item.preview_surface_id == active_surface.id
+            ),
+            None,
+        )
+        if feature is None:
+            self.status_text.set("Selected surface is not an editable four-boundary patch.")
+            return
+        result = build_surface_preview(
+            active_surface,
+            self.app_state.curve_collection.curves,
+        )
+        active_surface.metadata.update(result.diagnostics)
+        active_surface.metadata["preview_available"] = result.preview_available
+        active_surface.metadata["preview_reason"] = result.reason
+        feature.last_build_status = result.reason
+        feature.metadata["four_boundary_feature_dirty"] = not result.preview_available
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(
+            "Rebuilt four-boundary patch feature."
+            if result.preview_available
+            else result.reason
+        )
         self._set_project_dirty(True)
 
     @staticmethod
@@ -7779,11 +8750,13 @@ class OpenRetopWindow:
         self._manual_curve_left_dragged = False
         self._clear_manual_curve_preview_state()
         self._manual_curve_points = []
+        self._manual_curve_point_types = []
         self._manual_curve_closed = False
         self._manual_curve_snap_point_count = 0
         self._manual_curve_snap_flags = []
         self._manual_curve_snap_triangle_indices = []
         self._manual_curve_snap_normals = []
+        self._configure_manual_curve_placement_plane()
         self._set_active_workbench("Manual RE", set_status=False)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
@@ -7809,6 +8782,44 @@ class OpenRetopWindow:
             else "Snap to Mesh: Off"
         )
         self._sync_workflow_ui()
+
+    def _on_manual_curve_placement_changed(self, _event: object | None = None) -> None:
+        placement = self.manual_curve_placement_text.get().strip().lower()
+        self.manual_curve_snap_to_mesh.set(placement == "snap to mesh")
+        self._configure_manual_curve_placement_plane()
+        self._on_manual_curve_snap_to_mesh_changed()
+
+    def _configure_manual_curve_placement_plane(self) -> None:
+        placement = self.manual_curve_placement_text.get().strip().lower()
+        if placement == "free 3d":
+            camera = self.viewport.get_camera_vectors()
+            self._manual_curve_plane_origin = (
+                self._manual_curve_points[0].copy()
+                if self._manual_curve_points
+                else np.asarray(camera.focal_point, dtype=float).reshape(3)
+            )
+            self._manual_curve_plane_normal = normalized_vector(
+                np.asarray(camera.forward, dtype=float).reshape(3),
+                fallback=np.asarray([0.0, 0.0, -1.0], dtype=float),
+            )
+            self._manual_curve_plane_type = "free_3d"
+            self._manual_curve_plane_label = "camera-aligned free 3D plane"
+            self._manual_curve_source_section_plane_id = None
+            return
+
+        active_curve = self._active_manual_edit_curve()
+        plane = (
+            self._manual_curve_work_plane_for_curve(active_curve)
+            if active_curve is not None
+            else self._manual_curve_work_plane()
+        )
+        (
+            self._manual_curve_plane_origin,
+            self._manual_curve_plane_normal,
+            self._manual_curve_plane_type,
+            self._manual_curve_plane_label,
+            self._manual_curve_source_section_plane_id,
+        ) = plane
 
     def _manual_curve_work_plane(
         self,
@@ -7890,6 +8901,7 @@ class OpenRetopWindow:
         self._manual_curve_left_dragged = False
         self._clear_manual_curve_preview_state()
         self._load_manual_curve_edit_working_copy(curve, control_data=control_data)
+        self._configure_manual_curve_placement_plane()
         self._set_active_workbench("Manual RE", set_status=False)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(status)
@@ -7899,7 +8911,7 @@ class OpenRetopWindow:
         self,
         curve: StoredCurve,
         *,
-        control_data: ManualCurveControlData | None = None,
+        control_data: ManualCurveControlData | ManualCurveControlDataV2 | None = None,
     ) -> bool:
         control_data = control_data or self._manual_curve_control_data_for_curve(curve)
         if control_data is None:
@@ -7909,6 +8921,18 @@ class OpenRetopWindow:
             np.asarray(point, dtype=float).reshape(3)
             for point in np.asarray(control_data.control_points, dtype=float).reshape((-1, 3))
         ]
+        if isinstance(control_data, ManualCurveControlDataV2):
+            self._manual_curve_point_types = [
+                point.point_type for point in control_data.points
+            ]
+            self.manual_curve_preserve_corners.set(control_data.preserve_corners)
+            self.manual_curve_corner_threshold_text.set(
+                f"{control_data.corner_angle_threshold_degrees:.0f}"
+            )
+        else:
+            self._manual_curve_point_types = [
+                CURVE_POINT_SMOOTH for _point in self._manual_curve_points
+            ]
         self._manual_curve_closed = bool(control_data.is_closed)
         self._manual_curve_curve_method = str(control_data.curve_method)
         self._manual_curve_sample_count = int(control_data.sample_count)
@@ -7919,6 +8943,16 @@ class OpenRetopWindow:
             or str(metadata.get("snap_mode", "")).strip().lower() == "mesh"
         )
         self.manual_curve_snap_to_mesh.set(snap_to_mesh)
+        self.manual_curve_placement_text.set(
+            "Snap to Mesh"
+            if snap_to_mesh
+            else (
+                "Free 3D"
+                if str(metadata.get("work_plane_type", "")).strip().lower()
+                == "free_3d"
+                else "Work Plane"
+            )
+        )
         self._manual_curve_snap_point_count = len(self._manual_curve_points) if snap_to_mesh else 0
         self._manual_curve_snap_flags = [snap_to_mesh for _point in self._manual_curve_points]
         self._manual_curve_snap_triangle_indices = self._manual_curve_metadata_list(
@@ -7936,8 +8970,8 @@ class OpenRetopWindow:
     def _manual_curve_control_data_for_curve(
         self,
         curve: StoredCurve,
-    ) -> ManualCurveControlData | None:
-        control_data = parse_manual_curve_metadata(curve)
+    ) -> ManualCurveControlData | ManualCurveControlDataV2 | None:
+        control_data = parse_manual_curve_metadata_v2(curve)
         if control_data is not None:
             return control_data
 
@@ -7947,10 +8981,10 @@ class OpenRetopWindow:
         if points is None:
             return None
 
-        return ManualCurveControlData(
-            control_points=points,
+        return ManualCurveControlDataV2(
+            points=[ManualCurvePoint(position=point) for point in points],
             is_closed=bool(curve.is_closed),
-            curve_method="polyline",
+            curve_method=MANUAL_CURVE_METHOD_POLYLINE,
             sample_count=DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
         )
 
@@ -8014,7 +9048,10 @@ class OpenRetopWindow:
                 self.delete_selected_manual_curve_point()
                 return
             if key == "C":
-                self._toggle_manual_curve_closed()
+                self.set_selected_manual_curve_point_corner()
+                return
+            if key == "S":
+                self.set_selected_manual_curve_point_smooth()
                 return
 
         if key in {"Escape", "Esc"}:
@@ -8027,7 +9064,10 @@ class OpenRetopWindow:
             self._remove_last_manual_curve_point()
             return
         if key == "C":
-            self._toggle_manual_curve_closed()
+            self.set_selected_manual_curve_point_corner()
+            return
+        if key == "S":
+            self.set_selected_manual_curve_point_smooth()
 
     def _prepare_manual_curve_preview_for_click(
         self,
@@ -8322,8 +9362,16 @@ class OpenRetopWindow:
             return
 
         self._manual_curve_selected_control_point_index = selected_index
+        self.manual_curve_selected_point_type_text.set(
+            self._manual_curve_point_types[selected_index]
+            if selected_index < len(self._manual_curve_point_types)
+            else CURVE_POINT_SMOOTH
+        )
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(f"Selected control point {selected_index + 1}")
+        self.status_text.set(
+            f"Selected control point {selected_index + 1}: "
+            f"{self.manual_curve_selected_point_type_text.get()}"
+        )
         self._sync_workflow_ui()
 
     def _nearest_manual_curve_control_point_index(self, point: np.ndarray) -> int | None:
@@ -8380,6 +9428,8 @@ class OpenRetopWindow:
 
         removed_index = self._manual_curve_selected_control_point_index
         self._manual_curve_points.pop(removed_index)
+        if removed_index < len(self._manual_curve_point_types):
+            self._manual_curve_point_types.pop(removed_index)
         if removed_index < len(self._manual_curve_snap_flags):
             was_snapped = self._manual_curve_snap_flags.pop(removed_index)
             if was_snapped:
@@ -8397,6 +9447,185 @@ class OpenRetopWindow:
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Deleted control point {removed_index + 1}")
         self._sync_workflow_ui()
+
+    def set_selected_manual_curve_point_smooth(self) -> None:
+        self._set_selected_manual_curve_point_type(CURVE_POINT_SMOOTH)
+
+    def set_selected_manual_curve_point_corner(self) -> None:
+        self._set_selected_manual_curve_point_type(CURVE_POINT_CORNER)
+
+    def toggle_selected_manual_curve_point_type(self) -> None:
+        index = self._manual_curve_selected_control_point_index
+        if index is None or index >= len(self._manual_curve_point_types):
+            if not self._manual_curve_edit_active:
+                self.manual_curve_next_point_type_text.set(
+                    "Corner"
+                    if self._next_manual_curve_point_type() == CURVE_POINT_SMOOTH
+                    else "Smooth"
+                )
+                self.status_text.set(
+                    f"Next point: {self.manual_curve_next_point_type_text.get()}"
+                )
+                return
+            self.status_text.set("No control point selected")
+            return
+        point_type = self._manual_curve_point_types[index]
+        self._set_selected_manual_curve_point_type(
+            CURVE_POINT_CORNER
+            if point_type == CURVE_POINT_SMOOTH
+            else CURVE_POINT_SMOOTH
+        )
+
+    def _set_selected_manual_curve_point_type(self, point_type: str) -> None:
+        if not self._manual_curve_edit_active:
+            self.manual_curve_next_point_type_text.set(
+                "Corner" if point_type == CURVE_POINT_CORNER else "Smooth"
+            )
+            self.status_text.set(
+                f"Next point: {self.manual_curve_next_point_type_text.get()}"
+            )
+            self._sync_workflow_ui()
+            return
+        index = self._manual_curve_selected_control_point_index
+        if index is None or not (0 <= index < len(self._manual_curve_points)):
+            self.status_text.set("No control point selected")
+            self._sync_workflow_ui()
+            return
+        while len(self._manual_curve_point_types) < len(self._manual_curve_points):
+            self._manual_curve_point_types.append(CURVE_POINT_SMOOTH)
+        self._manual_curve_point_types[index] = point_type
+        self.manual_curve_selected_point_type_text.set(point_type)
+        self._manual_curve_curve_method = MANUAL_CURVE_METHOD_HYBRID
+        self._set_manual_curve_type_label(self._manual_curve_curve_method)
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(f"Control point {index + 1}: {point_type}")
+        self._sync_workflow_ui()
+
+    def auto_detect_manual_curve_corners(self) -> None:
+        self._auto_detect_working_curve_corners(set_status=True)
+
+    def _auto_detect_working_curve_corners(self, *, set_status: bool) -> None:
+        if len(self._manual_curve_points) < 3:
+            if set_status:
+                self.status_text.set("Corner detection requires at least 3 points.")
+            return
+        control_data = self._working_manual_curve_control_data_v2()
+        detected = auto_detect_manual_curve_corners(
+            control_data,
+            threshold_degrees=self._manual_curve_corner_threshold(),
+        )
+        self._manual_curve_point_types = [point.point_type for point in detected.points]
+        self._manual_curve_curve_method = MANUAL_CURVE_METHOD_HYBRID
+        self._set_manual_curve_type_label(self._manual_curve_curve_method)
+        index = self._manual_curve_selected_control_point_index
+        if index is not None and index < len(self._manual_curve_point_types):
+            self.manual_curve_selected_point_type_text.set(
+                self._manual_curve_point_types[index]
+            )
+        self._refresh_viewport(reset_camera=False)
+        if set_status:
+            corner_count = sum(
+                point_type == CURVE_POINT_CORNER
+                for point_type in self._manual_curve_point_types
+            )
+            self.status_text.set(f"Detected {corner_count} corner points.")
+        self._sync_workflow_ui()
+
+    def smooth_selected_manual_curve_span(self) -> None:
+        indices = self._selected_manual_curve_span_indices()
+        if len(indices) < 2:
+            self.status_text.set("Select a point inside a curve span first.")
+            return
+        for index in indices[1:-1]:
+            self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
+        self._manual_curve_curve_method = MANUAL_CURVE_METHOD_HYBRID
+        self._set_manual_curve_type_label(self._manual_curve_curve_method)
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Selected span set to smooth; corner endpoints preserved.")
+
+    def straighten_selected_manual_curve_span(self) -> None:
+        indices = self._selected_manual_curve_span_indices()
+        if len(indices) < 2:
+            self.status_text.set("Select a point inside a curve span first.")
+            return
+        start = self._manual_curve_points[indices[0]].copy()
+        end = self._manual_curve_points[indices[-1]].copy()
+        for offset, index in enumerate(indices[1:-1], start=1):
+            factor = offset / float(len(indices) - 1)
+            self._manual_curve_points[index] = start * (1.0 - factor) + end * factor
+            self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Selected span straightened; endpoints preserved.")
+
+    def _selected_manual_curve_span_indices(self) -> list[int]:
+        selected = self._manual_curve_selected_control_point_index
+        count = len(self._manual_curve_points)
+        if selected is None or count < 2:
+            return []
+        corners = {
+            index
+            for index, point_type in enumerate(self._manual_curve_point_types)
+            if point_type == CURVE_POINT_CORNER
+        }
+        if not self._manual_curve_closed:
+            left = max([0, *[index for index in corners if index <= selected]])
+            right = min([count - 1, *[index for index in corners if index >= selected]])
+            return list(range(left, right + 1))
+        if not corners:
+            return list(range(count))
+        left = selected
+        while left not in corners:
+            left = (left - 1) % count
+        right = selected
+        while right not in corners or right == left:
+            right = (right + 1) % count
+            if right == left:
+                return list(range(count))
+        result = [left]
+        while result[-1] != right:
+            result.append((result[-1] + 1) % count)
+        return result
+
+    def _working_manual_curve_control_data_v2(self) -> ManualCurveControlDataV2:
+        while len(self._manual_curve_point_types) < len(self._manual_curve_points):
+            self._manual_curve_point_types.append(CURVE_POINT_SMOOTH)
+        return ManualCurveControlDataV2(
+            points=[
+                ManualCurvePoint(position=point, point_type=self._manual_curve_point_types[index])
+                for index, point in enumerate(self._manual_curve_points)
+            ],
+            is_closed=self._manual_curve_closed,
+            curve_method=self._manual_curve_curve_method,
+            sample_count=self._manual_curve_sample_count,
+            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
+            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
+        )
+
+    def _manual_curve_corner_threshold(self) -> float:
+        try:
+            value = float(self.manual_curve_corner_threshold_text.get())
+        except (TypeError, ValueError):
+            value = DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES
+        value = min(max(value, 1.0), 179.0)
+        self.manual_curve_corner_threshold_text.set(f"{value:.0f}")
+        return value
+
+    def _next_manual_curve_point_type(self) -> str:
+        return (
+            CURVE_POINT_CORNER
+            if self.manual_curve_next_point_type_text.get().strip().lower() == "corner"
+            else CURVE_POINT_SMOOTH
+        )
+
+    def _auto_update_previous_manual_curve_point_type(self) -> None:
+        if not bool(self.manual_curve_auto_detect_corners.get()) or len(self._manual_curve_points) < 3:
+            return
+        detected = auto_detect_manual_curve_corners(
+            self._working_manual_curve_control_data_v2(),
+            threshold_degrees=self._manual_curve_corner_threshold(),
+        )
+        previous_index = len(self._manual_curve_points) - 2
+        self._manual_curve_point_types[previous_index] = detected.points[previous_index].point_type
 
     def _snap_manual_curve_closed_to_first_point(
         self,
@@ -8418,6 +9647,8 @@ class OpenRetopWindow:
             self.status_text.set("Manual Curve: already closed")
         else:
             self._manual_curve_closed = True
+            if bool(self.manual_curve_auto_detect_corners.get()):
+                self._auto_detect_working_curve_corners(set_status=False)
             self.status_text.set("Curve closed to first point")
         self._manual_curve_selected_control_point_index = 0 if edit_status else None
         self._clear_manual_curve_preview_state()
@@ -8452,12 +9683,14 @@ class OpenRetopWindow:
         normal: list[float] | None = None,
     ) -> None:
         self._manual_curve_points.append(np.asarray(point, dtype=float).reshape(3))
+        self._manual_curve_point_types.append(self._next_manual_curve_point_type())
         snapped = bool(snapped)
         self._manual_curve_snap_flags.append(snapped)
         self._manual_curve_snap_triangle_indices.append(triangle_index)
         self._manual_curve_snap_normals.append(normal)
         if snapped:
             self._manual_curve_snap_point_count += 1
+        self._auto_update_previous_manual_curve_point_type()
 
     def _insert_manual_curve_point(
         self,
@@ -8473,12 +9706,17 @@ class OpenRetopWindow:
             insert_index,
             np.asarray(point, dtype=float).reshape(3),
         )
+        self._manual_curve_point_types.insert(
+            insert_index,
+            self._next_manual_curve_point_type(),
+        )
         snapped = bool(snapped)
         self._manual_curve_snap_flags.insert(insert_index, snapped)
         self._manual_curve_snap_triangle_indices.insert(insert_index, triangle_index)
         self._manual_curve_snap_normals.insert(insert_index, normal)
         if snapped:
             self._manual_curve_snap_point_count += 1
+        self._auto_detect_working_curve_corners(set_status=False)
 
     @staticmethod
     def _manual_curve_pick_normal_value(normal: object) -> list[float] | None:
@@ -8500,6 +9738,8 @@ class OpenRetopWindow:
             return
 
         self._manual_curve_points.pop()
+        if self._manual_curve_point_types:
+            self._manual_curve_point_types.pop()
         if self._manual_curve_snap_flags:
             was_snapped = self._manual_curve_snap_flags.pop()
             if was_snapped:
@@ -8524,6 +9764,8 @@ class OpenRetopWindow:
             return
 
         self._manual_curve_closed = not self._manual_curve_closed
+        if self._manual_curve_closed and bool(self.manual_curve_auto_detect_corners.get()):
+            self._auto_detect_working_curve_corners(set_status=False)
         self._refresh_viewport(reset_camera=False)
         if self._manual_curve_edit_active:
             self.status_text.set("Curve closed" if self._manual_curve_closed else "Curve opened")
@@ -8580,6 +9822,9 @@ class OpenRetopWindow:
             ),
             curve_method=self._manual_curve_curve_method,
             sample_count=self._manual_curve_sample_count,
+            point_types=list(self._manual_curve_point_types),
+            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
+            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
         )
         add_curve(self.app_state.curve_collection, curve)
         self._sync_visible_curve_results()
@@ -8641,6 +9886,9 @@ class OpenRetopWindow:
             snap_normals=metadata.get("snap_normals"),
             curve_method=self._manual_curve_curve_method,
             sample_count=self._manual_curve_sample_count,
+            point_types=list(self._manual_curve_point_types),
+            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
+            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
         )
         active_curve.original_points = updated_curve.original_points
         active_curve.fitted_points = updated_curve.fitted_points
@@ -8653,6 +9901,9 @@ class OpenRetopWindow:
             updated_points=updated_curve.fitted_points,
             is_closed=bool(updated_curve.is_closed),
         )
+        active_curve.metadata["source_curve_revision"] = int(
+            metadata.get("source_curve_revision", 0)
+        ) + 1
         refresh_curve_diagnostics(active_curve)
         after_curve = copy.deepcopy(active_curve)
         self._push_undo_command(
@@ -8669,7 +9920,9 @@ class OpenRetopWindow:
         self._sync_visible_curve_results()
         self._sync_curve_context_from_active_curve()
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Curve edits saved")
+        self._handle_source_curve_edit_completion(active_curve.id)
+        if not self.status_text.get().startswith("Loft source curve changed"):
+            self.status_text.set("Curve edits saved")
         self._set_project_dirty(True)
         self._sync_workflow_ui()
 
@@ -8683,7 +9936,12 @@ class OpenRetopWindow:
     ) -> dict[str, object]:
         metadata = dict(updated_metadata)
         creation_type = str(original_metadata.get("creation_type", "")).strip().lower()
-        if creation_type not in {"region_boundary", "projected_curve", "rebuilt_curve"}:
+        if creation_type not in {
+            "region_boundary",
+            "hybrid_region_guide",
+            "projected_curve",
+            "rebuilt_curve",
+        }:
             return metadata
 
         preserve_keys = (
@@ -8696,6 +9954,7 @@ class OpenRetopWindow:
             "source_mesh_name",
             "region_triangle_count",
             "source_region_triangle_count",
+            "source_curve_tags",
             "boundary_index",
             "projection_projected_count",
             "projection_missed_count",
@@ -8724,6 +9983,47 @@ class OpenRetopWindow:
             if curve.id == self._manual_curve_edit_curve_id:
                 return curve
         return None
+
+    def _handle_source_curve_edit_completion(self, curve_id: str) -> None:
+        affected = mark_loft_features_dirty_for_curve(
+            self.app_state.loft_feature_collection,
+            curve_id,
+        )
+        mark_four_boundary_features_dirty_for_curve(
+            self.app_state.four_boundary_feature_collection,
+            curve_id,
+        )
+        if not affected:
+            return
+        auto_rebuilt = 0
+        for feature in affected:
+            surface = self._brep_surface_by_id(feature.brep_surface_id)
+            if surface is not None:
+                surface.metadata["loft_feature_dirty"] = True
+            if not feature.options.rebuild_on_source_edit:
+                continue
+            source_curves, missing = self._curves_for_ids(feature.options.source_curve_ids)
+            if missing:
+                continue
+            result = self._build_editable_loft_feature(feature, source_curves)
+            feature.last_build_success = result.success and result.cad_object is not None
+            feature.last_build_reason = result.reason
+            feature.last_build_warnings = list(result.warnings)
+            if not feature.last_build_success or surface is None:
+                continue
+            self._loft_rebuild_counter += 1
+            feature.metadata["loft_feature_dirty"] = False
+            feature.metadata["last_rebuild_session"] = self._loft_rebuild_counter
+            self._brep_runtime_cache[surface.id] = result.cad_object
+            surface.metadata.update(result.metadata)
+            surface.metadata["loft_feature_dirty"] = False
+            surface.metadata["warnings"] = list(result.warnings)
+            auto_rebuilt += 1
+        self.status_text.set(
+            "Loft source curve changed; rebuilt loft."
+            if auto_rebuilt
+            else "Loft source curve changed; rebuild loft."
+        )
 
     def _restore_manual_curve_snapshot(self, snapshot: StoredCurve) -> None:
         for index, curve in enumerate(self.app_state.curve_collection.curves):
@@ -8807,11 +10107,19 @@ class OpenRetopWindow:
     def _manual_curve_method_from_label(self) -> str:
         value = self.manual_curve_type_text.get().strip().lower()
         if value == "polyline":
-            return "polyline"
-        return DEFAULT_MANUAL_CURVE_METHOD
+            return MANUAL_CURVE_METHOD_POLYLINE
+        if value == "hybrid":
+            return MANUAL_CURVE_METHOD_HYBRID
+        return MANUAL_CURVE_METHOD_CATMULL_ROM
 
     def _set_manual_curve_type_label(self, method: str) -> None:
-        label = "Polyline" if str(method).strip().lower() == "polyline" else "Smooth Curve"
+        token = str(method).strip().lower()
+        if token == MANUAL_CURVE_METHOD_POLYLINE:
+            label = "Polyline"
+        elif token in {MANUAL_CURVE_METHOD_HYBRID, "cad_spline"}:
+            label = "Hybrid"
+        else:
+            label = "Smooth"
         self.manual_curve_type_text.set(label)
 
     def _show_manual_curve_context_menu(self, x_position: int, y_position: int) -> None:
@@ -8902,6 +10210,7 @@ class OpenRetopWindow:
         self._manual_curve_left_press_position = None
         self._manual_curve_left_dragged = False
         self._manual_curve_points = []
+        self._manual_curve_point_types = []
         self._manual_curve_closed = False
         self._manual_curve_plane_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
         self._manual_curve_plane_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
@@ -9126,6 +10435,16 @@ class OpenRetopWindow:
 
     def _clear_surfaces_for_curve_ids(self, curve_ids: list[str]) -> None:
         curve_id_set = {str(curve_id) for curve_id in curve_ids}
+        self.app_state.loft_feature_collection.features = [
+            feature
+            for feature in self.app_state.loft_feature_collection.features
+            if not curve_id_set.intersection(feature.options.source_curve_ids)
+        ]
+        self.app_state.four_boundary_feature_collection.features = [
+            feature
+            for feature in self.app_state.four_boundary_feature_collection.features
+            if not curve_id_set.intersection(feature.source_curve_ids)
+        ]
         for curve_id in curve_ids:
             clear_surfaces_for_curve(self.app_state.surface_collection, curve_id)
         removed_brep_ids = {
@@ -9343,6 +10662,7 @@ class OpenRetopWindow:
                 self.brep_last_export_path_text.set("(none)")
                 self.brep_build_warnings_text.set("(none)")
                 self.brep_build_errors_text.set("(none)")
+                self._sync_loft_feature_context(None)
             finally:
                 self._syncing_surface_display_controls = False
             return
@@ -9472,6 +10792,50 @@ class OpenRetopWindow:
                 self.brep_build_errors_text.set("(none)")
         finally:
             self._syncing_surface_display_controls = False
+        self._sync_loft_feature_context(active_surface)
+
+    def _sync_loft_feature_context(
+        self,
+        active_surface: SurfacePatch | BrepSurfaceRecord | None,
+    ) -> None:
+        feature = (
+            loft_feature_for_brep_surface(
+                self.app_state.loft_feature_collection,
+                active_surface.id,
+            )
+            if isinstance(active_surface, BrepSurfaceRecord)
+            else None
+        )
+        if feature is None:
+            self.loft_feature_name_text.set("(none)")
+            self.loft_feature_source_curves_text.set("(none)")
+            self.loft_feature_curve_count_text.set("0")
+            self.loft_last_build_status_text.set("(none)")
+            self.loft_last_build_warnings_text.set("(none)")
+            return
+        curves, missing = self._curves_for_ids(feature.options.source_curve_ids)
+        names = [curve.name for curve in curves]
+        names.extend(f"{curve_id} (missing)" for curve_id in missing)
+        self.loft_feature_name_text.set(feature.name)
+        self.loft_feature_source_curves_text.set(", ".join(names) if names else "(none)")
+        self.loft_feature_curve_count_text.set(str(len(feature.options.source_curve_ids)))
+        self.loft_preserve_corners.set(feature.options.preserve_corners)
+        self.loft_match_directions.set(feature.options.match_curve_directions)
+        self.loft_align_closed_seams.set(feature.options.align_closed_curve_seams)
+        self.loft_cap_start.set(feature.options.cap_start)
+        self.loft_cap_end.set(feature.options.cap_end)
+        self.loft_create_solid.set(feature.options.create_solid_if_closed)
+        self.loft_ruled.set(feature.options.ruled)
+        self.loft_rebuild_on_source_edit.set(feature.options.rebuild_on_source_edit)
+        dirty = bool(feature.metadata.get("loft_feature_dirty", False))
+        self.loft_last_build_status_text.set(
+            f"{feature.last_build_reason}{' (rebuild required)' if dirty else ''}"
+        )
+        self.loft_last_build_warnings_text.set(
+            "; ".join(feature.last_build_warnings)
+            if feature.last_build_warnings
+            else "(none)"
+        )
 
     def _on_surface_name_changed(self, event: object | None = None) -> None:
         active_surface = self._active_surface_record()
@@ -9959,6 +11323,11 @@ class OpenRetopWindow:
                 if self._manual_curve_active
                 else None
             ),
+            manual_curve_point_types=(
+                self._manual_curve_point_types
+                if self._manual_curve_active
+                else None
+            ),
             manual_curve_closed=self._manual_curve_closed,
             manual_curve_plane_normal=(
                 self._manual_curve_plane_normal
@@ -10220,6 +11589,15 @@ class OpenRetopWindow:
                     else "disabled"
                 )
             )
+        widget = getattr(self, "editable_brep_loft_button", None)
+        if widget is not None:
+            widget.configure(
+                state=(
+                    "normal"
+                    if has_mesh and cad_available and selected_curve_count >= 2
+                    else "disabled"
+                )
+            )
         for name in ("join_curves_button", "loft_curves_button"):
             widget = getattr(self, name, None)
             if widget is not None:
@@ -10298,6 +11676,20 @@ class OpenRetopWindow:
                 widget.configure(
                     state="normal" if has_active_brep_surface else "disabled"
                 )
+        has_loft_feature = self._active_loft_feature() is not None
+        for name in (
+            "loft_feature_name_entry",
+            "rebuild_loft_feature_button",
+            "edit_loft_source_curve_button",
+            "reverse_loft_source_curve_button",
+            "move_loft_source_up_button",
+            "move_loft_source_down_button",
+            "duplicate_loft_feature_button",
+            "delete_loft_feature_button",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(state="normal" if has_loft_feature else "disabled")
 
     def _current_mode_label(self) -> str:
         if self._manual_curve_edit_active:
@@ -10361,6 +11753,8 @@ class OpenRetopWindow:
                 f"Closed: {closed_label}\n"
                 f"Action: {sub_action}"
             )
+            if self._manual_curve_selected_control_point_index is None:
+                self.manual_curve_selected_point_type_text.set("(none)")
         elif active:
             self.manual_curve_mode_title.set("MANUAL CURVE MODE")
             snap_label = "On" if bool(self.manual_curve_snap_to_mesh.get()) else "Off"
@@ -10417,7 +11811,24 @@ class OpenRetopWindow:
                 else "disabled",
             ),
             ("manual_curve_snap_check", snap_state),
+            ("manual_curve_placement_combo", "readonly" if active else "disabled"),
+            ("manual_curve_auto_corner_check", active_state),
+            ("manual_curve_preserve_corners_check", active_state),
             ("manual_curve_type_combo", "readonly" if active else "disabled"),
+            ("set_point_smooth_button", edit_active_state),
+            ("set_point_corner_button", edit_active_state),
+            ("toggle_point_type_button", active_state),
+            ("auto_detect_corners_button", active_state),
+            ("smooth_selected_span_button", edit_active_state),
+            ("straighten_selected_span_button", edit_active_state),
+            (
+                "convert_boundary_hybrid_button",
+                "normal"
+                if active_curve is not None
+                and self._is_region_boundary_curve(active_curve)
+                and not active
+                else "disabled",
+            ),
         ):
             widget = getattr(self, name, None)
             if widget is not None:
@@ -12425,6 +13836,17 @@ class OpenRetopWindow:
             self.app_state.brep_surface_collection.active_surface_id = None
         for surface_id in surface_ids:
             self._brep_runtime_cache.pop(surface_id, None)
+        self.app_state.loft_feature_collection.features = [
+            feature
+            for feature in self.app_state.loft_feature_collection.features
+            if feature.brep_surface_id not in surface_ids
+        ]
+        self.app_state.four_boundary_feature_collection.features = [
+            feature
+            for feature in self.app_state.four_boundary_feature_collection.features
+            if feature.preview_surface_id not in surface_ids
+            and feature.brep_surface_id not in surface_ids
+        ]
 
         self.app_state.curve_collection.curves = [
             curve

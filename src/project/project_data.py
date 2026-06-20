@@ -171,6 +171,33 @@ class ProjectBrepSurface:
 
 
 @dataclass
+class ProjectLoftFeature:
+    id: str
+    name: str
+    options: dict[str, object]
+    brep_surface_id: str | None
+    preview_surface_id: str | None
+    last_build_success: bool
+    last_build_reason: str
+    last_build_warnings: list[str]
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class ProjectFourBoundaryPatchFeature:
+    id: str
+    name: str
+    source_curve_ids: list[str]
+    preserve_corners: bool
+    match_directions: bool
+    fill_method: str
+    brep_surface_id: str | None
+    preview_surface_id: str | None
+    last_build_status: str
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
 class ProjectData:
     version: int
     name: str
@@ -186,6 +213,10 @@ class ProjectData:
     curves: list[ProjectCurve] = field(default_factory=list)
     surfaces: list[ProjectSurface] = field(default_factory=list)
     brep_surfaces: list[ProjectBrepSurface] = field(default_factory=list)
+    loft_features: list[ProjectLoftFeature] = field(default_factory=list)
+    four_boundary_patch_features: list[ProjectFourBoundaryPatchFeature] = field(
+        default_factory=list
+    )
 
 
 def default_project_data() -> ProjectData:

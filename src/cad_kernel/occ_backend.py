@@ -13,9 +13,9 @@ from cad_kernel.types import CadKernelInfo, CadKernelUnavailableError
 
 
 _BACKEND_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("CadQuery", "cadquery"),
     ("OCP", "OCP"),
     ("pythonocc-core", "OCC.Core"),
-    ("CadQuery", "cadquery"),
 )
 
 
@@ -35,8 +35,8 @@ def detect_cad_kernel_backend() -> CadKernelInfo:
         available=False,
         backend_name="unavailable",
         module_name=None,
-        status="CAD kernel unavailable: install OCP/pythonocc-core to enable BREP export",
-        detail="Checked optional backends: OCP, pythonocc-core, CadQuery.",
+        status="CAD kernel unavailable: install OCP/pythonocc-core or CadQuery to enable BREP export",
+        detail="Checked optional backends: CadQuery, OCP, pythonocc-core.",
     )
 
 
@@ -103,6 +103,80 @@ def build_loft_surface_with_backend(
             closed=bool(closed),
         )
 
+    raise RuntimeError(f"Unsupported CAD backend: {module_name or type(backend_module).__name__}")
+
+
+def build_planar_face_from_wire_with_backend(
+    backend_module: object,
+    wire: object,
+) -> object:
+    builder = getattr(backend_module, "build_planar_face_from_wire", None)
+    if callable(builder):
+        return builder(wire)
+    module_name = str(getattr(backend_module, "__name__", "")).strip()
+    if module_name == "cadquery":
+        return backend_module.Face.makeFromWires(wire)
+    if module_name == "OCP" or module_name.startswith("OCP."):
+        brep_module = importlib.import_module("OCP.BRepBuilderAPI")
+        return _make_opencascade_face_builder(brep_module.BRepBuilderAPI_MakeFace, wire).Face()
+    if module_name == "OCC.Core" or module_name.startswith("OCC."):
+        brep_module = importlib.import_module("OCC.Core.BRepBuilderAPI")
+        return _make_opencascade_face_builder(brep_module.BRepBuilderAPI_MakeFace, wire).Face()
+    raise RuntimeError(f"Unsupported CAD backend: {module_name or type(backend_module).__name__}")
+
+
+def build_loft_from_wires_with_backend(
+    backend_module: object,
+    wires: list[object],
+    *,
+    closed_profiles: bool,
+    cap_start: bool,
+    cap_end: bool,
+    create_solid_if_closed: bool,
+    ruled: bool,
+) -> tuple[object, dict[str, object], list[str]]:
+    builder = getattr(backend_module, "build_loft_from_wires", None)
+    if callable(builder):
+        result = builder(
+            wires,
+            closed_profiles=bool(closed_profiles),
+            cap_start=bool(cap_start),
+            cap_end=bool(cap_end),
+            create_solid_if_closed=bool(create_solid_if_closed),
+            ruled=bool(ruled),
+        )
+        return result, {}, []
+    module_name = str(getattr(backend_module, "__name__", "")).strip()
+    if module_name == "cadquery":
+        return _build_cadquery_loft_from_wires(
+            backend_module,
+            wires,
+            closed_profiles=closed_profiles,
+            cap_start=cap_start,
+            cap_end=cap_end,
+            create_solid_if_closed=create_solid_if_closed,
+            ruled=ruled,
+        )
+    if module_name == "OCP" or module_name.startswith("OCP."):
+        return _build_opencascade_loft_from_wires(
+            "OCP",
+            wires,
+            closed_profiles=closed_profiles,
+            cap_start=cap_start,
+            cap_end=cap_end,
+            create_solid_if_closed=create_solid_if_closed,
+            ruled=ruled,
+        )
+    if module_name == "OCC.Core" or module_name.startswith("OCC."):
+        return _build_opencascade_loft_from_wires(
+            "OCC.Core",
+            wires,
+            closed_profiles=closed_profiles,
+            cap_start=cap_start,
+            cap_end=cap_end,
+            create_solid_if_closed=create_solid_if_closed,
+            ruled=ruled,
+        )
     raise RuntimeError(f"Unsupported CAD backend: {module_name or type(backend_module).__name__}")
 
 
@@ -239,6 +313,125 @@ def _cadquery_polygon_wire(
         for point in point_array
     ]
     return cadquery_module.Wire.makePolygon(vectors, close=bool(close))
+
+
+def _build_cadquery_loft_from_wires(
+    cadquery: object,
+    wires: list[object],
+    *,
+    closed_profiles: bool,
+    cap_start: bool,
+    cap_end: bool,
+    create_solid_if_closed: bool,
+    ruled: bool,
+) -> tuple[object, dict[str, object], list[str]]:
+    warnings: list[str] = []
+    wants_solid = bool(
+        closed_profiles and create_solid_if_closed and cap_start and cap_end
+    )
+    if wants_solid and hasattr(cadquery, "Solid") and hasattr(cadquery.Solid, "makeLoft"):
+        shape = cadquery.Solid.makeLoft(wires, ruled=bool(ruled))
+        return shape, {"loft_result_type": "solid", "caps_included": True}, warnings
+
+    shell_type = getattr(cadquery, "Shell", None)
+    if shell_type is not None and hasattr(shell_type, "makeLoft"):
+        loft_shape = shell_type.makeLoft(wires, ruled=bool(ruled))
+    elif hasattr(cadquery, "Solid") and hasattr(cadquery.Solid, "makeLoft"):
+        loft_shape = cadquery.Solid.makeLoft(wires, ruled=bool(ruled))
+    else:
+        raise RuntimeError("CadQuery loft construction from wires is unavailable.")
+
+    cap_shapes: list[object] = []
+    if closed_profiles and cap_start:
+        cap_shapes.append(cadquery.Face.makeFromWires(wires[0]))
+    if closed_profiles and cap_end:
+        cap_shapes.append(cadquery.Face.makeFromWires(wires[-1]))
+    if cap_shapes:
+        compound_type = getattr(cadquery, "Compound", None)
+        if compound_type is not None and hasattr(compound_type, "makeCompound"):
+            shape = compound_type.makeCompound([loft_shape, *cap_shapes])
+            return shape, {
+                "loft_result_type": "closed_loft_with_caps_compound",
+                "caps_included": True,
+                "cap_face_count": len(cap_shapes),
+            }, warnings
+        warnings.append("Loft caps could not be grouped by this CadQuery version.")
+    return loft_shape, {
+        "loft_result_type": "closed_shell" if closed_profiles else "open_sheet",
+        "caps_included": False,
+        "cap_face_count": 0,
+    }, warnings
+
+
+def _build_opencascade_loft_from_wires(
+    module_prefix: str,
+    wires: list[object],
+    *,
+    closed_profiles: bool,
+    cap_start: bool,
+    cap_end: bool,
+    create_solid_if_closed: bool,
+    ruled: bool,
+) -> tuple[object, dict[str, object], list[str]]:
+    loft_module = importlib.import_module(f"{module_prefix}.BRepOffsetAPI")
+    wants_solid = bool(
+        closed_profiles and create_solid_if_closed and cap_start and cap_end
+    )
+    loft = loft_module.BRepOffsetAPI_ThruSections(wants_solid, bool(ruled), 1.0e-6)
+    if hasattr(loft, "CheckCompatibility"):
+        loft.CheckCompatibility(False)
+    for wire in wires:
+        loft.AddWire(wire)
+    loft.Build()
+    if hasattr(loft, "IsDone") and not bool(loft.IsDone()):
+        raise RuntimeError("CAD loft construction failed.")
+    loft_shape = loft.Shape()
+    if wants_solid:
+        return loft_shape, {"loft_result_type": "solid", "caps_included": True}, []
+
+    cap_shapes: list[object] = []
+    if closed_profiles and (cap_start or cap_end):
+        brep_module = importlib.import_module(f"{module_prefix}.BRepBuilderAPI")
+        if cap_start:
+            cap_shapes.append(
+                _make_opencascade_face_builder(
+                    brep_module.BRepBuilderAPI_MakeFace,
+                    wires[0],
+                ).Face()
+            )
+        if cap_end:
+            cap_shapes.append(
+                _make_opencascade_face_builder(
+                    brep_module.BRepBuilderAPI_MakeFace,
+                    wires[-1],
+                ).Face()
+            )
+    if cap_shapes:
+        try:
+            topo_module = importlib.import_module(f"{module_prefix}.TopoDS")
+            builder_module = importlib.import_module(f"{module_prefix}.BRep")
+            compound = topo_module.TopoDS_Compound()
+            builder = builder_module.BRep_Builder()
+            builder.MakeCompound(compound)
+            builder.Add(compound, loft_shape)
+            for cap in cap_shapes:
+                builder.Add(compound, cap)
+            return compound, {
+                "loft_result_type": "closed_loft_with_caps_compound",
+                "caps_included": True,
+                "cap_face_count": len(cap_shapes),
+            }, []
+        except (ImportError, AttributeError, TypeError):
+            return loft_shape, {
+                "loft_result_type": "closed_shell",
+                "caps_included": False,
+                "cap_face_count": 0,
+            }, ["Loft caps were built but could not be grouped by this backend."]
+    return loft_shape, {
+        "loft_result_type": "closed_shell" if closed_profiles else "open_sheet",
+        "caps_included": False,
+        "cap_face_count": 0,
+    }, []
 
 
 def _numpy() -> object:

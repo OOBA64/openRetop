@@ -550,6 +550,10 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.curves_menu.entrycget(16, "label"), "Extract Region Boundary")
             self.assertEqual(window.curves_menu.entrycget(17, "label"), "Snap to Mesh")
             self.assertEqual(window.curves_menu.type(17), "checkbutton")
+            self.assertEqual(
+                window.curves_menu.entrycget(18, "label"),
+                "Convert Boundary to Hybrid Guide Curve",
+            )
             self.assertEqual(window.surfaces_menu.entrycget(0, "label"), "Fill Closed Curve")
             self.assertEqual(window.surfaces_menu.entrycget(1, "label"), "Loft Between Two Curves")
             self.assertEqual(
@@ -579,6 +583,11 @@ class MainWindowUiTests(unittest.TestCase):
                 window.surfaces_menu.entrycget(15, "label"),
                 "Create BREP Face From Selected Region",
             )
+            self.assertEqual(
+                window.surfaces_menu.entrycget(16, "label"),
+                "Create Editable BREP Loft From Curves",
+            )
+            self.assertEqual(window.surfaces_menu.entrycget(17, "label"), "Rebuild Loft")
             self.assertEqual(window.tools_menu.entrycget(0, "label"), "Select Model")
             self.assertEqual(window.tools_menu.entrycget(1, "label"), "Select Section Plane")
             self.assertEqual(window.tools_menu.entrycget(2, "label"), "Move")
@@ -2689,6 +2698,104 @@ class MainWindowUiTests(unittest.TestCase):
             window.create_brep_face_from_selected_region()
             self.assertEqual(window.status_text.get(), "Select a region first.")
             self.assertEqual(window.app_state.brep_surface_collection.surfaces, [])
+        finally:
+            window.root.destroy()
+
+    def test_create_editable_loft_feature_and_mark_dirty_after_source_edit(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            curves = [
+                StoredCurve(
+                    id=f"editable-loft-{index}",
+                    name=f"Profile {index}",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=np.asarray(
+                        [[0.0, 0.0, float(index)], [1.0, 0.0, float(index)]],
+                        dtype=float,
+                    ),
+                    fitted_points=np.asarray(
+                        [[0.0, 0.0, float(index)], [1.0, 0.0, float(index)]],
+                        dtype=float,
+                    ),
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                    metadata={"creation_type": "manual"},
+                )
+                for index in range(2)
+            ]
+            for curve in curves:
+                add_curve(window.app_state.curve_collection, curve)
+            window.select_curves([curve.id for curve in curves], active_curve_id=curves[0].id)
+            wire_objects = [object(), object()]
+            wire_results = [
+                CadBuildResult(
+                    success=True,
+                    cad_object=wire,
+                    reason="wire built",
+                    metadata={"cad_wire_edge_count": 1, "backend": "FakeCAD"},
+                )
+                for wire in wire_objects
+            ]
+            loft_object = object()
+            loft_result = CadBuildResult(
+                success=True,
+                cad_object=loft_object,
+                reason="editable loft built",
+                metadata={
+                    "brep_type": "loft_surface",
+                    "backend": "FakeCAD",
+                    "build_method": "editable_loft_from_cad_wires",
+                    "loft_result_type": "open_sheet",
+                },
+            )
+            with (
+                patch(
+                    "app.main_window.build_cad_wire_from_curve",
+                    side_effect=wire_results,
+                ),
+                patch(
+                    "app.main_window.build_loft_surface_from_cad_wires",
+                    return_value=loft_result,
+                ) as build_loft,
+            ):
+                window.create_editable_brep_loft_from_curves()
+
+            feature = window.app_state.loft_feature_collection.features[0]
+            surface = window.app_state.brep_surface_collection.surfaces[0]
+            self.assertEqual(feature.options.source_curve_ids, [curve.id for curve in curves])
+            self.assertEqual(feature.brep_surface_id, surface.id)
+            self.assertEqual(surface.metadata["loft_feature_id"], feature.id)
+            self.assertEqual(surface.metadata["creation_type"], "editable_loft_feature")
+            self.assertEqual(window._brep_runtime_cache[surface.id], loft_object)
+            self.assertEqual(
+                window.scene_browser.tree.item(surface_node_id(surface.id), "text"),
+                "[V] Editable BREP Loft 1 (editable, loft)",
+            )
+            build_loft.assert_called_once()
+
+            feature.options.rebuild_on_source_edit = False
+            window._handle_source_curve_edit_completion(curves[0].id)
+            self.assertTrue(feature.metadata["loft_feature_dirty"])
+            self.assertTrue(surface.metadata["loft_feature_dirty"])
+            self.assertEqual(
+                window.status_text.get(),
+                "Loft source curve changed; rebuild loft.",
+            )
+
+            before_order = list(feature.options.source_curve_ids)
+            window.move_selected_loft_source_curve_down()
+            self.assertEqual(
+                feature.options.source_curve_ids,
+                list(reversed(before_order)),
+            )
+            before_points = curves[0].fitted_points.copy()
+            window.reverse_selected_loft_source_curve_direction()
+            np.testing.assert_allclose(curves[0].fitted_points, before_points[::-1])
         finally:
             window.root.destroy()
 
@@ -5153,6 +5260,16 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(
                 window.scene_browser.tree.item(surface_node_id(four_curve_surface.id), "text"),
                 "[V] Four-Curve Patch 1 (4-curve patch)",
+            )
+            self.assertEqual(
+                len(window.app_state.four_boundary_feature_collection.features),
+                1,
+            )
+            patch_feature = window.app_state.four_boundary_feature_collection.features[0]
+            self.assertEqual(patch_feature.preview_surface_id, four_curve_surface.id)
+            self.assertEqual(
+                patch_feature.source_curve_ids,
+                [curve.id for curve in patch_curves],
             )
             window.undo()
             self.assertNotIn(
@@ -8483,6 +8600,43 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(len(surfaces), 1)
             self.assertEqual(surfaces[0].surface_type, "preview_fill")
             self.assertEqual(surfaces[0].source_curve_ids, [curve.id])
+        finally:
+            window.root.destroy()
+
+    def test_convert_region_boundary_to_hybrid_guide_preserves_original(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = TriangleMeshData(
+                vertices=np.asarray(
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+                    dtype=float,
+                ),
+                triangles=np.asarray([[0, 1, 2], [0, 2, 3]], dtype=int),
+            )
+            region = RegionSelection(
+                id="region-square",
+                name="Square",
+                triangle_indices=(0, 1),
+                source_mesh_name="sample.stl",
+            )
+            window.app_state.region_collection.set_active(region)
+            window.extract_region_boundary()
+            original = window.app_state.curve_collection.curves[0]
+            original_points = original.fitted_points.copy()
+
+            window.convert_boundary_to_hybrid_guide_curve()
+
+            self.assertEqual(len(window.app_state.curve_collection.curves), 2)
+            guide = window.app_state.curve_collection.curves[1]
+            np.testing.assert_allclose(original.fitted_points, original_points)
+            self.assertEqual(guide.metadata["creation_type"], "hybrid_region_guide")
+            self.assertEqual(guide.metadata["curve_method"], "hybrid")
+            self.assertEqual(guide.metadata["source_curve_id"], original.id)
+            self.assertEqual(guide.metadata["point_types"], ["corner"] * 4)
+            self.assertEqual(window.app_state.curve_collection.active_curve_id, guide.id)
         finally:
             window.root.destroy()
 

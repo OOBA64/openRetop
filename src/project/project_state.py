@@ -12,6 +12,8 @@ from project.project_data import (
     ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
+    ProjectFourBoundaryPatchFeature,
+    ProjectLoftFeature,
     ProjectSectionPlane,
     ProjectSectionResult,
     ProjectSectionSettings,
@@ -21,6 +23,8 @@ from project.project_data import (
 )
 from sections.section_state import SectionCollection, plane_normal, plane_origin
 from surfaces.brep_state import BrepSurfaceCollection
+from surfaces.four_boundary_feature import FourBoundaryPatchFeatureCollection
+from surfaces.loft_feature import LoftFeatureCollection
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -38,6 +42,8 @@ def project_from_app_state(
     curve_collection: CurveCollection | None = None,
     surface_collection: SurfaceCollection | None = None,
     brep_surface_collection: BrepSurfaceCollection | None = None,
+    loft_feature_collection: LoftFeatureCollection | None = None,
+    four_boundary_feature_collection: FourBoundaryPatchFeatureCollection | None = None,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
@@ -58,6 +64,10 @@ def project_from_app_state(
     curves = _curves_from_collection(curve_collection)
     surfaces = _surfaces_from_collection(surface_collection)
     brep_surfaces = _brep_surfaces_from_collection(brep_surface_collection)
+    loft_features = _loft_features_from_collection(loft_feature_collection)
+    four_boundary_patch_features = _four_boundary_features_from_collection(
+        four_boundary_feature_collection
+    )
 
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
@@ -104,6 +114,8 @@ def project_from_app_state(
         curves=curves,
         surfaces=surfaces,
         brep_surfaces=brep_surfaces,
+        loft_features=loft_features,
+        four_boundary_patch_features=four_boundary_patch_features,
     )
 
 
@@ -311,6 +323,69 @@ def _brep_surfaces_from_collection(
             ),
         )
         for surface in brep_surface_collection.surfaces
+    ]
+
+
+def _loft_features_from_collection(
+    collection: LoftFeatureCollection | None,
+) -> list[ProjectLoftFeature]:
+    if collection is None:
+        return []
+    return [
+        ProjectLoftFeature(
+            id=feature.id,
+            name=feature.name,
+            options=_metadata_from_value(
+                {
+                    "source_curve_ids": list(feature.options.source_curve_ids),
+                    "source_order_locked": feature.options.source_order_locked,
+                    "use_cad_wires": feature.options.use_cad_wires,
+                    "match_curve_directions": feature.options.match_curve_directions,
+                    "align_closed_curve_seams": feature.options.align_closed_curve_seams,
+                    "preserve_corners": feature.options.preserve_corners,
+                    "cap_start": feature.options.cap_start,
+                    "cap_end": feature.options.cap_end,
+                    "create_solid_if_closed": feature.options.create_solid_if_closed,
+                    "ruled": feature.options.ruled,
+                    "smoothing": feature.options.smoothing,
+                    "rebuild_on_source_edit": feature.options.rebuild_on_source_edit,
+                    "metadata": feature.options.metadata,
+                },
+                "loft_feature.options",
+            ),
+            brep_surface_id=feature.brep_surface_id,
+            preview_surface_id=feature.preview_surface_id,
+            last_build_success=feature.last_build_success,
+            last_build_reason=feature.last_build_reason,
+            last_build_warnings=list(feature.last_build_warnings),
+            metadata=_metadata_from_value(feature.metadata, "loft_feature.metadata"),
+        )
+        for feature in collection.features
+    ]
+
+
+def _four_boundary_features_from_collection(
+    collection: FourBoundaryPatchFeatureCollection | None,
+) -> list[ProjectFourBoundaryPatchFeature]:
+    if collection is None:
+        return []
+    return [
+        ProjectFourBoundaryPatchFeature(
+            id=feature.id,
+            name=feature.name,
+            source_curve_ids=list(feature.source_curve_ids),
+            preserve_corners=feature.preserve_corners,
+            match_directions=feature.match_directions,
+            fill_method=feature.fill_method,
+            brep_surface_id=feature.brep_surface_id,
+            preview_surface_id=feature.preview_surface_id,
+            last_build_status=feature.last_build_status,
+            metadata=_metadata_from_value(
+                feature.metadata,
+                "four_boundary_feature.metadata",
+            ),
+        )
+        for feature in collection.features
     ]
 
 

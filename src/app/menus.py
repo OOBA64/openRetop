@@ -150,6 +150,10 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
         variable=app.manual_curve_snap_to_mesh,
         command=app._on_manual_curve_snap_to_mesh_changed,
     )
+    app.curves_menu.add_command(
+        label="Convert Boundary to Hybrid Guide Curve",
+        command=app.convert_boundary_to_hybrid_guide_curve,
+    )
 
     app.surfaces_menu = Menu(app.root, tearoff=False)
     app.surfaces_menu.add_command(label="Fill Closed Curve", command=app.fill_closed_curve)
@@ -206,6 +210,18 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
     app.surfaces_menu.add_command(
         label="Create BREP Face From Selected Region",
         command=app.create_brep_face_from_selected_region,
+    )
+    app.surfaces_menu.add_command(
+        label="Create Editable BREP Loft From Curves",
+        command=app.create_editable_brep_loft_from_curves,
+    )
+    app.surfaces_menu.add_command(
+        label="Rebuild Loft",
+        command=app.rebuild_selected_loft_feature,
+    )
+    app.surfaces_menu.add_command(
+        label="Rebuild Four-Boundary Patch Feature",
+        command=app.rebuild_selected_four_boundary_patch_feature,
     )
 
     app.tools_menu = Menu(app.root, tearoff=False)

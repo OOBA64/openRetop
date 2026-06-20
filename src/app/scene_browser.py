@@ -228,6 +228,8 @@ def _surface_preview_tag(surface: SurfaceSceneRecord) -> str:
             return "region, planar"
         return "curve, planar"
     if brep_type == "loft_surface":
+        if str(metadata.get("creation_type", "")) == "editable_loft_feature":
+            return "editable, loft"
         return "loft"
     if brep_type:
         return "BREP"

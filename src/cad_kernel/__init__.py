@@ -1,7 +1,10 @@
 """Optional CAD-kernel integration boundary."""
 
 from cad_kernel.backend import (
+    build_cad_wire_from_curve,
+    build_loft_surface_from_cad_wires,
     build_loft_surface_from_curves,
+    build_planar_face_from_cad_wire,
     build_planar_face_from_curve,
     cad_kernel_info,
     cad_kernel_status,
@@ -26,6 +29,9 @@ __all__ = [
     "CadKernelUnavailableError",
     "StepExportResult",
     "build_loft_surface_from_curves",
+    "build_cad_wire_from_curve",
+    "build_loft_surface_from_cad_wires",
+    "build_planar_face_from_cad_wire",
     "build_planar_face_from_curve",
     "cad_kernel_info",
     "cad_kernel_status",

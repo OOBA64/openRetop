@@ -41,6 +41,11 @@ from surfaces.surface_preview import (
     build_surface_preview,
     build_surface_preview_mesh,
 )
+from surfaces.loft_feature import LoftFeatureCollection, LoftFeatureOptions, LoftFeatureRecord
+from surfaces.four_boundary_feature import (
+    FourBoundaryPatchFeatureCollection,
+    FourBoundaryPatchFeatureRecord,
+)
 
 __all__ = [
     "BREP_TYPE_LOFT_SURFACE",
@@ -51,8 +56,13 @@ __all__ = [
     "CLOSED_CURVE_FILL",
     "CURVE_NETWORK_PATCH",
     "FOUR_CURVE_PATCH",
+    "FourBoundaryPatchFeatureCollection",
+    "FourBoundaryPatchFeatureRecord",
     "BrepSurfaceCollection",
     "BrepSurfaceRecord",
+    "LoftFeatureCollection",
+    "LoftFeatureOptions",
+    "LoftFeatureRecord",
     "SurfaceCollection",
     "SurfacePreviewBuildResult",
     "SurfacePatch",

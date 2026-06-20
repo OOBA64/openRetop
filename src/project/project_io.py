@@ -13,6 +13,8 @@ from project.project_data import (
     ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
+    ProjectFourBoundaryPatchFeature,
+    ProjectLoftFeature,
     ProjectSectionPlane,
     ProjectSectionResult,
     ProjectSectionSettings,
@@ -46,7 +48,7 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
     if not isinstance(project, ProjectData):
         raise ValueError("Expected ProjectData.")
 
-    return {
+    result: dict[str, object] = {
         "version": int(project.version),
         "name": project.name,
         "mesh_path": project.mesh_path,
@@ -173,6 +175,47 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             for index, surface in enumerate(project.brep_surfaces)
         ],
     }
+    if project.loft_features:
+        result["loft_features"] = [
+            {
+                "id": feature.id,
+                "name": feature.name,
+                "options": _metadata_dict_value(
+                    feature.options,
+                    f"loft_features[{index}].options",
+                ),
+                "brep_surface_id": feature.brep_surface_id,
+                "preview_surface_id": feature.preview_surface_id,
+                "last_build_success": bool(feature.last_build_success),
+                "last_build_reason": feature.last_build_reason,
+                "last_build_warnings": list(feature.last_build_warnings),
+                "metadata": _metadata_dict_value(
+                    feature.metadata,
+                    f"loft_features[{index}].metadata",
+                ),
+            }
+            for index, feature in enumerate(project.loft_features)
+        ]
+    if project.four_boundary_patch_features:
+        result["four_boundary_patch_features"] = [
+            {
+                "id": feature.id,
+                "name": feature.name,
+                "source_curve_ids": list(feature.source_curve_ids),
+                "preserve_corners": bool(feature.preserve_corners),
+                "match_directions": bool(feature.match_directions),
+                "fill_method": feature.fill_method,
+                "brep_surface_id": feature.brep_surface_id,
+                "preview_surface_id": feature.preview_surface_id,
+                "last_build_status": feature.last_build_status,
+                "metadata": _metadata_dict_value(
+                    feature.metadata,
+                    f"four_boundary_patch_features[{index}].metadata",
+                ),
+            }
+            for index, feature in enumerate(project.four_boundary_patch_features)
+        ]
+    return result
 
 
 def project_from_dict(data: dict[str, object]) -> ProjectData:
@@ -264,6 +307,15 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
     brep_surfaces = _brep_surfaces_value(
         data.get("brep_surfaces", defaults.brep_surfaces)
     )
+    loft_features = _loft_features_value(
+        data.get("loft_features", defaults.loft_features)
+    )
+    four_boundary_patch_features = _four_boundary_features_value(
+        data.get(
+            "four_boundary_patch_features",
+            defaults.four_boundary_patch_features,
+        )
+    )
     return ProjectData(
         version=version,
         name=name,
@@ -279,6 +331,8 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         curves=curves,
         surfaces=surfaces,
         brep_surfaces=brep_surfaces,
+        loft_features=loft_features,
+        four_boundary_patch_features=four_boundary_patch_features,
     )
 
 
@@ -732,6 +786,121 @@ def _brep_surfaces_value(value: object) -> list[ProjectBrepSurface]:
         )
 
     return surfaces
+
+
+def _loft_features_value(value: object) -> list[ProjectLoftFeature]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("loft_features must be a list.")
+    features: list[ProjectLoftFeature] = []
+    seen_ids: set[str] = set()
+    for index, raw_feature in enumerate(value):
+        prefix = f"loft_features[{index}]"
+        data = _mapping_value(raw_feature, prefix)
+        feature_id = _string_value(_nested_value(data, "id", ""), f"{prefix}.id")
+        if not feature_id or feature_id in seen_ids:
+            raise ValueError(f"{prefix}.id must be non-empty and unique.")
+        seen_ids.add(feature_id)
+        warnings = _string_list_value(
+            _nested_value(data, "last_build_warnings", []),
+            f"{prefix}.last_build_warnings",
+        )
+        features.append(
+            ProjectLoftFeature(
+                id=feature_id,
+                name=_string_value(
+                    _nested_value(data, "name", f"Editable Loft {index + 1}"),
+                    f"{prefix}.name",
+                ),
+                options=_metadata_dict_value(
+                    _nested_value(data, "options", {}),
+                    f"{prefix}.options",
+                ),
+                brep_surface_id=_optional_string_value(
+                    _nested_value(data, "brep_surface_id", None),
+                    f"{prefix}.brep_surface_id",
+                ),
+                preview_surface_id=_optional_string_value(
+                    _nested_value(data, "preview_surface_id", None),
+                    f"{prefix}.preview_surface_id",
+                ),
+                last_build_success=_bool_value(
+                    _nested_value(data, "last_build_success", False),
+                    f"{prefix}.last_build_success",
+                ),
+                last_build_reason=_string_value(
+                    _nested_value(data, "last_build_reason", "Not built."),
+                    f"{prefix}.last_build_reason",
+                ),
+                last_build_warnings=warnings,
+                metadata=_metadata_dict_value(
+                    _nested_value(data, "metadata", {}),
+                    f"{prefix}.metadata",
+                ),
+            )
+        )
+    return features
+
+
+def _four_boundary_features_value(
+    value: object,
+) -> list[ProjectFourBoundaryPatchFeature]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("four_boundary_patch_features must be a list.")
+    features: list[ProjectFourBoundaryPatchFeature] = []
+    seen_ids: set[str] = set()
+    for index, raw_feature in enumerate(value):
+        prefix = f"four_boundary_patch_features[{index}]"
+        data = _mapping_value(raw_feature, prefix)
+        feature_id = _string_value(_nested_value(data, "id", ""), f"{prefix}.id")
+        if not feature_id or feature_id in seen_ids:
+            raise ValueError(f"{prefix}.id must be non-empty and unique.")
+        seen_ids.add(feature_id)
+        features.append(
+            ProjectFourBoundaryPatchFeature(
+                id=feature_id,
+                name=_string_value(
+                    _nested_value(data, "name", f"Four-Boundary Patch {index + 1}"),
+                    f"{prefix}.name",
+                ),
+                source_curve_ids=_string_list_value(
+                    _nested_value(data, "source_curve_ids", []),
+                    f"{prefix}.source_curve_ids",
+                ),
+                preserve_corners=_bool_value(
+                    _nested_value(data, "preserve_corners", True),
+                    f"{prefix}.preserve_corners",
+                ),
+                match_directions=_bool_value(
+                    _nested_value(data, "match_directions", True),
+                    f"{prefix}.match_directions",
+                ),
+                fill_method=_string_value(
+                    _nested_value(data, "fill_method", "coons_preview"),
+                    f"{prefix}.fill_method",
+                ),
+                brep_surface_id=_optional_string_value(
+                    _nested_value(data, "brep_surface_id", None),
+                    f"{prefix}.brep_surface_id",
+                ),
+                preview_surface_id=_optional_string_value(
+                    _nested_value(data, "preview_surface_id", None),
+                    f"{prefix}.preview_surface_id",
+                ),
+                last_build_status=_string_value(
+                    _nested_value(data, "last_build_status", "Not built."),
+                    f"{prefix}.last_build_status",
+                ),
+                metadata=_metadata_dict_value(
+                    _nested_value(data, "metadata", {}),
+                    f"{prefix}.metadata",
+                ),
+            )
+        )
+    return features
 
 
 def _string_list_value(value: object, field_name: str) -> list[str]:

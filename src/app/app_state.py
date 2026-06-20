@@ -17,6 +17,8 @@ from sections.section_state import (
     create_default_section_plane,
 )
 from surfaces.brep_state import BrepSurfaceCollection
+from surfaces.four_boundary_feature import FourBoundaryPatchFeatureCollection
+from surfaces.loft_feature import LoftFeatureCollection
 from surfaces.surface_state import SurfaceCollection
 
 
@@ -44,6 +46,12 @@ class AppState:
     surface_collection: SurfaceCollection = field(default_factory=SurfaceCollection)
     brep_surface_collection: BrepSurfaceCollection = field(
         default_factory=BrepSurfaceCollection
+    )
+    loft_feature_collection: LoftFeatureCollection = field(
+        default_factory=LoftFeatureCollection
+    )
+    four_boundary_feature_collection: FourBoundaryPatchFeatureCollection = field(
+        default_factory=FourBoundaryPatchFeatureCollection
     )
     region_collection: RegionCollection = field(default_factory=RegionCollection)
 
@@ -83,3 +91,7 @@ class AppState:
         self.brep_surface_collection.surfaces = []
         self.brep_surface_collection.active_surface_id = None
         self.brep_surface_collection.selected_surface_ids.clear()
+        self.loft_feature_collection.features = []
+        self.loft_feature_collection.active_feature_id = None
+        self.four_boundary_feature_collection.features = []
+        self.four_boundary_feature_collection.active_feature_id = None
