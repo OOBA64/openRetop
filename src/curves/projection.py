@@ -104,7 +104,9 @@ def project_curve_points_to_mesh(
         else:
             projected_points.append(source_point.copy() if preserve_missed_points else np.zeros(3, dtype=float))
             hit_mask.append(False)
-            distances.append(0.0)
+            distances.append(
+                float(distance) if source_triangle_index is not None else 0.0
+            )
             triangle_indices.append(None)
             normals.append(None)
 

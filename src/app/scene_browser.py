@@ -240,6 +240,11 @@ def _surface_preview_tag(surface: SurfaceSceneRecord) -> str:
         return "fill"
     if preview_mode == "two_curve_loft" or surface_type == "preview_loft":
         return "loft"
+    if (
+        preview_mode == "mesh_conforming_loft"
+        or surface_type == "mesh_conforming_loft_preview"
+    ):
+        return "conforming preview"
     if preview_mode == "boundary_patch" or surface_type == "preview_boundary_patch":
         return "boundary patch"
     if preview_mode == "four_curve_patch" or surface_type == "preview_four_curve_patch":

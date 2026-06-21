@@ -14,17 +14,23 @@ MANUAL_CURVE_METHOD_POLYLINE = "polyline"
 MANUAL_CURVE_METHOD_CATMULL_ROM = "catmull_rom"
 MANUAL_CURVE_METHOD_HYBRID = "hybrid"
 MANUAL_CURVE_METHOD_CAD_SPLINE = "cad_spline"
+MANUAL_CURVE_METHOD_SMOOTH_GUIDE = "smooth_guide"
 CURVE_POINT_SMOOTH = "smooth"
 CURVE_POINT_CORNER = "corner"
 CURVE_POINT_TANGENT_LOCKED = "tangent_locked"
+CURVE_POINT_SOURCE_MANUAL = "manual"
+CURVE_POINT_SOURCE_AUTO = "auto"
+CURVE_POINT_SOURCE_LEGACY = "legacy"
+CURVE_POINT_SOURCE_IMPORTED = "imported"
 CURVE_POINT_TYPES = {
     CURVE_POINT_SMOOTH,
     CURVE_POINT_CORNER,
     CURVE_POINT_TANGENT_LOCKED,
 }
 DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES = 135.0
-DEFAULT_MANUAL_CURVE_METHOD = MANUAL_CURVE_METHOD_CATMULL_ROM
-DEFAULT_MANUAL_CURVE_SAMPLE_COUNT = 64
+DEFAULT_MANUAL_CURVE_METHOD = MANUAL_CURVE_METHOD_SMOOTH_GUIDE
+DEFAULT_MANUAL_CURVE_SAMPLE_COUNT = 128
+DEFAULT_MANUAL_CURVE_SMOOTHNESS = 4
 MANUAL_CURVE_CLOSE_THRESHOLD_RATIO = 0.01
 MANUAL_CURVE_CLOSE_THRESHOLD_MIN = 1e-4
 
@@ -65,6 +71,9 @@ class ManualCurvePoint:
                 self.snap_triangle_index = None
         self.snap_normal = _json_safe_point_or_none(self.snap_normal)
         self.metadata = dict(self.metadata) if isinstance(self.metadata, dict) else {}
+        self.metadata["point_type_source"] = _normalized_point_type_source(
+            self.metadata.get("point_type_source", CURVE_POINT_SOURCE_IMPORTED)
+        )
 
 
 @dataclass
@@ -112,8 +121,11 @@ def manual_curve_metadata(
     curve_method: str = DEFAULT_MANUAL_CURVE_METHOD,
     sample_count: int = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
     point_types: Sequence[str] | None = None,
+    point_type_sources: Sequence[str] | None = None,
     corner_angle_threshold_degrees: float = DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
     preserve_corners: bool = True,
+    smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
+    keep_curve_on_mesh: bool = False,
 ) -> dict[str, object]:
     points = _safe_points(control_points)
     method = _normalized_curve_method(curve_method)
@@ -147,12 +159,16 @@ def manual_curve_metadata(
         curve_method=method,
         sample_count=sample_count,
         point_types=point_types,
+        point_type_sources=point_type_sources,
         corner_angle_threshold_degrees=corner_angle_threshold_degrees,
         preserve_corners=preserve_corners,
+        smoothness=smoothness,
         snap_triangle_indices=snap_triangle_indices,
         snap_normals=snap_normals,
     )
     metadata.update(manual_curve_v2_metadata(control_data))
+    metadata["smoothness"] = _normalized_smoothness(smoothness)
+    metadata["keep_curve_on_mesh"] = bool(keep_curve_on_mesh)
     return metadata
 
 
@@ -209,6 +225,7 @@ def parse_manual_curve_metadata_v2(curve: object) -> ManualCurveControlDataV2 | 
             )
         triangle_indices = metadata.get("snap_triangle_indices")
         normals = metadata.get("snap_normals")
+        point_type_sources = metadata.get("point_type_sources")
         for index, position in enumerate(control_points):
             points.append(
                 ManualCurvePoint(
@@ -220,6 +237,12 @@ def parse_manual_curve_metadata_v2(curve: object) -> ManualCurveControlDataV2 | 
                     ),
                     snap_triangle_index=_sequence_item(triangle_indices, index),
                     snap_normal=_sequence_item(normals, index),
+                    metadata={
+                        "point_type_source": (
+                            _sequence_item(point_type_sources, index)
+                            or CURVE_POINT_SOURCE_LEGACY
+                        )
+                    },
                 )
             )
     if not points:
@@ -240,9 +263,16 @@ def parse_manual_curve_metadata_v2(curve: object) -> ManualCurveControlDataV2 | 
             )
         ),
         preserve_corners=bool(metadata.get("preserve_corners", True)),
-        metadata=dict(metadata.get("manual_curve_v2_metadata", {}))
-        if isinstance(metadata.get("manual_curve_v2_metadata"), dict)
-        else {},
+        metadata={
+            **(
+                dict(metadata.get("manual_curve_v2_metadata", {}))
+                if isinstance(metadata.get("manual_curve_v2_metadata"), dict)
+                else {}
+            ),
+            "smoothness": _normalized_smoothness(
+                metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS)
+            ),
+        },
     )
 
 
@@ -325,6 +355,7 @@ def ensure_manual_curve_storage(curve: StoredCurve) -> StoredCurve:
             and control_data_v2.curve_method in {
                 MANUAL_CURVE_METHOD_HYBRID,
                 MANUAL_CURVE_METHOD_CAD_SPLINE,
+                MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
             }
             else sample_manual_curve(
                 control_points,
@@ -356,7 +387,11 @@ def sample_manual_curve(
         return points.copy()
 
     method = _normalized_curve_method(method)
-    if method in {MANUAL_CURVE_METHOD_HYBRID, MANUAL_CURVE_METHOD_CAD_SPLINE}:
+    if method in {
+        MANUAL_CURVE_METHOD_HYBRID,
+        MANUAL_CURVE_METHOD_CAD_SPLINE,
+        MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
+    }:
         control_data = manual_curve_control_data_v2(
             points,
             is_closed=bool(is_closed),
@@ -392,8 +427,11 @@ def build_manual_stored_curve(
     curve_method: str = DEFAULT_MANUAL_CURVE_METHOD,
     sample_count: int = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
     point_types: Sequence[str] | None = None,
+    point_type_sources: Sequence[str] | None = None,
     corner_angle_threshold_degrees: float = DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
     preserve_corners: bool = True,
+    smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
+    keep_curve_on_mesh: bool = False,
 ) -> StoredCurve:
     control_array = _safe_points(control_points)
     method = _normalized_curve_method(curve_method)
@@ -404,14 +442,20 @@ def build_manual_stored_curve(
         curve_method=method,
         sample_count=count,
         point_types=point_types,
+        point_type_sources=point_type_sources,
         corner_angle_threshold_degrees=corner_angle_threshold_degrees,
         preserve_corners=preserve_corners,
+        smoothness=smoothness,
         snap_triangle_indices=snap_triangle_indices,
         snap_normals=snap_normals,
     )
     fitted_points = (
         sample_hybrid_manual_curve(control_data_v2)
-        if method in {MANUAL_CURVE_METHOD_HYBRID, MANUAL_CURVE_METHOD_CAD_SPLINE}
+        if method in {
+            MANUAL_CURVE_METHOD_HYBRID,
+            MANUAL_CURVE_METHOD_CAD_SPLINE,
+            MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
+        }
         else sample_manual_curve(
             control_array,
             is_closed=bool(is_closed),
@@ -432,8 +476,14 @@ def build_manual_stored_curve(
         curve_method=method,
         sample_count=count,
         point_types=[point.point_type for point in control_data_v2.points],
+        point_type_sources=[
+            manual_curve_point_type_source(point)
+            for point in control_data_v2.points
+        ],
         corner_angle_threshold_degrees=control_data_v2.corner_angle_threshold_degrees,
         preserve_corners=control_data_v2.preserve_corners,
+        smoothness=smoothness,
+        keep_curve_on_mesh=keep_curve_on_mesh,
     )
     metadata.update(hybrid_curve_diagnostics(control_data_v2, fitted_points))
     return StoredCurve(
@@ -459,28 +509,47 @@ def manual_curve_control_data_v2(
     curve_method: str = MANUAL_CURVE_METHOD_HYBRID,
     sample_count: int = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
     point_types: Sequence[str] | None = None,
+    point_type_sources: Sequence[str] | None = None,
     corner_angle_threshold_degrees: float = DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
     preserve_corners: bool = True,
+    smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
     snap_triangle_indices: Sequence[int | None] | None = None,
     snap_normals: Sequence[Sequence[float] | None] | None = None,
 ) -> ManualCurveControlDataV2:
     positions = _safe_points(control_points)
     threshold = _normalized_corner_threshold(corner_angle_threshold_degrees)
-    resolved_types = (
-        [_normalized_point_type(value) for value in point_types]
-        if point_types is not None and len(point_types) == len(positions)
-        else detect_corner_point_types(
+    has_explicit_point_types = bool(
+        point_types is not None and len(point_types) == len(positions)
+    )
+    if has_explicit_point_types:
+        assert point_types is not None
+        resolved_types = [_normalized_point_type(value) for value in point_types]
+    elif _normalized_curve_method(curve_method) == MANUAL_CURVE_METHOD_SMOOTH_GUIDE:
+        resolved_types = [CURVE_POINT_SMOOTH for _point in positions]
+    else:
+        resolved_types = detect_corner_point_types(
             positions,
             is_closed=bool(is_closed),
             threshold_degrees=threshold,
         )
-    )
     points = [
         ManualCurvePoint(
             position=position,
             point_type=resolved_types[index],
             snap_triangle_index=_sequence_item(snap_triangle_indices, index),
             snap_normal=_sequence_item(snap_normals, index),
+            metadata={
+                "point_type_source": (
+                    _sequence_item(point_type_sources, index)
+                    or (
+                        CURVE_POINT_SOURCE_IMPORTED
+                        if has_explicit_point_types
+                        or _normalized_curve_method(curve_method)
+                        == MANUAL_CURVE_METHOD_SMOOTH_GUIDE
+                        else CURVE_POINT_SOURCE_AUTO
+                    )
+                )
+            },
         )
         for index, position in enumerate(positions)
     ]
@@ -491,6 +560,7 @@ def manual_curve_control_data_v2(
         sample_count=sample_count,
         corner_angle_threshold_degrees=threshold,
         preserve_corners=bool(preserve_corners),
+        metadata={"smoothness": _normalized_smoothness(smoothness)},
     )
 
 
@@ -514,6 +584,9 @@ def manual_curve_v2_metadata(
             for point in control_data.points
         ],
         "point_types": [point.point_type for point in control_data.points],
+        "point_type_sources": [
+            manual_curve_point_type_source(point) for point in control_data.points
+        ],
         "corner_angle_threshold_degrees": float(
             control_data.corner_angle_threshold_degrees
         ),
@@ -559,27 +632,169 @@ def auto_detect_manual_curve_corners(
         is_closed=control_data.is_closed,
         threshold_degrees=threshold,
     )
-    points = [
-        ManualCurvePoint(
-            position=point.position.copy(),
-            point_type=point_types[index],
-            tangent_in=None if point.tangent_in is None else point.tangent_in.copy(),
-            tangent_out=None if point.tangent_out is None else point.tangent_out.copy(),
-            weight=point.weight,
-            snap_triangle_index=point.snap_triangle_index,
-            snap_normal=point.snap_normal,
-            metadata=dict(point.metadata),
+    points: list[ManualCurvePoint] = []
+    for index, point in enumerate(control_data.points):
+        source = manual_curve_point_type_source(point)
+        preserve_manual_corner = bool(
+            point.point_type == CURVE_POINT_CORNER
+            and source == CURVE_POINT_SOURCE_MANUAL
         )
-        for index, point in enumerate(control_data.points)
-    ]
+        detected_type = point.point_type if preserve_manual_corner else point_types[index]
+        metadata = dict(point.metadata)
+        if not preserve_manual_corner and detected_type == CURVE_POINT_CORNER:
+            metadata["point_type_source"] = CURVE_POINT_SOURCE_AUTO
+        points.append(
+            ManualCurvePoint(
+                position=point.position.copy(),
+                point_type=detected_type,
+                tangent_in=None if point.tangent_in is None else point.tangent_in.copy(),
+                tangent_out=None if point.tangent_out is None else point.tangent_out.copy(),
+                weight=point.weight,
+                snap_triangle_index=point.snap_triangle_index,
+                snap_normal=point.snap_normal,
+                metadata=metadata,
+            )
+        )
     return ManualCurveControlDataV2(
         points=points,
         is_closed=control_data.is_closed,
-        curve_method=MANUAL_CURVE_METHOD_HYBRID,
+        curve_method=control_data.curve_method,
         sample_count=control_data.sample_count,
         corner_angle_threshold_degrees=threshold,
         preserve_corners=control_data.preserve_corners,
         metadata=dict(control_data.metadata),
+    )
+
+
+def clear_auto_detected_manual_curve_corners(
+    control_data: ManualCurveControlDataV2,
+) -> ManualCurveControlDataV2:
+    """Clear only corner classifications produced by auto detection."""
+
+    points: list[ManualCurvePoint] = []
+    for point in control_data.points:
+        metadata = dict(point.metadata)
+        point_type = point.point_type
+        if (
+            point_type == CURVE_POINT_CORNER
+            and manual_curve_point_type_source(point) == CURVE_POINT_SOURCE_AUTO
+        ):
+            point_type = CURVE_POINT_SMOOTH
+        points.append(
+            ManualCurvePoint(
+                position=point.position.copy(),
+                point_type=point_type,
+                tangent_in=None if point.tangent_in is None else point.tangent_in.copy(),
+                tangent_out=None if point.tangent_out is None else point.tangent_out.copy(),
+                weight=point.weight,
+                snap_triangle_index=point.snap_triangle_index,
+                snap_normal=point.snap_normal,
+                metadata=metadata,
+            )
+        )
+    return ManualCurveControlDataV2(
+        points=points,
+        is_closed=control_data.is_closed,
+        curve_method=control_data.curve_method,
+        sample_count=control_data.sample_count,
+        corner_angle_threshold_degrees=control_data.corner_angle_threshold_degrees,
+        preserve_corners=control_data.preserve_corners,
+        metadata=dict(control_data.metadata),
+    )
+
+
+def manual_curve_point_type_source(point: ManualCurvePoint) -> str:
+    return _normalized_point_type_source(
+        point.metadata.get("point_type_source", CURVE_POINT_SOURCE_IMPORTED)
+    )
+
+
+def simplify_manual_curve_control_data(
+    control_data: ManualCurveControlDataV2,
+    *,
+    tolerance: float,
+) -> ManualCurveControlDataV2:
+    """Reduce controls while preserving endpoints and manually marked corners."""
+
+    points = control_data.control_points
+    if len(points) <= (3 if control_data.is_closed else 2):
+        return control_data
+    try:
+        tolerance_value = float(tolerance)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Guide simplification tolerance must be finite and non-negative.") from exc
+    if not np.isfinite(tolerance_value) or tolerance_value < 0.0:
+        raise ValueError("Guide simplification tolerance must be finite and non-negative.")
+
+    manual_corners = [
+        index
+        for index, point in enumerate(control_data.points)
+        if point.point_type == CURVE_POINT_CORNER
+        and manual_curve_point_type_source(point) == CURVE_POINT_SOURCE_MANUAL
+    ]
+    kept_indices: list[int] = []
+    if control_data.is_closed:
+        anchors = list(manual_corners)
+        if len(anchors) < 2:
+            first_anchor = anchors[0] if anchors else 0
+            distances = np.linalg.norm(points - points[first_anchor], axis=1)
+            second_anchor = int(np.argmax(distances))
+            if second_anchor == first_anchor:
+                second_anchor = (first_anchor + max(len(points) // 2, 1)) % len(points)
+            anchors = [first_anchor, second_anchor]
+        for anchor_index, start in enumerate(anchors):
+            end = anchors[(anchor_index + 1) % len(anchors)]
+            span_indices = [start]
+            cursor = start
+            while cursor != end or len(span_indices) == 1:
+                cursor = (cursor + 1) % len(points)
+                span_indices.append(cursor)
+                if len(span_indices) > len(points) + 1:
+                    break
+            local_kept = _rdp_keep_indices(points[span_indices], tolerance_value)
+            kept_indices.extend(span_indices[index] for index in local_kept[:-1])
+        kept_indices = list(dict.fromkeys(kept_indices))
+        if len(kept_indices) < 3:
+            kept_indices = list(range(min(3, len(points))))
+    else:
+        anchors = sorted(set([0, *manual_corners, len(points) - 1]))
+        for start, end in zip(anchors[:-1], anchors[1:]):
+            span_indices = list(range(start, end + 1))
+            local_kept = _rdp_keep_indices(points[span_indices], tolerance_value)
+            mapped = [span_indices[index] for index in local_kept]
+            if kept_indices and mapped and kept_indices[-1] == mapped[0]:
+                mapped = mapped[1:]
+            kept_indices.extend(mapped)
+
+    reduced_points = [
+        _copy_manual_curve_point(control_data.points[index]) for index in kept_indices
+    ]
+    return ManualCurveControlDataV2(
+        points=reduced_points,
+        is_closed=control_data.is_closed,
+        curve_method=control_data.curve_method,
+        sample_count=control_data.sample_count,
+        corner_angle_threshold_degrees=control_data.corner_angle_threshold_degrees,
+        preserve_corners=control_data.preserve_corners,
+        metadata={
+            **control_data.metadata,
+            "simplification_tolerance": tolerance_value,
+            "source_control_point_count": len(points),
+            "result_control_point_count": len(reduced_points),
+        },
+    )
+
+
+def _copy_manual_curve_point(point: ManualCurvePoint) -> ManualCurvePoint:
+    return ManualCurvePoint(
+        position=point.position.copy(),
+        point_type=point.point_type,
+        tangent_in=None if point.tangent_in is None else point.tangent_in.copy(),
+        tangent_out=None if point.tangent_out is None else point.tangent_out.copy(),
+        weight=point.weight,
+        snap_triangle_index=point.snap_triangle_index,
+        snap_normal=point.snap_normal,
+        metadata=dict(point.metadata),
     )
 
 
@@ -590,21 +805,13 @@ def sample_hybrid_manual_curve(
     if len(points) <= 1:
         return points.copy()
     if not control_data.preserve_corners:
-        return _catmull_rom_sample(
-            points,
-            is_closed=control_data.is_closed,
-            sample_count=control_data.sample_count,
-        )
+        return _smooth_span_sample(control_data, points, closed=control_data.is_closed)
 
     spans = manual_curve_segment_definitions(control_data)
     if not spans:
         return _polyline_sample(points, is_closed=control_data.is_closed)
     if len(spans) == 1 and spans[0]["kind"] == "spline" and spans[0].get("closed"):
-        return _catmull_rom_sample(
-            points,
-            is_closed=True,
-            sample_count=control_data.sample_count,
-        )
+        return _smooth_span_sample(control_data, points, closed=True)
 
     total_segments = max(
         sum(max(len(np.asarray(span["points"])) - 1, 1) for span in spans),
@@ -623,9 +830,10 @@ def sample_hybrid_manual_curve(
                 3,
                 int(np.ceil(control_data.sample_count * span_segments / total_segments)),
             )
-            sampled = _catmull_rom_sample(
+            sampled = _smooth_span_sample(
+                control_data,
                 span_points,
-                is_closed=False,
+                closed=False,
                 sample_count=span_sample_count,
             )
         if sampled_parts and np.allclose(sampled_parts[-1][-1], sampled[0]):
@@ -643,6 +851,45 @@ def sample_hybrid_manual_curve(
     if not np.all(np.isfinite(result)):
         return _polyline_sample(points, is_closed=control_data.is_closed)
     return result
+
+
+def sample_smooth_guide_manual_curve(
+    control_data: ManualCurveControlDataV2,
+) -> np.ndarray:
+    """Sample a fair, sparse guide while preserving explicit corner constraints."""
+
+    smooth_data = ManualCurveControlDataV2(
+        points=control_data.points,
+        is_closed=control_data.is_closed,
+        curve_method=MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
+        sample_count=control_data.sample_count,
+        corner_angle_threshold_degrees=control_data.corner_angle_threshold_degrees,
+        preserve_corners=control_data.preserve_corners,
+        metadata=dict(control_data.metadata),
+    )
+    return sample_hybrid_manual_curve(smooth_data)
+
+
+def _smooth_span_sample(
+    control_data: ManualCurveControlDataV2,
+    points: np.ndarray,
+    *,
+    closed: bool,
+    sample_count: int | None = None,
+) -> np.ndarray:
+    count = control_data.sample_count if sample_count is None else sample_count
+    if control_data.curve_method == MANUAL_CURVE_METHOD_SMOOTH_GUIDE:
+        return _centripetal_catmull_rom_sample(
+            points,
+            is_closed=closed,
+            sample_count=count,
+            smoothness=_normalized_smoothness(
+                control_data.metadata.get(
+                    "smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS
+                )
+            ),
+        )
+    return _catmull_rom_sample(points, is_closed=closed, sample_count=count)
 
 
 def manual_curve_segment_definitions(
@@ -822,6 +1069,101 @@ def _catmull_rom_sample(
     return result
 
 
+def _centripetal_catmull_rom_sample(
+    points: np.ndarray,
+    *,
+    is_closed: bool,
+    sample_count: int,
+    smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
+) -> np.ndarray:
+    point_count = len(points)
+    if point_count < 3:
+        return _polyline_sample(points, is_closed=is_closed)
+
+    segment_count = point_count if is_closed else point_count - 1
+    samples_per_segment = max(int(np.ceil(sample_count / max(segment_count, 1))), 1)
+    sampled: list[np.ndarray] = []
+    for segment_index in range(segment_count):
+        p1 = points[segment_index % point_count]
+        p2 = points[(segment_index + 1) % point_count]
+        if is_closed:
+            p0 = points[(segment_index - 1) % point_count]
+            p3 = points[(segment_index + 2) % point_count]
+        else:
+            p0 = (
+                points[segment_index - 1]
+                if segment_index > 0
+                else (2.0 * p1) - p2
+            )
+            p3 = (
+                points[segment_index + 2]
+                if segment_index + 2 < point_count
+                else (2.0 * p2) - p1
+            )
+        include_endpoint = segment_index == segment_count - 1 and not is_closed
+        step_count = samples_per_segment + (1 if include_endpoint else 0)
+        for step in range(step_count):
+            if sampled and step == 0:
+                continue
+            factor = step / float(samples_per_segment)
+            curve_point = _centripetal_catmull_rom_point(p0, p1, p2, p3, factor)
+            linear_point = p1 * (1.0 - factor) + p2 * factor
+            smooth_factor = min(max(float(smoothness) / 4.0, 0.25), 1.25)
+            sampled.append(
+                linear_point + smooth_factor * (curve_point - linear_point)
+            )
+
+    if is_closed and sampled:
+        sampled.append(sampled[0].copy())
+    result = _safe_points(sampled)
+    if not is_closed and len(result) >= 2:
+        result[0] = points[0]
+        result[-1] = points[-1]
+    if not np.all(np.isfinite(result)):
+        return _catmull_rom_sample(
+            points,
+            is_closed=is_closed,
+            sample_count=sample_count,
+        )
+    return result
+
+
+def _centripetal_catmull_rom_point(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    p3: np.ndarray,
+    factor: float,
+) -> np.ndarray:
+    alpha = 0.5
+
+    def knot(previous: float, start: np.ndarray, end: np.ndarray) -> float:
+        distance = max(float(np.linalg.norm(end - start)), 1e-9)
+        return previous + distance**alpha
+
+    def blend(
+        start: np.ndarray,
+        end: np.ndarray,
+        start_t: float,
+        end_t: float,
+        value_t: float,
+    ) -> np.ndarray:
+        span = max(end_t - start_t, 1e-12)
+        return ((end_t - value_t) / span) * start + ((value_t - start_t) / span) * end
+
+    t0 = 0.0
+    t1 = knot(t0, p0, p1)
+    t2 = knot(t1, p1, p2)
+    t3 = knot(t2, p2, p3)
+    value_t = t1 + min(max(float(factor), 0.0), 1.0) * (t2 - t1)
+    a1 = blend(p0, p1, t0, t1, value_t)
+    a2 = blend(p1, p2, t1, t2, value_t)
+    a3 = blend(p2, p3, t2, t3, value_t)
+    b1 = blend(a1, a2, t0, t2, value_t)
+    b2 = blend(a2, a3, t1, t3, value_t)
+    return blend(b1, b2, t1, t2, value_t)
+
+
 def _catmull_rom_segment_points(
     points: np.ndarray,
     segment_index: int,
@@ -878,6 +1220,28 @@ def _polyline_sample(points: np.ndarray, *, is_closed: bool) -> np.ndarray:
     return points.copy()
 
 
+def _rdp_keep_indices(points: np.ndarray, tolerance: float) -> list[int]:
+    if len(points) <= 2:
+        return list(range(len(points)))
+    start = points[0]
+    end = points[-1]
+    segment = end - start
+    segment_length = float(np.linalg.norm(segment))
+    if segment_length <= 1e-12:
+        distances = np.linalg.norm(points[1:-1] - start, axis=1)
+    else:
+        distances = (
+            np.linalg.norm(np.cross(points[1:-1] - start, segment), axis=1)
+            / segment_length
+        )
+    if len(distances) == 0 or float(np.max(distances)) <= tolerance:
+        return [0, len(points) - 1]
+    split = int(np.argmax(distances)) + 1
+    left = _rdp_keep_indices(points[: split + 1], tolerance)
+    right = _rdp_keep_indices(points[split:], tolerance)
+    return [*left[:-1], *[split + index for index in right]]
+
+
 def _safe_points(points: object) -> np.ndarray:
     try:
         values = np.asarray(points, dtype=float)
@@ -911,9 +1275,10 @@ def _normalized_curve_method(method: object) -> str:
         MANUAL_CURVE_METHOD_CATMULL_ROM,
         MANUAL_CURVE_METHOD_HYBRID,
         MANUAL_CURVE_METHOD_CAD_SPLINE,
+        MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
     }:
         return value
-    return MANUAL_CURVE_METHOD_CATMULL_ROM
+    return DEFAULT_MANUAL_CURVE_METHOD
 
 
 def _normalized_sample_count(sample_count: object) -> int:
@@ -927,6 +1292,26 @@ def _normalized_sample_count(sample_count: object) -> int:
 def _normalized_point_type(value: object) -> str:
     token = str(value).strip().lower()
     return token if token in CURVE_POINT_TYPES else CURVE_POINT_SMOOTH
+
+
+def _normalized_point_type_source(value: object) -> str:
+    token = str(value).strip().lower()
+    if token in {
+        CURVE_POINT_SOURCE_MANUAL,
+        CURVE_POINT_SOURCE_AUTO,
+        CURVE_POINT_SOURCE_LEGACY,
+        CURVE_POINT_SOURCE_IMPORTED,
+    }:
+        return token
+    return CURVE_POINT_SOURCE_IMPORTED
+
+
+def _normalized_smoothness(value: object) -> int:
+    try:
+        smoothness = int(round(float(value)))
+    except (TypeError, ValueError):
+        smoothness = DEFAULT_MANUAL_CURVE_SMOOTHNESS
+    return min(max(smoothness, 1), 8)
 
 
 def _normalized_corner_threshold(value: object) -> float:

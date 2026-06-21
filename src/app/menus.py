@@ -154,6 +154,14 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
         label="Convert Boundary to Hybrid Guide Curve",
         command=app.convert_boundary_to_hybrid_guide_curve,
     )
+    app.curves_menu.add_command(
+        label="Convert Selected Curve to Smooth Guide",
+        command=app.convert_selected_curve_to_smooth_guide,
+    )
+    app.curves_menu.add_command(
+        label="Reduce/Simplify Selected Guide Curve",
+        command=app.reduce_simplify_selected_guide_curve,
+    )
 
     app.surfaces_menu = Menu(app.root, tearoff=False)
     app.surfaces_menu.add_command(label="Fill Closed Curve", command=app.fill_closed_curve)
@@ -222,6 +230,10 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
     app.surfaces_menu.add_command(
         label="Rebuild Four-Boundary Patch Feature",
         command=app.rebuild_selected_four_boundary_patch_feature,
+    )
+    app.surfaces_menu.add_command(
+        label="Create Mesh-Conforming Loft Preview",
+        command=app.create_mesh_conforming_loft_preview,
     )
 
     app.tools_menu = Menu(app.root, tearoff=False)

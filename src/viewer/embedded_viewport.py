@@ -12,8 +12,10 @@ import numpy as np
 from curves.curve_state import is_repaired_curve
 from curves.manual_curve import (
     CURVE_POINT_CORNER,
+    DEFAULT_MANUAL_CURVE_METHOD,
     DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
     MANUAL_CURVE_METHOD_HYBRID,
+    MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
     ManualCurveControlDataV2,
     ManualCurvePoint,
     sample_manual_curve,
@@ -229,6 +231,7 @@ class EmbeddedVTKViewport:
         self._left_button_pressed = False
         self._middle_button_pressed = False
         self._right_button_pressed = False
+        self._modified_left_navigation = False
         self._active_interaction = False
         self._render_after_id: str | None = None
         self.scene_dirty = False
@@ -366,6 +369,28 @@ class EmbeddedVTKViewport:
             return None
         return point
 
+    def manual_curve_control_point_index_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+        points: Sequence[Sequence[float]] | np.ndarray,
+        *,
+        tolerance_pixels: float = 14.0,
+    ) -> int | None:
+        point_array = _manual_curve_points_array(points)
+        if self.widget is None or len(point_array) == 0:
+            return None
+        projected = _project_points(self.renderer, point_array)
+        if len(projected) != len(point_array):
+            return None
+        display_point = np.asarray(
+            [float(x_position), float(max(int(self.widget.winfo_height()), 1) - y_position)],
+            dtype=float,
+        )
+        distances = np.linalg.norm(projected - display_point, axis=1)
+        index = int(np.argmin(distances))
+        return index if float(distances[index]) <= float(tolerance_pixels) else None
+
     def _display_to_world(
         self,
         display_x: float,
@@ -453,11 +478,12 @@ class EmbeddedVTKViewport:
         region_selection_opacity: float = REGION_SELECTION_OPACITY,
         manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None = None,
         manual_curve_point_types: Sequence[str] | None = None,
+        manual_curve_fitted_points: Sequence[Sequence[float]] | np.ndarray | None = None,
         manual_curve_closed: bool = False,
         manual_curve_plane_normal: Sequence[float] | None = None,
         manual_curve_snap_to_mesh: bool = False,
         manual_curve_selected_control_point_index: int | None = None,
-        manual_curve_method: str = "catmull_rom",
+        manual_curve_method: str = DEFAULT_MANUAL_CURVE_METHOD,
         manual_curve_sample_count: int = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
         manual_curve_preview_point: Sequence[float] | None = None,
         manual_curve_preview_valid: bool = False,
@@ -568,6 +594,7 @@ class EmbeddedVTKViewport:
         self._update_manual_curve_preview_actor(
             manual_curve_points,
             point_types=manual_curve_point_types,
+            fitted_points=manual_curve_fitted_points,
             closed=manual_curve_closed,
             plane_normal=manual_curve_plane_normal,
             snap_to_mesh=manual_curve_snap_to_mesh,
@@ -1282,6 +1309,7 @@ class EmbeddedVTKViewport:
         manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None,
         *,
         point_types: Sequence[str] | None,
+        fitted_points: Sequence[Sequence[float]] | np.ndarray | None,
         closed: bool,
         plane_normal: Sequence[float] | None,
         snap_to_mesh: bool,
@@ -1306,6 +1334,7 @@ class EmbeddedVTKViewport:
             reference_extent=self._view_extent,
             curve_method=curve_method,
             point_types=point_types,
+            fitted_points=fitted_points,
             sample_count=sample_count,
             preview_point=preview,
             preview_valid=preview_valid,
@@ -1449,11 +1478,14 @@ class EmbeddedVTKViewport:
             return
 
         actors = [
-            _surface_preview_actor(
-                preview,
-                selected=bool(preview.selected or preview.source_surface_id == active_surface_id),
-            )
+            actor
             for preview in renderable_previews
+            for actor in _surface_preview_actors(
+                preview,
+                selected=bool(
+                    preview.selected or preview.source_surface_id == active_surface_id
+                ),
+            )
         ]
         self._replace_overlay_group("surface_previews", actors, key=key)
 
@@ -1990,6 +2022,10 @@ class EmbeddedVTKViewport:
     def _on_left_button_press(self, event: Event[Canvas]) -> None:
         self._left_press_position = (int(event.x), int(event.y))
         self._set_mouse_button_pressed("left", True)
+        self._modified_left_navigation = _is_navigation_left_event(event)
+        if self._modified_left_navigation:
+            self._forward_mouse_event(event, "LeftButtonPressEvent")
+            return
         if self._dispatch_pointer_event("left_press", event):
             self.request_render(overlay_dirty=True)
             return
@@ -1998,6 +2034,11 @@ class EmbeddedVTKViewport:
 
     def _on_left_button_release(self, event: Event[Canvas]) -> None:
         self._set_mouse_button_pressed("left", False)
+        if self._modified_left_navigation:
+            self._modified_left_navigation = False
+            self._left_press_position = None
+            self._forward_mouse_event(event, "LeftButtonReleaseEvent")
+            return
         if self._dispatch_pointer_event("left_release", event):
             self._left_press_position = None
             self.request_render(scene_dirty=True, overlay_dirty=True)
@@ -2015,37 +2056,28 @@ class EmbeddedVTKViewport:
 
     def _on_middle_button_press(self, event: Event[Canvas]) -> None:
         self._set_mouse_button_pressed("middle", True)
-        if self._dispatch_pointer_event("middle_press", event):
-            self.request_render(overlay_dirty=True)
-            return
-
         self._forward_mouse_event(event, "MiddleButtonPressEvent")
 
     def _on_middle_button_release(self, event: Event[Canvas]) -> None:
         self._set_mouse_button_pressed("middle", False)
-        if self._dispatch_pointer_event("middle_release", event):
-            self.request_render(overlay_dirty=True)
-            return
-
         self._forward_mouse_event(event, "MiddleButtonReleaseEvent")
 
     def _on_right_button_press(self, event: Event[Canvas]) -> None:
         self._set_mouse_button_pressed("right", True)
-        if self._dispatch_pointer_event("right_press", event):
-            self.request_render(overlay_dirty=True)
-            return
-
         self._forward_mouse_event(event, "RightButtonPressEvent")
 
     def _on_right_button_release(self, event: Event[Canvas]) -> None:
         self._set_mouse_button_pressed("right", False)
-        if self._dispatch_pointer_event("right_release", event):
-            self.request_render(scene_dirty=True, overlay_dirty=True)
-            return
-
         self._forward_mouse_event(event, "RightButtonReleaseEvent")
 
     def _on_mouse_move(self, event: Event[Canvas]) -> None:
+        if (
+            self._middle_button_pressed
+            or self._right_button_pressed
+            or self._modified_left_navigation
+        ):
+            self._forward_mouse_event(event, "MouseMoveEvent")
+            return
         if self._dispatch_pointer_event("motion", event):
             self.request_render(scene_dirty=True, overlay_dirty=True)
             return
@@ -2255,6 +2287,11 @@ def _is_app_shortcut_key_event(event: object) -> bool:
     return keysym in APP_SHORTCUT_KEYSYMS
 
 
+def _is_navigation_left_event(event: object) -> bool:
+    state = int(getattr(event, "state", 0))
+    return bool(state & 0x0001 or state & 0x0008)
+
+
 def _project_points(renderer: vtkRenderer, points: Sequence[Sequence[float]]) -> np.ndarray:
     projected: list[tuple[float, float]] = []
     for point in np.asarray(points, dtype=float).reshape((-1, 3)):
@@ -2416,6 +2453,7 @@ def _manual_curve_preview_geometries(
     reference_extent: float,
     curve_method: str,
     point_types: Sequence[str] | None,
+    fitted_points: Sequence[Sequence[float]] | np.ndarray | None,
     sample_count: int,
     preview_point: np.ndarray,
     preview_valid: bool,
@@ -2447,7 +2485,14 @@ def _manual_curve_preview_geometries(
             )
         )
         line_widths.append(MANUAL_CURVE_POINT_LINE_WIDTH)
-        if str(curve_method).strip().lower() == MANUAL_CURVE_METHOD_HYBRID:
+        provided_fitted = _manual_curve_points_array(fitted_points)
+        method_token = str(curve_method).strip().lower()
+        if len(provided_fitted) >= 2:
+            sampled_points = provided_fitted
+        elif method_token in {
+            MANUAL_CURVE_METHOD_HYBRID,
+            MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
+        }:
             types = list(point_types or ())
             sampled_points = sample_hybrid_manual_curve(
                 ManualCurveControlDataV2(
@@ -2459,7 +2504,7 @@ def _manual_curve_preview_geometries(
                         for index, point in enumerate(points)
                     ],
                     is_closed=bool(closed),
-                    curve_method=MANUAL_CURVE_METHOD_HYBRID,
+                    curve_method=method_token,
                     sample_count=sample_count,
                 )
             )
@@ -2502,6 +2547,7 @@ def _manual_curve_preview_geometries(
         _array_key(normal),
         str(curve_method).strip().lower(),
         tuple(point_types or ()),
+        _array_key(_manual_curve_points_array(fitted_points)),
         int(sample_count),
         _array_key(preview) if len(preview) else None,
         bool(preview_valid),
@@ -2918,6 +2964,18 @@ def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
     return actor
 
 
+def _surface_preview_actors(
+    preview: SurfacePreviewMesh,
+    *,
+    selected: bool,
+) -> list[vtkActor]:
+    fill_actor = _surface_preview_actor(preview, selected=selected)
+    boundary = _surface_preview_boundary_geometry(preview, selected=selected)
+    if boundary is None:
+        return [fill_actor]
+    return [fill_actor, _line_actor(boundary, line_width=2.6 if selected else 1.5)]
+
+
 def _surface_preview_actor(
     preview: SurfacePreviewMesh,
     *,
@@ -2953,7 +3011,7 @@ def _surface_preview_actor(
         property_.SetEdgeColor(0.24, 0.58, 0.78)
         property_.SetLineWidth(1.1)
     property_.SetRepresentationToSurface()
-    if bool(preview.wireframe_overlay) or selected:
+    if bool(preview.wireframe_overlay):
         property_.EdgeVisibilityOn()
     else:
         property_.EdgeVisibilityOff()
@@ -2962,6 +3020,27 @@ def _surface_preview_actor(
     property_.SetSpecular(0.05)
     property_.SetInterpolationToPhong()
     return actor
+
+
+def _surface_preview_boundary_geometry(
+    preview: SurfacePreviewMesh,
+    *,
+    selected: bool,
+) -> LineGeometry | None:
+    edge_counts: dict[tuple[int, int], int] = {}
+    for face in np.asarray(preview.faces, dtype=int).reshape((-1, 3)):
+        for start, end in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            edge = tuple(sorted((int(start), int(end))))
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+    boundary_edges = [edge for edge, count in edge_counts.items() if count == 1]
+    if not boundary_edges:
+        return None
+    color = (0.82, 1.0, 1.0) if selected else (0.28, 0.62, 0.82)
+    return LineGeometry(
+        points=preview.vertices,
+        lines=np.asarray(boundary_edges, dtype=int).reshape((-1, 2)),
+        colors=np.tile(np.asarray(color, dtype=float), (len(boundary_edges), 1)),
+    )
 
 
 def _region_selection_actor(

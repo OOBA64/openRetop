@@ -714,14 +714,12 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.current_mode_text.get(), "Manual Curve")
             self.assertEqual(
                 window.command_prompt_text.get(),
-                "Manual Curve: previewing next point. Click to place.",
+                "Drawing curve: left-click to add points. Right-drag to orbit.",
             )
             self.assertIn("Enter=finish", window.hotkey_hint_text.get())
-            self.assertIn("MANUAL CURVE MODE", details)
-            self.assertIn("Point count: 0", details)
-            self.assertIn("Snap mode: Off", details)
-            self.assertIn("Drawing plane: Section Plane", details)
-            self.assertIn("Closed: No", details)
+            self.assertIn("0 controls", details)
+            self.assertIn("Fit to Mesh: Off", details)
+            self.assertIn("No", details)
             self.assertEqual(str(window.finish_manual_curve_button.cget("state")), "normal")
             self.assertEqual(str(window.cancel_manual_curve_button.cget("state")), "normal")
             self.assertEqual(str(window.remove_manual_point_button.cget("state")), "normal")
@@ -2637,7 +2635,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(surface.metadata["build_method"], "two_curve_loft")
             self.assertEqual(surface.metadata["warnings"], ["point counts differ"])
             self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
-            self.assertEqual(window.status_text.get(), "Created BREP loft surface from 2 curves.")
+            self.assertIn("BREP loft is a CAD surface", window.status_text.get())
 
             surface_node = surface_node_id(surface.id)
             self.assertIn(
@@ -4988,13 +4986,13 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.surface_validation_warnings_text.get(), "(none)")
             self.assertEqual(window.surface_validation_errors_text.get(), "(none)")
             self.assertEqual(window.surface_opacity_text.get(), "0.22")
-            self.assertTrue(window.surface_wireframe_overlay.get())
+            self.assertFalse(window.surface_wireframe_overlay.get())
             self.assertIn("curve_count=1", window.surface_metadata_text.get())
             self.assertIn("source_curve_names=", window.surface_metadata_text.get())
             self.assertIn("source=selected_curve", window.surface_metadata_text.get())
             preview = window.viewport.scene_calls[-1]["surface_previews"][0]
             self.assertAlmostEqual(preview.opacity, 0.22)
-            self.assertTrue(preview.wireframe_overlay)
+            self.assertFalse(preview.wireframe_overlay)
 
             window._on_surface_opacity_changed("0.35")
             preview = window.viewport.scene_calls[-1]["surface_previews"][0]
@@ -5002,11 +5000,11 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertAlmostEqual(preview.opacity, 0.35)
             self.assertEqual(window.surface_opacity_text.get(), "0.35")
 
-            window.surface_wireframe_overlay.set(False)
+            window.surface_wireframe_overlay.set(True)
             window._on_surface_wireframe_changed()
             preview = window.viewport.scene_calls[-1]["surface_previews"][0]
-            self.assertFalse(surface.metadata["wireframe_overlay"])
-            self.assertFalse(preview.wireframe_overlay)
+            self.assertTrue(surface.metadata["wireframe_overlay"])
+            self.assertTrue(preview.wireframe_overlay)
 
             tree = window.scene_browser.tree
             surface_node = surface_node_id(surface.id)
@@ -5115,6 +5113,76 @@ class MainWindowUiTests(unittest.TestCase):
                 "Select exactly two curves to loft",
             )
             self.assertEqual(len(window.app_state.surface_collection.surfaces), 2)
+        finally:
+            window.root.destroy()
+
+    def test_mesh_conforming_loft_creates_preview_without_brep(self) -> None:
+        class RecordingProgressDialog:
+            def __init__(self, _parent: object, _title: str, _summary: str | None = None) -> None:
+                pass
+
+            def update_stage(self, _stage: str) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.app_state.mesh_object.display_mesh = TriangleMeshData(
+                vertices=np.asarray(
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+                    dtype=float,
+                ),
+                triangles=np.asarray([[0, 1, 2], [0, 2, 3]], dtype=int),
+            )
+            curves = [
+                StoredCurve(
+                    id=f"body-line-{index}",
+                    name=f"Body Line {index}",
+                    section_result_id="",
+                    plane_id="",
+                    original_points=np.asarray(
+                        [[0.1, y_value, 0.2], [0.5, y_value, 0.2], [0.9, y_value, 0.2]],
+                        dtype=float,
+                    ),
+                    fitted_points=np.asarray(
+                        [[0.1, y_value, 0.2], [0.5, y_value, 0.2], [0.9, y_value, 0.2]],
+                        dtype=float,
+                    ),
+                    mean_error=0.0,
+                    max_error=0.0,
+                    is_closed=False,
+                )
+                for index, y_value in enumerate((0.2, 0.8))
+            ]
+            for curve in curves:
+                add_curve(window.app_state.curve_collection, curve)
+            window.select_curves(
+                [curve.id for curve in curves],
+                active_curve_id=curves[0].id,
+            )
+            window.conforming_projection_threshold_text.set("1.0")
+
+            with patch(
+                "app.main_window.ComputationProgressDialog",
+                RecordingProgressDialog,
+            ):
+                window.create_mesh_conforming_loft_preview()
+
+            self.assertEqual(len(window.app_state.surface_collection.surfaces), 1)
+            self.assertEqual(window.app_state.brep_surface_collection.surfaces, [])
+            surface = window.app_state.surface_collection.surfaces[0]
+            self.assertTrue(surface.metadata["conforming_preview"])
+            self.assertFalse(surface.metadata["is_brep"])
+            self.assertEqual(surface.metadata["failed_projection_count"], 0)
+            self.assertGreater(surface.metadata["projection_mean_distance"], 0.0)
+            preview = window.viewport.scene_calls[-1]["surface_previews"][0]
+            self.assertFalse(preview.wireframe_overlay)
+            self.assertIn("Mesh-Conforming Preview", window.status_text.get())
         finally:
             window.root.destroy()
 
@@ -7370,7 +7438,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(len(window.app_state.curve_collection.curves), 0)
             self.assertEqual(
                 window.status_text.get(),
-                "Manual Curve: previewing next point. Click to place.",
+                "Drawing curve: left-click to add points. Right-drag to orbit.",
             )
             self.assertTrue(
                 np.allclose(
@@ -7453,7 +7521,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window._manual_curve_points, [])
             self.assertEqual(
                 window.status_text.get(),
-                "Manual Curve: Snap to Mesh On. Click scan surface to place.",
+                "Drawing curve: left-click to add points. Right-drag to orbit.",
             )
 
             window._on_viewport_pointer_event("motion", 55, 65)
@@ -7552,18 +7620,26 @@ class MainWindowUiTests(unittest.TestCase):
             _manual_curve_click(window, 10, 10)
             _manual_curve_click(window, 20, 20)
 
-            window._handle_shortcut("C")
+            window._toggle_manual_curve_closed()
             self.assertFalse(window._manual_curve_closed)
             self.assertEqual(window.status_text.get(), "Manual Curve: need at least 3 points to close")
 
             _manual_curve_click(window, 30, 30)
-            window._handle_shortcut("C")
+            window._toggle_manual_curve_closed()
             self.assertTrue(window._manual_curve_closed)
             self.assertTrue(window.viewport.scene_calls[-1]["manual_curve_closed"])
 
             window._handle_shortcut("Backspace")
             self.assertEqual(len(window._manual_curve_points), 2)
             self.assertFalse(window._manual_curve_closed)
+
+            window._handle_shortcut("Esc")
+            self.assertTrue(window._manual_curve_active)
+            self.assertEqual(window._manual_curve_submode, "navigate")
+            self.assertEqual(
+                window.status_text.get(),
+                "Navigate active: point placement paused.",
+            )
 
             window._handle_shortcut("Esc")
             self.assertFalse(window._manual_curve_active)
@@ -7746,7 +7822,12 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.app_state.curve_collection.active_curve_id, curve.id)
             self.assertIn(curve.id, window.app_state.curve_collection.selected_curve_ids)
             self.assertEqual(window.status_text.get(), "Manual curve editing finished")
-            self.assertIsNone(window.viewport.scene_calls[-1]["manual_curve_points"])
+            self.assertTrue(
+                np.allclose(
+                    window.viewport.scene_calls[-1]["manual_curve_points"],
+                    curve.original_points,
+                )
+            )
         finally:
             window.root.destroy()
 
@@ -7806,7 +7887,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.viewport.projected_points = [np.asarray([1.0, 0.0, 0.0], dtype=float)]
             self.assertTrue(_manual_curve_click(window, 20, 20))
             self.assertEqual(window._manual_curve_selected_control_point_index, 1)
-            self.assertEqual(window.status_text.get(), "Selected control point 2")
+            self.assertIn("Selected control point 2", window.status_text.get())
             self.assertEqual(str(window.delete_manual_point_button.cget("state")), "normal")
 
             menu = window._build_manual_curve_context_menu()
@@ -7824,8 +7905,8 @@ class MainWindowUiTests(unittest.TestCase):
             before_count = len(window._manual_curve_points)
             with patch.object(window, "_show_manual_curve_context_menu") as popup:
                 handled = window._on_viewport_pointer_event("right_release", 40, 40)
-            self.assertTrue(handled)
-            popup.assert_called_once()
+            self.assertFalse(handled)
+            popup.assert_not_called()
             self.assertEqual(len(window._manual_curve_points), before_count)
 
             window.activate_manual_curve_add_point()
@@ -7887,6 +7968,94 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.status_text.get(), "Curve edit cancelled")
             self.assertEqual(len(window._manual_curve_points), 5)
             self.assertEqual(len(curve.metadata["control_points"]), 5)
+        finally:
+            window.root.destroy()
+
+    def test_rewritten_manual_curve_defaults_and_advanced_controls(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.root.update_idletasks()
+            self.assertEqual(window.manual_curve_type_text.get(), "Smooth Guide")
+            self.assertEqual(
+                window.manual_curve_sample_count_text.get(),
+                str(DEFAULT_MANUAL_CURVE_SAMPLE_COUNT),
+            )
+            self.assertEqual(int(window.manual_curve_smoothness.get()), 4)
+            self.assertFalse(window.manual_curve_auto_detect_corners.get())
+            self.assertFalse(window.surface_wireframe_overlay.get())
+            self.assertEqual(window.add_manual_point_button.winfo_manager(), "")
+
+            window.toggle_advanced_curve_controls()
+
+            self.assertEqual(window.add_manual_point_button.winfo_manager(), "grid")
+            self.assertEqual(window.clear_auto_corners_button.winfo_manager(), "grid")
+            self.assertEqual(window.manual_curve_sample_count_entry.winfo_manager(), "grid")
+        finally:
+            window.root.destroy()
+
+    def test_manual_curve_smoothness_updates_live_fitted_preview(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            window.start_manual_curve_mode()
+            for point in (
+                [0.0, 0.0, 0.0],
+                [0.3, 0.7, 0.0],
+                [0.7, 0.7, 0.0],
+                [1.0, 0.0, 0.0],
+            ):
+                window._append_manual_curve_point(np.asarray(point), snapped=False)
+
+            window.manual_curve_smoothness.set(1)
+            window._on_manual_curve_smoothness_changed()
+            low_smoothness = np.asarray(
+                window.viewport.scene_calls[-1]["manual_curve_fitted_points"]
+            )
+            window.manual_curve_smoothness.set(8)
+            window._on_manual_curve_smoothness_changed()
+            high_smoothness = np.asarray(
+                window.viewport.scene_calls[-1]["manual_curve_fitted_points"]
+            )
+
+            self.assertEqual(low_smoothness.shape, high_smoothness.shape)
+            self.assertFalse(np.allclose(low_smoothness, high_smoothness))
+        finally:
+            window.root.destroy()
+
+    def test_edit_empty_click_does_not_add_and_escape_exits_submodes(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            curve = _create_manual_curve(
+                window,
+                [(0.0, 0.0, 0.0), (1.0, 0.25, 0.0), (2.0, 0.0, 0.0)],
+            )
+            before_count = len(window._manual_curve_points)
+            window.viewport.projected_points = [
+                np.asarray([20.0, 20.0, 0.0]),
+                np.asarray([20.0, 20.0, 0.0]),
+            ]
+
+            self.assertTrue(_manual_curve_click(window, 200, 200))
+
+            self.assertEqual(len(window._manual_curve_points), before_count)
+            self.assertEqual(len(curve.metadata["control_points"]), before_count)
+            self.assertEqual(window._manual_curve_submode, "select_point")
+
+            window.activate_manual_curve_add_point()
+            self.assertEqual(window._manual_curve_submode, "add_point")
+            self.assertIn("Add Point active", window.status_text.get())
+            window._handle_manual_curve_shortcut("Esc")
+            self.assertTrue(window._manual_curve_edit_active)
+            self.assertEqual(window._manual_curve_submode, "select_point")
+            window._handle_manual_curve_shortcut("Esc")
+            self.assertFalse(window._manual_curve_edit_active)
         finally:
             window.root.destroy()
 
@@ -8037,7 +8206,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(window.current_mode_text.get(), "Manual Curve")
             self.assertEqual(
                 window.command_prompt_text.get(),
-                "Manual Curve: Snap to Mesh On. Click scan surface to place.",
+                "Drawing curve: left-click to add points. Right-drag to orbit.",
             )
             self.assertEqual(window.viewport.mesh_pick_calls[-1], {"x": 50, "y": 60})
             self.assertEqual(len(window.viewport.projection_calls), 0)
@@ -8569,7 +8738,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.start_manual_curve_edit_mode()
             self.assertTrue(window._manual_curve_edit_active)
             self.assertEqual(window.status_text.get(), "Editing Region Boundary 1")
-            window.manual_curve_type_text.set("Smooth Curve")
+            window.manual_curve_type_text.set("Smooth Guide")
             window._on_manual_curve_type_changed()
             window.apply_manual_curve_edits()
 

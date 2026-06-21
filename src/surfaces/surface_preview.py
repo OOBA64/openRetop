@@ -8,6 +8,8 @@ from typing import Sequence
 import numpy as np
 
 from curves.curve_state import StoredCurve
+from curves.projection import project_curve_points_to_mesh
+from mesh.triangle_mesh import TriangleMeshData
 from surfaces.surface_state import SurfacePatch
 
 
@@ -22,6 +24,7 @@ TWO_CURVE_LOFT = "two_curve_loft"
 BOUNDARY_PATCH = "boundary_patch"
 FOUR_CURVE_PATCH = "four_curve_patch"
 CURVE_NETWORK_PATCH = "curve_network_patch"
+MESH_CONFORMING_LOFT = "mesh_conforming_loft"
 
 FAN_FILL_WARNING = "Fan fill preview may be inaccurate for concave curves"
 LOFT_PAIR_DISTANCE_WARNING = "Loft preview has high paired-curve distance; inspect for twisting"
@@ -48,7 +51,7 @@ class SurfacePreviewMesh:
     source_surface_id: str
     selected: bool = False
     opacity: float | None = None
-    wireframe_overlay: bool = True
+    wireframe_overlay: bool = False
     display_role: str = "preview_surface"
 
     def __post_init__(self) -> None:
@@ -76,6 +79,8 @@ class SurfacePreviewBuildResult:
 def build_surface_preview(
     surface: SurfacePatch,
     curves: Sequence[StoredCurve],
+    *,
+    mesh: TriangleMeshData | None = None,
 ) -> SurfacePreviewBuildResult:
     """Build preview geometry and diagnostics for supported placeholder cases."""
 
@@ -88,6 +93,8 @@ def build_surface_preview(
         )
 
     preview_mode = _preview_mode(surface)
+    if preview_mode == MESH_CONFORMING_LOFT:
+        return build_mesh_conforming_loft_preview(surface, source_curves, mesh)
     if preview_mode == BOUNDARY_PATCH:
         if len(source_curves) != 1:
             return _unavailable(
@@ -133,10 +140,12 @@ def build_surface_preview(
 def build_surface_preview_mesh(
     surface: SurfacePatch,
     curves: Sequence[StoredCurve],
+    *,
+    mesh: TriangleMeshData | None = None,
 ) -> SurfacePreviewMesh | None:
     """Build a coarse triangulated preview for the supported placeholder cases."""
 
-    return build_surface_preview(surface, curves).mesh
+    return build_surface_preview(surface, curves, mesh=mesh).mesh
 
 
 def build_boundary_patch_preview(
@@ -514,6 +523,8 @@ def _build_two_curve_loft_result(
         target_count=target_count,
         closed=first_closed,
     )
+
+
     second_points = _resample_by_arc_length(
         second_points,
         target_count=target_count,
@@ -588,6 +599,134 @@ def _build_two_curve_loft_result(
     )
 
 
+def build_mesh_conforming_loft_preview(
+    surface: SurfacePatch,
+    source_curves: Sequence[StoredCurve],
+    mesh: TriangleMeshData | None,
+) -> SurfacePreviewBuildResult:
+    """Project a loft sampling grid onto the scan without creating CAD geometry."""
+
+    diagnostics: dict[str, object] = {
+        "preview_mode": MESH_CONFORMING_LOFT,
+        "conforming_preview": True,
+        "source_curve_count": len(source_curves),
+        "source_curve_ids": [curve.id for curve in source_curves],
+        "source_mesh_name": str(surface.metadata.get("source_mesh_name", "")),
+    }
+    if len(source_curves) < 2:
+        return _unavailable(
+            "mesh-conforming loft requires at least two open curves",
+            diagnostics=diagnostics,
+        )
+    if any(_is_curve_closed(curve) for curve in source_curves):
+        return _unavailable(
+            "mesh-conforming loft requires open source curves",
+            diagnostics=diagnostics,
+        )
+    if mesh is None or mesh.is_empty():
+        return _unavailable(
+            "mesh-conforming loft requires a loaded mesh",
+            diagnostics=diagnostics,
+        )
+
+    cleaned = _clean_patch_curves(source_curves, min_point_count=2)
+    if isinstance(cleaned, str):
+        return _unavailable(cleaned, diagnostics=diagnostics)
+    grid_u_count = min(
+        max(max(len(points) for points in cleaned), 8),
+        MAX_PATCH_GRID_COUNT,
+    )
+    try:
+        requested_v_count = int(surface.metadata.get("grid_v_count", 16))
+    except (TypeError, ValueError):
+        requested_v_count = 16
+    grid_v_count = min(max(requested_v_count, len(cleaned)), MAX_PATCH_GRID_COUNT)
+    rows: list[np.ndarray] = []
+    for points in cleaned:
+        row = _resample_by_arc_length(points, target_count=grid_u_count, closed=False)
+        if row is None:
+            return _unavailable("curve is degenerate", diagnostics=diagnostics)
+        if rows:
+            row, _reversed, _shift = _align_second_curve_points(
+                rows[-1],
+                row,
+                closed=False,
+            )
+        rows.append(row)
+
+    loft_rows: list[np.ndarray] = []
+    for v_index in range(grid_v_count):
+        source_position = (
+            0.0
+            if grid_v_count <= 1
+            else v_index * (len(rows) - 1) / float(grid_v_count - 1)
+        )
+        lower_index = min(int(np.floor(source_position)), len(rows) - 1)
+        upper_index = min(lower_index + 1, len(rows) - 1)
+        factor = source_position - lower_index
+        loft_rows.append(
+            rows[lower_index] * (1.0 - factor) + rows[upper_index] * factor
+        )
+    unprojected_vertices = np.vstack(loft_rows)
+
+    threshold = _optional_positive_metadata_float(
+        surface.metadata.get("projection_distance_threshold")
+    )
+    projection = project_curve_points_to_mesh(
+        unprojected_vertices,
+        mesh,
+        max_search_distance=threshold,
+        preserve_missed_points=True,
+    )
+    attempted_distances = projection.distances[np.isfinite(projection.distances)]
+    faces = _grid_faces(grid_u_count, grid_v_count)
+    valid_faces = _valid_triangle_faces(projection.projected_points, faces)
+    diagnostics.update(
+        {
+            "grid_u_count": int(grid_u_count),
+            "grid_v_count": int(grid_v_count),
+            "projection_mean_distance": (
+                float(np.mean(attempted_distances)) if len(attempted_distances) else 0.0
+            ),
+            "projection_max_distance": (
+                float(np.max(attempted_distances)) if len(attempted_distances) else 0.0
+            ),
+            "failed_projection_count": int(projection.missed_count),
+            "projected_point_count": int(projection.projected_count),
+            "projection_distance_threshold": threshold,
+            "show_projection_error_heatmap": bool(
+                surface.metadata.get("show_projection_error_heatmap", False)
+            ),
+            "wireframe_overlay": False,
+            "is_brep": False,
+        }
+    )
+    if not valid_faces:
+        return _unavailable(
+            "mesh-conforming loft projection produced no valid faces",
+            diagnostics=diagnostics,
+        )
+    warning = None
+    if projection.missed_count:
+        warning = (
+            f"{projection.missed_count} loft grid points exceeded the projection threshold."
+        )
+    return SurfacePreviewBuildResult(
+        mesh=SurfacePreviewMesh(
+            vertices=projection.projected_points,
+            faces=np.asarray(valid_faces, dtype=int),
+            source_surface_id=surface.id,
+            selected=bool(surface.selected),
+            wireframe_overlay=False,
+            display_role="mesh_conforming_preview",
+        ),
+        preview_available=True,
+        reason="mesh-conforming loft preview generated",
+        warning=warning,
+        diagnostics=diagnostics,
+    )
+
+
 def _clean_curve_points(curve: StoredCurve) -> np.ndarray | None:
     try:
         points = np.asarray(curve.fitted_points, dtype=float)
@@ -614,6 +753,16 @@ def _clean_curve_points(curve: StoredCurve) -> np.ndarray | None:
     if not cleaned:
         return None
     return np.asarray(cleaned, dtype=float).reshape((-1, 3))
+
+
+def _optional_positive_metadata_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) and number > 0.0 else None
 
 
 def _clean_patch_curves(
@@ -1051,6 +1200,7 @@ def _preview_mode(surface: SurfacePatch) -> str:
         "preview_boundary_patch": BOUNDARY_PATCH,
         "preview_four_curve_patch": FOUR_CURVE_PATCH,
         "preview_curve_network_patch": CURVE_NETWORK_PATCH,
+        "mesh_conforming_loft_preview": MESH_CONFORMING_LOFT,
     }.get(surface_type, "")
 
 

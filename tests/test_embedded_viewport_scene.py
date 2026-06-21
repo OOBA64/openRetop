@@ -422,6 +422,52 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(render_window.render_count, 1)
         self.assertFalse(viewport.camera_dirty)
 
+    def test_navigation_drags_bypass_tool_pointer_callback(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        viewport.widget = FakeViewportWidget()  # type: ignore[assignment]
+        viewport.render_window = FakeRenderWindow()  # type: ignore[assignment]
+        interactor = FakeInteractor()
+        viewport.interactor = interactor  # type: ignore[assignment]
+        pointer_events: list[str] = []
+        viewport.set_pointer_callback(
+            lambda event_type, *_args: pointer_events.append(event_type) or True
+        )
+        event = SimpleNamespace(x=20, y=30, state=0)
+
+        viewport._on_right_button_press(event)
+        viewport._on_mouse_move(SimpleNamespace(x=25, y=35, state=0))
+        viewport._on_right_button_release(event)
+        viewport._on_middle_button_press(event)
+        viewport._on_mouse_move(SimpleNamespace(x=27, y=37, state=0))
+        viewport._on_middle_button_release(event)
+
+        self.assertEqual(pointer_events, [])
+        self.assertIn("right_press", interactor.calls)
+        self.assertIn("right_release", interactor.calls)
+        self.assertIn("middle_press", interactor.calls)
+        self.assertIn("middle_release", interactor.calls)
+        self.assertEqual(interactor.calls.count("mouse_move"), 2)
+
+    def test_shift_left_drag_bypasses_curve_tool_callback(self) -> None:
+        viewport = EmbeddedVTKViewport(parent=object())
+        viewport.widget = FakeViewportWidget()  # type: ignore[assignment]
+        viewport.render_window = FakeRenderWindow()  # type: ignore[assignment]
+        interactor = FakeInteractor()
+        viewport.interactor = interactor  # type: ignore[assignment]
+        pointer_events: list[str] = []
+        viewport.set_pointer_callback(
+            lambda event_type, *_args: pointer_events.append(event_type) or True
+        )
+
+        viewport._on_left_button_press(SimpleNamespace(x=20, y=30, state=0x0001))
+        viewport._on_mouse_move(SimpleNamespace(x=24, y=34, state=0x0001))
+        viewport._on_left_button_release(SimpleNamespace(x=24, y=34, state=0x0001))
+
+        self.assertEqual(pointer_events, [])
+        self.assertIn("left_press", interactor.calls)
+        self.assertIn("mouse_move", interactor.calls)
+        self.assertIn("left_release", interactor.calls)
+
     def test_configure_coalesces_render_requests(self) -> None:
         viewport = EmbeddedVTKViewport(parent=object())
         widget = FakeViewportWidget()
@@ -1692,17 +1738,42 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
 
         self.assertIn("surface_previews", viewport._actor_groups)
         surface_actors = viewport._actor_groups["surface_previews"]
-        self.assertEqual(len(surface_actors), 2)
+        self.assertEqual(len(surface_actors), 4)
         self.assertAlmostEqual(surface_actors[0].GetProperty().GetOpacity(), 0.12)
         self.assertEqual(surface_actors[0].GetProperty().GetEdgeVisibility(), 0)
         self.assertLess(surface_actors[0].GetProperty().GetOpacity(), 1.0)
         self.assertGreater(
-            surface_actors[1].GetProperty().GetOpacity(),
+            surface_actors[2].GetProperty().GetOpacity(),
             surface_actors[0].GetProperty().GetOpacity(),
         )
-        self.assertAlmostEqual(surface_actors[1].GetProperty().GetOpacity(), 0.30)
-        self.assertEqual(surface_actors[1].GetProperty().GetEdgeVisibility(), 1)
+        self.assertAlmostEqual(surface_actors[2].GetProperty().GetOpacity(), 0.30)
+        self.assertEqual(surface_actors[2].GetProperty().GetEdgeVisibility(), 0)
+        self.assertGreater(
+            surface_actors[1].GetMapper().GetInput().GetNumberOfLines(), 0
+        )
+        self.assertGreater(
+            surface_actors[3].GetMapper().GetInput().GetNumberOfLines(), 0
+        )
         count_with_previews = self._actor_count(viewport)
+
+        debug_preview = SurfacePreviewMesh(
+            vertices=first_preview.vertices,
+            faces=first_preview.faces,
+            source_surface_id="surface-debug",
+            wireframe_overlay=True,
+        )
+        self._set_basic_scene(
+            viewport,
+            mesh,
+            surface_previews=[debug_preview],
+            active_surface_id=None,
+        )
+        self.assertEqual(
+            viewport._actor_groups["surface_previews"][0]
+            .GetProperty()
+            .GetEdgeVisibility(),
+            1,
+        )
 
         self._set_basic_scene(
             viewport,
@@ -1712,7 +1783,7 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         )
 
         self.assertNotIn("surface_previews", viewport._actor_groups)
-        self.assertEqual(self._actor_count(viewport), count_with_previews - 2)
+        self.assertEqual(self._actor_count(viewport), count_with_previews - 4)
 
     def test_clearing_mesh_preserves_view_metrics_and_reference_actors(self) -> None:
         viewport = self._viewport()

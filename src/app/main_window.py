@@ -111,19 +111,24 @@ from curves.curve_state import (
     smooth_curve,
 )
 from curves.manual_curve import (
+    CURVE_POINT_SOURCE_AUTO,
+    CURVE_POINT_SOURCE_MANUAL,
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
     DEFAULT_MANUAL_CURVE_METHOD,
     DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
+    DEFAULT_MANUAL_CURVE_SMOOTHNESS,
     MANUAL_CURVE_METHOD_CATMULL_ROM,
     MANUAL_CURVE_METHOD_HYBRID,
     MANUAL_CURVE_METHOD_POLYLINE,
+    MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
     ManualCurveControlData,
     ManualCurveControlDataV2,
     ManualCurvePoint,
     auto_detect_manual_curve_corners,
     build_manual_stored_curve,
+    clear_auto_detected_manual_curve_corners,
     ensure_manual_curve_storage,
     hybrid_curve_diagnostics,
     is_manual_curve_like,
@@ -131,9 +136,10 @@ from curves.manual_curve import (
     parse_manual_curve_metadata,
     parse_manual_curve_metadata_v2,
     sample_hybrid_manual_curve,
+    simplify_manual_curve_control_data,
     should_snap_closed_to_first_point,
 )
-from curves.projection import project_stored_curve_to_mesh
+from curves.projection import project_curve_points_to_mesh, project_stored_curve_to_mesh
 from curves.rebuild import rebuild_stored_curve
 from curves.validation import (
     CurveSurfaceReadiness,
@@ -250,6 +256,7 @@ from surfaces.surface_preview import (
     BOUNDARY_PATCH,
     CURVE_NETWORK_PATCH,
     FOUR_CURVE_PATCH,
+    MESH_CONFORMING_LOFT,
     SurfacePreviewMesh,
     TWO_CURVE_LOFT,
     CLOSED_CURVE_FILL,
@@ -315,6 +322,10 @@ SURFACE_PREVIEW_PROGRESS_STAGES = (
     "Updating viewport",
 )
 SURFACE_PREVIEW_DEFAULT_OPACITY = 0.22
+LOFT_MODE_EXPLANATION = (
+    "BREP loft is a CAD surface through the curves. Mesh-Conforming Preview "
+    "projects the loft to the scan for visual/body-following evaluation."
+)
 GENERATED_GEOMETRY_TRANSFORM_WARNING = (
     "Generated sections/curves/surfaces will not follow mesh transform. "
     "Recompute after moving."
@@ -439,6 +450,7 @@ class OpenRetopWindow:
         self._manual_curve_active = False
         self._manual_curve_points: list[np.ndarray] = []
         self._manual_curve_point_types: list[str] = []
+        self._manual_curve_point_type_sources: list[str] = []
         self._manual_curve_closed = False
         self._manual_curve_plane_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
         self._manual_curve_plane_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
@@ -449,11 +461,15 @@ class OpenRetopWindow:
         self._manual_curve_snap_flags: list[bool] = []
         self._manual_curve_snap_triangle_indices: list[int | None] = []
         self._manual_curve_snap_normals: list[list[float] | None] = []
+        self._manual_curve_projection_distances: list[float | None] = []
         self._manual_curve_edit_active = False
         self._manual_curve_edit_curve_id: str | None = None
         self._manual_curve_selected_control_point_index: int | None = None
         self._manual_curve_hover_control_point_index: int | None = None
         self._manual_curve_drag_active = False
+        self._manual_curve_drag_candidate_index: int | None = None
+        self._manual_curve_main_mode = "inactive"
+        self._manual_curve_submode = "navigate"
         self._manual_curve_placing_enabled = True
         self._manual_curve_add_point_active = False
         self._manual_curve_insert_point_active = False
@@ -493,8 +509,15 @@ class OpenRetopWindow:
         self.show_normals = BooleanVar(value=False)
         self.show_section_plane = BooleanVar(value=False)
         self.manual_curve_snap_to_mesh = BooleanVar(value=False)
-        self.manual_curve_auto_detect_corners = BooleanVar(value=True)
+        self.manual_curve_auto_detect_corners = BooleanVar(value=False)
         self.manual_curve_preserve_corners = BooleanVar(value=True)
+        self.manual_curve_keep_on_mesh = BooleanVar(value=False)
+        self.manual_curve_smoothness = DoubleVar(value=DEFAULT_MANUAL_CURVE_SMOOTHNESS)
+        self.manual_curve_sample_count_text = StringVar(
+            value=str(DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)
+        )
+        self.manual_curve_advanced_visible = BooleanVar(value=False)
+        self.region_advanced_visible = BooleanVar(value=False)
         self.manual_curve_placement_text = StringVar(value="Work Plane")
         self.manual_curve_next_point_type_text = StringVar(value="Smooth")
         self.manual_curve_selected_point_type_text = StringVar(value="(none)")
@@ -537,7 +560,7 @@ class OpenRetopWindow:
         self.manual_curve_snap_help_text = StringVar(
             value="Load a mesh to enable Snap to Mesh."
         )
-        self.manual_curve_type_text = StringVar(value="Smooth Curve")
+        self.manual_curve_type_text = StringVar(value="Smooth Guide")
         self.region_name_text = StringVar(value="(none)")
         self.region_triangle_count_text = StringVar(value="0")
         self.region_threshold_display_text = StringVar(value="20.0 deg")
@@ -619,11 +642,16 @@ class OpenRetopWindow:
         self.surface_seam_shift_applied_text = StringVar(value="(none)")
         self.surface_average_pair_distance_text = StringVar(value="(none)")
         self.surface_max_pair_distance_text = StringVar(value="(none)")
+        self.surface_projection_mean_distance_text = StringVar(value="(none)")
+        self.surface_projection_max_distance_text = StringVar(value="(none)")
+        self.surface_failed_projection_count_text = StringVar(value="(none)")
         self.surface_validation_warnings_text = StringVar(value="(none)")
         self.surface_validation_errors_text = StringVar(value="(none)")
         self.surface_opacity = DoubleVar(value=0.22)
         self.surface_opacity_text = StringVar(value="0.22")
-        self.surface_wireframe_overlay = BooleanVar(value=True)
+        self.surface_wireframe_overlay = BooleanVar(value=False)
+        self.conforming_projection_threshold_text = StringVar(value="0.050")
+        self.conforming_projection_heatmap = BooleanVar(value=False)
         self.surface_metadata_text = StringVar(value="(none)")
         self.cad_kernel_status_text = StringVar(value=cad_kernel_status())
         self.brep_type_text = StringVar(value="(none)")
@@ -3001,6 +3029,36 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self.mesh_conforming_loft_button = ttk.Button(
+            parent,
+            text="Create Mesh-Conforming Loft Preview",
+            command=self.create_mesh_conforming_loft_preview,
+        )
+        self.mesh_conforming_loft_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+        )
+        row += 1
+        ttk.Label(parent, text="Projection Distance Threshold").grid(
+            row=row, column=0, sticky="w", pady=(6, 0)
+        )
+        self.conforming_projection_threshold_entry = ttk.Entry(
+            parent,
+            textvariable=self.conforming_projection_threshold_text,
+            width=10,
+        )
+        self.conforming_projection_threshold_entry.grid(
+            row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0)
+        )
+        row += 1
+        self.conforming_projection_heatmap_check = ttk.Checkbutton(
+            parent,
+            text="Show Projection Error Heatmap",
+            variable=self.conforming_projection_heatmap,
+        )
+        self.conforming_projection_heatmap_check.grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
         self.brep_face_button = ttk.Button(
             parent,
             text="Create BREP Face",
@@ -3147,6 +3205,24 @@ class OpenRetopWindow:
         row = self._add_info_row(
             parent,
             row,
+            "Projection mean distance",
+            self.surface_projection_mean_distance_text,
+        )
+        row = self._add_info_row(
+            parent,
+            row,
+            "Projection max distance",
+            self.surface_projection_max_distance_text,
+        )
+        row = self._add_info_row(
+            parent,
+            row,
+            "Failed projections",
+            self.surface_failed_projection_count_text,
+        )
+        row = self._add_info_row(
+            parent,
+            row,
             "Validation warnings",
             self.surface_validation_warnings_text,
         )
@@ -3174,7 +3250,7 @@ class OpenRetopWindow:
         row += 1
         self.surface_wireframe_check = ttk.Checkbutton(
             parent,
-            text="Wireframe overlay",
+            text="Show Surface Tessellation",
             variable=self.surface_wireframe_overlay,
             command=self._on_surface_wireframe_changed,
         )
@@ -3467,7 +3543,7 @@ class OpenRetopWindow:
         row += 1
         self.start_manual_curve_button = ttk.Button(
             parent,
-            text="Create Manual Curve",
+            text="Create Curve",
             command=self.start_manual_curve_mode,
         )
         self.start_manual_curve_button.grid(row=row, column=0, columnspan=2, sticky="ew")
@@ -3483,6 +3559,46 @@ class OpenRetopWindow:
             columnspan=2,
             sticky="ew",
             pady=(4, 0),
+        )
+        row += 1
+        self.convert_smooth_guide_button = ttk.Button(
+            parent,
+            text="Convert Selected Curve to Smooth Guide",
+            command=self.convert_selected_curve_to_smooth_guide,
+        )
+        self.convert_smooth_guide_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+        )
+        row += 1
+        self.reduce_guide_curve_button = ttk.Button(
+            parent,
+            text="Reduce/Simplify Selected Guide Curve",
+            command=self.reduce_simplify_selected_guide_curve,
+        )
+        self.reduce_guide_curve_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+        )
+        row += 1
+        ttk.Label(parent, text="Smoothness").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.manual_curve_smoothness_slider = ttk.Scale(
+            parent,
+            from_=1,
+            to=8,
+            variable=self.manual_curve_smoothness,
+            command=self._on_manual_curve_smoothness_changed,
+        )
+        self.manual_curve_smoothness_slider.grid(
+            row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0)
+        )
+        row += 1
+        self.manual_curve_fit_to_mesh_check = ttk.Checkbutton(
+            parent,
+            text="Fit to Mesh",
+            variable=self.manual_curve_snap_to_mesh,
+            command=self._on_manual_curve_snap_to_mesh_changed,
+        )
+        self.manual_curve_fit_to_mesh_check.grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
         row += 1
         self.manual_project_curve_to_mesh_button = ttk.Button(
@@ -3550,9 +3666,16 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
+        self._advanced_curve_widgets: list[object] = [
+            self.manual_project_curve_to_mesh_button,
+            self.manual_rebuild_curve_button,
+            self.done_manual_curve_edit_button,
+        ]
+        for widget in self._advanced_curve_widgets:
+            widget.grid_remove()
         self.remove_manual_point_button = ttk.Button(
             parent,
-            text="Remove Last Point",
+            text="Undo Last Point",
             command=self._remove_last_manual_curve_point,
         )
         self.remove_manual_point_button.grid(
@@ -3565,7 +3688,7 @@ class OpenRetopWindow:
         row += 1
         self.toggle_manual_closed_button = ttk.Button(
             parent,
-            text="Toggle Closed",
+            text="Close / Open Curve",
             command=self._toggle_manual_curve_closed,
         )
         self.toggle_manual_closed_button.grid(
@@ -3574,6 +3697,25 @@ class OpenRetopWindow:
             columnspan=2,
             sticky="ew",
             pady=(4, 0),
+        )
+        row += 1
+        self.advanced_curve_controls_button = ttk.Button(
+            parent,
+            text="Advanced Curve Controls",
+            command=self.toggle_advanced_curve_controls,
+        )
+        self.advanced_curve_controls_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        row += 1
+        advanced_curve_start_row = row
+        self.navigate_manual_curve_button = ttk.Button(
+            parent,
+            text="Navigate",
+            command=self.activate_manual_curve_navigate,
+        )
+        self.navigate_manual_curve_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
         )
         row += 1
         self.add_manual_point_button = ttk.Button(
@@ -3617,11 +3759,39 @@ class OpenRetopWindow:
         self.manual_curve_type_combo = ttk.Combobox(
             parent,
             textvariable=self.manual_curve_type_text,
-            values=("Smooth", "Polyline", "Hybrid"),
+            values=("Smooth Guide", "Polyline", "Hybrid", "Smooth"),
             state="readonly",
         )
         self.manual_curve_type_combo.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
         self.manual_curve_type_combo.bind("<<ComboboxSelected>>", self._on_manual_curve_type_changed)
+        row += 1
+        ttk.Label(parent, text="Sample Count").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        self.manual_curve_sample_count_entry = ttk.Entry(
+            parent,
+            textvariable=self.manual_curve_sample_count_text,
+            width=8,
+        )
+        self.manual_curve_sample_count_entry.grid(
+            row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0)
+        )
+        self.manual_curve_sample_count_entry.bind(
+            "<FocusOut>", self._on_manual_curve_sample_count_changed
+        )
+        self.manual_curve_sample_count_entry.bind(
+            "<Return>", self._on_manual_curve_sample_count_changed
+        )
+        row += 1
+        ttk.Label(parent, text="Corner Threshold").grid(
+            row=row, column=0, sticky="w", pady=(6, 0)
+        )
+        self.manual_curve_corner_threshold_entry = ttk.Entry(
+            parent,
+            textvariable=self.manual_curve_corner_threshold_text,
+            width=8,
+        )
+        self.manual_curve_corner_threshold_entry.grid(
+            row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0)
+        )
         row += 1
         ttk.Label(parent, text="Point Placement").grid(row=row, column=0, sticky="w", pady=(6, 0))
         self.manual_curve_placement_combo = ttk.Combobox(
@@ -3649,6 +3819,16 @@ class OpenRetopWindow:
             command=self._on_manual_curve_snap_to_mesh_changed,
         )
         self.manual_curve_snap_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        row += 1
+        self.manual_curve_keep_on_mesh_check = ttk.Checkbutton(
+            parent,
+            text="Keep Curve On Mesh",
+            variable=self.manual_curve_keep_on_mesh,
+            command=self._on_manual_curve_keep_on_mesh_changed,
+        )
+        self.manual_curve_keep_on_mesh_check.grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
         row += 1
         self.manual_curve_auto_corner_check = ttk.Checkbutton(
             parent,
@@ -3697,6 +3877,15 @@ class OpenRetopWindow:
         )
         self.auto_detect_corners_button.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         row += 1
+        self.clear_auto_corners_button = ttk.Button(
+            parent,
+            text="Clear Auto-Detected Corners",
+            command=self.clear_auto_detected_manual_curve_corners,
+        )
+        self.clear_auto_corners_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+        )
+        row += 1
         self.smooth_selected_span_button = ttk.Button(
             parent,
             text="Smooth Selected Span",
@@ -3716,6 +3905,10 @@ class OpenRetopWindow:
             wraplength=250,
         ).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(2, 0))
         row += 1
+        for advanced_row in range(advanced_curve_start_row, row):
+            self._advanced_curve_widgets.extend(parent.grid_slaves(row=advanced_row))
+        for widget in self._advanced_curve_widgets:
+            widget.grid_remove()
         row = self._add_separator(parent, row)
         row = self._add_heading(parent, row, "Region Selection")
         self.region_select_button = ttk.Button(
@@ -3725,6 +3918,16 @@ class OpenRetopWindow:
         )
         self.region_select_button.grid(row=row, column=0, columnspan=2, sticky="ew")
         row += 1
+        self.region_details_button = ttk.Button(
+            parent,
+            text="Region Details",
+            command=self.toggle_region_details,
+        )
+        self.region_details_button.grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+        )
+        row += 1
+        advanced_region_start_row = row
         ttk.Label(parent, text="Region Name").grid(row=row, column=0, sticky="w", pady=(6, 0))
         self.region_name_entry = ttk.Entry(
             parent,
@@ -3819,6 +4022,11 @@ class OpenRetopWindow:
         row = self._add_info_row(parent, row, "Triangles", self.region_triangle_count_text)
         row = self._add_info_row(parent, row, "Seed triangle", self.region_seed_triangle_text)
         row = self._add_info_row(parent, row, "Region status", self.region_status_text)
+        self._advanced_region_widgets: list[object] = []
+        for advanced_row in range(advanced_region_start_row, row):
+            self._advanced_region_widgets.extend(parent.grid_slaves(row=advanced_row))
+        for widget in self._advanced_region_widgets:
+            widget.grid_remove()
         self.extract_region_boundary_button = ttk.Button(
             parent,
             text="Extract Region Boundary",
@@ -3844,6 +4052,8 @@ class OpenRetopWindow:
             sticky="ew",
             pady=(4, 0),
         )
+        self._advanced_region_widgets.append(self.select_region_boundary_curves_button)
+        self.select_region_boundary_curves_button.grid_remove()
         row += 1
         self.convert_boundary_hybrid_button = ttk.Button(
             parent,
@@ -3857,6 +4067,8 @@ class OpenRetopWindow:
             sticky="ew",
             pady=(4, 0),
         )
+        self._advanced_region_widgets.append(self.convert_boundary_hybrid_button)
+        self.convert_boundary_hybrid_button.grid_remove()
         row += 1
         self.create_region_brep_face_button = ttk.Button(
             parent,
@@ -4105,6 +4317,8 @@ class OpenRetopWindow:
                 source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
             )
             self._clear_manual_curve_state()
+            self.manual_curve_snap_to_mesh.set(True)
+            self.manual_curve_placement_text.set("Snap to Mesh")
             self._clear_region_selection_state()
             self.app_state.section_result = None
             self.app_state.section_collection.results = []
@@ -4341,7 +4555,12 @@ class OpenRetopWindow:
             return
 
         self._sync_curve_context_from_active_curve()
-        self._set_selected_item(SELECT_CURVE, status=f"Selected: {active_curve.name}")
+        status = (
+            "Click Edit Selected Curve to modify control points."
+            if is_manual_curve_like(active_curve)
+            else f"Selected: {active_curve.name}"
+        )
+        self._set_selected_item(SELECT_CURVE, status=status)
 
     def select_curves(
         self,
@@ -6422,6 +6641,158 @@ class OpenRetopWindow:
         )
         self._set_project_dirty(True)
 
+    def convert_selected_curve_to_smooth_guide(self) -> None:
+        curve = self._single_curve_for_surface_prep(
+            "Select one manual curve to convert to Smooth Guide."
+        )
+        if curve is None or not self._is_editable_manual_curve(curve):
+            self.status_text.set("Select one manual curve to convert to Smooth Guide.")
+            return
+        control_data = parse_manual_curve_metadata_v2(curve)
+        if control_data is None:
+            self.status_text.set("Selected curve has no editable control points.")
+            return
+
+        before_curve = copy.deepcopy(curve)
+        point_types: list[str] = []
+        point_sources: list[str] = []
+        for point in control_data.points:
+            source = str(
+                point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO)
+            )
+            keep_corner = bool(
+                point.point_type == CURVE_POINT_CORNER
+                and source == CURVE_POINT_SOURCE_MANUAL
+            )
+            point_types.append(CURVE_POINT_CORNER if keep_corner else CURVE_POINT_SMOOTH)
+            point_sources.append(source)
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        snap_to_mesh = bool(
+            metadata.get("snap_to_mesh") or metadata.get("snap_mode") == "mesh"
+        )
+        updated = build_manual_stored_curve(
+            curve_id=curve.id,
+            name=curve.name,
+            control_points=control_data.control_points,
+            is_closed=control_data.is_closed,
+            creation_type=str(metadata.get("creation_type", "manual")),
+            snap_to_mesh=snap_to_mesh,
+            work_plane_type=str(metadata.get("work_plane_type", "mesh" if snap_to_mesh else "world_xy")),
+            source_section_plane_id=metadata.get("source_section_plane_id"),
+            source_mesh_name=metadata.get("source_mesh_name"),
+            snap_triangle_indices=[point.snap_triangle_index for point in control_data.points],
+            snap_normals=[point.snap_normal for point in control_data.points],
+            curve_method=MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
+            sample_count=int(metadata.get("sample_count", DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)),
+            point_types=point_types,
+            point_type_sources=point_sources,
+            preserve_corners=True,
+            smoothness=int(metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS)),
+            keep_curve_on_mesh=bool(metadata.get("keep_curve_on_mesh", snap_to_mesh)),
+        )
+        updated.metadata = {**metadata, **updated.metadata}
+        self._project_manual_curve_fitted_preview_to_mesh(updated)
+        self._replace_curve_geometry(curve, updated)
+        after_curve = copy.deepcopy(curve)
+        self._push_curve_snapshot_undo(
+            "Convert Curve to Smooth Guide", before_curve, after_curve
+        )
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Converted selected curve to Smooth Guide.")
+        self._set_project_dirty(True)
+        self._sync_workflow_ui()
+
+    def reduce_simplify_selected_guide_curve(self) -> None:
+        source_curve = self._single_curve_for_surface_prep(
+            "Select one manual guide curve to simplify."
+        )
+        if source_curve is None:
+            return
+        control_data = parse_manual_curve_metadata_v2(source_curve)
+        if control_data is None:
+            self.status_text.set("Selected curve has no editable control points.")
+            return
+        tolerance = self._curve_simplify_tolerance(source_curve)
+        reduced = simplify_manual_curve_control_data(
+            control_data,
+            tolerance=tolerance,
+        )
+        metadata = source_curve.metadata if isinstance(source_curve.metadata, dict) else {}
+        snap_to_mesh = bool(
+            metadata.get("snap_to_mesh") or metadata.get("snap_mode") == "mesh"
+        )
+        generated = build_manual_stored_curve(
+            curve_id=f"curve-{uuid4().hex}",
+            name=self._next_derived_curve_name("Simplified Guide"),
+            control_points=reduced.control_points,
+            is_closed=reduced.is_closed,
+            creation_type="manual",
+            snap_to_mesh=snap_to_mesh,
+            work_plane_type=str(metadata.get("work_plane_type", "mesh" if snap_to_mesh else "world_xy")),
+            source_mesh_name=metadata.get("source_mesh_name"),
+            snap_triangle_indices=[point.snap_triangle_index for point in reduced.points],
+            snap_normals=[point.snap_normal for point in reduced.points],
+            curve_method=MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
+            sample_count=int(metadata.get("sample_count", DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)),
+            point_types=[point.point_type for point in reduced.points],
+            point_type_sources=[
+                str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
+                for point in reduced.points
+            ],
+            preserve_corners=True,
+            smoothness=int(metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS)),
+            keep_curve_on_mesh=bool(metadata.get("keep_curve_on_mesh", False)),
+        )
+        generated.metadata.update(
+            {
+                "source_curve_id": source_curve.id,
+                "source_curve_name": source_curve.name,
+                "simplification_tolerance": tolerance,
+                "source_control_point_count": len(control_data.points),
+                "result_control_point_count": len(reduced.points),
+            }
+        )
+        self._project_manual_curve_fitted_preview_to_mesh(generated)
+        add_curve(self.app_state.curve_collection, generated)
+        self.select_curve(generated.id)
+        self._push_created_curve_command(
+            generated,
+            command_name="Simplify Guide Curve",
+        )
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(
+            f"Created simplified guide ({len(control_data.points)} -> {len(reduced.points)} controls)."
+        )
+        self._set_project_dirty(True)
+
+    @staticmethod
+    def _replace_curve_geometry(target: StoredCurve, source: StoredCurve) -> None:
+        target.original_points = source.original_points.copy()
+        target.fitted_points = source.fitted_points.copy()
+        target.mean_error = source.mean_error
+        target.max_error = source.max_error
+        target.is_closed = source.is_closed
+        target.metadata = copy.deepcopy(source.metadata)
+        refresh_curve_diagnostics(target)
+
+    def _push_curve_snapshot_undo(
+        self,
+        name: str,
+        before: StoredCurve,
+        after: StoredCurve,
+    ) -> None:
+        self._push_undo_command(
+            CallbackUndoCommand(
+                name,
+                undo_action=lambda: self._restore_manual_curve_snapshot(
+                    copy.deepcopy(before)
+                ),
+                redo_action=lambda: self._restore_manual_curve_snapshot(
+                    copy.deepcopy(after)
+                ),
+            )
+        )
+
     def smooth_selected_curve(self) -> None:
         selected_curves = get_selected_curves(self.app_state.curve_collection)
         if len(selected_curves) != 1:
@@ -6656,6 +7027,54 @@ class OpenRetopWindow:
             validation_readiness=readiness,
         )
 
+    def create_mesh_conforming_loft_preview(self) -> None:
+        mesh_object = self.app_state.mesh_object
+        if mesh_object is None:
+            self.status_text.set("Load a mesh before creating a conforming loft preview.")
+            return
+        source_curves = self._surface_source_curves_from_selection()
+        if len(source_curves) < 2:
+            self.status_text.set(
+                "Select at least two open curves for a mesh-conforming loft preview."
+            )
+            return
+        if any(curve.is_closed for curve in source_curves):
+            self.status_text.set("Mesh-conforming loft preview requires open curves.")
+            return
+        threshold = self._conforming_projection_threshold()
+        surface = self._create_surface_preview(
+            source_curves,
+            surface_type="mesh_conforming_loft_preview",
+            preview_mode=MESH_CONFORMING_LOFT,
+            source_label="selected_open_curves",
+            name_prefix="Conforming Loft Preview",
+            success_action="Created",
+            extra_metadata={
+                "conforming_preview": True,
+                "source_mesh_name": mesh_object.name,
+                "projection_distance_threshold": threshold,
+                "show_projection_error_heatmap": bool(
+                    self.conforming_projection_heatmap.get()
+                ),
+                "wireframe_overlay": False,
+                "is_brep": False,
+            },
+        )
+        if surface is None:
+            return
+        self.status_text.set(LOFT_MODE_EXPLANATION)
+
+    def _conforming_projection_threshold(self) -> float | None:
+        try:
+            value = float(self.conforming_projection_threshold_text.get())
+        except (TypeError, ValueError):
+            value = 0.05
+        if not np.isfinite(value) or value <= 0.0:
+            self.conforming_projection_threshold_text.set("0.000")
+            return None
+        self.conforming_projection_threshold_text.set(f"{value:.3f}")
+        return value
+
     def create_brep_face_from_closed_curve(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
         if not self.app_state.curve_collection.curves:
@@ -6709,7 +7128,6 @@ class OpenRetopWindow:
                 else f"Created BREP planar face from {source_curve.name}."
             ),
         )
-
     def create_brep_face_from_selected_region(self) -> None:
         mesh_object = self.app_state.mesh_object
         region = self.app_state.region_collection.active_region
@@ -6980,6 +7398,8 @@ class OpenRetopWindow:
                 else "Created BREP loft surface from 2 curves."
             ),
         )
+        if "Used sampled curve fallback; inspect sharp corners." not in result.warnings:
+            self.status_text.set(LOFT_MODE_EXPLANATION)
 
     def create_editable_brep_loft_from_curves(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
@@ -7956,6 +8376,7 @@ class OpenRetopWindow:
             preview_result = build_surface_preview(
                 surface,
                 self.app_state.curve_collection.curves,
+                mesh=self._surface_preview_projection_mesh(),
             )
             self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[2])
         finally:
@@ -8004,6 +8425,7 @@ class OpenRetopWindow:
         result = build_surface_preview(
             active_surface,
             self.app_state.curve_collection.curves,
+            mesh=self._surface_preview_projection_mesh(),
         )
         active_surface.metadata.update(result.diagnostics)
         active_surface.metadata["preview_available"] = result.preview_available
@@ -8395,6 +8817,23 @@ class OpenRetopWindow:
         if event_type == "left_press":
             self._manual_curve_left_press_position = (int(x_position), int(y_position))
             self._manual_curve_left_dragged = False
+            self._manual_curve_drag_candidate_index = None
+            if (
+                self._manual_curve_edit_active
+                and not self._manual_curve_add_point_active
+                and not self._manual_curve_insert_point_active
+            ):
+                candidate = self._manual_curve_control_point_index_at_screen(
+                    int(x_position), int(y_position)
+                )
+                if candidate is not None:
+                    self._manual_curve_drag_candidate_index = candidate
+                    self._manual_curve_selected_control_point_index = candidate
+                    self.manual_curve_selected_point_type_text.set(
+                        self._manual_curve_point_types[candidate]
+                    )
+                    self._manual_curve_submode = "move_point"
+                    self._refresh_viewport(reset_camera=False)
             return True
 
         if event_type == "motion":
@@ -8418,6 +8857,20 @@ class OpenRetopWindow:
                 self._sync_workflow_ui()
                 return True
             if self._manual_curve_edit_active:
+                if (
+                    self._manual_curve_drag_candidate_index is not None
+                    and not self._manual_curve_add_point_active
+                    and not self._manual_curve_insert_point_active
+                ):
+                    selected_index = self._manual_curve_drag_candidate_index
+                    self._manual_curve_drag_candidate_index = None
+                    self._manual_curve_submode = "select_point"
+                    self.status_text.set(
+                        f"Selected control point {selected_index + 1}: "
+                        f"{self.manual_curve_selected_point_type_text.get()}"
+                    )
+                    self._sync_workflow_ui()
+                    return True
                 self._handle_manual_curve_edit_click(
                     int(x_position),
                     int(y_position),
@@ -8429,11 +8882,10 @@ class OpenRetopWindow:
             return True
 
         if event_type == "right_press":
-            return True
+            return False
 
         if event_type == "right_release":
-            self._show_manual_curve_context_menu(int(x_position), int(y_position))
-            return True
+            return False
 
         if event_type == "leave":
             if self._clear_manual_curve_preview_state():
@@ -8455,26 +8907,31 @@ class OpenRetopWindow:
         return bool(
             self._manual_curve_edit_active
             and self._manual_curve_left_dragged
-            and self._manual_curve_selected_control_point_index is not None
+            and self._manual_curve_drag_candidate_index is not None
             and not self._manual_curve_add_point_active
             and not self._manual_curve_insert_point_active
         )
 
     def _drag_manual_curve_selected_point(self, x_position: int, y_position: int) -> None:
-        selected_index = self._manual_curve_selected_control_point_index
+        selected_index = self._manual_curve_drag_candidate_index
         if selected_index is None or not (0 <= selected_index < len(self._manual_curve_points)):
             return
 
-        point = self._manual_curve_point_from_screen(
-            x_position,
-            y_position,
-            snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
+        point, valid, snapped, triangle_index, normal = (
+            self._manual_curve_preview_candidate_from_screen(x_position, y_position)
         )
-        if point is None:
+        if not valid or point is None:
             return
 
         self._manual_curve_drag_active = True
         self._manual_curve_points[selected_index] = point
+        self._manual_curve_snap_flags[selected_index] = bool(snapped)
+        self._manual_curve_snap_triangle_indices[selected_index] = triangle_index
+        self._manual_curve_snap_normals[selected_index] = normal
+        self._manual_curve_projection_distances[selected_index] = (
+            0.0 if snapped else None
+        )
+        self._manual_curve_snap_point_count = sum(self._manual_curve_snap_flags)
         if selected_index != 0:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
         self._refresh_viewport(reset_camera=False)
@@ -8484,6 +8941,8 @@ class OpenRetopWindow:
     def _finish_manual_curve_point_drag(self) -> None:
         selected_index = self._manual_curve_selected_control_point_index
         self._manual_curve_drag_active = False
+        self._manual_curve_drag_candidate_index = None
+        self._manual_curve_submode = "select_point"
         self._manual_curve_left_press_position = None
         self._manual_curve_left_dragged = False
         if selected_index is None:
@@ -8588,16 +9047,16 @@ class OpenRetopWindow:
             return "Manual Curve: click near first point to close."
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                return "Edit Curve: Add Point active. Click to place next point."
+                return "Add Point active: left-click to append point. Esc to return to edit mode."
             if self._manual_curve_insert_point_active:
-                return "Edit Curve: Insert Point active. Click segment location."
-            return "Manual Curve Edit: click a control point to select it."
+                return "Insert Point active: click curve segment to insert. Esc to return to edit mode."
+            return "Editing curve: select or drag control points. Press Add Point to add points."
         if bool(self.manual_curve_snap_to_mesh.get()):
             if self._manual_curve_preview_valid:
-                return "Manual Curve: Snap to Mesh On. Click scan surface to place."
+                return "Drawing curve: left-click to add points. Right-drag to orbit."
             return "Manual Curve: no mesh under cursor."
         if self._manual_curve_preview_valid:
-            return "Manual Curve: previewing next point. Click to place."
+            return "Drawing curve: left-click to add points. Right-drag to orbit."
         return "Manual Curve: could not place point on work plane"
 
     def _manual_curve_preview_candidate_from_screen(
@@ -8737,6 +9196,8 @@ class OpenRetopWindow:
         ) = self._manual_curve_work_plane()
         self._manual_curve_active = True
         self._manual_curve_edit_active = False
+        self._manual_curve_main_mode = "drawing"
+        self._manual_curve_submode = "add_point"
         self._manual_curve_edit_curve_id = None
         self._manual_curve_selected_control_point_index = None
         self._manual_curve_hover_control_point_index = None
@@ -8751,11 +9212,13 @@ class OpenRetopWindow:
         self._clear_manual_curve_preview_state()
         self._manual_curve_points = []
         self._manual_curve_point_types = []
+        self._manual_curve_point_type_sources = []
         self._manual_curve_closed = False
         self._manual_curve_snap_point_count = 0
         self._manual_curve_snap_flags = []
         self._manual_curve_snap_triangle_indices = []
         self._manual_curve_snap_normals = []
+        self._manual_curve_projection_distances = []
         self._configure_manual_curve_placement_plane()
         self._set_active_workbench("Manual RE", set_status=False)
         self._refresh_viewport(reset_camera=False)
@@ -8890,6 +9353,8 @@ class OpenRetopWindow:
         ) = self._manual_curve_work_plane_for_curve(curve)
         self._manual_curve_active = True
         self._manual_curve_edit_active = True
+        self._manual_curve_main_mode = "editing"
+        self._manual_curve_submode = "select_point"
         self._manual_curve_edit_curve_id = curve.id
         self._manual_curve_selected_control_point_index = None
         self._manual_curve_hover_control_point_index = None
@@ -8925,6 +9390,10 @@ class OpenRetopWindow:
             self._manual_curve_point_types = [
                 point.point_type for point in control_data.points
             ]
+            self._manual_curve_point_type_sources = [
+                str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
+                for point in control_data.points
+            ]
             self.manual_curve_preserve_corners.set(control_data.preserve_corners)
             self.manual_curve_corner_threshold_text.set(
                 f"{control_data.corner_angle_threshold_degrees:.0f}"
@@ -8933,11 +9402,21 @@ class OpenRetopWindow:
             self._manual_curve_point_types = [
                 CURVE_POINT_SMOOTH for _point in self._manual_curve_points
             ]
+            self._manual_curve_point_type_sources = [
+                CURVE_POINT_SOURCE_AUTO for _point in self._manual_curve_points
+            ]
         self._manual_curve_closed = bool(control_data.is_closed)
         self._manual_curve_curve_method = str(control_data.curve_method)
         self._manual_curve_sample_count = int(control_data.sample_count)
+        self.manual_curve_sample_count_text.set(str(self._manual_curve_sample_count))
         self._set_manual_curve_type_label(self._manual_curve_curve_method)
         metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        self.manual_curve_smoothness.set(
+            float(metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS))
+        )
+        self.manual_curve_keep_on_mesh.set(
+            bool(metadata.get("keep_curve_on_mesh", False))
+        )
         snap_to_mesh = (
             bool(metadata.get("snap_to_mesh"))
             or str(metadata.get("snap_mode", "")).strip().lower() == "mesh"
@@ -8965,6 +9444,21 @@ class OpenRetopWindow:
             "snap_normals",
             default=None,
         )
+        self._manual_curve_projection_distances = self._manual_curve_metadata_list(
+            metadata,
+            "snap_projection_distances",
+            default=None,
+        )
+        point_count = len(self._manual_curve_points)
+        self._manual_curve_snap_triangle_indices = (
+            self._manual_curve_snap_triangle_indices + [None] * point_count
+        )[:point_count]
+        self._manual_curve_snap_normals = (
+            self._manual_curve_snap_normals + [None] * point_count
+        )[:point_count]
+        self._manual_curve_projection_distances = (
+            self._manual_curve_projection_distances + [None] * point_count
+        )[:point_count]
         return True
 
     def _manual_curve_control_data_for_curve(
@@ -9055,6 +9549,10 @@ class OpenRetopWindow:
                 return
 
         if key in {"Escape", "Esc"}:
+            if self._cancel_manual_curve_subaction(
+                status="Navigate active: point placement paused."
+            ):
+                return
             self._cancel_manual_curve_mode(status="Manual curve cancelled")
             return
         if key == "Enter":
@@ -9259,6 +9757,7 @@ class OpenRetopWindow:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
             self._manual_curve_add_point_active = False
             self._manual_curve_placing_enabled = False
+            self._manual_curve_submode = "select_point"
             self._clear_manual_curve_preview_state()
             return
 
@@ -9275,6 +9774,7 @@ class OpenRetopWindow:
         self._manual_curve_selected_control_point_index = len(self._manual_curve_points) - 1
         self._manual_curve_add_point_active = False
         self._manual_curve_placing_enabled = False
+        self._manual_curve_submode = "select_point"
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Point added. Add Point mode off.")
         self._sync_workflow_ui()
@@ -9294,6 +9794,7 @@ class OpenRetopWindow:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
+            self._manual_curve_submode = "select_point"
             self._clear_manual_curve_preview_state()
             return
 
@@ -9312,6 +9813,7 @@ class OpenRetopWindow:
         self._manual_curve_selected_control_point_index = insert_index
         self._manual_curve_insert_point_active = False
         self._manual_curve_placing_enabled = False
+        self._manual_curve_submode = "select_point"
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Point inserted. Insert mode off.")
         self._sync_workflow_ui()
@@ -9345,23 +9847,21 @@ class OpenRetopWindow:
         return float(np.linalg.norm(point - closest))
 
     def _select_manual_curve_control_point(self, x_position: int, y_position: int) -> None:
-        point = self._manual_curve_point_from_screen(
-            x_position,
-            y_position,
-            snap_to_mesh=False,
+        selected_index = self._manual_curve_control_point_index_at_screen(
+            x_position, y_position
         )
-        if point is None:
-            return
-
-        selected_index = self._nearest_manual_curve_control_point_index(point)
         if selected_index is None:
             self._manual_curve_selected_control_point_index = None
+            self._manual_curve_drag_candidate_index = None
+            self._manual_curve_submode = "select_point"
             self._refresh_viewport(reset_camera=False)
             self.status_text.set("No control point selected")
             self._sync_workflow_ui()
             return
 
         self._manual_curve_selected_control_point_index = selected_index
+        self._manual_curve_drag_candidate_index = None
+        self._manual_curve_submode = "select_point"
         self.manual_curve_selected_point_type_text.set(
             self._manual_curve_point_types[selected_index]
             if selected_index < len(self._manual_curve_point_types)
@@ -9373,6 +9873,25 @@ class OpenRetopWindow:
             f"{self.manual_curve_selected_point_type_text.get()}"
         )
         self._sync_workflow_ui()
+
+    def _manual_curve_control_point_index_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+    ) -> int | None:
+        picker = getattr(
+            self.viewport,
+            "manual_curve_control_point_index_at_screen",
+            None,
+        )
+        if callable(picker):
+            return picker(x_position, y_position, self._manual_curve_points)
+        point = self._manual_curve_point_from_screen(
+            x_position,
+            y_position,
+            snap_to_mesh=False,
+        )
+        return None if point is None else self._nearest_manual_curve_control_point_index(point)
 
     def _nearest_manual_curve_control_point_index(self, point: np.ndarray) -> int | None:
         if not self._manual_curve_points:
@@ -9387,15 +9906,30 @@ class OpenRetopWindow:
         return None
 
     def activate_manual_curve_add_point(self) -> None:
-        if not self._manual_curve_edit_active:
-            self.status_text.set("Edit a manual curve before adding points.")
+        if not self._manual_curve_active:
+            self.status_text.set("Create or edit a manual curve before adding points.")
             self._sync_workflow_ui()
             return
 
         self._manual_curve_add_point_active = True
         self._manual_curve_insert_point_active = False
         self._manual_curve_placing_enabled = True
-        self.status_text.set("Edit Curve: Add Point active. Click to place next point.")
+        self._manual_curve_submode = "add_point"
+        self.status_text.set(
+            "Add Point active: left-click to append point. Esc to return to edit mode."
+        )
+        self._sync_workflow_ui()
+
+    def activate_manual_curve_navigate(self) -> None:
+        if not self._manual_curve_active:
+            return
+        self._manual_curve_add_point_active = False
+        self._manual_curve_insert_point_active = False
+        self._manual_curve_placing_enabled = False
+        self._manual_curve_submode = "navigate"
+        self._clear_manual_curve_preview_state()
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Navigate active: orbit, pan, and zoom without placing points.")
         self._sync_workflow_ui()
 
     def activate_manual_curve_insert_point(self) -> None:
@@ -9407,7 +9941,10 @@ class OpenRetopWindow:
         self._manual_curve_insert_point_active = True
         self._manual_curve_add_point_active = False
         self._manual_curve_placing_enabled = True
-        self.status_text.set("Edit Curve: Insert Point active. Click segment location.")
+        self._manual_curve_submode = "insert_point"
+        self.status_text.set(
+            "Insert Point active: click curve segment to insert. Esc to return to edit mode."
+        )
         self._sync_workflow_ui()
 
     def delete_selected_manual_curve_point(self) -> None:
@@ -9430,6 +9967,8 @@ class OpenRetopWindow:
         self._manual_curve_points.pop(removed_index)
         if removed_index < len(self._manual_curve_point_types):
             self._manual_curve_point_types.pop(removed_index)
+        if removed_index < len(self._manual_curve_point_type_sources):
+            self._manual_curve_point_type_sources.pop(removed_index)
         if removed_index < len(self._manual_curve_snap_flags):
             was_snapped = self._manual_curve_snap_flags.pop(removed_index)
             if was_snapped:
@@ -9441,6 +9980,8 @@ class OpenRetopWindow:
             self._manual_curve_snap_triangle_indices.pop(removed_index)
         if removed_index < len(self._manual_curve_snap_normals):
             self._manual_curve_snap_normals.pop(removed_index)
+        if removed_index < len(self._manual_curve_projection_distances):
+            self._manual_curve_projection_distances.pop(removed_index)
         if removed_index >= len(self._manual_curve_points):
             removed_index = len(self._manual_curve_points) - 1
         self._manual_curve_selected_control_point_index = removed_index
@@ -9493,16 +10034,33 @@ class OpenRetopWindow:
             return
         while len(self._manual_curve_point_types) < len(self._manual_curve_points):
             self._manual_curve_point_types.append(CURVE_POINT_SMOOTH)
+        while len(self._manual_curve_point_type_sources) < len(self._manual_curve_points):
+            self._manual_curve_point_type_sources.append(CURVE_POINT_SOURCE_AUTO)
         self._manual_curve_point_types[index] = point_type
+        self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
         self.manual_curve_selected_point_type_text.set(point_type)
-        self._manual_curve_curve_method = MANUAL_CURVE_METHOD_HYBRID
-        self._set_manual_curve_type_label(self._manual_curve_curve_method)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Control point {index + 1}: {point_type}")
         self._sync_workflow_ui()
 
     def auto_detect_manual_curve_corners(self) -> None:
         self._auto_detect_working_curve_corners(set_status=True)
+
+    def clear_auto_detected_manual_curve_corners(self) -> None:
+        if not self._manual_curve_active:
+            self.status_text.set("Edit a manual curve before clearing auto corners.")
+            return
+        cleared = clear_auto_detected_manual_curve_corners(
+            self._working_manual_curve_control_data_v2()
+        )
+        self._manual_curve_point_types = [point.point_type for point in cleared.points]
+        self._manual_curve_point_type_sources = [
+            str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
+            for point in cleared.points
+        ]
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set("Cleared auto-detected corners; manual corners preserved.")
+        self._sync_workflow_ui()
 
     def _auto_detect_working_curve_corners(self, *, set_status: bool) -> None:
         if len(self._manual_curve_points) < 3:
@@ -9515,8 +10073,10 @@ class OpenRetopWindow:
             threshold_degrees=self._manual_curve_corner_threshold(),
         )
         self._manual_curve_point_types = [point.point_type for point in detected.points]
-        self._manual_curve_curve_method = MANUAL_CURVE_METHOD_HYBRID
-        self._set_manual_curve_type_label(self._manual_curve_curve_method)
+        self._manual_curve_point_type_sources = [
+            str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
+            for point in detected.points
+        ]
         index = self._manual_curve_selected_control_point_index
         if index is not None and index < len(self._manual_curve_point_types):
             self.manual_curve_selected_point_type_text.set(
@@ -9538,8 +10098,7 @@ class OpenRetopWindow:
             return
         for index in indices[1:-1]:
             self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
-        self._manual_curve_curve_method = MANUAL_CURVE_METHOD_HYBRID
-        self._set_manual_curve_type_label(self._manual_curve_curve_method)
+            self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Selected span set to smooth; corner endpoints preserved.")
 
@@ -9554,6 +10113,7 @@ class OpenRetopWindow:
             factor = offset / float(len(indices) - 1)
             self._manual_curve_points[index] = start * (1.0 - factor) + end * factor
             self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
+            self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Selected span straightened; endpoints preserved.")
 
@@ -9589,9 +10149,17 @@ class OpenRetopWindow:
     def _working_manual_curve_control_data_v2(self) -> ManualCurveControlDataV2:
         while len(self._manual_curve_point_types) < len(self._manual_curve_points):
             self._manual_curve_point_types.append(CURVE_POINT_SMOOTH)
+        while len(self._manual_curve_point_type_sources) < len(self._manual_curve_points):
+            self._manual_curve_point_type_sources.append(CURVE_POINT_SOURCE_AUTO)
         return ManualCurveControlDataV2(
             points=[
-                ManualCurvePoint(position=point, point_type=self._manual_curve_point_types[index])
+                ManualCurvePoint(
+                    position=point,
+                    point_type=self._manual_curve_point_types[index],
+                    metadata={
+                        "point_type_source": self._manual_curve_point_type_sources[index]
+                    },
+                )
                 for index, point in enumerate(self._manual_curve_points)
             ],
             is_closed=self._manual_curve_closed,
@@ -9599,6 +10167,7 @@ class OpenRetopWindow:
             sample_count=self._manual_curve_sample_count,
             corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
             preserve_corners=bool(self.manual_curve_preserve_corners.get()),
+            metadata={"smoothness": self._manual_curve_smoothness_value()},
         )
 
     def _manual_curve_corner_threshold(self) -> float:
@@ -9609,6 +10178,72 @@ class OpenRetopWindow:
         value = min(max(value, 1.0), 179.0)
         self.manual_curve_corner_threshold_text.set(f"{value:.0f}")
         return value
+
+    def _manual_curve_sample_count_value(self) -> int:
+        try:
+            value = int(str(self.manual_curve_sample_count_text.get()).strip())
+        except (TypeError, ValueError):
+            value = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
+        value = min(max(value, 16), 2048)
+        self.manual_curve_sample_count_text.set(str(value))
+        self._manual_curve_sample_count = value
+        return value
+
+    def _manual_curve_smoothness_value(self) -> int:
+        try:
+            value = int(round(float(self.manual_curve_smoothness.get())))
+        except (TypeError, ValueError):
+            value = DEFAULT_MANUAL_CURVE_SMOOTHNESS
+        value = min(max(value, 1), 8)
+        self.manual_curve_smoothness.set(float(value))
+        return value
+
+    def _update_manual_curve_snap_metadata(self, curve: StoredCurve) -> None:
+        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        distances = [
+            None if value is None else float(value)
+            for value in self._manual_curve_projection_distances
+        ]
+        metadata["snap_triangle_indices"] = list(
+            self._manual_curve_snap_triangle_indices
+        )
+        metadata["snap_normals"] = list(self._manual_curve_snap_normals)
+        metadata["snap_projection_distances"] = distances
+        finite_distances = [value for value in distances if value is not None]
+        metadata["projection_distance"] = (
+            max(finite_distances) if finite_distances else 0.0
+        )
+        mesh_object = self.app_state.mesh_object
+        if mesh_object is not None and bool(self.manual_curve_snap_to_mesh.get()):
+            metadata["source_mesh_name"] = mesh_object.name
+        curve.metadata = metadata
+
+    def _project_manual_curve_fitted_preview_to_mesh(self, curve: StoredCurve) -> None:
+        if not bool(curve.metadata.get("keep_curve_on_mesh", False)):
+            return
+        mesh_object = self.app_state.mesh_object
+        if mesh_object is None:
+            return
+        world_mesh = mesh_object.display_mesh.copy()
+        world_mesh.transform(self._current_object_matrix())
+        projection = project_curve_points_to_mesh(
+            curve.fitted_points,
+            world_mesh,
+            preserve_missed_points=True,
+        )
+        curve.fitted_points = projection.projected_points
+        curve.metadata.update(
+            {
+                "keep_curve_on_mesh": True,
+                "source_mesh_name": mesh_object.name,
+                "projection_projected_count": projection.projected_count,
+                "projection_missed_count": projection.missed_count,
+                "projection_mean_distance": projection.mean_distance,
+                "projection_max_distance": projection.max_distance,
+                "projection_warnings": list(projection.warnings),
+            }
+        )
+        refresh_curve_diagnostics(curve)
 
     def _next_manual_curve_point_type(self) -> str:
         return (
@@ -9626,6 +10261,11 @@ class OpenRetopWindow:
         )
         previous_index = len(self._manual_curve_points) - 2
         self._manual_curve_point_types[previous_index] = detected.points[previous_index].point_type
+        self._manual_curve_point_type_sources[previous_index] = str(
+            detected.points[previous_index].metadata.get(
+                "point_type_source", CURVE_POINT_SOURCE_AUTO
+            )
+        )
 
     def _snap_manual_curve_closed_to_first_point(
         self,
@@ -9684,10 +10324,16 @@ class OpenRetopWindow:
     ) -> None:
         self._manual_curve_points.append(np.asarray(point, dtype=float).reshape(3))
         self._manual_curve_point_types.append(self._next_manual_curve_point_type())
+        self._manual_curve_point_type_sources.append(
+            CURVE_POINT_SOURCE_MANUAL
+            if self._next_manual_curve_point_type() == CURVE_POINT_CORNER
+            else CURVE_POINT_SOURCE_AUTO
+        )
         snapped = bool(snapped)
         self._manual_curve_snap_flags.append(snapped)
         self._manual_curve_snap_triangle_indices.append(triangle_index)
         self._manual_curve_snap_normals.append(normal)
+        self._manual_curve_projection_distances.append(0.0 if snapped else None)
         if snapped:
             self._manual_curve_snap_point_count += 1
         self._auto_update_previous_manual_curve_point_type()
@@ -9710,13 +10356,23 @@ class OpenRetopWindow:
             insert_index,
             self._next_manual_curve_point_type(),
         )
+        self._manual_curve_point_type_sources.insert(
+            insert_index,
+            CURVE_POINT_SOURCE_MANUAL
+            if self._next_manual_curve_point_type() == CURVE_POINT_CORNER
+            else CURVE_POINT_SOURCE_AUTO,
+        )
         snapped = bool(snapped)
         self._manual_curve_snap_flags.insert(insert_index, snapped)
         self._manual_curve_snap_triangle_indices.insert(insert_index, triangle_index)
         self._manual_curve_snap_normals.insert(insert_index, normal)
+        self._manual_curve_projection_distances.insert(
+            insert_index, 0.0 if snapped else None
+        )
         if snapped:
             self._manual_curve_snap_point_count += 1
-        self._auto_detect_working_curve_corners(set_status=False)
+        if bool(self.manual_curve_auto_detect_corners.get()):
+            self._auto_detect_working_curve_corners(set_status=False)
 
     @staticmethod
     def _manual_curve_pick_normal_value(normal: object) -> list[float] | None:
@@ -9740,6 +10396,8 @@ class OpenRetopWindow:
         self._manual_curve_points.pop()
         if self._manual_curve_point_types:
             self._manual_curve_point_types.pop()
+        if self._manual_curve_point_type_sources:
+            self._manual_curve_point_type_sources.pop()
         if self._manual_curve_snap_flags:
             was_snapped = self._manual_curve_snap_flags.pop()
             if was_snapped:
@@ -9751,6 +10409,8 @@ class OpenRetopWindow:
             self._manual_curve_snap_triangle_indices.pop()
         if self._manual_curve_snap_normals:
             self._manual_curve_snap_normals.pop()
+        if self._manual_curve_projection_distances:
+            self._manual_curve_projection_distances.pop()
         if len(self._manual_curve_points) < 3:
             self._manual_curve_closed = False
         self._refresh_viewport(reset_camera=False)
@@ -9821,11 +10481,16 @@ class OpenRetopWindow:
                 else None
             ),
             curve_method=self._manual_curve_curve_method,
-            sample_count=self._manual_curve_sample_count,
+            sample_count=self._manual_curve_sample_count_value(),
             point_types=list(self._manual_curve_point_types),
+            point_type_sources=list(self._manual_curve_point_type_sources),
             corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
             preserve_corners=bool(self.manual_curve_preserve_corners.get()),
+            smoothness=self._manual_curve_smoothness_value(),
+            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
         )
+        self._update_manual_curve_snap_metadata(curve)
+        self._project_manual_curve_fitted_preview_to_mesh(curve)
         add_curve(self.app_state.curve_collection, curve)
         self._sync_visible_curve_results()
         self.select_curve(curve.id)
@@ -9882,14 +10547,19 @@ class OpenRetopWindow:
                 or self._manual_curve_source_section_plane_id
             ),
             source_mesh_name=metadata.get("source_mesh_name"),
-            snap_triangle_indices=metadata.get("snap_triangle_indices"),
-            snap_normals=metadata.get("snap_normals"),
+            snap_triangle_indices=list(self._manual_curve_snap_triangle_indices),
+            snap_normals=list(self._manual_curve_snap_normals),
             curve_method=self._manual_curve_curve_method,
-            sample_count=self._manual_curve_sample_count,
+            sample_count=self._manual_curve_sample_count_value(),
             point_types=list(self._manual_curve_point_types),
+            point_type_sources=list(self._manual_curve_point_type_sources),
             corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
             preserve_corners=bool(self.manual_curve_preserve_corners.get()),
+            smoothness=self._manual_curve_smoothness_value(),
+            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
         )
+        self._update_manual_curve_snap_metadata(updated_curve)
+        self._project_manual_curve_fitted_preview_to_mesh(updated_curve)
         active_curve.original_points = updated_curve.original_points
         active_curve.fitted_points = updated_curve.fitted_points
         active_curve.mean_error = updated_curve.mean_error
@@ -10083,14 +10753,31 @@ class OpenRetopWindow:
     def _cancel_manual_curve_subaction(self, *, status: str) -> bool:
         if self._manual_curve_drag_active:
             self._manual_curve_drag_active = False
+            self._manual_curve_drag_candidate_index = None
+            self._manual_curve_submode = "select_point"
             self._clear_manual_curve_preview_state()
             self.status_text.set(status)
+            self._sync_workflow_ui()
+            return True
+        if (
+            self._manual_curve_main_mode == "drawing"
+            and self._manual_curve_submode == "add_point"
+            and self._manual_curve_placing_enabled
+        ):
+            self._manual_curve_add_point_active = False
+            self._manual_curve_insert_point_active = False
+            self._manual_curve_placing_enabled = False
+            self._manual_curve_submode = "navigate"
+            self._clear_manual_curve_preview_state()
+            self.status_text.set(status)
+            self._refresh_viewport(reset_camera=False)
             self._sync_workflow_ui()
             return True
         if self._manual_curve_add_point_active or self._manual_curve_insert_point_active:
             self._manual_curve_add_point_active = False
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
+            self._manual_curve_submode = "select_point"
             self._clear_manual_curve_preview_state()
             self.status_text.set(status)
             self._sync_workflow_ui()
@@ -10104,12 +10791,61 @@ class OpenRetopWindow:
             self.status_text.set(f"Curve type: {self.manual_curve_type_text.get()}")
         self._sync_workflow_ui()
 
+    def toggle_advanced_curve_controls(self) -> None:
+        visible = not bool(self.manual_curve_advanced_visible.get())
+        self.manual_curve_advanced_visible.set(visible)
+        for widget in self._advanced_curve_widgets:
+            if visible:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        self.advanced_curve_controls_button.configure(
+            text=(
+                "Hide Advanced Curve Controls"
+                if visible
+                else "Advanced Curve Controls"
+            )
+        )
+        self._on_sidebar_content_configure()
+
+    def toggle_region_details(self) -> None:
+        visible = not bool(self.region_advanced_visible.get())
+        self.region_advanced_visible.set(visible)
+        for widget in self._advanced_region_widgets:
+            if visible:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        self.region_details_button.configure(
+            text="Hide Region Details" if visible else "Region Details"
+        )
+        self._on_sidebar_content_configure()
+
+    def _on_manual_curve_smoothness_changed(self, _value: object | None = None) -> None:
+        self._manual_curve_smoothness_value()
+        if self._manual_curve_active:
+            self._refresh_viewport(reset_camera=False)
+
+    def _on_manual_curve_sample_count_changed(self, _event: object | None = None) -> None:
+        self._manual_curve_sample_count_value()
+        if self._manual_curve_active:
+            self._refresh_viewport(reset_camera=False)
+
+    def _on_manual_curve_keep_on_mesh_changed(self) -> None:
+        if bool(self.manual_curve_keep_on_mesh.get()):
+            self.manual_curve_snap_to_mesh.set(True)
+        if self._manual_curve_active:
+            self._refresh_viewport(reset_camera=False)
+        self._sync_workflow_ui()
+
     def _manual_curve_method_from_label(self) -> str:
         value = self.manual_curve_type_text.get().strip().lower()
         if value == "polyline":
             return MANUAL_CURVE_METHOD_POLYLINE
         if value == "hybrid":
             return MANUAL_CURVE_METHOD_HYBRID
+        if value in {"smooth guide", "smooth"}:
+            return MANUAL_CURVE_METHOD_SMOOTH_GUIDE
         return MANUAL_CURVE_METHOD_CATMULL_ROM
 
     def _set_manual_curve_type_label(self, method: str) -> None:
@@ -10118,6 +10854,8 @@ class OpenRetopWindow:
             label = "Polyline"
         elif token in {MANUAL_CURVE_METHOD_HYBRID, "cad_spline"}:
             label = "Hybrid"
+        elif token == MANUAL_CURVE_METHOD_SMOOTH_GUIDE:
+            label = "Smooth Guide"
         else:
             label = "Smooth"
         self.manual_curve_type_text.set(label)
@@ -10198,10 +10936,13 @@ class OpenRetopWindow:
     def _clear_manual_curve_state(self, *, reset_snap: bool = False) -> None:
         self._manual_curve_active = False
         self._manual_curve_edit_active = False
+        self._manual_curve_main_mode = "inactive"
+        self._manual_curve_submode = "navigate"
         self._manual_curve_edit_curve_id = None
         self._manual_curve_selected_control_point_index = None
         self._manual_curve_hover_control_point_index = None
         self._manual_curve_drag_active = False
+        self._manual_curve_drag_candidate_index = None
         self._manual_curve_placing_enabled = True
         self._manual_curve_add_point_active = False
         self._manual_curve_insert_point_active = False
@@ -10211,6 +10952,7 @@ class OpenRetopWindow:
         self._manual_curve_left_dragged = False
         self._manual_curve_points = []
         self._manual_curve_point_types = []
+        self._manual_curve_point_type_sources = []
         self._manual_curve_closed = False
         self._manual_curve_plane_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
         self._manual_curve_plane_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
@@ -10221,6 +10963,7 @@ class OpenRetopWindow:
         self._manual_curve_snap_flags = []
         self._manual_curve_snap_triangle_indices = []
         self._manual_curve_snap_normals = []
+        self._manual_curve_projection_distances = []
         self._clear_manual_curve_preview_state()
         if reset_snap:
             self.manual_curve_snap_to_mesh.set(False)
@@ -10236,21 +10979,13 @@ class OpenRetopWindow:
         )
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                action_label = "Add Point"
-            elif self._manual_curve_insert_point_active:
-                action_label = "Insert Point"
-            else:
-                action_label = "Select Point"
-            return (
-                "Manual Curve Edit: "
-                f"{point_count} {point_label}, {closed_label}; "
-                f"{snap_label}; action: {action_label}"
-            )
-        return (
-            "Manual Curve: click to place points; "
-            f"Manual Curve: using {self._manual_curve_plane_label} "
-            f"({point_count} {point_label}, {closed_label}; {snap_label})"
-        )
+                return "Add Point active: left-click to append point. Esc to return to edit mode."
+            if self._manual_curve_insert_point_active:
+                return "Insert Point active: click curve segment to insert. Esc to return to edit mode."
+            return "Editing curve: select or drag control points. Press Add Point to add points."
+        if self._manual_curve_submode == "navigate":
+            return "Navigate active: orbit, pan, and zoom without placing points."
+        return "Drawing curve: left-click to add points. Right-drag to orbit."
 
     def _curve_repair_tolerance(self) -> float:
         mesh_object = self.app_state.mesh_object
@@ -10355,7 +11090,11 @@ class OpenRetopWindow:
             if not surface.visible:
                 continue
 
-            preview = build_surface_preview_mesh(surface, curves)
+            preview = build_surface_preview_mesh(
+                surface,
+                curves,
+                mesh=self._surface_preview_projection_mesh(),
+            )
             if preview is not None:
                 previews.append(
                     SurfacePreviewMesh(
@@ -10365,10 +11104,19 @@ class OpenRetopWindow:
                         selected=bool(preview.selected),
                         opacity=self._surface_display_opacity(surface),
                         wireframe_overlay=self._surface_wireframe_overlay(surface),
+                        display_role=preview.display_role,
                     )
                 )
         previews.extend(self._build_visible_brep_surface_previews())
         return previews
+
+    def _surface_preview_projection_mesh(self) -> TriangleMeshData | None:
+        mesh_object = self.app_state.mesh_object
+        if mesh_object is None:
+            return None
+        mesh = mesh_object.display_mesh.copy()
+        mesh.transform(self._current_object_matrix())
+        return mesh
 
     def _build_visible_brep_surface_previews(self) -> list[SurfacePreviewMesh]:
         previews: list[SurfacePreviewMesh] = []
@@ -10644,11 +11392,14 @@ class OpenRetopWindow:
                 self.surface_seam_shift_applied_text.set("(none)")
                 self.surface_average_pair_distance_text.set("(none)")
                 self.surface_max_pair_distance_text.set("(none)")
+                self.surface_projection_mean_distance_text.set("(none)")
+                self.surface_projection_max_distance_text.set("(none)")
+                self.surface_failed_projection_count_text.set("(none)")
                 self.surface_validation_warnings_text.set("(none)")
                 self.surface_validation_errors_text.set("(none)")
                 self.surface_opacity.set(SURFACE_PREVIEW_DEFAULT_OPACITY)
                 self.surface_opacity_text.set(f"{SURFACE_PREVIEW_DEFAULT_OPACITY:.2f}")
-                self.surface_wireframe_overlay.set(True)
+                self.surface_wireframe_overlay.set(False)
                 self.surface_metadata_text.set("(none)")
                 self.brep_type_text.set("(none)")
                 self.brep_backend_text.set("(none)")
@@ -10721,6 +11472,15 @@ class OpenRetopWindow:
             )
             self.surface_max_pair_distance_text.set(
                 self._surface_metadata_float_text(metadata, "max_pair_distance")
+            )
+            self.surface_projection_mean_distance_text.set(
+                self._surface_metadata_float_text(metadata, "projection_mean_distance")
+            )
+            self.surface_projection_max_distance_text.set(
+                self._surface_metadata_float_text(metadata, "projection_max_distance")
+            )
+            self.surface_failed_projection_count_text.set(
+                str(metadata.get("failed_projection_count", "(none)"))
             )
             self.surface_validation_warnings_text.set(
                 self._surface_metadata_list_text(
@@ -10930,7 +11690,7 @@ class OpenRetopWindow:
     @staticmethod
     def _surface_wireframe_overlay(surface: SurfacePatch | BrepSurfaceRecord) -> bool:
         metadata = surface.metadata if isinstance(surface.metadata, dict) else {}
-        return bool(metadata.get("wireframe_overlay", True))
+        return bool(metadata.get("wireframe_overlay", False))
 
     def _surface_source_curve_names_summary(
         self,
@@ -11145,7 +11905,11 @@ class OpenRetopWindow:
         for surface in self.app_state.surface_collection.surfaces:
             if surface_node_id(surface.id) not in node_ids:
                 continue
-            preview = build_surface_preview_mesh(surface, curves)
+            preview = build_surface_preview_mesh(
+                surface,
+                curves,
+                mesh=self._surface_preview_projection_mesh(),
+            )
             if preview is None:
                 continue
             points = self._finite_points(preview.vertices)
@@ -11285,6 +12049,60 @@ class OpenRetopWindow:
             if hide_expensive_overlays
             else self._active_visible_region_selection()
         )
+        manual_points: object | None = None
+        manual_point_types: Sequence[str] | None = None
+        manual_fitted_points: object | None = None
+        manual_closed = False
+        manual_plane_normal: object | None = None
+        manual_snap = False
+        manual_selected_index: int | None = None
+        manual_method = DEFAULT_MANUAL_CURVE_METHOD
+        manual_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
+        if self._manual_curve_active:
+            manual_points = self._manual_curve_points
+            manual_point_types = self._manual_curve_point_types
+            manual_closed = self._manual_curve_closed
+            manual_plane_normal = self._manual_curve_plane_normal
+            manual_snap = bool(self.manual_curve_snap_to_mesh.get())
+            manual_selected_index = (
+                self._manual_curve_selected_control_point_index
+                if self._manual_curve_edit_active
+                else None
+            )
+            manual_method = self._manual_curve_curve_method
+            manual_sample_count = self._manual_curve_sample_count
+            if len(self._manual_curve_points) >= 2:
+                manual_fitted_points = sample_hybrid_manual_curve(
+                    self._working_manual_curve_control_data_v2()
+                )
+            if (
+                bool(self.manual_curve_keep_on_mesh.get())
+                and manual_fitted_points is not None
+            ):
+                mesh = self._surface_preview_projection_mesh()
+                if mesh is not None:
+                    manual_fitted_points = project_curve_points_to_mesh(
+                        manual_fitted_points,
+                        mesh,
+                        preserve_missed_points=True,
+                    ).projected_points
+        elif self.app_state.selected_item == SELECT_CURVE:
+            selected_curve = self._active_curve()
+            if selected_curve is not None and is_manual_curve_like(selected_curve):
+                control_data = parse_manual_curve_metadata_v2(selected_curve)
+                if control_data is not None:
+                    manual_points = control_data.control_points
+                    manual_point_types = [
+                        point.point_type for point in control_data.points
+                    ]
+                    manual_closed = control_data.is_closed
+                    manual_snap = bool(
+                        selected_curve.metadata.get("snap_to_mesh")
+                        or selected_curve.metadata.get("snap_mode") == "mesh"
+                    )
+                    manual_method = control_data.curve_method
+                    manual_sample_count = control_data.sample_count
+                    manual_fitted_points = selected_curve.fitted_points
         self.viewport.set_scene(
             display_mesh,
             transform_matrix=transform_matrix,
@@ -11318,30 +12136,15 @@ class OpenRetopWindow:
             region_selection_color=self.settings.display.region_selection_color,
             region_selection_edge_color=self.settings.display.region_selection_edge_color,
             region_selection_opacity=self.settings.display.region_selection_opacity,
-            manual_curve_points=(
-                self._manual_curve_points
-                if self._manual_curve_active
-                else None
-            ),
-            manual_curve_point_types=(
-                self._manual_curve_point_types
-                if self._manual_curve_active
-                else None
-            ),
-            manual_curve_closed=self._manual_curve_closed,
-            manual_curve_plane_normal=(
-                self._manual_curve_plane_normal
-                if self._manual_curve_active
-                else None
-            ),
-            manual_curve_snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
-            manual_curve_selected_control_point_index=(
-                self._manual_curve_selected_control_point_index
-                if self._manual_curve_edit_active
-                else None
-            ),
-            manual_curve_method=self._manual_curve_curve_method,
-            manual_curve_sample_count=self._manual_curve_sample_count,
+            manual_curve_points=manual_points,
+            manual_curve_point_types=manual_point_types,
+            manual_curve_fitted_points=manual_fitted_points,
+            manual_curve_closed=manual_closed,
+            manual_curve_plane_normal=manual_plane_normal,
+            manual_curve_snap_to_mesh=manual_snap,
+            manual_curve_selected_control_point_index=manual_selected_index,
+            manual_curve_method=manual_method,
+            manual_curve_sample_count=manual_sample_count,
             manual_curve_preview_point=(
                 self._manual_curve_preview_point
                 if self._manual_curve_active and self._manual_curve_preview_valid
@@ -11439,18 +12242,20 @@ class OpenRetopWindow:
         self.current_mode_text.set(mode)
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                prompt = "Edit Curve: Add Point active. Click to place next point."
+                prompt = "Add Point active: left-click to append point. Esc to return to edit mode."
             elif self._manual_curve_insert_point_active:
-                prompt = "Edit Curve: Insert Point active. Click segment location."
+                prompt = "Insert Point active: click curve segment to insert. Esc to return to edit mode."
             else:
-                prompt = "Manual Curve Edit: click a control point to select it."
-            hints = "Enter=apply, Esc=done/cancel action, Backspace=delete point, C=closed"
+                prompt = "Editing curve: select or drag control points. Press Add Point to add points."
+            hints = "Enter=apply, Esc=done/cancel action, Backspace=delete point, C=corner, S=smooth"
         elif self._manual_curve_active:
-            if bool(self.manual_curve_snap_to_mesh.get()):
-                prompt = "Manual Curve: Snap to Mesh On. Click scan surface to place."
+            if self._manual_curve_submode == "navigate":
+                prompt = "Navigate active: orbit, pan, and zoom without placing points."
+            elif bool(self.manual_curve_snap_to_mesh.get()):
+                prompt = "Drawing curve: left-click to add points. Right-drag to orbit."
             else:
-                prompt = "Manual Curve: previewing next point. Click to place."
-            hints = "Enter=finish, Esc=cancel, Backspace=remove, C=closed"
+                prompt = "Drawing curve: left-click to add points. Right-drag to orbit."
+            hints = "Enter=finish, Esc=cancel, Backspace=remove, C=corner, S=smooth"
         elif self.app_state.transform_state is not None:
             prompt = self._active_transform_status()
             hints = "Drag mouse, X/Y/Z constrain, Enter/click confirm, Esc cancel"
@@ -11745,13 +12550,8 @@ class OpenRetopWindow:
             closed_label = "Yes" if self._manual_curve_closed else "No"
             self.manual_curve_mode_title.set("MANUAL CURVE EDIT MODE")
             self.manual_curve_mode_details.set(
-                "MANUAL CURVE EDIT MODE\n"
-                f"Control points: {point_count}\n"
-                f"Selected point: {selected_label}\n"
-                f"Snap edited points: {snap_label}\n"
-                f"Curve type: {self.manual_curve_type_text.get()}\n"
-                f"Closed: {closed_label}\n"
-                f"Action: {sub_action}"
+                f"{point_count} controls, selected: {selected_label}, "
+                f"Fit to Mesh: {snap_label}, action: {sub_action}"
             )
             if self._manual_curve_selected_control_point_index is None:
                 self.manual_curve_selected_point_type_text.set("(none)")
@@ -11760,12 +12560,8 @@ class OpenRetopWindow:
             snap_label = "On" if bool(self.manual_curve_snap_to_mesh.get()) else "Off"
             closed_label = "Yes" if self._manual_curve_closed else "No"
             self.manual_curve_mode_details.set(
-                "MANUAL CURVE MODE\n"
-                f"Point count: {point_count}\n"
-                f"Snap mode: {snap_label}\n"
-                f"Drawing plane: {self._manual_curve_plane_label}\n"
-                f"Closed: {closed_label}\n"
-                "Enter: Finish, Esc: Cancel, Backspace: Remove last point, C: Toggle closed"
+                f"{point_count} controls, Fit to Mesh: {snap_label}, "
+                f"{closed_label}. Right-drag to orbit."
             )
         elif has_mesh:
             self.manual_curve_mode_title.set("Manual Curve")
@@ -11802,7 +12598,8 @@ class OpenRetopWindow:
             ("done_manual_curve_edit_button", edit_active_state),
             ("remove_manual_point_button", create_active_state),
             ("toggle_manual_closed_button", active_state),
-            ("add_manual_point_button", edit_active_state),
+            ("navigate_manual_curve_button", active_state),
+            ("add_manual_point_button", active_state),
             ("insert_manual_point_button", edit_active_state),
             (
                 "delete_manual_point_button",
@@ -11811,16 +12608,38 @@ class OpenRetopWindow:
                 else "disabled",
             ),
             ("manual_curve_snap_check", snap_state),
+            ("manual_curve_fit_to_mesh_check", snap_state),
+            ("manual_curve_keep_on_mesh_check", snap_state),
             ("manual_curve_placement_combo", "readonly" if active else "disabled"),
             ("manual_curve_auto_corner_check", active_state),
             ("manual_curve_preserve_corners_check", active_state),
             ("manual_curve_type_combo", "readonly" if active else "disabled"),
-            ("set_point_smooth_button", edit_active_state),
-            ("set_point_corner_button", edit_active_state),
+            (
+                "set_point_smooth_button",
+                "normal"
+                if edit_active and self._manual_curve_selected_control_point_index is not None
+                else "disabled",
+            ),
+            (
+                "set_point_corner_button",
+                "normal"
+                if edit_active and self._manual_curve_selected_control_point_index is not None
+                else "disabled",
+            ),
             ("toggle_point_type_button", active_state),
             ("auto_detect_corners_button", active_state),
+            ("clear_auto_corners_button", active_state),
+            ("manual_curve_sample_count_entry", active_state),
             ("smooth_selected_span_button", edit_active_state),
             ("straighten_selected_span_button", edit_active_state),
+            (
+                "convert_smooth_guide_button",
+                "normal" if can_edit_selected and not active else "disabled",
+            ),
+            (
+                "reduce_guide_curve_button",
+                "normal" if can_edit_selected and not active else "disabled",
+            ),
             (
                 "convert_boundary_hybrid_button",
                 "normal"
