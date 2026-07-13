@@ -102,16 +102,20 @@ for ($Task = $StartTask; $Task -le $EndTask; $Task++) {
     try {
         Push-Location $RepoRoot
         try {
-            $Prompt |
-                & codex exec `
-                    --model $Model `
-                    --sandbox workspace-write `
+            $CodexArgs = @(
+                "exec",
+                "--model", $Model,
+                "--sandbox", "workspace-write",
+                "--cd", $RepoRoot,
+                "--output-last-message", $LastMessage,
+                "-"
+            )
 
-                    --cd $RepoRoot `
-                    --output-last-message $LastMessage `
-                    - `
+            $Prompt |
+                & codex @CodexArgs `
                     1>> $Stdout `
                     2>> $Stderr
+
             $Code = $LASTEXITCODE
         }
         finally { Pop-Location }
@@ -179,5 +183,7 @@ Write-Host ""
 Write-Host "Tasks $StartTask through $EndTask completed." -ForegroundColor Green
 Write-Host "Final commit: $(git -C $RepoRoot rev-parse HEAD)"
 Write-Host "Logs: $LogRoot"
+
+
 
 
