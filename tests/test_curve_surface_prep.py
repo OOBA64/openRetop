@@ -18,6 +18,7 @@ from curves.validation import (
 )
 from app.scene_browser import _curve_display_label
 from mesh.triangle_mesh import TriangleMeshData
+from mesh_query_reference import ReferenceMeshQueryService
 
 
 def _mesh() -> TriangleMeshData:
@@ -60,8 +61,15 @@ def _curve(
 
 
 class CurveProjectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.query_service = ReferenceMeshQueryService()
+
     def test_projection_empty_curve_returns_safe_result(self) -> None:
-        result = project_curve_points_to_mesh(np.zeros((0, 3), dtype=float), _mesh())
+        result = project_curve_points_to_mesh(
+            np.zeros((0, 3), dtype=float),
+            _mesh(),
+            mesh_query_service=self.query_service,
+        )
 
         self.assertEqual(result.projected_points.shape, (0, 3))
         self.assertEqual(result.projected_count, 0)
@@ -74,7 +82,11 @@ class CurveProjectionTests(unittest.TestCase):
             dtype=float,
         )
 
-        result = project_curve_points_to_mesh(points, _mesh())
+        result = project_curve_points_to_mesh(
+            points,
+            _mesh(),
+            mesh_query_service=self.query_service,
+        )
 
         self.assertEqual(result.projected_points.shape, points.shape)
         self.assertTrue(np.allclose(result.projected_points[:, 2], 0.0))
@@ -87,7 +99,11 @@ class CurveProjectionTests(unittest.TestCase):
     def test_projection_handles_missing_mesh_safely(self) -> None:
         points = np.asarray([[0.0, 0.0, 1.0]], dtype=float)
 
-        result = project_curve_points_to_mesh(points, None)
+        result = project_curve_points_to_mesh(
+            points,
+            None,
+            mesh_query_service=self.query_service,
+        )
 
         self.assertEqual(result.projected_count, 0)
         self.assertEqual(result.missed_count, 1)
@@ -97,7 +113,12 @@ class CurveProjectionTests(unittest.TestCase):
     def test_projection_preserves_missed_points_when_limited(self) -> None:
         points = np.asarray([[0.25, 0.25, 5.0], [0.75, 0.75, 4.0]], dtype=float)
 
-        result = project_curve_points_to_mesh(points, _mesh(), max_search_distance=0.01)
+        result = project_curve_points_to_mesh(
+            points,
+            _mesh(),
+            max_search_distance=0.01,
+            mesh_query_service=self.query_service,
+        )
 
         self.assertEqual(result.hit_mask.tolist(), [False, False])
         self.assertEqual(result.projected_count, 0)
@@ -112,7 +133,11 @@ class CurveProjectionTests(unittest.TestCase):
             triangles=np.asarray([[0, 1, 2]], dtype=int),
         )
 
-        result = project_curve_points_to_mesh(points, invalid_mesh)
+        result = project_curve_points_to_mesh(
+            points,
+            invalid_mesh,
+            mesh_query_service=self.query_service,
+        )
 
         self.assertEqual(result.projected_count, 0)
         self.assertEqual(result.missed_count, 1)
@@ -138,6 +163,7 @@ class CurveProjectionTests(unittest.TestCase):
             curve_id="curve-projected",
             name="Projected Curve 1",
             source_mesh_name="scan.stl",
+            mesh_query_service=self.query_service,
         )
 
         self.assertEqual(projected.metadata["creation_type"], "projected_curve")

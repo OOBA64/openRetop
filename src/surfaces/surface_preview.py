@@ -9,6 +9,7 @@ import numpy as np
 
 from curves.curve_state import StoredCurve
 from curves.projection import project_curve_points_to_mesh
+from mesh.query_service import MeshQueryService
 from mesh.triangle_mesh import TriangleMeshData
 from surfaces.surface_state import SurfacePatch
 
@@ -96,6 +97,8 @@ def build_surface_preview(
     curves: Sequence[StoredCurve],
     *,
     mesh: TriangleMeshData | None = None,
+    mesh_query_service: MeshQueryService | None = None,
+    mesh_revision: object | None = None,
 ) -> SurfacePreviewBuildResult:
     """Build preview geometry and diagnostics for supported placeholder cases."""
 
@@ -109,7 +112,13 @@ def build_surface_preview(
 
     preview_mode = _preview_mode(surface)
     if preview_mode == MESH_CONFORMING_LOFT:
-        return build_mesh_conforming_loft_preview(surface, source_curves, mesh)
+        return build_mesh_conforming_loft_preview(
+            surface,
+            source_curves,
+            mesh,
+            mesh_query_service=mesh_query_service,
+            mesh_revision=mesh_revision,
+        )
     if preview_mode == BOUNDARY_PATCH:
         if len(source_curves) != 1:
             return _unavailable(
@@ -157,10 +166,18 @@ def build_surface_preview_mesh(
     curves: Sequence[StoredCurve],
     *,
     mesh: TriangleMeshData | None = None,
+    mesh_query_service: MeshQueryService | None = None,
+    mesh_revision: object | None = None,
 ) -> SurfacePreviewMesh | None:
     """Build a coarse triangulated preview for the supported placeholder cases."""
 
-    return build_surface_preview(surface, curves, mesh=mesh).mesh
+    return build_surface_preview(
+        surface,
+        curves,
+        mesh=mesh,
+        mesh_query_service=mesh_query_service,
+        mesh_revision=mesh_revision,
+    ).mesh
 
 
 def build_boundary_patch_preview(
@@ -716,6 +733,9 @@ def build_mesh_conforming_loft_preview(
     surface: SurfacePatch,
     source_curves: Sequence[StoredCurve],
     mesh: TriangleMeshData | None,
+    *,
+    mesh_query_service: MeshQueryService | None = None,
+    mesh_revision: object | None = None,
 ) -> SurfacePreviewBuildResult:
     """Project a loft sampling grid onto the scan without creating CAD geometry."""
 
@@ -790,6 +810,8 @@ def build_mesh_conforming_loft_preview(
         mesh,
         max_search_distance=threshold,
         preserve_missed_points=True,
+        mesh_query_service=mesh_query_service,
+        mesh_revision=mesh_revision,
     )
     attempted_distances = projection.distances[np.isfinite(projection.distances)]
     faces = _grid_faces(grid_u_count, grid_v_count)
@@ -806,6 +828,13 @@ def build_mesh_conforming_loft_preview(
             ),
             "failed_projection_count": int(projection.missed_count),
             "projected_point_count": int(projection.projected_count),
+            "projection_failed_indices": list(projection.failed_indices),
+            "projection_index_build_time_seconds": projection.build_time_seconds,
+            "projection_query_time_seconds": projection.query_time_seconds,
+            "projection_total_time_seconds": float(
+                projection.metadata.get("projection_time_seconds", 0.0)
+            ),
+            "projection_backend": projection.backend,
             "projection_distance_threshold": threshold,
             "show_projection_error_heatmap": bool(
                 surface.metadata.get("show_projection_error_heatmap", False)

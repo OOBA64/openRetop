@@ -164,6 +164,7 @@ from mesh.display_proxy import (
 )
 from mesh.loader import load_mesh
 from mesh.mesh_state import MeshState
+from mesh.query_service import MeshQueryService
 from mesh.triangle_mesh import TriangleMeshData
 from project.project_data import ProjectData
 from project.project_io import load_project, save_project
@@ -445,6 +446,9 @@ class OpenRetopWindow:
 
         self.mesh_state = MeshState()
         self.app_state = AppState()
+        self.mesh_query_service = MeshQueryService()
+        self._mesh_query_world_mesh: TriangleMeshData | None = None
+        self._mesh_query_world_mesh_revision: object | None = None
         self.undo_stack = UndoStack()
         self._brep_runtime_cache: dict[str, object] = {}
         self._last_viewport_mouse = (0, 0)
@@ -818,6 +822,7 @@ class OpenRetopWindow:
         self._update_window_title()
 
     def _clear_scene_data(self, *, reset_camera: bool) -> None:
+        self._invalidate_mesh_query_cache()
         self.mesh_state = MeshState()
         self.app_state = AppState(
             section_collection=SectionCollection(),
@@ -4357,6 +4362,7 @@ class OpenRetopWindow:
                 source_bounds_min=np.asarray(bounds.get_min_bound(), dtype=float),
                 source_bounds_max=np.asarray(bounds.get_max_bound(), dtype=float),
             )
+            self._invalidate_mesh_query_cache()
             self._clear_manual_curve_state()
             self.manual_curve_snap_to_mesh.set(True)
             self.manual_curve_placement_text.set("Snap to Mesh")
@@ -7016,14 +7022,15 @@ class OpenRetopWindow:
         if source_curve is None:
             return
 
-        boundary_mesh = mesh_object.display_mesh.copy()
-        boundary_mesh.transform(self._current_object_matrix())
+        boundary_mesh = self._surface_preview_projection_mesh()
         projected_curve = project_stored_curve_to_mesh(
             source_curve,
             boundary_mesh,
             curve_id=f"curve-{uuid4().hex}",
             name=self._next_derived_curve_name("Projected Curve"),
             source_mesh_name=mesh_object.name,
+            mesh_query_service=self.mesh_query_service,
+            mesh_revision=self._mesh_query_revision(),
         )
         add_curve(self.app_state.curve_collection, projected_curve)
         self._sync_visible_curve_results()
@@ -8644,6 +8651,8 @@ class OpenRetopWindow:
                 surface,
                 self.app_state.curve_collection.curves,
                 mesh=self._surface_preview_projection_mesh(),
+                mesh_query_service=self.mesh_query_service,
+                mesh_revision=self._mesh_query_revision(),
             )
             self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[2])
         finally:
@@ -8693,6 +8702,8 @@ class OpenRetopWindow:
             active_surface,
             self.app_state.curve_collection.curves,
             mesh=self._surface_preview_projection_mesh(),
+            mesh_query_service=self.mesh_query_service,
+            mesh_revision=self._mesh_query_revision(),
         )
         active_surface.metadata.update(result.diagnostics)
         active_surface.metadata["preview_available"] = result.preview_available
@@ -10519,12 +10530,13 @@ class OpenRetopWindow:
         mesh_object = self.app_state.mesh_object
         if mesh_object is None:
             return
-        world_mesh = mesh_object.display_mesh.copy()
-        world_mesh.transform(self._current_object_matrix())
+        world_mesh = self._surface_preview_projection_mesh()
         projection = project_curve_points_to_mesh(
             curve.fitted_points,
             world_mesh,
             preserve_missed_points=True,
+            mesh_query_service=self.mesh_query_service,
+            mesh_revision=self._mesh_query_revision(),
         )
         curve.fitted_points = projection.projected_points
         curve.metadata.update(
@@ -10536,6 +10548,10 @@ class OpenRetopWindow:
                 "projection_mean_distance": projection.mean_distance,
                 "projection_max_distance": projection.max_distance,
                 "projection_warnings": list(projection.warnings),
+                "projection_failed_indices": list(projection.failed_indices),
+                "projection_index_build_time_seconds": projection.build_time_seconds,
+                "projection_query_time_seconds": projection.query_time_seconds,
+                "projection_backend": projection.backend,
             }
         )
         refresh_curve_diagnostics(curve)
@@ -11427,6 +11443,8 @@ class OpenRetopWindow:
                 surface,
                 curves,
                 mesh=self._surface_preview_projection_mesh(),
+                mesh_query_service=self.mesh_query_service,
+                mesh_revision=self._mesh_query_revision(),
             )
             if preview is not None:
                 previews.append(
@@ -11449,9 +11467,32 @@ class OpenRetopWindow:
         mesh_object = self.app_state.mesh_object
         if mesh_object is None:
             return None
+        revision = self._mesh_query_revision()
+        if (
+            self._mesh_query_world_mesh is not None
+            and self._mesh_query_world_mesh_revision == revision
+        ):
+            return self._mesh_query_world_mesh
         mesh = mesh_object.display_mesh.copy()
         mesh.transform(self._current_object_matrix())
-        return mesh
+        self._mesh_query_world_mesh = mesh
+        self._mesh_query_world_mesh_revision = revision
+        return self._mesh_query_world_mesh
+
+    def _mesh_query_revision(self) -> object | None:
+        mesh_object = self.app_state.mesh_object
+        if mesh_object is None:
+            return None
+        matrix = np.asarray(self._current_object_matrix(), dtype=float).reshape((4, 4))
+        return (
+            id(mesh_object.display_mesh),
+            tuple(float(value) for value in matrix.ravel()),
+        )
+
+    def _invalidate_mesh_query_cache(self) -> None:
+        self.mesh_query_service.invalidate()
+        self._mesh_query_world_mesh = None
+        self._mesh_query_world_mesh_revision = None
 
     def _build_visible_brep_surface_previews(self) -> list[SurfacePreviewMesh]:
         previews: list[SurfacePreviewMesh] = []
@@ -11500,7 +11541,13 @@ class OpenRetopWindow:
                         except ValueError:
                             pass
                         preview_curves.append(display_curve)
-            preview = build_surface_preview_mesh(preview_surface, preview_curves)
+            preview = build_surface_preview_mesh(
+                preview_surface,
+                preview_curves,
+                mesh=self._surface_preview_projection_mesh(),
+                mesh_query_service=self.mesh_query_service,
+                mesh_revision=self._mesh_query_revision(),
+            )
             if preview is None:
                 continue
             previews.append(
@@ -12263,6 +12310,8 @@ class OpenRetopWindow:
                 surface,
                 curves,
                 mesh=self._surface_preview_projection_mesh(),
+                mesh_query_service=self.mesh_query_service,
+                mesh_revision=self._mesh_query_revision(),
             )
             if preview is None:
                 continue
@@ -12439,6 +12488,8 @@ class OpenRetopWindow:
                         manual_fitted_points,
                         mesh,
                         preserve_missed_points=True,
+                        mesh_query_service=self.mesh_query_service,
+                        mesh_revision=self._mesh_query_revision(),
                     ).projected_points
         elif self.app_state.selected_item == SELECT_CURVE:
             selected_curve = self._active_curve()
@@ -14021,6 +14072,7 @@ class OpenRetopWindow:
         return (location, rotation, scale)
 
     def _apply_object_transform(self, *, reset_camera: bool) -> None:
+        self._invalidate_mesh_query_cache()
         if self.app_state.mesh_object is None:
             self.mesh_state = MeshState()
             self._update_stats()
@@ -14045,6 +14097,7 @@ class OpenRetopWindow:
         if self.app_state.mesh_object is None:
             return
 
+        self._invalidate_mesh_query_cache()
         self.app_state.mesh_object.display_mesh = display_result.display_mesh
         self.app_state.mesh_object.source_triangle_count = display_result.source_triangle_count
         self.app_state.mesh_object.display_triangle_count = display_result.display_triangle_count

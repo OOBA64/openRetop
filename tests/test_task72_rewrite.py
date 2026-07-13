@@ -33,6 +33,7 @@ from surfaces.surface_preview import (
     build_surface_preview,
 )
 from surfaces.surface_state import SurfacePatch
+from mesh_query_reference import ReferenceMeshQueryService
 
 
 def _plane_mesh() -> TriangleMeshData:
@@ -205,6 +206,9 @@ class Task72SmoothGuideTests(unittest.TestCase):
 
 
 class Task72ConformingLoftTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.query_service = ReferenceMeshQueryService()
+
     def _surface(self, *, threshold: float) -> SurfacePatch:
         return SurfacePatch(
             id="conforming",
@@ -226,6 +230,7 @@ class Task72ConformingLoftTests(unittest.TestCase):
             self._surface(threshold=1.0),
             curves,
             mesh=_plane_mesh(),
+            mesh_query_service=self.query_service,
         )
 
         self.assertTrue(result.preview_available)
@@ -244,6 +249,7 @@ class Task72ConformingLoftTests(unittest.TestCase):
             self._surface(threshold=0.1),
             curves,
             mesh=_plane_mesh(),
+            mesh_query_service=self.query_service,
         )
 
         self.assertTrue(result.preview_available)

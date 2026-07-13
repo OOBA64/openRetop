@@ -1,921 +1,516 @@
 ---
 
-## Task 72: Manual Curve Workflow Rescue, Simple Corner Detection, Loft Overbuild Preview, and Display Customization
+## Task 73: Accelerated Mesh Query Engine and Performance Verification
 
 Purpose:
-The manual curve workflow has become too complicated and still does not behave like the target ExModel-style workflow.
+Task 72 introduced manual-curve projection, Keep Curve On Mesh behavior, mesh-conforming loft previews, future deviation-analysis contracts, and additional surface workflows.
 
-The goal is to simplify and stabilize manual curve creation/editing before adding more primitive fitting or advanced surfacing.
+The current nearest-mesh projection implementation performs a Python loop over every mesh triangle for every query point. This is not viable for realistic scan meshes and will prevent future curve fitting, surface fitting, deviation analysis, and primitive recognition from performing acceptably.
 
-Focus on:
+Replace the brute-force nearest-surface implementation with a reusable, cached, accelerated mesh spatial-query engine.
 
-* simple angle-based corner detection
-* smooth curve behavior that needs fewer points
-* better curve edit/navigation behavior
-* less UI clutter
-* smaller curve/point display
-* color customization
-* surface display that does not show internal triangles by default
-* loft overbuild preview behavior
-* mesh-conforming loft preview for scan/body-line workflows
-* removal or consolidation of redundant/useless code where safe
+This is a foundation and stabilization task.
 
-Do not add cylinder/cone/sphere fitting.
-Do not add full deviation analysis yet.
-Do not add overbuild trimming/intersection yet.
-Do not do the large Tasks 78–80 refactor yet.
-Do not add proprietary/commercial CAD kernel assumptions.
-Use the existing public CAD stack already in the project, currently CadQuery/OCP/OCCT-based.
+Do not add primitives.
+Do not add surface trimming or intersection.
+Do not add new surfacing tools.
+Do not redesign the UI.
+Do not perform the full Tasks 78–80 refactor.
+Do not change normal user workflows unless required to fix correctness or responsiveness.
+Do not rewrite the viewport.
+Do not introduce duplicate mesh-state systems.
+
+Use the VTK stack already required by the application. Prefer `vtkStaticCellLocator` for immutable loaded scan meshes, with `vtkCellLocator` only if there is a concrete compatibility reason.
 
 ---
 
-## Important instruction: audit before adding
+## Part A — Establish a correctness baseline
 
-Before adding new code, inspect the current manual curve, loft, viewport, preferences, and surface-preview code.
+Before replacing the current projection implementation:
 
-If existing code is redundant, unused, misleading, or actively making the tool worse, remove or consolidate it.
+1. Preserve the existing brute-force closest-point behavior as a test-only reference implementation.
+2. Add correctness tests comparing the accelerated implementation against the reference on small known meshes.
+3. Cover:
 
-Specifically look for:
+   * point above triangle interior
+   * point nearest triangle edge
+   * point nearest triangle vertex
+   * multiple disconnected triangles
+   * degenerate/invalid triangles
+   * empty mesh
+   * finite and non-finite query points
+   * maximum-distance rejection
+   * normal calculation
+   * source triangle index reporting
 
-* duplicate curve modes that behave the same
-* user-facing options that do not materially change behavior
-* unused helper functions
-* repeated corner detection during preview/rendering
-* old curve sampling paths that are no longer needed
-* UI buttons that are almost always disabled
-* display settings hardcoded in viewport files
-* surface wireframe/debug display being shown by default
-* mesh-conforming preview code, if any, that is mislabeled as CAD/BREP
-
-Rules:
-
-* Do not remove working BREP export.
-* Do not remove region select.
-* Do not remove curve projection/rebuild/validation.
-* Do not remove project save/load compatibility.
-* Do not remove old project compatibility.
-* If unsure whether a function is used, leave it and add a short TODO comment.
-* Do not perform broad package refactoring in this task.
-* Keep the changes surgical and workflow-focused.
+The brute-force implementation must not remain in the normal runtime path after this task.
 
 Acceptance:
 
-* redundant or misleading curve/UI code is removed or hidden where safe
-* existing project files still load
-* tests pass
-* app launches
+* accelerated and reference results agree within a defined tolerance
+* expected triangle IDs agree
+* expected distances agree
+* invalid inputs fail safely
+* tests exist before runtime replacement
 
 ---
 
-## Part A — Simplify user-facing manual curve modes
+## Part B — Create a reusable spatial index
 
-The user should not have to choose between several overlapping curve systems.
+Create:
 
-User-facing curve modes should be reduced to:
+src/mesh/spatial_index.py
 
-1. Smooth Curve
-2. Polyline
+Add dataclass:
 
-Optional/legacy/debug modes may remain internally if needed for old project compatibility or tests, but they should not clutter the normal UI.
+MeshClosestPointResult
 
-Smooth Curve:
+Fields:
 
-* default mode
-* uses simple angle-based corner detection
-* smooths between corners
-* preserves sharp corners
-* should work for body lines, wheel arches, bumpers, fender contours, and scan guide curves
+* source_points: np.ndarray
+* closest_points: np.ndarray
+* distances: np.ndarray
+* hit_mask: np.ndarray
+* triangle_indices: np.ndarray
+* normals: np.ndarray
+* queried_point_count: int
+* hit_count: int
+* missed_count: int
+* build_time_seconds: float
+* query_time_seconds: float
+* backend: str
+* metadata: dict[str, object]
 
-Polyline:
+Add class:
 
-* straight segment chain
-* useful for hard-edged mechanical tracing
+MeshSpatialIndex
 
-Hide/demote:
+Responsibilities:
 
-* Hybrid
-* Catmull-Rom
-* CAD Spline if it is not a true CAD spline yet
+* accept a validated `TriangleMeshData`
+* convert the mesh once to VTK polydata
+* build a `vtkStaticCellLocator`
+* retain the source mesh identity/revision information
+* answer repeated closest-point queries without rebuilding the locator
+* return closest surface point, triangle ID, distance, and triangle normal
+* support one query point or a batch of query points
+* support an optional maximum search distance
+* preserve or reject missed source points according to caller preference
+* never scan all mesh triangles in Python
 
-Acceptance:
+Suggested public API:
 
-* normal user sees Smooth Curve and Polyline only
-* Smooth Curve is the default
-* old curves still load
-* old internal modes do not break tests
+MeshSpatialIndex.from_mesh(mesh)
 
----
-
-## Part B — Use simple angle-based corner detection only
-
-Corner detection should be simple and cheap, similar to what appears to be used in ExModel-style workflows.
-
-Implement or consolidate into one function:
-
-detect_corner_point_types_by_angle(
-control_points,
+MeshSpatialIndex.query_closest_points(
+points,
 *,
-is_closed: bool,
-threshold_degrees: float,
-) -> list[str]
+max_distance: float | None = None,
+preserve_missed_points: bool = True,
+) -> MeshClosestPointResult
 
-Behavior:
+Properties:
 
-* For each eligible point, compute local angle using previous-current-next.
-* If angle is below threshold, classify as corner.
-* Otherwise classify as smooth.
-* Open-curve endpoints should remain smooth unless manually overridden.
-* Closed curves may evaluate all points.
-* Degenerate/duplicate points should be handled safely.
-* No NaN/inf results.
-* No expensive mesh queries.
-* No curvature optimization.
-* No repeated detection inside display sampling.
-
-Default threshold:
-
-* 135 degrees
-
-Performance requirement:
-
-* O(n)
-* run only when:
-
-  * a control point is added
-  * a control point is deleted
-  * a control point is moved
-  * the threshold changes
-  * the user explicitly presses Auto Detect Corners
-* do not run on every viewport render
-* do not run during every mouse move unless actively dragging a point, and even then throttle or update only the local affected points if possible
-
-Metadata:
-
-* point_types
-* point_type_sources
-* corner_angle_threshold_degrees
-* control_point_revision
-* corner_detection_revision
-
-Point type sources:
-
-* manual
-* auto
-* legacy
-* imported
+* triangle_count
+* vertex_count
+* build_time_seconds
+* valid
+* source_signature
 
 Rules:
 
-* manually set smooth/corner always overrides auto detection
-* auto-detected corners can be cleared
-* manual corners must not be cleared by Clear Auto Corners
+* locator construction may perform preprocessing once
+* query execution may loop over query points if required by VTK
+* query execution must not loop over all triangles
+* return NumPy arrays with stable shapes and dtypes
+* invalid triangles must be excluded during index construction
+* output triangle indices must map back to original `TriangleMeshData.triangles`
+* normal calculation must use the matched source triangle
+* no NaN/inf output
+* duplicate query points must work
+* empty query sets must work
 
 Acceptance:
 
-* creating manual curves with auto corner detection on is interactive
-* detection does not tank performance
-* smooth curves are not accidentally over-segmented
-* obvious hard angles become corners
-* tests verify sampling/rendering does not re-run detection unnecessarily
+* one spatial index can serve repeated queries
+* no per-query mesh rebuild
+* no Python triangle scan
+* original source triangle indices are preserved
 
 ---
 
-## Part C — Keep smoothing simple and predictable
+## Part C — Add a cached mesh-query service
 
-Do not build a complex tangent-handle system yet.
+Create:
 
-Use a simple smooth-span approach:
+src/mesh/query_service.py
 
-* corners split the curve into spans
-* smooth spans are smoothed/interpolated
-* corners remain exact
-* endpoints remain exact
-* closed curves close cleanly
+Add class:
 
-Preferred sampler:
+MeshQueryService
 
-* current best stable smoother if it already works
-* otherwise use centripetal Catmull-Rom for smooth spans
+Responsibilities:
+
+* lazily build and cache a `MeshSpatialIndex`
+* return the cached index for the current source mesh
+* invalidate the index when source mesh geometry changes
+* avoid invalidation for display-only changes such as color, opacity, or selection
+* expose cache/build diagnostics
+* centralize mesh-query ownership instead of building locators independently in multiple tools
+
+Suggested API:
+
+get_index(mesh, *, mesh_revision=None) -> MeshSpatialIndex
+
+invalidate()
+
+query_closest_points(
+mesh,
+points,
+*,
+mesh_revision=None,
+max_distance=None,
+preserve_missed_points=True,
+) -> MeshClosestPointResult
+
+Diagnostics:
+
+* cache_hit
+* index_build_count
+* last_build_time
+* last_query_time
+* triangle_count
+* queried_point_count
+* backend
 
 Rules:
 
-* smoothing must not cross corner points
-* smoothing must not move stored control points
-* smoothing affects fitted/display curve only
-* smoothness slider controls fitted-curve smoothing strength
-* no hidden curve mode behavior
-* no excessive control-point creation
+* do not hash every vertex/triangle on every request
+* use stable mesh identity plus an explicit revision or replacement event
+* document coordinate-space assumptions
+* curve points and mesh geometry must be queried in the same coordinate system
+* if mesh transforms are applied outside source geometry, preserve the current projection semantics exactly
 
 Acceptance:
 
-* sparse wheel-arch/body-line curve looks smooth with fewer points
-* hard corners stay hard
-* smoothness adjustment is visible but predictable
-* no performance regression
+* repeated curve/surface queries reuse one index
+* loading or replacing a mesh invalidates the index
+* visual preference changes do not invalidate it
+* cache behavior is testable
 
 ---
 
-## Part D — Fix manual curve interaction and camera control
+## Part D — Replace curve projection internals
 
-Manual curve creation/editing must not trap the user in one camera position.
+Update:
 
-Required viewport behavior:
+src/curves/projection.py
 
-* right mouse drag always orbits
-* middle mouse drag always pans
-* mouse wheel always zooms
-* left click only places a point when drawing/add-point mode is active
-* left click in edit mode selects a control point only if the cursor is over a control point
-* left click empty space in edit mode does nothing
-* left drag moves a control point only if the drag starts on a control point
-* Esc exits active submode first, then exits curve edit/draw mode if pressed again
+Keep the public contracts compatible where practical:
 
-Manual curve submodes:
+* `CurveProjectionResult`
+* `project_curve_points_to_mesh`
+* `project_stored_curve_to_mesh`
 
-* inactive
-* draw_add_points
-* edit_select
-* edit_move_point
-* explicit_add_point
-* explicit_insert_point
+Replace the brute-force internals with the spatial query service/index.
 
-Rules:
+Requirements:
 
-* Creating a new curve starts in draw_add_points.
-* Editing an existing curve starts in edit_select.
-* Add Point while editing must be explicitly enabled.
-* Insert Point while editing must be explicitly enabled.
-* Clicking empty space while editing must never add a point.
-* Camera navigation must remain available in every submode.
+* preserve projected points
+* preserve triangle indices
+* preserve normals
+* preserve distance calculations
+* preserve maximum-distance behavior
+* preserve missed-point behavior
+* preserve existing metadata names where possible
 
-Status text examples:
+Improve warning behavior:
 
-* "Drawing curve: left-click to add points. Right-drag to orbit."
-* "Editing curve: select or drag control points. Right-drag to orbit."
-* "Add Point active: left-click to append. Esc returns to edit mode."
-* "Insert Point active: click a curve segment. Esc returns to edit mode."
+* do not create thousands of individual warning strings for large batches
+* retain detailed warnings for small requests
+* aggregate large failures, for example:
+
+  * "238 of 4096 points exceeded the projection threshold."
+* store failed indices separately when useful
+
+Remove the old runtime `_closest_mesh_point` triangle loop after correctness tests are established.
 
 Acceptance:
 
-* user can orbit/pan/zoom during curve drawing
-* user can orbit/pan/zoom during curve editing
-* no random point placement during navigation
-* edit mode does not lock camera control
+* existing callers continue working
+* projection output remains compatible
+* large projection requests no longer scale linearly with every mesh triangle
+* existing project and curve metadata remain readable
 
 ---
 
-## Part E — Reduce visual size of curve points and lines
+## Part E — Route all scan-conforming tools through the service
 
-The current curve markers and lines are too bulky for scan tracing.
+Audit every current nearest-mesh or projection path.
 
-Reduce:
+At minimum, update:
 
-* normal control point radius
-* selected control point radius
-* minimum control point radius
-* active curve line width
-* selected curve line width
-* preview line width
-* surface source curve line width
+1. Manual curve projection
+2. Keep Curve On Mesh fitted-curve projection
+3. Project Selected Curve to Mesh
+4. Mesh-Conforming Loft Preview
+5. Any region-boundary projection using the same nearest-surface logic
+6. Future deviation-analysis computation helpers added in this task
 
-Suggested defaults:
+Do not create separate spatial locators for each feature.
 
-* selected curve line width: 3.0 to 3.4
-* active/manual curve line width: 2.4 to 2.8
-* preview line width: 2.0 to 2.2
-* control polygon line width: 0.8 to 1.0
-* normal control point radius ratio: about 0.0025
-* selected point radius ratio: about 0.0040
-* minimum point radius: about 0.0015
+Mesh-Conforming Loft Preview:
 
-Visual rules:
-
-* smooth points should be small and readable
-* corner points should be visually distinct but not huge
-* selected point should be obvious but not block the scan
-* control polygon should be thin and muted
-* fitted curve should be clear but not thick like a marker
+* build the loft grid as it does currently
+* send the full point batch through MeshQueryService
+* reuse the cached locator
+* preserve projection threshold behavior
+* preserve projection mean/max diagnostics
+* preserve failed projection count
+* preserve smooth shaded display
+* preserve non-BREP labeling
 
 Acceptance:
 
-* points do not obscure scan geometry
-* curves look more CAD-like
-* selected curves are still visible
+* all nearest-surface tools use the same query engine
+* locator is not rebuilt for each curve or surface
+* mesh-conforming loft performance is suitable for interactive use on realistic scans
 
 ---
 
-## Part F — Simplify Manual RE UI
+## Part F — Add foundational deviation computation
 
-The Manual RE panel currently exposes too many options.
-
-Default visible controls should be:
-
-Manual Curve:
-
-* Create Curve
-* Edit Selected Curve
-* Finish / Done
-* Cancel
-* Undo Last Point
-* Close / Open Curve
-* Convert Selected Curve to Smooth
-* Simplify Selected Curve
-
-Basic options:
-
-* Snap to Mesh
-* Auto Corners
-* Smoothness slider
-
-Move these under a collapsible Advanced Curve Controls section:
-
-* Add Point
-* Insert Point
-* Delete Point
-* Set Point Smooth
-* Set Point Corner
-* Clear Auto Corners
-* Auto Detect Corners
-* Straighten Span
-* Sample Count
-* Corner Threshold
-* Debug Curve Method
-
-Rules:
-
-* common workflow should not require opening Advanced
-* advanced controls remain available
-* disabled buttons should not dominate the UI
-* do not redesign the whole app layout in this task
-
-Acceptance:
-
-* Manual RE panel is shorter and easier to understand
-* common curve workflow is obvious
-* advanced functionality is hidden but available
-
----
-
-## Part G — Add Preferences color chooser / color wheel
-
-Add general color customization using Tk’s color chooser:
-
-tkinter.colorchooser.askcolor
-
-Add Preferences section:
-Display Colors
-
-Color-editable items:
-
-* mesh color
-* selected mesh color
-* manual curve color
-* selected curve color
-* active curve color
-* smooth point color
-* corner point color
-* selected point color
-* preview point color
-* preview line color
-* surface color
-* selected surface color
-* BREP surface color
-* selected BREP surface color
-* region color
-* region edge color
-* background color
-
-Colors should be stored and saved across projects. Color wheels should exist in preferences, replacing manual hex inputs.
-
-Rules:
-
-* old settings must load
-* invalid colors fall back to defaults
-* viewport converts hex colors to RGB
-* if live update is safe, apply immediately
-* otherwise apply after closing Preferences
-
-Acceptance:
-
-* user can change curve/point/surface colors
-* preferences persist
-* old settings do not break
-* default colors remain reasonable
-
----
-
-## Part H — Use current public CAD backend only
-
-Use the existing public CAD backend path in the project.
-
-Current intended backend:
-
-* CadQuery/OCP/OCCT
-
-Do not add proprietary CAD kernel assumptions.
-Do not add commercial SDK integration.
-Do not add unsupported backend UI.
-
-The backend abstraction should remain generic enough for future open/public kernels, but it should only expose capabilities that are actually implemented or planned with the current public stack.
-
-Acceptance:
-
-* CAD/BREP features still work with current installed backend
-* app still launches without CAD backend
-* STEP export still works when backend is installed
-* no confusing unsupported kernel options are added
-
----
-
-## Part I — Loft overbuild preview and draggable extension handles
-
-ExModel-style lofts appear to overbuild surfaces automatically. Add this as preview/feature behavior first.
-
-Add editable loft options:
-
-* overbuild_enabled: bool = True
-* overbuild_amount: float
-* overbuild_u_start: float
-* overbuild_u_end: float
-* overbuild_v_start: float
-* overbuild_v_end: float
-* show_overbuild_handles: bool = True
-
-Initial implementation:
-
-* extend loft preview beyond source curves by extrapolating sampled surface rows/columns
-* store overbuild values in loft feature metadata
-* show four corner handles on selected loft preview
-* allow dragging handles outward/inward to change overbuild values
-* update preview after drag
-* mark loft feature dirty/rebuild preview
-
-Important:
-
-* this is not final trim
-* this is not surface-surface intersection
-* this is not final sewn BREP
-* do not claim trimmed/intersected output yet
-* if backend cannot create true overbuilt BREP, keep overbuild as preview metadata only
-
-Status text:
-"Overbuild preview extends the loft for later trim/intersection. Final trimming is not implemented yet."
-
-Acceptance:
-
-* loft previews overbuild past curve boundaries by default
-* user can adjust overbuild with handles
-* metadata stores overbuild values
-* no false trim/intersection claims
-* existing BREP loft export still works
-
----
-
-## Part J — Hide internal surface triangles by default
-
-Generated surfaces should look like CAD surfaces, not retopology triangle grids.
-
-Default display:
-
-* smooth shaded surface
-* no internal triangle wireframe
-* boundary edges visible
-* optional sparse U/V isocurves
-* debug tessellation hidden
-
-Add option:
-
-* Show Surface Tessellation
-
-Rules:
-
-* preview mesh triangles are display-only
-* do not show every triangle edge unless debug option is enabled
-* BREP/preview surfaces should visually resemble smooth CAD surfaces
-
-Acceptance:
-
-* loft previews look smooth
-* internal triangle grid is hidden
-* debug wireframe/tessellation can still be enabled
-
----
-
-## Part K — Mesh-conforming loft preview for open body-line curves
-
-Problem:
-Open BREP lofts through body-line curves may not conform to the scanned body. This is expected because a CAD loft interpolates through curves in space; it does not automatically know to follow the mesh between open curves.
-
-Add command:
-Create Mesh-Conforming Loft Preview
-
-Behavior:
-
-1. Build a loft sample grid between selected open curves.
-2. Project grid points to the nearest mesh surface.
-3. Display the projected preview as a smooth shaded surface.
-4. Report projection mean/max distance.
-5. Store projection metrics.
-6. Do not label it as BREP.
-7. Do not export it as STEP unless later fitted into a real CAD surface.
-
-Metadata:
-
-* source_curve_ids
-* source_mesh_name
-* projection_mean_distance
-* projection_max_distance
-* failed_projection_count
-* grid_u_count
-* grid_v_count
-* conforming_preview = True
-
-Status explanation:
-"BREP loft is a clean CAD surface through curves. Mesh-Conforming Preview projects a loft preview to the scan for body-following evaluation."
-
-Acceptance:
-
-* open body-line curves can create a scan-following preview
-* user can see whether the surface follows the body
-* no false BREP labeling
-* projection metrics are shown
-
----
-
-## Part L — Prepare for future deviation analysis
-
-Do not implement full real-time deviation analysis in this task.
-
-Add only a small module target:
+Extend:
 
 src/analysis/deviation.py
 
-Dataclasses:
+The existing dataclasses may remain, but add a computation function using the new mesh query service:
 
-* DeviationSample
-* DeviationResult
+compute_point_deviation_to_mesh(
+source_points,
+mesh_or_index,
+*,
+max_distance: float | None = None,
+signed: bool = False,
+) -> DeviationResult
 
-Future concepts:
+Requirements:
 
-* curve deviation to mesh
-* surface deviation to mesh
-* BREP deviation to scan
-* color-coded heatmap
+* no viewport/UI heatmap yet
+* no continuous real-time mode yet
+* use accelerated nearest-surface queries
+* calculate:
 
-Rules:
+  * mean absolute distance
+  * maximum absolute distance
+  * RMS distance
+  * failed sample count
+* optionally calculate signed distance only when a reliable normal/sign convention is available
+* if signed distance is not reliable, leave it `None` rather than inventing a sign
+* include query/build timing and backend information in metadata
 
-* no expensive computation yet
-* no full UI yet
-* no performance hit
+Purpose:
+This establishes the real computational foundation for the later color-coded deviation tool without adding that UI yet.
 
 Acceptance:
 
-* future deviation analysis has a clear module target
-* no current workflow slowdown
+* deviation computation uses the spatial index
+* results are numerically tested
+* no duplicated closest-point code exists in the analysis module
 
 ---
 
-## Part M — Tests
+## Part G — Add performance instrumentation
 
-Add/update tests:
+Add timing diagnostics around:
 
-Code cleanup:
+* index construction
+* batch query
+* curve projection
+* mesh-conforming loft projection
 
-* removed/hidden curve modes do not break old project loading
-* internal legacy modes still load if needed
-* no deleted function breaks imports
+Do not print timing information continuously to stdout.
 
-Corner detection:
+Store timing in result metadata and expose it through existing diagnostics/status systems where appropriate.
 
-* angle threshold marks sharp corners
-* smooth point remains smooth
-* open endpoints remain smooth by default
-* manual corners override auto
-* Clear Auto Corners preserves manual corners
-* corner detection does not run during pure sampling/render refresh
-* performance with 100+ points is acceptable
+Add:
 
-Smoothing:
+benchmarks/benchmark_mesh_queries.py
 
-* Smooth Curve is default
-* sparse wheel-arch-like curve is smooth
-* boxy curve gets corners with auto corners enabled
-* smoothing does not cross corners
-* endpoints remain exact
-* stored control points are not moved by smoothing
+The benchmark should:
 
-Interaction:
+* generate or load a representative triangulated mesh
+* query several point counts
+* report:
 
-* right-drag orbit works in draw mode
-* right-drag orbit works in edit mode
-* middle-drag pan works in draw/edit mode
-* wheel zoom works in draw/edit mode
-* left-click empty space in edit mode does not add point
-* Add Point mode adds point
-* Insert Point mode inserts point
-* Esc exits submode predictably
+  * triangle count
+  * query point count
+  * index build time
+  * first query time
+  * repeated cached query time
+  * hit/miss count
+* optionally compare against brute force only on a small mesh
+* never run the brute-force reference on a production-sized benchmark
 
-Display:
+Suggested benchmark cases:
 
-* reduced line widths applied
-* reduced point radius applied
-* selected curve still visible
-* point markers do not dominate scan
+* 10,000 triangles / 100 points
+* 100,000 triangles / 1,000 points
+* larger case when memory permits
 
-Preferences:
+Do not add fragile microsecond-level timing assertions to normal CI.
 
-* color chooser saves settings
-* invalid color falls back safely
-* old settings load
-* viewport uses updated colors
+Acceptance:
 
-CAD backend:
+* benchmark can be run directly
+* cached queries are visibly faster than rebuilding
+* performance characteristics are measurable
 
-* current CadQuery/OCP/OCCT path still works
-* no unsupported/proprietary backend UI added
-* STEP export still works if backend installed
-* app launches without CAD backend
+---
 
-Loft overbuild:
+## Part H — Add meaningful automated tests
 
-* loft feature stores overbuild options
-* preview extends beyond source curves
-* handle drag changes overbuild values
-* no trim/intersection claim
+Add tests for:
 
-Surface display:
+Spatial index:
 
-* internal triangle wireframe hidden by default
-* boundary edges visible
-* debug tessellation option works
+* correct closest points
+* correct triangle IDs
+* correct distances
+* correct normals
+* empty mesh
+* invalid triangles
+* empty point batch
+* maximum-distance rejection
+* duplicate points
+* missed-point preservation
+
+Cache:
+
+* first query builds one index
+* repeated query reuses it
+* mesh replacement invalidates it
+* display setting change does not invalidate it
+
+Projection:
+
+* existing `CurveProjectionResult` behavior remains compatible
+* projected stored curves retain lineage
+* large batches produce aggregated warnings
+* no brute-force runtime triangle loop is called
 
 Mesh-conforming loft:
 
-* projected preview follows mesh
-* projection metrics stored
-* not exported as BREP
-* not mislabeled as CAD/BREP
+* uses MeshQueryService
+* reuses cached locator
+* retains projection diagnostics
+* remains non-BREP
+* remains wireframe-off by default
+
+Deviation:
+
+* mean/max/RMS are correct
+* failed samples are counted
+* timing/backend metadata exists
+
+Performance structure:
+
+* patch or instrument locator construction to prove it is built once
+* patch the old brute-force helper to prove production code does not call it
+* avoid unreliable strict wall-clock assertions in CI
 
 Regression:
 
-* app launches
-* existing manual curves load
-* region select works
-* BREP face from region works
-* BREP loft works
-* editable loft feature records still load
-* project save/load works
-* scene browser works
-* pytest passes
+* manual curve tests pass
+* Task 72 tests pass
+* region selection tests pass
+* surface preview tests pass
+* BREP tests pass
+* project IO tests pass
+* settings tests pass
+* app imports and launches
+
+---
+
+## Part I — Add continuous integration
+
+The repository currently lacks automated commit checks.
+
+Add a GitHub Actions workflow appropriate to the existing project:
+
+.github/workflows/tests.yml
+
+Requirements:
+
+* run on push and pull request
+* use the project’s supported Python version
+* install project requirements
+* run the complete test suite
+* use a Linux virtual display for Tk/VTK tests if required
+* cache pip downloads where straightforward
+* fail on test failures
+* do not silently skip the core geometry tests
+
+If full GUI tests cannot run reliably in CI:
+
+* run all headless geometry/state/project tests
+* clearly separate GUI-dependent tests
+* document the local command for the complete suite
 
 Acceptance:
 
-* curve system feels simpler and faster
-* corner detection is simple angle-based
-* smooth body curves need fewer points
-* user can still manually override smooth/corner points
-* camera/navigation remain usable
-* points and lines are visually smaller
-* colors can be adjusted in preferences
-* loft overbuild preview exists
-* surface triangle grid is hidden by default
-* mesh-conforming loft preview exists
-* current open-source CAD backend remains functional
+* future commits receive an automated pass/fail result
+* geometry-query tests run in CI
+* no dependency on proprietary software
+
+---
+
+## Part J — Limited cleanup only
+
+While replacing the projection engine:
+
+Remove or consolidate only code directly made redundant by this task:
+
+* brute-force runtime nearest-triangle loops
+* duplicate closest-point result conversions
+* duplicate warning generation
+* duplicate mesh-query preparation
+* unused imports/helpers caused by the replacement
+
+Do not start the full application refactor here.
+Do not broadly move UI panels.
+Do not rewrite MainWindow.
+Do not rename unrelated systems.
+Do not combine this with primitive recognition or trim tools.
+
+It is acceptable to give MainWindow one `MeshQueryService` instance and pass it into projection/surface commands.
+
+Acceptance:
+
+* one authoritative nearest-surface implementation
+* no duplicated production projection engines
+* unrelated behavior remains unchanged
+
+---
+
+## Final acceptance
+
+Task 73 is complete when:
+
+* closest-point projection no longer loops through every triangle in Python
+* a cached VTK spatial locator is used
+* curve projection uses the locator
+* Keep Curve On Mesh uses the locator
+* mesh-conforming loft uses the locator
+* deviation computation uses the locator
+* repeated queries reuse the same index
+* mesh replacement invalidates the index
+* correctness matches the reference implementation
+* benchmarks demonstrate the new scaling behavior
+* Task 72 behavior remains intact
+* the complete test suite passes
+* CI is added and passes
+* app launches
+* no primitives, trimming, or new surfacing features were added
 
 ## Stop after this task.
-
-
-## Task 78: Application Architecture Refactor — Controllers, Commands, and Services
-
-Goal:
-Remove feature logic from MainWindow and move it into dedicated controllers/services.
-
-Create structure:
-
-src/app/controllers/
-
-* selection_controller.py
-* viewport_controller.py
-* scene_controller.py
-* curve_controller.py
-* manual_curve_controller.py
-* region_controller.py
-* surface_controller.py
-* brep_controller.py
-* transform_controller.py
-
-src/app/commands/
-
-* command_context.py
-* command_result.py
-* curve_commands.py
-* region_commands.py
-* surface_commands.py
-* brep_commands.py
-* transform_commands.py
-* export_commands.py
-
-src/app/services/
-
-* status_service.py
-* dirty_state_service.py
-* selection_service.py
-* undo_service.py
-* project_service.py
-* viewport_refresh_service.py
-* scene_browser_refresh_service.py
-
-Rules:
-
-* MainWindow should not directly implement feature behavior.
-* MainWindow should own the shell, app lifecycle, and panel mounting only.
-* Controllers coordinate tools.
-* Commands perform discrete user actions.
-* Services handle shared cross-cutting behavior.
-* No feature regression.
-* No UI redesign in this task.
-* No new geometry features in this task.
-
-MainWindow should retain:
-
-* app startup
-* menu/panel initialization
-* top-level event wiring
-* controller construction
-* global shutdown/error handling
-
-MainWindow should lose:
-
-* BREP creation logic
-* curve editing logic
-* region extraction/fitting logic
-* surface generation logic
-* export logic
-* detailed selection mutation logic
-* direct project serialization logic where possible
-
-Acceptance:
-
-* MainWindow is substantially smaller.
-* Existing commands still work.
-* Undo/redo still works.
-* Scene browser still updates.
-* Viewport still updates.
-* Tests pass.
-* App launches.
-* No user workflow is broken.
-
----
-
-## Task 79: UI Refactor — Workbench Panels, Widgets, and Settings Separation
-
-Goal:
-Move all UI construction out of MainWindow into dedicated panels and reusable widgets.
-
-Create structure:
-
-src/app/panels/
-
-* base_panel.py
-* scene_panel.py
-* transform_panel.py
-* sections_panel.py
-* curves_panel.py
-* manual_re_panel.py
-* region_panel.py
-* surfaces_panel.py
-* brep_panel.py
-* analysis_panel.py
-
-src/app/widgets/
-
-* labeled_value.py
-* numeric_entry.py
-* color_picker_row.py
-* command_button.py
-* collapsible_section.py
-* object_list_actions.py
-* status_strip.py
-
-src/app/bindings/
-
-* ui_state.py
-* panel_bindings.py
-* command_bindings.py
-
-Settings structure:
-
-src/settings/
-
-* settings_data.py
-* settings_io.py
-* settings_registry.py
-* display_settings.py
-* curve_settings.py
-* region_settings.py
-* surface_settings.py
-* brep_settings.py
-* export_settings.py
-
-Rules:
-
-* Panels build UI only.
-* Panels do not contain geometry logic.
-* Panels call controllers/commands.
-* Settings UI must be separate from settings data.
-* Preferences dialog must not own business logic.
-* Reusable rows/widgets should replace repetitive label/button code.
-* Workbench panels should be mountable independently.
-* No behavior change unless required to preserve functionality.
-
-Acceptance:
-
-* MainWindow no longer contains thousands of lines of widget layout.
-* Surface/BREP UI is in surfaces_panel.py / brep_panel.py.
-* Manual curve UI is in manual_re_panel.py.
-* Region UI is in region_panel.py.
-* Preferences/settings code is split cleanly.
-* Settings save/load still works.
-* App launches.
-* Tests pass.
-
----
-
-## Task 80: Project IO, Export, and Dependency Boundary Refactor
-
-Goal:
-Separate all import/export, project persistence, CAD export, mesh export, and optional dependency handling into clean packages.
-
-Create structure:
-
-src/io/
-
-* project_io.py
-* project_schema.py
-* project_migrations.py
-* mesh_import.py
-* mesh_export.py
-* curve_io.py
-* surface_io.py
-* brep_io.py
-
-src/export/
-
-* export_registry.py
-* step_exporter.py
-* mesh_exporter.py
-* curve_exporter.py
-* diagnostic_exporter.py
-
-src/dependencies/
-
-* optional_dependencies.py
-* cad_kernel_dependency.py
-* vtk_dependency.py
-
-src/cad_kernel/
-
-* keep backend-specific CAD code isolated
-* no app/UI imports inside cad_kernel
-* no Tk imports inside cad_kernel
-
-Rules:
-
-* Export commands call export services.
-* Project IO should not live inside MainWindow.
-* CAD/BREP export should not be mixed with UI callbacks.
-* Optional dependencies must be detected in one place.
-* Missing optional dependency must never crash app startup.
-* Project schema should support migration/versioning.
-* STEP export must only export real CAD/BREP objects.
-* Mesh export must not pretend to be BREP export.
-
-Acceptance:
-
-* Project save/load works.
-* Existing projects load.
-* STEP export works.
-* Mesh import still works.
-* Optional CAD kernel detection works.
-* App launches without optional CAD packages.
-* Export code is testable without UI.
-* MainWindow does not directly write files except through services/commands.
-* Tests pass.
-
----
-
-## Refactor phase acceptance
-
-After Tasks 78–80:
-
-* MainWindow is mostly application shell.
-* UI panels are separate.
-* Settings are separated by domain.
-* Export and project IO are separate.
-* CAD kernel code remains isolated.
-* Commands/controllers are testable.
-* Geometry logic is outside UI files.
-* No major user-visible regression.
-* Future ExModel-style tools can be added without bloating MainWindow again.
-
----

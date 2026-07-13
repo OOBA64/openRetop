@@ -1,5 +1,13 @@
-"""Analysis data contracts for future inspection workflows."""
+"""Analysis contracts and accelerated computation helpers."""
 
-from analysis.deviation import DeviationResult, DeviationSample
+from analysis.deviation import (
+    DeviationResult,
+    DeviationSample,
+    compute_point_deviation_to_mesh,
+)
 
-__all__ = ["DeviationResult", "DeviationSample"]
+__all__ = [
+    "DeviationResult",
+    "DeviationSample",
+    "compute_point_deviation_to_mesh",
+]

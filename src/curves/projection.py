@@ -1,9 +1,9 @@
-"""Curve-to-mesh projection helpers."""
+"""Curve-to-mesh projection helpers backed by the shared mesh query service."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from time import perf_counter
 
 import numpy as np
 
@@ -14,7 +14,12 @@ from curves.manual_curve import (
     build_manual_stored_curve,
     parse_manual_curve_metadata,
 )
+from mesh.query_service import DEFAULT_MESH_QUERY_SERVICE, MeshQueryService
+from mesh.spatial_index import MeshClosestPointResult
 from mesh.triangle_mesh import TriangleMeshData
+
+
+_DETAILED_WARNING_POINT_LIMIT = 32
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,11 @@ class CurveProjectionResult:
     max_distance: float
     mean_distance: float
     warnings: list[str] = field(default_factory=list)
+    failed_indices: list[int] = field(default_factory=list)
+    build_time_seconds: float = 0.0
+    query_time_seconds: float = 0.0
+    backend: str = ""
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 def project_curve_points_to_mesh(
@@ -38,12 +48,23 @@ def project_curve_points_to_mesh(
     *,
     max_search_distance: float | None = None,
     preserve_missed_points: bool = True,
+    mesh_query_service: MeshQueryService | None = None,
+    mesh_revision: object | None = None,
 ) -> CurveProjectionResult:
+    started = perf_counter()
     source_points = _safe_points(points)
     if len(source_points) == 0:
-        return _empty_projection_result(source_points, warning="No curve points to project.")
+        return _empty_projection_result(
+            source_points,
+            warning="No curve points to project.",
+            projection_time_seconds=perf_counter() - started,
+        )
     if mesh is None or mesh.is_empty():
-        projected = source_points.copy() if preserve_missed_points else np.zeros((len(source_points), 3), dtype=float)
+        projected = (
+            source_points.copy()
+            if preserve_missed_points
+            else np.zeros((len(source_points), 3), dtype=float)
+        )
         return _projection_result(
             source_points,
             projected,
@@ -52,14 +73,26 @@ def project_curve_points_to_mesh(
             [None for _point in source_points],
             [None for _point in source_points],
             ["No mesh available for projection."],
+            failed_indices=list(range(len(source_points))),
+            metadata={"reason": "no_mesh"},
+            projection_time_seconds=perf_counter() - started,
         )
 
-    vertices = np.asarray(mesh.vertices, dtype=float).reshape((-1, 3))
-    triangles = np.asarray(mesh.triangles, dtype=int).reshape((-1, 3))
-    valid_triangle_mask = np.all((triangles >= 0) & (triangles < len(vertices)), axis=1)
-    valid_triangle_indices = np.nonzero(valid_triangle_mask)[0]
-    if len(valid_triangle_indices) == 0:
-        projected = source_points.copy() if preserve_missed_points else np.zeros((len(source_points), 3), dtype=float)
+    service = mesh_query_service or DEFAULT_MESH_QUERY_SERVICE
+    try:
+        query = service.query_closest_points(
+            mesh,
+            source_points,
+            mesh_revision=mesh_revision,
+            max_distance=max_search_distance,
+            preserve_missed_points=preserve_missed_points,
+        )
+    except RuntimeError as exc:
+        projected = (
+            source_points.copy()
+            if preserve_missed_points
+            else np.zeros((len(source_points), 3), dtype=float)
+        )
         return _projection_result(
             source_points,
             projected,
@@ -67,57 +100,46 @@ def project_curve_points_to_mesh(
             np.zeros(len(source_points), dtype=float),
             [None for _point in source_points],
             [None for _point in source_points],
-            ["Mesh has no valid projection triangles."],
+            [f"Mesh query backend unavailable: {exc}"],
+            failed_indices=list(range(len(source_points))),
+            metadata={"reason": "backend_unavailable"},
+            projection_time_seconds=perf_counter() - started,
         )
 
-    triangle_points = vertices[triangles[valid_triangle_indices]]
-    max_distance = _optional_positive_float(max_search_distance)
-    projected_points: list[np.ndarray] = []
-    hit_mask: list[bool] = []
-    distances: list[float] = []
-    triangle_indices: list[int | None] = []
-    normals: list[list[float] | None] = []
-    warnings: list[str] = []
-
-    for point_index, source_point in enumerate(source_points):
-        closest_point, source_triangle_index, distance, normal = _closest_mesh_point(
-            source_point,
-            triangle_points,
-            valid_triangle_indices,
-        )
-        hit = bool(source_triangle_index is not None)
-        if hit and max_distance is not None and distance > max_distance:
-            hit = False
-            warnings.append(
-                f"Point {point_index + 1} missed projection distance limit "
-                f"({distance:.6g} > {max_distance:.6g})."
-            )
-        elif not hit:
-            warnings.append(f"Point {point_index + 1} could not be projected.")
-
-        if hit:
-            projected_points.append(closest_point)
-            hit_mask.append(True)
-            distances.append(float(distance))
-            triangle_indices.append(source_triangle_index)
-            normals.append(None if normal is None else [float(value) for value in normal])
-        else:
-            projected_points.append(source_point.copy() if preserve_missed_points else np.zeros(3, dtype=float))
-            hit_mask.append(False)
-            distances.append(
-                float(distance) if source_triangle_index is not None else 0.0
-            )
-            triangle_indices.append(None)
-            normals.append(None)
-
+    triangle_indices = [
+        int(query.triangle_indices[index]) if query.hit_mask[index] else None
+        for index in range(len(source_points))
+    ]
+    normals = [
+        [float(value) for value in query.normals[index]]
+        if query.hit_mask[index]
+        else None
+        for index in range(len(source_points))
+    ]
+    failed_indices = np.flatnonzero(~query.hit_mask).astype(int).tolist()
+    warnings = _query_warnings(query, max_search_distance=max_search_distance)
+    metadata = {
+        **query.metadata,
+        "query_backend": query.backend,
+        "index_build_time_seconds": query.build_time_seconds,
+        "query_time_seconds": query.query_time_seconds,
+        "failed_indices": failed_indices,
+        "projection_time_seconds": perf_counter() - started,
+    }
     return _projection_result(
         source_points,
-        np.asarray(projected_points, dtype=float).reshape((-1, 3)),
-        np.asarray(hit_mask, dtype=bool),
-        np.asarray(distances, dtype=float),
+        query.closest_points,
+        query.hit_mask,
+        query.distances,
         triangle_indices,
         normals,
         warnings,
+        failed_indices=failed_indices,
+        build_time_seconds=query.build_time_seconds,
+        query_time_seconds=query.query_time_seconds,
+        backend=query.backend,
+        metadata=metadata,
+        projection_time_seconds=metadata["projection_time_seconds"],
     )
 
 
@@ -129,6 +151,8 @@ def project_stored_curve_to_mesh(
     name: str,
     source_mesh_name: str,
     max_search_distance: float | None = None,
+    mesh_query_service: MeshQueryService | None = None,
+    mesh_revision: object | None = None,
 ) -> StoredCurve:
     source_points = _source_points_for_curve(curve)
     projection = project_curve_points_to_mesh(
@@ -136,6 +160,8 @@ def project_stored_curve_to_mesh(
         mesh,
         max_search_distance=max_search_distance,
         preserve_missed_points=True,
+        mesh_query_service=mesh_query_service,
+        mesh_revision=mesh_revision,
     )
     source_metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
     control_data = parse_manual_curve_metadata(curve)
@@ -179,6 +205,10 @@ def project_stored_curve_to_mesh(
             "projection_mean_distance": float(projection.mean_distance),
             "projection_max_distance": float(projection.max_distance),
             "projection_warnings": list(projection.warnings),
+            "projection_failed_indices": list(projection.failed_indices),
+            "projection_index_build_time_seconds": projection.build_time_seconds,
+            "projection_query_time_seconds": projection.query_time_seconds,
+            "projection_backend": projection.backend,
             "control_points": projection.projected_points.tolist(),
             "curve_method": curve_method,
             "sample_count": sample_count,
@@ -191,6 +221,49 @@ def project_stored_curve_to_mesh(
     return projected_curve
 
 
+def _query_warnings(
+    query: MeshClosestPointResult,
+    *,
+    max_search_distance: float | None,
+) -> list[str]:
+    if query.metadata.get("reason") == "no_valid_triangles":
+        return ["Mesh has no valid projection triangles."]
+    failed_indices = np.flatnonzero(~query.hit_mask).astype(int).tolist()
+    if not failed_indices:
+        return []
+
+    threshold_indices = {
+        int(index)
+        for index in query.metadata.get("threshold_rejected_indices", [])
+    }
+    if len(query.source_points) > _DETAILED_WARNING_POINT_LIMIT:
+        warnings: list[str] = []
+        threshold_count = sum(index in threshold_indices for index in failed_indices)
+        if threshold_count:
+            warnings.append(
+                f"{threshold_count} of {len(query.source_points)} points exceeded "
+                "the projection threshold."
+            )
+        other_count = len(failed_indices) - threshold_count
+        if other_count:
+            warnings.append(
+                f"{other_count} of {len(query.source_points)} points could not be projected."
+            )
+        return warnings
+
+    threshold = _optional_positive_float(max_search_distance)
+    warnings = []
+    for index in failed_indices:
+        if index in threshold_indices and threshold is not None:
+            warnings.append(
+                f"Point {index + 1} missed projection distance limit "
+                f"({query.distances[index]:.6g} > {threshold:.6g})."
+            )
+        else:
+            warnings.append(f"Point {index + 1} could not be projected.")
+    return warnings
+
+
 def _projection_result(
     source_points: np.ndarray,
     projected_points: np.ndarray,
@@ -199,6 +272,13 @@ def _projection_result(
     triangle_indices: list[int | None],
     normals: list[list[float] | None],
     warnings: list[str],
+    *,
+    failed_indices: list[int] | None = None,
+    build_time_seconds: float = 0.0,
+    query_time_seconds: float = 0.0,
+    backend: str = "",
+    metadata: dict[str, object] | None = None,
+    projection_time_seconds: float = 0.0,
 ) -> CurveProjectionResult:
     safe_distances = np.nan_to_num(
         np.asarray(distances, dtype=float).reshape((-1,)),
@@ -206,13 +286,18 @@ def _projection_result(
         posinf=0.0,
         neginf=0.0,
     )
-    hit_distances = distances[hit_mask & np.isfinite(distances)]
-    projected_count = int(np.count_nonzero(hit_mask))
+    safe_hit_mask = np.asarray(hit_mask, dtype=bool).reshape((-1,))
+    hit_distances = safe_distances[safe_hit_mask]
+    projected_count = int(np.count_nonzero(safe_hit_mask))
     missed_count = int(len(source_points) - projected_count)
+    result_metadata = dict(metadata or {})
+    result_metadata.setdefault(
+        "projection_time_seconds", max(float(projection_time_seconds), 0.0)
+    )
     return CurveProjectionResult(
         projected_points=_safe_points(projected_points),
         source_points=source_points.copy(),
-        hit_mask=np.asarray(hit_mask, dtype=bool).reshape((-1,)),
+        hit_mask=safe_hit_mask,
         distances=safe_distances,
         triangle_indices=list(triangle_indices),
         normals=list(normals),
@@ -221,10 +306,20 @@ def _projection_result(
         max_distance=float(np.max(hit_distances)) if len(hit_distances) else 0.0,
         mean_distance=float(np.mean(hit_distances)) if len(hit_distances) else 0.0,
         warnings=list(warnings),
+        failed_indices=list(failed_indices or []),
+        build_time_seconds=max(float(build_time_seconds), 0.0),
+        query_time_seconds=max(float(query_time_seconds), 0.0),
+        backend=str(backend),
+        metadata=result_metadata,
     )
 
 
-def _empty_projection_result(source_points: np.ndarray, *, warning: str) -> CurveProjectionResult:
+def _empty_projection_result(
+    source_points: np.ndarray,
+    *,
+    warning: str,
+    projection_time_seconds: float = 0.0,
+) -> CurveProjectionResult:
     return _projection_result(
         source_points,
         source_points.copy(),
@@ -233,89 +328,8 @@ def _empty_projection_result(source_points: np.ndarray, *, warning: str) -> Curv
         [None for _point in source_points],
         [None for _point in source_points],
         [warning],
+        projection_time_seconds=projection_time_seconds,
     )
-
-
-def _closest_mesh_point(
-    point: np.ndarray,
-    triangle_points: np.ndarray,
-    triangle_indices: np.ndarray,
-) -> tuple[np.ndarray, int | None, float, list[float] | None]:
-    best_point: np.ndarray | None = None
-    best_triangle_index: int | None = None
-    best_distance_squared = float("inf")
-    best_normal: list[float] | None = None
-    for local_index, triangle in enumerate(triangle_points):
-        candidate = _closest_point_on_triangle(point, triangle[0], triangle[1], triangle[2])
-        distance_squared = float(np.dot(candidate - point, candidate - point))
-        if distance_squared >= best_distance_squared:
-            continue
-        normal = _triangle_normal(triangle[0], triangle[1], triangle[2])
-        best_point = candidate
-        best_triangle_index = int(triangle_indices[local_index])
-        best_distance_squared = distance_squared
-        best_normal = normal
-
-    if best_point is None:
-        return (point.copy(), None, 0.0, None)
-    return (best_point, best_triangle_index, float(np.sqrt(best_distance_squared)), best_normal)
-
-
-def _closest_point_on_triangle(
-    point: np.ndarray,
-    a: np.ndarray,
-    b: np.ndarray,
-    c: np.ndarray,
-) -> np.ndarray:
-    ab = b - a
-    ac = c - a
-    ap = point - a
-    d1 = float(np.dot(ab, ap))
-    d2 = float(np.dot(ac, ap))
-    if d1 <= 0.0 and d2 <= 0.0:
-        return a.copy()
-
-    bp = point - b
-    d3 = float(np.dot(ab, bp))
-    d4 = float(np.dot(ac, bp))
-    if d3 >= 0.0 and d4 <= d3:
-        return b.copy()
-
-    vc = d1 * d4 - d3 * d2
-    if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
-        v = d1 / (d1 - d3)
-        return a + v * ab
-
-    cp = point - c
-    d5 = float(np.dot(ab, cp))
-    d6 = float(np.dot(ac, cp))
-    if d6 >= 0.0 and d5 <= d6:
-        return c.copy()
-
-    vb = d5 * d2 - d1 * d6
-    if vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
-        w = d2 / (d2 - d6)
-        return a + w * ac
-
-    va = d3 * d6 - d5 * d4
-    if va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
-        w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
-        return b + w * (c - b)
-
-    denominator = va + vb + vc
-    if abs(denominator) <= 1e-12:
-        return a.copy()
-    v = vb / denominator
-    w = vc / denominator
-    return a + ab * v + ac * w
-
-
-def _triangle_normal(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> list[float] | None:
-    normal = np.cross(b - a, c - a)
-    length = float(np.linalg.norm(normal))
-    if length <= 1e-12 or not np.isfinite(length):
-        return None
-    return [float(value) for value in normal / length]
 
 
 def _source_points_for_curve(curve: StoredCurve) -> np.ndarray:

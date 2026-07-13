@@ -59,3 +59,22 @@ python src/main.py
 ```
 
 Do not commit secrets, API keys, credentials, or large scan files. Dont be stupid.
+
+## Tests and mesh-query benchmark
+
+Run the complete local suite from the repository root:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+The GitHub Actions workflow runs the same suite under a Linux virtual display so
+Tk/VTK tests execute alongside the headless geometry, state, and project tests.
+
+Run the accelerated mesh-query benchmark with:
+
+```powershell
+python benchmarks/benchmark_mesh_queries.py
+```
+
+Use `--quick` for the 10,000-triangle smoke case.
