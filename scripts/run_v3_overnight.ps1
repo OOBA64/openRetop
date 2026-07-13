@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$StartTask = 75,
     [int]$EndTask = 82,
     [string]$Model = "gpt-5.6-sol",
@@ -106,7 +106,7 @@ for ($Task = $StartTask; $Task -le $EndTask; $Task++) {
                 & codex exec `
                     --model $Model `
                     --sandbox workspace-write `
-                    --ask-for-approval never `
+
                     --cd $RepoRoot `
                     --output-last-message $LastMessage `
                     - `
@@ -179,3 +179,5 @@ Write-Host ""
 Write-Host "Tasks $StartTask through $EndTask completed." -ForegroundColor Green
 Write-Host "Final commit: $(git -C $RepoRoot rev-parse HEAD)"
 Write-Host "Logs: $LogRoot"
+
+
