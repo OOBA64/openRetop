@@ -189,6 +189,25 @@ class ProjectDataTests(unittest.TestCase):
 
 
 class ProjectIOTests(unittest.TestCase):
+    def test_project_display_colors_round_trip_and_invalid_entries_are_ignored(self) -> None:
+        project = default_project_data()
+        project.display.colors = {
+            "manual_curve_color": "#123456",
+            "surface_color": "#ABCDEF",
+        }
+        data = project_to_dict(project)
+        data["display"]["colors"]["bad"] = "invalid"
+
+        loaded = project_from_dict(data)
+
+        self.assertEqual(
+            loaded.display.colors,
+            {
+                "manual_curve_color": "#123456",
+                "surface_color": "#ABCDEF",
+            },
+        )
+
     def test_project_to_dict_preserves_all_fields(self) -> None:
         project = _sample_project()
 
@@ -211,6 +230,7 @@ class ProjectIOTests(unittest.TestCase):
                     "show_grid": False,
                     "show_axes": True,
                     "show_normals": True,
+                    "colors": {},
                 },
                 "section": {
                     "axis": "Y",

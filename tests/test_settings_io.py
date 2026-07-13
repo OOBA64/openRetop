@@ -12,6 +12,7 @@ from settings.settings_data import (
     DEFAULT_REGION_SELECTION_EDGE_COLOR,
     DEFAULT_REGION_SELECTION_COLOR,
     DEFAULT_REGION_SELECTION_OPACITY,
+    DISPLAY_COLOR_FIELDS,
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
@@ -129,8 +130,10 @@ class SettingsIOTests(unittest.TestCase):
                     "show_normals": True,
                     "show_axis_gizmo": False,
                     "show_viewcube": False,
-                    "region_selection_color": "#FF8800",
-                    "region_selection_edge_color": "#FFF2CC",
+                    **{
+                        field_name: getattr(settings.display, field_name)
+                        for field_name in DISPLAY_COLOR_FIELDS
+                    },
                     "region_selection_opacity": 0.5,
                 },
                 "import": {
@@ -166,6 +169,19 @@ class SettingsIOTests(unittest.TestCase):
         settings = _sample_settings()
 
         self.assertEqual(settings_from_dict(settings_to_dict(settings)), settings)
+
+    def test_invalid_saved_color_falls_back_without_losing_other_settings(self) -> None:
+        data = settings_to_dict(_sample_settings())
+        data["display"]["manual_curve_color"] = "not-a-color"
+
+        loaded = settings_from_dict(data)
+
+        self.assertEqual(
+            loaded.display.manual_curve_color,
+            default_app_settings().display.manual_curve_color,
+        )
+        self.assertEqual(loaded.display.selected_curve_color, "#00F2FF")
+        self.assertFalse(loaded.display.show_grid)
 
     def test_settings_from_dict_uses_defaults_for_missing_optional_fields(self) -> None:
         settings = settings_from_dict(

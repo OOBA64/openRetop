@@ -10,9 +10,8 @@ from pathlib import Path
 
 from mesh.display_proxy import normalize_proxy_quality
 from settings.settings_data import (
-    DEFAULT_REGION_SELECTION_EDGE_COLOR,
-    DEFAULT_REGION_SELECTION_COLOR,
     DEFAULT_REGION_SELECTION_OPACITY,
+    DISPLAY_COLOR_FIELDS,
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
@@ -64,14 +63,13 @@ def settings_to_dict(settings: AppSettings) -> dict[str, object]:
             "show_normals": bool(settings.display.show_normals),
             "show_axis_gizmo": bool(settings.display.show_axis_gizmo),
             "show_viewcube": bool(settings.display.show_viewcube),
-            "region_selection_color": _hex_color_value(
-                settings.display.region_selection_color,
-                "display.region_selection_color",
-            ),
-            "region_selection_edge_color": _hex_color_value(
-                settings.display.region_selection_edge_color,
-                "display.region_selection_edge_color",
-            ),
+            **{
+                field_name: _hex_color_value(
+                    getattr(settings.display, field_name),
+                    f"display.{field_name}",
+                )
+                for field_name in DISPLAY_COLOR_FIELDS
+            },
             "region_selection_opacity": _region_opacity_value(
                 settings.display.region_selection_opacity,
                 "display.region_selection_opacity",
@@ -170,22 +168,17 @@ def settings_from_dict(data: object) -> AppSettings:
                 ),
                 "display.show_viewcube",
             ),
-            region_selection_color=_hex_color_value(
-                _nested_value(
-                    display_data,
-                    "region_selection_color",
-                    DEFAULT_REGION_SELECTION_COLOR,
-                ),
-                "display.region_selection_color",
-            ),
-            region_selection_edge_color=_hex_color_value(
-                _nested_value(
-                    display_data,
-                    "region_selection_edge_color",
-                    DEFAULT_REGION_SELECTION_EDGE_COLOR,
-                ),
-                "display.region_selection_edge_color",
-            ),
+            **{
+                field_name: _safe_hex_color_value(
+                    _nested_value(
+                        display_data,
+                        field_name,
+                        getattr(defaults.display, field_name),
+                    ),
+                    getattr(defaults.display, field_name),
+                )
+                for field_name in DISPLAY_COLOR_FIELDS
+            },
             region_selection_opacity=_region_opacity_value(
                 _nested_value(
                     display_data,
@@ -406,6 +399,13 @@ def _hex_color_value(value: object, field_name: str) -> str:
         return "#" + "".join(f"{int(component):02X}" for component in byte_values)
 
     raise ValueError(f"{field_name} must be a #RRGGBB color.")
+
+
+def _safe_hex_color_value(value: object, fallback: str) -> str:
+    try:
+        return _hex_color_value(value, "display color")
+    except ValueError:
+        return _hex_color_value(fallback, "display color fallback")
 
 
 def _region_opacity_value(value: object, field_name: str) -> float:

@@ -155,7 +155,7 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
         command=app.convert_boundary_to_hybrid_guide_curve,
     )
     app.curves_menu.add_command(
-        label="Convert Selected Curve to Smooth Guide",
+        label="Convert Selected Curve to Smooth",
         command=app.convert_selected_curve_to_smooth_guide,
     )
     app.curves_menu.add_command(

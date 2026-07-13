@@ -181,9 +181,8 @@ from regions.primitive_fit import (
     project_region_boundary_to_plane,
 )
 from settings.settings_data import (
-    DEFAULT_REGION_SELECTION_EDGE_COLOR,
-    DEFAULT_REGION_SELECTION_COLOR,
     DEFAULT_REGION_SELECTION_OPACITY,
+    DISPLAY_COLOR_FIELDS,
     SETTINGS_VERSION,
     AppDisplaySettings,
     AppImportSettings,
@@ -323,8 +322,12 @@ SURFACE_PREVIEW_PROGRESS_STAGES = (
 )
 SURFACE_PREVIEW_DEFAULT_OPACITY = 0.22
 LOFT_MODE_EXPLANATION = (
-    "BREP loft is a CAD surface through the curves. Mesh-Conforming Preview "
-    "projects the loft to the scan for visual/body-following evaluation."
+    "BREP loft is a clean CAD surface through curves. Mesh-Conforming Preview "
+    "projects a loft preview to the scan for body-following evaluation."
+)
+LOFT_OVERBUILD_EXPLANATION = (
+    "Overbuild preview extends the loft for later trim/intersection. "
+    "Final trimming is not implemented yet."
 )
 GENERATED_GEOMETRY_TRANSFORM_WARNING = (
     "Generated sections/curves/surfaces will not follow mesh transform. "
@@ -468,14 +471,18 @@ class OpenRetopWindow:
         self._manual_curve_hover_control_point_index: int | None = None
         self._manual_curve_drag_active = False
         self._manual_curve_drag_candidate_index: int | None = None
-        self._manual_curve_main_mode = "inactive"
-        self._manual_curve_submode = "navigate"
+        self._manual_curve_submode = "inactive"
+        self._manual_curve_control_point_revision = 0
+        self._manual_curve_corner_detection_revision = 0
         self._manual_curve_placing_enabled = True
         self._manual_curve_add_point_active = False
         self._manual_curve_insert_point_active = False
         self._manual_curve_curve_method = DEFAULT_MANUAL_CURVE_METHOD
         self._manual_curve_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
         self._loft_rebuild_counter = 0
+        self._loft_overbuild_drag_handle_index: int | None = None
+        self._loft_overbuild_drag_start: tuple[int, int] | None = None
+        self._loft_overbuild_drag_initial_values: tuple[float, float] | None = None
         self._manual_curve_left_press_position: tuple[int, int] | None = None
         self._manual_curve_left_dragged = False
         self._manual_curve_context_menu: Menu | None = None
@@ -560,7 +567,7 @@ class OpenRetopWindow:
         self.manual_curve_snap_help_text = StringVar(
             value="Load a mesh to enable Snap to Mesh."
         )
-        self.manual_curve_type_text = StringVar(value="Smooth Guide")
+        self.manual_curve_type_text = StringVar(value="Smooth Curve")
         self.region_name_text = StringVar(value="(none)")
         self.region_triangle_count_text = StringVar(value="0")
         self.region_threshold_display_text = StringVar(value="20.0 deg")
@@ -677,6 +684,13 @@ class OpenRetopWindow:
         self.loft_create_solid = BooleanVar(value=False)
         self.loft_ruled = BooleanVar(value=False)
         self.loft_rebuild_on_source_edit = BooleanVar(value=True)
+        self.loft_overbuild_enabled = BooleanVar(value=True)
+        self.loft_overbuild_amount_text = StringVar(value="0.10")
+        self.loft_overbuild_u_start_text = StringVar(value="0.10")
+        self.loft_overbuild_u_end_text = StringVar(value="0.10")
+        self.loft_overbuild_v_start_text = StringVar(value="0.10")
+        self.loft_overbuild_v_end_text = StringVar(value="0.10")
+        self.loft_show_overbuild_handles = BooleanVar(value=True)
         self.loft_last_build_status_text = StringVar(value="(none)")
         self.loft_last_build_warnings_text = StringVar(value="(none)")
         self.selection_buttons: list[ttk.Button] = []
@@ -896,6 +910,11 @@ class OpenRetopWindow:
         self.show_grid.set(project.display.show_grid)
         self.show_axes.set(project.display.show_axes)
         self.show_normals.set(False)
+        for field_name, color in project.display.colors.items():
+            if field_name in DISPLAY_COLOR_FIELDS and hasattr(
+                self.settings.display, field_name
+            ):
+                setattr(self.settings.display, field_name, color)
         self._restore_project_mesh_display(project)
         self._restore_project_section_collection(project)
         self._restore_project_curve_collection(project)
@@ -1136,6 +1155,15 @@ class OpenRetopWindow:
                         ruled=bool(options.get("ruled", False)),
                         smoothing=str(options.get("smoothing", "normal")),
                         rebuild_on_source_edit=bool(options.get("rebuild_on_source_edit", True)),
+                        overbuild_enabled=bool(options.get("overbuild_enabled", True)),
+                        overbuild_amount=options.get("overbuild_amount", 0.10),
+                        overbuild_u_start=options.get("overbuild_u_start", 0.10),
+                        overbuild_u_end=options.get("overbuild_u_end", 0.10),
+                        overbuild_v_start=options.get("overbuild_v_start", 0.10),
+                        overbuild_v_end=options.get("overbuild_v_end", 0.10),
+                        show_overbuild_handles=bool(
+                            options.get("show_overbuild_handles", True)
+                        ),
                         metadata=dict(options.get("metadata", {}))
                         if isinstance(options.get("metadata"), dict)
                         else {},
@@ -1152,6 +1180,10 @@ class OpenRetopWindow:
             features=loft_features,
             active_feature_id=loft_features[0].id if loft_features else None,
         )
+        for feature in loft_features:
+            surface = self._brep_surface_by_id(feature.brep_surface_id)
+            if surface is not None:
+                surface.metadata.update(self._loft_overbuild_metadata(feature.options))
         four_boundary_features = [
             FourBoundaryPatchFeatureRecord(
                 id=feature.id,
@@ -1245,6 +1277,10 @@ class OpenRetopWindow:
                 show_grid=self.show_grid.get(),
                 show_axes=self.show_axes.get(),
                 show_normals=False,
+                display_colors={
+                    field_name: getattr(self.settings.display, field_name)
+                    for field_name in DISPLAY_COLOR_FIELDS
+                },
                 section_axis=self.section_axis.get(),
                 section_offset=self.section_offset.get(),
                 show_section_plane=self.show_section_plane.get(),
@@ -1820,18 +1856,19 @@ class OpenRetopWindow:
         )
         try:
             keybinds = self._keybind_settings_from_preferences()
-            region_display_settings = self._region_display_settings_from_preferences()
+            display_colors = self._display_colors_from_preferences()
+            region_selection_opacity = self._opacity_from_preferences(
+                "region_selection_opacity",
+                DEFAULT_REGION_SELECTION_OPACITY,
+            )
         except ValueError as exc:
             self.status_text.set(str(exc))
             return False
-        region_selection_color, region_selection_edge_color, region_selection_opacity = (
-            region_display_settings
-        )
-        old_region_display_settings = (
-            self.settings.display.region_selection_color,
-            self.settings.display.region_selection_edge_color,
-            float(self.settings.display.region_selection_opacity),
-        )
+        old_display_colors = {
+            field_name: getattr(self.settings.display, field_name)
+            for field_name in DISPLAY_COLOR_FIELDS
+        }
+        old_region_opacity = float(self.settings.display.region_selection_opacity)
 
         width, height = (
             self._current_window_size()
@@ -1846,8 +1883,7 @@ class OpenRetopWindow:
                 show_normals=False,
                 show_axis_gizmo=show_axis_gizmo,
                 show_viewcube=show_viewcube,
-                region_selection_color=region_selection_color,
-                region_selection_edge_color=region_selection_edge_color,
+                **display_colors,
                 region_selection_opacity=region_selection_opacity,
             ),
             import_settings=AppImportSettings(
@@ -1863,10 +1899,7 @@ class OpenRetopWindow:
             future=dict(self.settings.future),
         )
         self._save_app_settings()
-        if (
-            old_region_display_settings != region_display_settings
-            and self._active_visible_region_selection() is not None
-        ):
+        if old_display_colors != display_colors or old_region_opacity != region_selection_opacity:
             self._refresh_viewport(reset_camera=False)
         self.status_text.set("Preferences applied")
         return True
@@ -1881,22 +1914,23 @@ class OpenRetopWindow:
 
         return AppKeybindSettings(**values)
 
-    def _region_display_settings_from_preferences(self) -> tuple[str, str, float]:
-        fill_color = self._hex_color_from_preferences(
-            "region_selection_color",
-            "Region Fill Color",
-            DEFAULT_REGION_SELECTION_COLOR,
-        )
-        edge_color = self._hex_color_from_preferences(
-            "region_selection_edge_color",
-            "Region Edge Color",
-            DEFAULT_REGION_SELECTION_EDGE_COLOR,
-        )
-        opacity = self._opacity_from_preferences(
-            "region_selection_opacity",
-            DEFAULT_REGION_SELECTION_OPACITY,
-        )
-        return (fill_color, edge_color, opacity)
+    def _display_colors_from_preferences(self) -> dict[str, str]:
+        labels = {
+            "region_selection_color": "Region Fill Color",
+            "region_selection_edge_color": "Region Edge Color",
+        }
+        return {
+            field_name: self._hex_color_from_preferences(
+                field_name,
+                labels.get(
+                    field_name,
+                    field_name.removesuffix("_color").replace("_", " ").title()
+                    + " Color",
+                ),
+                str(getattr(self.settings.display, field_name)),
+            )
+            for field_name in DISPLAY_COLOR_FIELDS
+        }
 
     def _hex_color_from_preferences(
         self,
@@ -3397,6 +3431,8 @@ class OpenRetopWindow:
             ("Create Solid if Closed", self.loft_create_solid),
             ("Ruled", self.loft_ruled),
             ("Rebuild on Source Edit", self.loft_rebuild_on_source_edit),
+            ("Overbuild Preview", self.loft_overbuild_enabled),
+            ("Show Overbuild Handles", self.loft_show_overbuild_handles),
         ):
             check = ttk.Checkbutton(
                 parent,
@@ -3405,6 +3441,26 @@ class OpenRetopWindow:
                 command=self._on_loft_feature_options_changed,
             )
             check.grid(row=row, column=0, columnspan=2, sticky="w")
+            row += 1
+        for label, variable, attribute_name in (
+            ("Overbuild Amount", self.loft_overbuild_amount_text, "loft_overbuild_amount_entry"),
+            ("U Start", self.loft_overbuild_u_start_text, "loft_overbuild_u_start_entry"),
+            ("U End", self.loft_overbuild_u_end_text, "loft_overbuild_u_end_entry"),
+            ("V Start", self.loft_overbuild_v_start_text, "loft_overbuild_v_start_entry"),
+            ("V End", self.loft_overbuild_v_end_text, "loft_overbuild_v_end_entry"),
+        ):
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+            entry = ttk.Entry(parent, textvariable=variable, width=8)
+            entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+            entry.bind(
+                "<FocusOut>",
+                lambda _event: self._on_loft_feature_options_changed(),
+            )
+            entry.bind(
+                "<Return>",
+                lambda _event: self._on_loft_feature_options_changed(),
+            )
+            setattr(self, attribute_name, entry)
             row += 1
         row = self._add_info_row(parent, row, "Last Build Status", self.loft_last_build_status_text)
         row = self._add_info_row(parent, row, "Last Build Warnings", self.loft_last_build_warnings_text)
@@ -3563,7 +3619,7 @@ class OpenRetopWindow:
         row += 1
         self.convert_smooth_guide_button = ttk.Button(
             parent,
-            text="Convert Selected Curve to Smooth Guide",
+            text="Convert Selected Curve to Smooth",
             command=self.convert_selected_curve_to_smooth_guide,
         )
         self.convert_smooth_guide_button.grid(
@@ -3593,12 +3649,23 @@ class OpenRetopWindow:
         row += 1
         self.manual_curve_fit_to_mesh_check = ttk.Checkbutton(
             parent,
-            text="Fit to Mesh",
+            text="Snap to Mesh",
             variable=self.manual_curve_snap_to_mesh,
             command=self._on_manual_curve_snap_to_mesh_changed,
         )
         self.manual_curve_fit_to_mesh_check.grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        )
+        self.manual_curve_snap_check = self.manual_curve_fit_to_mesh_check
+        row += 1
+        self.manual_curve_auto_corner_check = ttk.Checkbutton(
+            parent,
+            text="Auto Corners",
+            variable=self.manual_curve_auto_detect_corners,
+            command=self._on_manual_curve_auto_corners_changed,
+        )
+        self.manual_curve_auto_corner_check.grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
         row += 1
         self.manual_project_curve_to_mesh_button = ttk.Button(
@@ -3630,7 +3697,7 @@ class OpenRetopWindow:
         self.finish_manual_curve_button = ttk.Button(
             parent,
             text="Finish Curve",
-            command=self._confirm_manual_curve,
+            command=self._finish_manual_curve_action,
         )
         self.finish_manual_curve_button.grid(
             row=row,
@@ -3653,23 +3720,10 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
-        self.done_manual_curve_edit_button = ttk.Button(
-            parent,
-            text="Done Editing",
-            command=self.done_manual_curve_editing,
-        )
-        self.done_manual_curve_edit_button.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(4, 0),
-        )
-        row += 1
+        self.done_manual_curve_edit_button = self.finish_manual_curve_button
         self._advanced_curve_widgets: list[object] = [
             self.manual_project_curve_to_mesh_button,
             self.manual_rebuild_curve_button,
-            self.done_manual_curve_edit_button,
         ]
         for widget in self._advanced_curve_widgets:
             widget.grid_remove()
@@ -3709,15 +3763,6 @@ class OpenRetopWindow:
         )
         row += 1
         advanced_curve_start_row = row
-        self.navigate_manual_curve_button = ttk.Button(
-            parent,
-            text="Navigate",
-            command=self.activate_manual_curve_navigate,
-        )
-        self.navigate_manual_curve_button.grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=(4, 0)
-        )
-        row += 1
         self.add_manual_point_button = ttk.Button(
             parent,
             text="Add Point",
@@ -3755,11 +3800,16 @@ class OpenRetopWindow:
             pady=(4, 0),
         )
         row += 1
-        ttk.Label(parent, text="Curve Type").grid(row=row, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(parent, text="Debug Curve Method").grid(row=row, column=0, sticky="w", pady=(6, 0))
         self.manual_curve_type_combo = ttk.Combobox(
             parent,
             textvariable=self.manual_curve_type_text,
-            values=("Smooth Guide", "Polyline", "Hybrid", "Smooth"),
+            values=(
+                "Smooth Curve",
+                "Polyline",
+                "Hybrid (Legacy)",
+                "Catmull-Rom (Legacy)",
+            ),
             state="readonly",
         )
         self.manual_curve_type_combo.grid(row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0))
@@ -3792,6 +3842,12 @@ class OpenRetopWindow:
         self.manual_curve_corner_threshold_entry.grid(
             row=row, column=1, sticky="ew", pady=(6, 0), padx=(8, 0)
         )
+        self.manual_curve_corner_threshold_entry.bind(
+            "<FocusOut>", self._on_manual_curve_corner_threshold_changed
+        )
+        self.manual_curve_corner_threshold_entry.bind(
+            "<Return>", self._on_manual_curve_corner_threshold_changed
+        )
         row += 1
         ttk.Label(parent, text="Point Placement").grid(row=row, column=0, sticky="w", pady=(6, 0))
         self.manual_curve_placement_combo = ttk.Combobox(
@@ -3812,14 +3868,6 @@ class OpenRetopWindow:
             self._on_manual_curve_placement_changed,
         )
         row += 1
-        self.manual_curve_snap_check = ttk.Checkbutton(
-            parent,
-            text="Snap to Mesh",
-            variable=self.manual_curve_snap_to_mesh,
-            command=self._on_manual_curve_snap_to_mesh_changed,
-        )
-        self.manual_curve_snap_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        row += 1
         self.manual_curve_keep_on_mesh_check = ttk.Checkbutton(
             parent,
             text="Keep Curve On Mesh",
@@ -3829,13 +3877,6 @@ class OpenRetopWindow:
         self.manual_curve_keep_on_mesh_check.grid(
             row=row, column=0, columnspan=2, sticky="w"
         )
-        row += 1
-        self.manual_curve_auto_corner_check = ttk.Checkbutton(
-            parent,
-            text="Auto corner detection",
-            variable=self.manual_curve_auto_detect_corners,
-        )
-        self.manual_curve_auto_corner_check.grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
         self.manual_curve_preserve_corners_check = ttk.Checkbutton(
             parent,
@@ -5220,6 +5261,12 @@ class OpenRetopWindow:
     @staticmethod
     def _is_projected_curve(curve: StoredCurve) -> bool:
         metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
+        self._manual_curve_control_point_revision = self._manual_curve_revision_value(
+            metadata.get("control_point_revision", 0)
+        )
+        self._manual_curve_corner_detection_revision = self._manual_curve_revision_value(
+            metadata.get("corner_detection_revision", 0)
+        )
         return str(metadata.get("creation_type", "")).strip().lower() == "projected_curve"
 
     @staticmethod
@@ -5260,6 +5307,13 @@ class OpenRetopWindow:
                 int(y_position),
             )
 
+        if self._handle_loft_overbuild_pointer_event(
+            event_type,
+            int(x_position),
+            int(y_position),
+        ):
+            return True
+
         if self.app_state.transform_state is None:
             return False
 
@@ -5279,6 +5333,135 @@ class OpenRetopWindow:
             return True
 
         return True
+
+    def _handle_loft_overbuild_pointer_event(
+        self,
+        event_type: str,
+        x_position: int,
+        y_position: int,
+    ) -> bool:
+        feature = self._active_loft_feature()
+        active_record = self._active_surface_record()
+        preview_surface = (
+            active_record
+            if isinstance(active_record, SurfacePatch)
+            and str(active_record.metadata.get("preview_mode", "")) == TWO_CURVE_LOFT
+            else None
+        )
+        if feature is not None:
+            enabled = feature.options.overbuild_enabled
+            show_handles = feature.options.show_overbuild_handles
+            u_start = feature.options.overbuild_u_start
+            u_end = feature.options.overbuild_u_end
+            v_start = feature.options.overbuild_v_start
+            v_end = feature.options.overbuild_v_end
+        elif preview_surface is not None:
+            enabled = bool(preview_surface.metadata.get("overbuild_enabled", False))
+            show_handles = bool(
+                preview_surface.metadata.get("show_overbuild_handles", True)
+            )
+            u_start = float(preview_surface.metadata.get("overbuild_u_start", 0.10))
+            u_end = float(preview_surface.metadata.get("overbuild_u_end", 0.10))
+            v_start = float(preview_surface.metadata.get("overbuild_v_start", 0.10))
+            v_end = float(preview_surface.metadata.get("overbuild_v_end", 0.10))
+        else:
+            enabled = show_handles = False
+            u_start = u_end = v_start = v_end = 0.10
+        if not (enabled and show_handles):
+            self._loft_overbuild_drag_handle_index = None
+            return False
+
+        if event_type == "left_press":
+            hit_test = getattr(
+                self.viewport,
+                "loft_overbuild_handle_index_at_screen",
+                None,
+            )
+            if not callable(hit_test):
+                return False
+            handle_index = hit_test(x_position, y_position)
+            if handle_index is None:
+                return False
+            self._loft_overbuild_drag_handle_index = int(handle_index)
+            self._loft_overbuild_drag_start = (x_position, y_position)
+            self._loft_overbuild_drag_initial_values = (
+                u_start if handle_index in {0, 2} else u_end,
+                v_start if handle_index in {0, 1} else v_end,
+            )
+            return True
+
+        if self._loft_overbuild_drag_handle_index is None:
+            return False
+        if event_type == "motion":
+            self._update_loft_overbuild_drag(
+                feature,
+                preview_surface,
+                x_position,
+                y_position,
+            )
+            return True
+        if event_type == "left_release":
+            self._update_loft_overbuild_drag(
+                feature,
+                preview_surface,
+                x_position,
+                y_position,
+            )
+            self._loft_overbuild_drag_handle_index = None
+            self._loft_overbuild_drag_start = None
+            self._loft_overbuild_drag_initial_values = None
+            if feature is not None:
+                self._sync_loft_feature_context(self._active_surface_record())
+            self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
+            self._set_project_dirty(True)
+            return True
+        return True
+
+    def _update_loft_overbuild_drag(
+        self,
+        feature: LoftFeatureRecord | None,
+        preview_surface: SurfacePatch | None,
+        x_position: int,
+        y_position: int,
+    ) -> None:
+        handle_index = self._loft_overbuild_drag_handle_index
+        start = self._loft_overbuild_drag_start
+        initial = self._loft_overbuild_drag_initial_values
+        if handle_index is None or start is None or initial is None:
+            return
+        delta_x = int(x_position) - start[0]
+        delta_y = int(y_position) - start[1]
+        horizontal_sign = -1.0 if handle_index in {0, 2} else 1.0
+        vertical_sign = -1.0 if handle_index in {0, 1} else 1.0
+        delta = (horizontal_sign * delta_x + vertical_sign * delta_y) * 0.005
+        u_value = min(max(initial[0] + delta, 0.0), 10.0)
+        v_value = min(max(initial[1] + delta, 0.0), 10.0)
+        if feature is not None:
+            if handle_index in {0, 2}:
+                feature.options.overbuild_u_start = u_value
+            else:
+                feature.options.overbuild_u_end = u_value
+            if handle_index in {0, 1}:
+                feature.options.overbuild_v_start = v_value
+            else:
+                feature.options.overbuild_v_end = v_value
+            surface = self._brep_surface_by_id(feature.brep_surface_id)
+            if surface is not None:
+                surface.metadata.update(self._loft_overbuild_metadata(feature.options))
+            feature.metadata["overbuild_preview_revision"] = int(
+                feature.metadata.get("overbuild_preview_revision", 0)
+            ) + 1
+        elif preview_surface is not None:
+            preview_surface.metadata[
+                "overbuild_u_start" if handle_index in {0, 2} else "overbuild_u_end"
+            ] = u_value
+            preview_surface.metadata[
+                "overbuild_v_start" if handle_index in {0, 1} else "overbuild_v_end"
+            ] = v_value
+            preview_surface.metadata["overbuild_preview_revision"] = int(
+                preview_surface.metadata.get("overbuild_preview_revision", 0)
+            ) + 1
+        self._refresh_viewport(reset_camera=False)
 
     def start_region_select_mode(self) -> None:
         if self.app_state.mesh_object is None:
@@ -6643,10 +6826,10 @@ class OpenRetopWindow:
 
     def convert_selected_curve_to_smooth_guide(self) -> None:
         curve = self._single_curve_for_surface_prep(
-            "Select one manual curve to convert to Smooth Guide."
+            "Select one manual curve to convert to Smooth Curve."
         )
         if curve is None or not self._is_editable_manual_curve(curve):
-            self.status_text.set("Select one manual curve to convert to Smooth Guide.")
+            self.status_text.set("Select one manual curve to convert to Smooth Curve.")
             return
         control_data = parse_manual_curve_metadata_v2(curve)
         if control_data is None:
@@ -6695,10 +6878,10 @@ class OpenRetopWindow:
         self._replace_curve_geometry(curve, updated)
         after_curve = copy.deepcopy(curve)
         self._push_curve_snapshot_undo(
-            "Convert Curve to Smooth Guide", before_curve, after_curve
+            "Convert Curve to Smooth", before_curve, after_curve
         )
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Converted selected curve to Smooth Guide.")
+        self.status_text.set("Converted selected curve to Smooth Curve.")
         self._set_project_dirty(True)
         self._sync_workflow_ui()
 
@@ -6992,7 +7175,7 @@ class OpenRetopWindow:
             self.status_text.set(readiness.errors[0])
             return
 
-        surface = self._create_surface_preview(
+        self._create_surface_preview(
             source_curves,
             surface_type="preview_fill",
             preview_mode=CLOSED_CURVE_FILL,
@@ -7017,7 +7200,7 @@ class OpenRetopWindow:
             self.status_text.set(first_error)
             return
 
-        self._create_surface_preview(
+        surface = self._create_surface_preview(
             source_curves,
             surface_type="preview_loft",
             preview_mode=TWO_CURVE_LOFT,
@@ -7026,6 +7209,8 @@ class OpenRetopWindow:
             success_action="Lofted",
             validation_readiness=readiness,
         )
+        if surface is not None:
+            self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
 
     def create_mesh_conforming_loft_preview(self) -> None:
         mesh_object = self.app_state.mesh_object
@@ -7420,6 +7605,23 @@ class OpenRetopWindow:
             ruled=bool(self.loft_ruled.get()),
             smoothing="ruled" if bool(self.loft_ruled.get()) else "normal",
             rebuild_on_source_edit=bool(self.loft_rebuild_on_source_edit.get()),
+            overbuild_enabled=bool(self.loft_overbuild_enabled.get()),
+            overbuild_amount=self._loft_overbuild_value(
+                self.loft_overbuild_amount_text
+            ),
+            overbuild_u_start=self._loft_overbuild_value(
+                self.loft_overbuild_u_start_text
+            ),
+            overbuild_u_end=self._loft_overbuild_value(
+                self.loft_overbuild_u_end_text
+            ),
+            overbuild_v_start=self._loft_overbuild_value(
+                self.loft_overbuild_v_start_text
+            ),
+            overbuild_v_end=self._loft_overbuild_value(
+                self.loft_overbuild_v_end_text
+            ),
+            show_overbuild_handles=bool(self.loft_show_overbuild_handles.get()),
         )
         self._create_editable_loft_feature_from_options(options)
 
@@ -7463,6 +7665,7 @@ class OpenRetopWindow:
                 "loft_feature_id": feature.id,
                 "loft_feature_dirty": False,
                 "editable_feature": True,
+                **self._loft_overbuild_metadata(feature.options),
             }
         )
         add_loft_feature(self.app_state.loft_feature_collection, feature)
@@ -7483,7 +7686,33 @@ class OpenRetopWindow:
                 else f"Created editable BREP loft: {feature.name}."
             ),
         )
+        self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
         return feature
+
+    @staticmethod
+    def _loft_overbuild_metadata(options: LoftFeatureOptions) -> dict[str, object]:
+        return {
+            "overbuild_enabled": bool(options.overbuild_enabled),
+            "overbuild_amount": float(options.overbuild_amount),
+            "overbuild_u_start": float(options.overbuild_u_start),
+            "overbuild_u_end": float(options.overbuild_u_end),
+            "overbuild_v_start": float(options.overbuild_v_start),
+            "overbuild_v_end": float(options.overbuild_v_end),
+            "show_overbuild_handles": bool(options.show_overbuild_handles),
+            "overbuild_preview_only": True,
+        }
+
+    @staticmethod
+    def _loft_overbuild_value(variable: StringVar) -> float:
+        try:
+            value = float(variable.get())
+        except (TypeError, ValueError):
+            value = 0.10
+        if not np.isfinite(value):
+            value = 0.10
+        value = min(max(value, 0.0), 10.0)
+        variable.set(f"{value:.3f}")
+        return value
 
     def _build_editable_loft_feature(
         self,
@@ -7767,6 +7996,7 @@ class OpenRetopWindow:
                 "runtime_status": "ready",
                 "build_reason": result.reason,
                 "warnings": list(result.warnings),
+                **self._loft_overbuild_metadata(feature.options),
             }
         )
         self._sync_surface_context_from_active_surface()
@@ -7800,11 +8030,35 @@ class OpenRetopWindow:
         feature.options.ruled = bool(self.loft_ruled.get())
         feature.options.smoothing = "ruled" if feature.options.ruled else "normal"
         feature.options.rebuild_on_source_edit = bool(self.loft_rebuild_on_source_edit.get())
+        feature.options.overbuild_enabled = bool(self.loft_overbuild_enabled.get())
+        feature.options.overbuild_amount = self._loft_overbuild_value(
+            self.loft_overbuild_amount_text
+        )
+        feature.options.overbuild_u_start = self._loft_overbuild_value(
+            self.loft_overbuild_u_start_text
+        )
+        feature.options.overbuild_u_end = self._loft_overbuild_value(
+            self.loft_overbuild_u_end_text
+        )
+        feature.options.overbuild_v_start = self._loft_overbuild_value(
+            self.loft_overbuild_v_start_text
+        )
+        feature.options.overbuild_v_end = self._loft_overbuild_value(
+            self.loft_overbuild_v_end_text
+        )
+        feature.options.show_overbuild_handles = bool(
+            self.loft_show_overbuild_handles.get()
+        )
         feature.metadata["loft_feature_dirty"] = True
+        feature.metadata["overbuild_preview_revision"] = int(
+            feature.metadata.get("overbuild_preview_revision", 0)
+        ) + 1
         surface = self._brep_surface_by_id(feature.brep_surface_id)
         if surface is not None:
             surface.metadata["loft_feature_dirty"] = True
-        self.status_text.set("Loft options changed; rebuild loft.")
+            surface.metadata.update(self._loft_overbuild_metadata(feature.options))
+        self._refresh_viewport(reset_camera=False)
+        self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
         self._set_project_dirty(True)
 
     def reverse_selected_loft_source_curve_direction(self) -> None:
@@ -8342,6 +8596,19 @@ class OpenRetopWindow:
             "source_curve_validation_warnings": [],
             "source_curve_validation_errors": [],
         }
+        if preview_mode == TWO_CURVE_LOFT:
+            metadata.update(
+                {
+                    "overbuild_enabled": True,
+                    "overbuild_amount": 0.10,
+                    "overbuild_u_start": 0.10,
+                    "overbuild_u_end": 0.10,
+                    "overbuild_v_start": 0.10,
+                    "overbuild_v_end": 0.10,
+                    "show_overbuild_handles": True,
+                    "overbuild_preview_only": True,
+                }
+            )
         metadata.update(self._surface_source_lineage_metadata(source_curves))
         if validation_readiness is not None:
             metadata.update(self._surface_validation_metadata(validation_readiness))
@@ -8461,6 +8728,19 @@ class OpenRetopWindow:
         metadata["source_curve_count"] = len(source_curves)
         metadata["runtime_status"] = "ready"
         metadata["build_reason"] = build_result.reason
+        if fallback_brep_type == BREP_TYPE_LOFT_SURFACE:
+            metadata.update(
+                {
+                    "overbuild_enabled": True,
+                    "overbuild_amount": 0.10,
+                    "overbuild_u_start": 0.10,
+                    "overbuild_u_end": 0.10,
+                    "overbuild_v_start": 0.10,
+                    "overbuild_v_end": 0.10,
+                    "show_overbuild_handles": False,
+                    "overbuild_preview_only": True,
+                }
+            )
         return BrepSurfaceRecord(
             id=f"brep-{uuid4().hex}",
             name=self._next_brep_surface_name(name_prefix),
@@ -8832,7 +9112,7 @@ class OpenRetopWindow:
                     self.manual_curve_selected_point_type_text.set(
                         self._manual_curve_point_types[candidate]
                     )
-                    self._manual_curve_submode = "move_point"
+                    self._manual_curve_submode = "edit_move_point"
                     self._refresh_viewport(reset_camera=False)
             return True
 
@@ -8864,7 +9144,7 @@ class OpenRetopWindow:
                 ):
                     selected_index = self._manual_curve_drag_candidate_index
                     self._manual_curve_drag_candidate_index = None
-                    self._manual_curve_submode = "select_point"
+                    self._manual_curve_submode = "edit_select"
                     self.status_text.set(
                         f"Selected control point {selected_index + 1}: "
                         f"{self.manual_curve_selected_point_type_text.get()}"
@@ -8942,9 +9222,10 @@ class OpenRetopWindow:
         selected_index = self._manual_curve_selected_control_point_index
         self._manual_curve_drag_active = False
         self._manual_curve_drag_candidate_index = None
-        self._manual_curve_submode = "select_point"
+        self._manual_curve_submode = "edit_select"
         self._manual_curve_left_press_position = None
         self._manual_curve_left_dragged = False
+        self._mark_manual_curve_controls_changed(detect_all=True)
         if selected_index is None:
             self.status_text.set("Moved control point")
         else:
@@ -9047,10 +9328,10 @@ class OpenRetopWindow:
             return "Manual Curve: click near first point to close."
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                return "Add Point active: left-click to append point. Esc to return to edit mode."
+                return "Add Point active: left-click to append. Esc returns to edit mode."
             if self._manual_curve_insert_point_active:
-                return "Insert Point active: click curve segment to insert. Esc to return to edit mode."
-            return "Editing curve: select or drag control points. Press Add Point to add points."
+                return "Insert Point active: click a curve segment. Esc returns to edit mode."
+            return "Editing curve: select or drag control points. Right-drag to orbit."
         if bool(self.manual_curve_snap_to_mesh.get()):
             if self._manual_curve_preview_valid:
                 return "Drawing curve: left-click to add points. Right-drag to orbit."
@@ -9196,8 +9477,9 @@ class OpenRetopWindow:
         ) = self._manual_curve_work_plane()
         self._manual_curve_active = True
         self._manual_curve_edit_active = False
-        self._manual_curve_main_mode = "drawing"
-        self._manual_curve_submode = "add_point"
+        self._manual_curve_submode = "draw_add_points"
+        self._manual_curve_control_point_revision = 0
+        self._manual_curve_corner_detection_revision = 0
         self._manual_curve_edit_curve_id = None
         self._manual_curve_selected_control_point_index = None
         self._manual_curve_hover_control_point_index = None
@@ -9353,8 +9635,7 @@ class OpenRetopWindow:
         ) = self._manual_curve_work_plane_for_curve(curve)
         self._manual_curve_active = True
         self._manual_curve_edit_active = True
-        self._manual_curve_main_mode = "editing"
-        self._manual_curve_submode = "select_point"
+        self._manual_curve_submode = "edit_select"
         self._manual_curve_edit_curve_id = curve.id
         self._manual_curve_selected_control_point_index = None
         self._manual_curve_hover_control_point_index = None
@@ -9494,6 +9775,14 @@ class OpenRetopWindow:
             return []
         return list(value)
 
+    @staticmethod
+    def _manual_curve_revision_value(value: object) -> int:
+        try:
+            revision = int(value)
+        except (TypeError, ValueError):
+            revision = 0
+        return max(revision, 0)
+
     def _manual_curve_work_plane_for_curve(
         self,
         curve: StoredCurve,
@@ -9550,7 +9839,7 @@ class OpenRetopWindow:
 
         if key in {"Escape", "Esc"}:
             if self._cancel_manual_curve_subaction(
-                status="Navigate active: point placement paused."
+                status="Point placement paused. Press Add Point to continue."
             ):
                 return
             self._cancel_manual_curve_mode(status="Manual curve cancelled")
@@ -9757,7 +10046,7 @@ class OpenRetopWindow:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
             self._manual_curve_add_point_active = False
             self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "select_point"
+            self._manual_curve_submode = "edit_select"
             self._clear_manual_curve_preview_state()
             return
 
@@ -9774,7 +10063,7 @@ class OpenRetopWindow:
         self._manual_curve_selected_control_point_index = len(self._manual_curve_points) - 1
         self._manual_curve_add_point_active = False
         self._manual_curve_placing_enabled = False
-        self._manual_curve_submode = "select_point"
+        self._manual_curve_submode = "edit_select"
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Point added. Add Point mode off.")
         self._sync_workflow_ui()
@@ -9794,7 +10083,7 @@ class OpenRetopWindow:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "select_point"
+            self._manual_curve_submode = "edit_select"
             self._clear_manual_curve_preview_state()
             return
 
@@ -9813,7 +10102,7 @@ class OpenRetopWindow:
         self._manual_curve_selected_control_point_index = insert_index
         self._manual_curve_insert_point_active = False
         self._manual_curve_placing_enabled = False
-        self._manual_curve_submode = "select_point"
+        self._manual_curve_submode = "edit_select"
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Point inserted. Insert mode off.")
         self._sync_workflow_ui()
@@ -9853,7 +10142,7 @@ class OpenRetopWindow:
         if selected_index is None:
             self._manual_curve_selected_control_point_index = None
             self._manual_curve_drag_candidate_index = None
-            self._manual_curve_submode = "select_point"
+            self._manual_curve_submode = "edit_select"
             self._refresh_viewport(reset_camera=False)
             self.status_text.set("No control point selected")
             self._sync_workflow_ui()
@@ -9861,7 +10150,7 @@ class OpenRetopWindow:
 
         self._manual_curve_selected_control_point_index = selected_index
         self._manual_curve_drag_candidate_index = None
-        self._manual_curve_submode = "select_point"
+        self._manual_curve_submode = "edit_select"
         self.manual_curve_selected_point_type_text.set(
             self._manual_curve_point_types[selected_index]
             if selected_index < len(self._manual_curve_point_types)
@@ -9914,22 +10203,10 @@ class OpenRetopWindow:
         self._manual_curve_add_point_active = True
         self._manual_curve_insert_point_active = False
         self._manual_curve_placing_enabled = True
-        self._manual_curve_submode = "add_point"
+        self._manual_curve_submode = "explicit_add_point"
         self.status_text.set(
-            "Add Point active: left-click to append point. Esc to return to edit mode."
+            "Add Point active: left-click to append. Esc returns to edit mode."
         )
-        self._sync_workflow_ui()
-
-    def activate_manual_curve_navigate(self) -> None:
-        if not self._manual_curve_active:
-            return
-        self._manual_curve_add_point_active = False
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_placing_enabled = False
-        self._manual_curve_submode = "navigate"
-        self._clear_manual_curve_preview_state()
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Navigate active: orbit, pan, and zoom without placing points.")
         self._sync_workflow_ui()
 
     def activate_manual_curve_insert_point(self) -> None:
@@ -9941,9 +10218,9 @@ class OpenRetopWindow:
         self._manual_curve_insert_point_active = True
         self._manual_curve_add_point_active = False
         self._manual_curve_placing_enabled = True
-        self._manual_curve_submode = "insert_point"
+        self._manual_curve_submode = "explicit_insert_point"
         self.status_text.set(
-            "Insert Point active: click curve segment to insert. Esc to return to edit mode."
+            "Insert Point active: click a curve segment. Esc returns to edit mode."
         )
         self._sync_workflow_ui()
 
@@ -9985,6 +10262,7 @@ class OpenRetopWindow:
         if removed_index >= len(self._manual_curve_points):
             removed_index = len(self._manual_curve_points) - 1
         self._manual_curve_selected_control_point_index = removed_index
+        self._mark_manual_curve_controls_changed(detect_all=True)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Deleted control point {removed_index + 1}")
         self._sync_workflow_ui()
@@ -10077,6 +10355,9 @@ class OpenRetopWindow:
             str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
             for point in detected.points
         ]
+        self._manual_curve_corner_detection_revision = self._manual_curve_revision_value(
+            detected.metadata.get("corner_detection_revision", 0)
+        )
         index = self._manual_curve_selected_control_point_index
         if index is not None and index < len(self._manual_curve_point_types):
             self.manual_curve_selected_point_type_text.set(
@@ -10090,6 +10371,15 @@ class OpenRetopWindow:
             )
             self.status_text.set(f"Detected {corner_count} corner points.")
         self._sync_workflow_ui()
+
+    def _mark_manual_curve_controls_changed(self, *, detect_all: bool) -> None:
+        self._manual_curve_control_point_revision += 1
+        if (
+            detect_all
+            and bool(self.manual_curve_auto_detect_corners.get())
+            and len(self._manual_curve_points) >= 3
+        ):
+            self._auto_detect_working_curve_corners(set_status=False)
 
     def smooth_selected_manual_curve_span(self) -> None:
         indices = self._selected_manual_curve_span_indices()
@@ -10114,6 +10404,7 @@ class OpenRetopWindow:
             self._manual_curve_points[index] = start * (1.0 - factor) + end * factor
             self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
             self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
+        self._mark_manual_curve_controls_changed(detect_all=True)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Selected span straightened; endpoints preserved.")
 
@@ -10167,7 +10458,11 @@ class OpenRetopWindow:
             sample_count=self._manual_curve_sample_count,
             corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
             preserve_corners=bool(self.manual_curve_preserve_corners.get()),
-            metadata={"smoothness": self._manual_curve_smoothness_value()},
+            metadata={
+                "smoothness": self._manual_curve_smoothness_value(),
+                "control_point_revision": self._manual_curve_control_point_revision,
+                "corner_detection_revision": self._manual_curve_corner_detection_revision,
+            },
         )
 
     def _manual_curve_corner_threshold(self) -> float:
@@ -10266,6 +10561,9 @@ class OpenRetopWindow:
                 "point_type_source", CURVE_POINT_SOURCE_AUTO
             )
         )
+        self._manual_curve_corner_detection_revision = (
+            self._manual_curve_control_point_revision
+        )
 
     def _snap_manual_curve_closed_to_first_point(
         self,
@@ -10287,8 +10585,7 @@ class OpenRetopWindow:
             self.status_text.set("Manual Curve: already closed")
         else:
             self._manual_curve_closed = True
-            if bool(self.manual_curve_auto_detect_corners.get()):
-                self._auto_detect_working_curve_corners(set_status=False)
+            self._mark_manual_curve_controls_changed(detect_all=True)
             self.status_text.set("Curve closed to first point")
         self._manual_curve_selected_control_point_index = 0 if edit_status else None
         self._clear_manual_curve_preview_state()
@@ -10336,6 +10633,7 @@ class OpenRetopWindow:
         self._manual_curve_projection_distances.append(0.0 if snapped else None)
         if snapped:
             self._manual_curve_snap_point_count += 1
+        self._mark_manual_curve_controls_changed(detect_all=False)
         self._auto_update_previous_manual_curve_point_type()
 
     def _insert_manual_curve_point(
@@ -10371,8 +10669,7 @@ class OpenRetopWindow:
         )
         if snapped:
             self._manual_curve_snap_point_count += 1
-        if bool(self.manual_curve_auto_detect_corners.get()):
-            self._auto_detect_working_curve_corners(set_status=False)
+        self._mark_manual_curve_controls_changed(detect_all=True)
 
     @staticmethod
     def _manual_curve_pick_normal_value(normal: object) -> list[float] | None:
@@ -10413,6 +10710,7 @@ class OpenRetopWindow:
             self._manual_curve_projection_distances.pop()
         if len(self._manual_curve_points) < 3:
             self._manual_curve_closed = False
+        self._mark_manual_curve_controls_changed(detect_all=True)
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
         self._sync_workflow_ui()
@@ -10424,8 +10722,7 @@ class OpenRetopWindow:
             return
 
         self._manual_curve_closed = not self._manual_curve_closed
-        if self._manual_curve_closed and bool(self.manual_curve_auto_detect_corners.get()):
-            self._auto_detect_working_curve_corners(set_status=False)
+        self._mark_manual_curve_controls_changed(detect_all=True)
         self._refresh_viewport(reset_camera=False)
         if self._manual_curve_edit_active:
             self.status_text.set("Curve closed" if self._manual_curve_closed else "Curve opened")
@@ -10488,6 +10785,8 @@ class OpenRetopWindow:
             preserve_corners=bool(self.manual_curve_preserve_corners.get()),
             smoothness=self._manual_curve_smoothness_value(),
             keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
+            control_point_revision=self._manual_curve_control_point_revision,
+            corner_detection_revision=self._manual_curve_corner_detection_revision,
         )
         self._update_manual_curve_snap_metadata(curve)
         self._project_manual_curve_fitted_preview_to_mesh(curve)
@@ -10502,22 +10801,29 @@ class OpenRetopWindow:
         self._set_project_dirty(True)
         self._sync_workflow_ui()
 
-    def apply_manual_curve_edits(self) -> None:
+    def _finish_manual_curve_action(self) -> None:
+        if self._manual_curve_edit_active:
+            if self.apply_manual_curve_edits():
+                self.done_manual_curve_editing(status="Curve edits saved")
+            return
+        self._confirm_manual_curve()
+
+    def apply_manual_curve_edits(self) -> bool:
         active_curve = self._active_manual_edit_curve()
         if active_curve is None:
             self.status_text.set("No manual curve is being edited")
             self._sync_workflow_ui()
-            return
+            return False
 
         point_count = len(self._manual_curve_points)
         if self._manual_curve_closed and point_count < 3:
             self.status_text.set("Manual Curve: closed curve needs at least 3 points")
             self._sync_workflow_ui()
-            return
+            return False
         if not self._manual_curve_closed and point_count < 2:
             self.status_text.set("Manual Curve: open curve needs at least 2 points")
             self._sync_workflow_ui()
-            return
+            return False
 
         metadata = active_curve.metadata if isinstance(active_curve.metadata, dict) else {}
         snap_to_mesh = bool(self.manual_curve_snap_to_mesh.get())
@@ -10557,6 +10863,8 @@ class OpenRetopWindow:
             preserve_corners=bool(self.manual_curve_preserve_corners.get()),
             smoothness=self._manual_curve_smoothness_value(),
             keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
+            control_point_revision=self._manual_curve_control_point_revision,
+            corner_detection_revision=self._manual_curve_corner_detection_revision,
         )
         self._update_manual_curve_snap_metadata(updated_curve)
         self._project_manual_curve_fitted_preview_to_mesh(updated_curve)
@@ -10595,6 +10903,7 @@ class OpenRetopWindow:
             self.status_text.set("Curve edits saved")
         self._set_project_dirty(True)
         self._sync_workflow_ui()
+        return True
 
     def _merged_manual_curve_edit_metadata(
         self,
@@ -10754,20 +11063,20 @@ class OpenRetopWindow:
         if self._manual_curve_drag_active:
             self._manual_curve_drag_active = False
             self._manual_curve_drag_candidate_index = None
-            self._manual_curve_submode = "select_point"
+            self._manual_curve_submode = "edit_select"
             self._clear_manual_curve_preview_state()
             self.status_text.set(status)
             self._sync_workflow_ui()
             return True
         if (
-            self._manual_curve_main_mode == "drawing"
-            and self._manual_curve_submode == "add_point"
+            not self._manual_curve_edit_active
+            and self._manual_curve_submode == "draw_add_points"
             and self._manual_curve_placing_enabled
         ):
             self._manual_curve_add_point_active = False
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "navigate"
+            self._manual_curve_submode = "inactive"
             self._clear_manual_curve_preview_state()
             self.status_text.set(status)
             self._refresh_viewport(reset_camera=False)
@@ -10777,7 +11086,9 @@ class OpenRetopWindow:
             self._manual_curve_add_point_active = False
             self._manual_curve_insert_point_active = False
             self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "select_point"
+            self._manual_curve_submode = (
+                "edit_select" if self._manual_curve_edit_active else "inactive"
+            )
             self._clear_manual_curve_preview_state()
             self.status_text.set(status)
             self._sync_workflow_ui()
@@ -10831,6 +11142,27 @@ class OpenRetopWindow:
         if self._manual_curve_active:
             self._refresh_viewport(reset_camera=False)
 
+    def _on_manual_curve_corner_threshold_changed(
+        self, _event: object | None = None
+    ) -> None:
+        self._manual_curve_corner_threshold()
+        if self._manual_curve_active and bool(
+            self.manual_curve_auto_detect_corners.get()
+        ):
+            self._auto_detect_working_curve_corners(set_status=False)
+        if self._manual_curve_active:
+            self._refresh_viewport(reset_camera=False)
+
+    def _on_manual_curve_auto_corners_changed(self) -> None:
+        if (
+            self._manual_curve_active
+            and bool(self.manual_curve_auto_detect_corners.get())
+            and len(self._manual_curve_points) >= 3
+        ):
+            self._auto_detect_working_curve_corners(set_status=False)
+        self._refresh_viewport(reset_camera=False)
+        self._sync_workflow_ui()
+
     def _on_manual_curve_keep_on_mesh_changed(self) -> None:
         if bool(self.manual_curve_keep_on_mesh.get()):
             self.manual_curve_snap_to_mesh.set(True)
@@ -10842,9 +11174,9 @@ class OpenRetopWindow:
         value = self.manual_curve_type_text.get().strip().lower()
         if value == "polyline":
             return MANUAL_CURVE_METHOD_POLYLINE
-        if value == "hybrid":
+        if value.startswith("hybrid"):
             return MANUAL_CURVE_METHOD_HYBRID
-        if value in {"smooth guide", "smooth"}:
+        if value in {"smooth curve", "smooth guide", "smooth"}:
             return MANUAL_CURVE_METHOD_SMOOTH_GUIDE
         return MANUAL_CURVE_METHOD_CATMULL_ROM
 
@@ -10853,11 +11185,11 @@ class OpenRetopWindow:
         if token == MANUAL_CURVE_METHOD_POLYLINE:
             label = "Polyline"
         elif token in {MANUAL_CURVE_METHOD_HYBRID, "cad_spline"}:
-            label = "Hybrid"
+            label = "Hybrid (Legacy)"
         elif token == MANUAL_CURVE_METHOD_SMOOTH_GUIDE:
-            label = "Smooth Guide"
+            label = "Smooth Curve"
         else:
-            label = "Smooth"
+            label = "Catmull-Rom (Legacy)"
         self.manual_curve_type_text.set(label)
 
     def _show_manual_curve_context_menu(self, x_position: int, y_position: int) -> None:
@@ -10936,8 +11268,9 @@ class OpenRetopWindow:
     def _clear_manual_curve_state(self, *, reset_snap: bool = False) -> None:
         self._manual_curve_active = False
         self._manual_curve_edit_active = False
-        self._manual_curve_main_mode = "inactive"
-        self._manual_curve_submode = "navigate"
+        self._manual_curve_submode = "inactive"
+        self._manual_curve_control_point_revision = 0
+        self._manual_curve_corner_detection_revision = 0
         self._manual_curve_edit_curve_id = None
         self._manual_curve_selected_control_point_index = None
         self._manual_curve_hover_control_point_index = None
@@ -10979,12 +11312,12 @@ class OpenRetopWindow:
         )
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                return "Add Point active: left-click to append point. Esc to return to edit mode."
+                return "Add Point active: left-click to append. Esc returns to edit mode."
             if self._manual_curve_insert_point_active:
-                return "Insert Point active: click curve segment to insert. Esc to return to edit mode."
-            return "Editing curve: select or drag control points. Press Add Point to add points."
-        if self._manual_curve_submode == "navigate":
-            return "Navigate active: orbit, pan, and zoom without placing points."
+                return "Insert Point active: click a curve segment. Esc returns to edit mode."
+            return "Editing curve: select or drag control points. Right-drag to orbit."
+        if self._manual_curve_submode == "inactive":
+            return "Point placement paused. Press Add Point to continue."
         return "Drawing curve: left-click to add points. Right-drag to orbit."
 
     def _curve_repair_tolerance(self) -> float:
@@ -11105,6 +11438,8 @@ class OpenRetopWindow:
                         opacity=self._surface_display_opacity(surface),
                         wireframe_overlay=self._surface_wireframe_overlay(surface),
                         display_role=preview.display_role,
+                        overbuild_handle_points=preview.overbuild_handle_points,
+                        show_overbuild_handles=preview.show_overbuild_handles,
                     )
                 )
         previews.extend(self._build_visible_brep_surface_previews())
@@ -11177,6 +11512,8 @@ class OpenRetopWindow:
                     opacity=self._surface_display_opacity(surface),
                     wireframe_overlay=self._surface_wireframe_overlay(surface),
                     display_role="brep_visual_preview",
+                    overbuild_handle_points=preview.overbuild_handle_points,
+                    show_overbuild_handles=preview.show_overbuild_handles,
                 )
             )
         return previews
@@ -11572,6 +11909,16 @@ class OpenRetopWindow:
             self.loft_feature_curve_count_text.set("0")
             self.loft_last_build_status_text.set("(none)")
             self.loft_last_build_warnings_text.set("(none)")
+            self.loft_overbuild_enabled.set(True)
+            self.loft_show_overbuild_handles.set(True)
+            for variable in (
+                self.loft_overbuild_amount_text,
+                self.loft_overbuild_u_start_text,
+                self.loft_overbuild_u_end_text,
+                self.loft_overbuild_v_start_text,
+                self.loft_overbuild_v_end_text,
+            ):
+                variable.set("0.10")
             return
         curves, missing = self._curves_for_ids(feature.options.source_curve_ids)
         names = [curve.name for curve in curves]
@@ -11587,6 +11934,13 @@ class OpenRetopWindow:
         self.loft_create_solid.set(feature.options.create_solid_if_closed)
         self.loft_ruled.set(feature.options.ruled)
         self.loft_rebuild_on_source_edit.set(feature.options.rebuild_on_source_edit)
+        self.loft_overbuild_enabled.set(feature.options.overbuild_enabled)
+        self.loft_show_overbuild_handles.set(feature.options.show_overbuild_handles)
+        self.loft_overbuild_amount_text.set(f"{feature.options.overbuild_amount:.3f}")
+        self.loft_overbuild_u_start_text.set(f"{feature.options.overbuild_u_start:.3f}")
+        self.loft_overbuild_u_end_text.set(f"{feature.options.overbuild_u_end:.3f}")
+        self.loft_overbuild_v_start_text.set(f"{feature.options.overbuild_v_start:.3f}")
+        self.loft_overbuild_v_end_text.set(f"{feature.options.overbuild_v_end:.3f}")
         dirty = bool(feature.metadata.get("loft_feature_dirty", False))
         self.loft_last_build_status_text.set(
             f"{feature.last_build_reason}{' (rebuild required)' if dirty else ''}"
@@ -12157,6 +12511,10 @@ class OpenRetopWindow:
             ),
             manual_curve_preview_snaps_closed=self._manual_curve_preview_snaps_closed,
             manual_curve_preview_snaps_to_mesh=self._manual_curve_preview_snaps_to_mesh,
+            display_colors={
+                field_name: getattr(self.settings.display, field_name)
+                for field_name in DISPLAY_COLOR_FIELDS
+            },
             reset_camera=reset_camera,
         )
         self._refresh_scene_browser()
@@ -12242,15 +12600,15 @@ class OpenRetopWindow:
         self.current_mode_text.set(mode)
         if self._manual_curve_edit_active:
             if self._manual_curve_add_point_active:
-                prompt = "Add Point active: left-click to append point. Esc to return to edit mode."
+                prompt = "Add Point active: left-click to append. Esc returns to edit mode."
             elif self._manual_curve_insert_point_active:
-                prompt = "Insert Point active: click curve segment to insert. Esc to return to edit mode."
+                prompt = "Insert Point active: click a curve segment. Esc returns to edit mode."
             else:
-                prompt = "Editing curve: select or drag control points. Press Add Point to add points."
+                prompt = "Editing curve: select or drag control points. Right-drag to orbit."
             hints = "Enter=apply, Esc=done/cancel action, Backspace=delete point, C=corner, S=smooth"
         elif self._manual_curve_active:
-            if self._manual_curve_submode == "navigate":
-                prompt = "Navigate active: orbit, pan, and zoom without placing points."
+            if self._manual_curve_submode == "inactive":
+                prompt = "Point placement paused. Press Add Point to continue."
             elif bool(self.manual_curve_snap_to_mesh.get()):
                 prompt = "Drawing curve: left-click to add points. Right-drag to orbit."
             else:
@@ -12551,7 +12909,7 @@ class OpenRetopWindow:
             self.manual_curve_mode_title.set("MANUAL CURVE EDIT MODE")
             self.manual_curve_mode_details.set(
                 f"{point_count} controls, selected: {selected_label}, "
-                f"Fit to Mesh: {snap_label}, action: {sub_action}"
+                f"Snap to Mesh: {snap_label}, action: {sub_action}"
             )
             if self._manual_curve_selected_control_point_index is None:
                 self.manual_curve_selected_point_type_text.set("(none)")
@@ -12560,7 +12918,7 @@ class OpenRetopWindow:
             snap_label = "On" if bool(self.manual_curve_snap_to_mesh.get()) else "Off"
             closed_label = "Yes" if self._manual_curve_closed else "No"
             self.manual_curve_mode_details.set(
-                f"{point_count} controls, Fit to Mesh: {snap_label}, "
+                f"{point_count} controls, Snap to Mesh: {snap_label}, "
                 f"{closed_label}. Right-drag to orbit."
             )
         elif has_mesh:
@@ -12584,7 +12942,7 @@ class OpenRetopWindow:
         snap_state = "normal" if has_mesh else "disabled"
         if hasattr(self, "finish_manual_curve_button"):
             self.finish_manual_curve_button.configure(
-                text="Apply Edits" if edit_active else "Finish Curve"
+                text="Done Editing" if edit_active else "Finish Curve"
             )
         if hasattr(self, "cancel_manual_curve_button"):
             self.cancel_manual_curve_button.configure(
@@ -12595,10 +12953,8 @@ class OpenRetopWindow:
             ("edit_manual_curve_button", edit_state),
             ("finish_manual_curve_button", active_state),
             ("cancel_manual_curve_button", active_state),
-            ("done_manual_curve_edit_button", edit_active_state),
             ("remove_manual_point_button", create_active_state),
             ("toggle_manual_closed_button", active_state),
-            ("navigate_manual_curve_button", active_state),
             ("add_manual_point_button", active_state),
             ("insert_manual_point_button", edit_active_state),
             (

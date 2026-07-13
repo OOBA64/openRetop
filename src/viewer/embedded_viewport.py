@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 from tkinter import Canvas, Event, TclError
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -90,11 +90,11 @@ TINY_CURVE_LINE_WIDTH = 2.4
 REPAIRED_CURVE_COLOR = (1.0, 0.48, 0.12)
 REPAIRED_CURVE_LINE_WIDTH = 3.0
 SURFACE_SOURCE_CURVE_COLOR = (0.66, 0.38, 1.0)
-SURFACE_SOURCE_CURVE_LINE_WIDTH = 3.6
+SURFACE_SOURCE_CURVE_LINE_WIDTH = 2.8
 SELECTED_CURVE_COLOR = (0.0, 0.95, 1.0)
-SELECTED_CURVE_LINE_WIDTH = 4.6
+SELECTED_CURVE_LINE_WIDTH = 3.2
 ACTIVE_CURVE_COLOR = (1.0, 0.92, 0.12)
-ACTIVE_CURVE_LINE_WIDTH = 5.4
+ACTIVE_CURVE_LINE_WIDTH = 2.8
 MANUAL_CURVE_POINT_COLOR = (1.0, 1.0, 1.0)
 MANUAL_CURVE_CORNER_POINT_COLOR = (1.0, 0.55, 0.12)
 MANUAL_CURVE_FIRST_POINT_COLOR = (0.96, 0.98, 1.0)
@@ -106,15 +106,15 @@ MANUAL_CURVE_PREVIEW_LINE_COLOR = (1.0, 0.48, 0.08)
 MANUAL_CURVE_CLOSING_COLOR = (1.0, 0.48, 0.08)
 MANUAL_CURVE_SNAP_POINT_COLOR = MANUAL_CURVE_POINT_COLOR
 MANUAL_CURVE_SNAP_POLYLINE_COLOR = MANUAL_CURVE_POLYLINE_COLOR
-MANUAL_CURVE_POINT_LINE_WIDTH = 1.15
-MANUAL_CURVE_PREVIEW_LINE_WIDTH = 2.6
-MANUAL_CURVE_GHOST_LINE_WIDTH = 1.9
-MANUAL_CURVE_ACTIVE_LINE_WIDTH = 3.2
-MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO = 0.0045
-MANUAL_CURVE_FIRST_POINT_RADIUS_RATIO = 0.0055
-MANUAL_CURVE_SELECTED_POINT_RADIUS_RATIO = 0.0065
-MANUAL_CURVE_PREVIEW_POINT_RADIUS_RATIO = 0.0055
-MANUAL_CURVE_MIN_POINT_RADIUS = 0.003
+MANUAL_CURVE_POINT_LINE_WIDTH = 0.9
+MANUAL_CURVE_PREVIEW_LINE_WIDTH = 2.1
+MANUAL_CURVE_GHOST_LINE_WIDTH = 1.8
+MANUAL_CURVE_ACTIVE_LINE_WIDTH = 2.6
+MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO = 0.0025
+MANUAL_CURVE_FIRST_POINT_RADIUS_RATIO = 0.0030
+MANUAL_CURVE_SELECTED_POINT_RADIUS_RATIO = 0.0040
+MANUAL_CURVE_PREVIEW_POINT_RADIUS_RATIO = 0.0035
+MANUAL_CURVE_MIN_POINT_RADIUS = 0.0015
 REGION_SELECTION_COLOR = (0.0, 0.82, 1.0)
 REGION_SELECTION_EDGE_COLOR = (0.88, 1.0, 1.0)
 REGION_SELECTION_OPACITY = 0.34
@@ -126,6 +126,7 @@ BREP_SELECTED_SURFACE_EDGE_COLOR = (0.78, 1.0, 0.96)
 
 CURVE_DISPLAY_CATEGORY_ORDER = (
     "normal",
+    "manual",
     "tiny",
     "repaired",
     "surface_source",
@@ -143,6 +144,7 @@ class CurveDisplayStyle:
 
 CURVE_DISPLAY_STYLES = {
     "normal": CurveDisplayStyle(UNSELECTED_CURVE_COLOR, UNSELECTED_CURVE_LINE_WIDTH),
+    "manual": CurveDisplayStyle(MANUAL_CURVE_POLYLINE_COLOR, UNSELECTED_CURVE_LINE_WIDTH),
     "tiny": CurveDisplayStyle(TINY_CURVE_COLOR, TINY_CURVE_LINE_WIDTH),
     "repaired": CurveDisplayStyle(REPAIRED_CURVE_COLOR, REPAIRED_CURVE_LINE_WIDTH),
     "surface_source": CurveDisplayStyle(
@@ -156,6 +158,28 @@ CURVE_DISPLAY_STYLES = {
     "selected": CurveDisplayStyle(SELECTED_CURVE_COLOR, SELECTED_CURVE_LINE_WIDTH),
     "active": CurveDisplayStyle(ACTIVE_CURVE_COLOR, ACTIVE_CURVE_LINE_WIDTH),
 }
+
+
+@dataclass(frozen=True)
+class ViewportDisplayColors:
+    mesh_color: tuple[float, float, float] = (0.72, 0.74, 0.78)
+    selected_mesh_color: tuple[float, float, float] = SELECTED_CURVE_COLOR
+    manual_curve_color: tuple[float, float, float] = MANUAL_CURVE_POLYLINE_COLOR
+    selected_curve_color: tuple[float, float, float] = SELECTED_CURVE_COLOR
+    active_curve_color: tuple[float, float, float] = ACTIVE_CURVE_COLOR
+    smooth_point_color: tuple[float, float, float] = MANUAL_CURVE_POINT_COLOR
+    corner_point_color: tuple[float, float, float] = MANUAL_CURVE_CORNER_POINT_COLOR
+    selected_point_color: tuple[float, float, float] = MANUAL_CURVE_SELECTED_POINT_COLOR
+    preview_point_color: tuple[float, float, float] = MANUAL_CURVE_PREVIEW_POINT_COLOR
+    preview_line_color: tuple[float, float, float] = MANUAL_CURVE_PREVIEW_LINE_COLOR
+    surface_color: tuple[float, float, float] = (0.12, 0.34, 0.48)
+    selected_surface_color: tuple[float, float, float] = SELECTED_CURVE_COLOR
+    brep_surface_color: tuple[float, float, float] = BREP_SURFACE_COLOR
+    selected_brep_surface_color: tuple[float, float, float] = BREP_SELECTED_SURFACE_COLOR
+    background_color: tuple[float, float, float] = (0.063, 0.075, 0.086)
+
+    def key(self) -> tuple[tuple[float, float, float], ...]:
+        return tuple(getattr(self, field_name) for field_name in self.__dataclass_fields__)
 
 
 @dataclass(frozen=True)
@@ -192,7 +216,8 @@ class EmbeddedVTKViewport:
     def __init__(self, parent: object) -> None:
         self.parent = parent
         self.renderer = vtkRenderer()
-        self.renderer.SetBackground(0.055, 0.06, 0.068)
+        self._display_colors = ViewportDisplayColors()
+        self.renderer.SetBackground(*self._display_colors.background_color)
         self.widget: Canvas | None = None
         self.render_window: vtkRenderWindow | None = None
         self.interactor: vtkRenderWindowInteractor | None = None
@@ -224,6 +249,7 @@ class EmbeddedVTKViewport:
         self._axis_gizmo_requested_visible: bool | None = None
         self._axis_gizmo_camera_key: tuple[float, ...] | None = None
         self._manual_overlay_renderer: vtkRenderer | None = None
+        self._loft_overbuild_handle_points = np.zeros((0, 3), dtype=float)
         self._selection_callback: Callable[[str | None], None] | None = None
         self._pointer_callback: Callable[[str, int, int, bool, bool], bool] | None = None
         self._left_press_position: tuple[int, int] | None = None
@@ -249,7 +275,7 @@ class EmbeddedVTKViewport:
 
         self.widget = Canvas(
             self.parent,
-            background="#101316",
+            background=_rgb_to_hex(self._display_colors.background_color),
             borderwidth=0,
             highlightthickness=0,
         )
@@ -391,6 +417,27 @@ class EmbeddedVTKViewport:
         index = int(np.argmin(distances))
         return index if float(distances[index]) <= float(tolerance_pixels) else None
 
+    def loft_overbuild_handle_index_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+        *,
+        tolerance_pixels: float = 16.0,
+    ) -> int | None:
+        points = np.asarray(self._loft_overbuild_handle_points, dtype=float).reshape((-1, 3))
+        if self.widget is None or len(points) == 0:
+            return None
+        projected = _project_points(self.renderer, points)
+        if len(projected) != len(points):
+            return None
+        display_point = np.asarray(
+            [float(x_position), float(max(int(self.widget.winfo_height()), 1) - y_position)],
+            dtype=float,
+        )
+        distances = np.linalg.norm(projected - display_point, axis=1)
+        index = int(np.argmin(distances))
+        return index if float(distances[index]) <= float(tolerance_pixels) else None
+
     def _display_to_world(
         self,
         display_x: float,
@@ -489,9 +536,19 @@ class EmbeddedVTKViewport:
         manual_curve_preview_valid: bool = False,
         manual_curve_preview_snaps_closed: bool = False,
         manual_curve_preview_snaps_to_mesh: bool = False,
+        display_colors: Mapping[str, object] | None = None,
         show_axis_gizmo: bool = True,
         reset_camera: bool = False,
     ) -> None:
+        colors = _viewport_display_colors(display_colors)
+        if colors != self._display_colors:
+            self._display_colors = colors
+            self._actor_keys.clear()
+            self._group_keys.clear()
+        self.renderer.SetBackground(*self._display_colors.background_color)
+        if self.widget is not None:
+            self.widget.configure(background=_rgb_to_hex(self._display_colors.background_color))
+
         if not self._is_started:
             self.start()
 
@@ -541,7 +598,11 @@ class EmbeddedVTKViewport:
         ):
             return
 
-        self._update_mesh_actor(mesh, matrix)
+        self._update_mesh_actor(
+            mesh,
+            matrix,
+            selected=selected_item == "model",
+        )
         self._update_selection_overlay_actors(
             mesh,
             selected_item=selected_item,
@@ -711,6 +772,8 @@ class EmbeddedVTKViewport:
         self,
         mesh: TriangleMeshData | None,
         matrix: np.ndarray,
+        *,
+        selected: bool,
     ) -> None:
         if mesh is None:
             self._remove_actor("mesh")
@@ -719,8 +782,19 @@ class EmbeddedVTKViewport:
             return
 
         mesh_actor = self._ensure_mesh_actor(mesh)
+        mesh_actor.GetProperty().SetColor(
+            *(
+                self._display_colors.selected_mesh_color
+                if selected
+                else self._display_colors.mesh_color
+            )
+        )
         mesh_actor.SetUserMatrix(_vtk_matrix(matrix))
-        self._replace_actor("mesh", mesh_actor, key=id(mesh))
+        self._replace_actor(
+            "mesh",
+            mesh_actor,
+            key=(id(mesh), bool(selected), self._display_colors.key()),
+        )
 
     def _update_selection_overlay_actors(
         self,
@@ -1328,6 +1402,7 @@ class EmbeddedVTKViewport:
         )
         geometries, line_widths, key = _manual_curve_preview_geometries(
             control_points,
+            colors=self._display_colors,
             closed=closed,
             plane_normal=plane_normal,
             snap_to_mesh=snap_to_mesh,
@@ -1379,6 +1454,7 @@ class EmbeddedVTKViewport:
         if self._group_keys.get("manual_curve_control_points") != point_key:
             point_actors = _manual_curve_control_point_actors(
                 control_points,
+                colors=self._display_colors,
                 point_types=point_types,
                 reference_extent=self._view_extent,
                 snap_to_mesh=snap_to_mesh,
@@ -1442,6 +1518,7 @@ class EmbeddedVTKViewport:
         active_surface_id: str | None,
     ) -> None:
         if not surface_previews:
+            self._loft_overbuild_handle_points = np.zeros((0, 3), dtype=float)
             self._clear_overlay_group("surface_previews")
             return
 
@@ -1451,11 +1528,13 @@ class EmbeddedVTKViewport:
             if len(preview.vertices) > 0 and len(preview.faces) > 0
         ]
         if not renderable_previews:
+            self._loft_overbuild_handle_points = np.zeros((0, 3), dtype=float)
             self._clear_overlay_group("surface_previews")
             return
 
         key = (
             "surface_previews",
+            self._display_colors.key(),
             tuple(
                 (
                     preview.source_surface_id,
@@ -1467,6 +1546,8 @@ class EmbeddedVTKViewport:
                     None if preview.opacity is None else round(float(preview.opacity), 4),
                     bool(preview.wireframe_overlay),
                     str(getattr(preview, "display_role", "")),
+                    bool(preview.show_overbuild_handles),
+                    _array_key(preview.overbuild_handle_points),
                 )
                 for preview in renderable_previews
             ),
@@ -1477,11 +1558,27 @@ class EmbeddedVTKViewport:
         ):
             return
 
+        selected_handles = next(
+            (
+                preview.overbuild_handle_points
+                for preview in renderable_previews
+                if bool(preview.show_overbuild_handles)
+                and bool(preview.selected or preview.source_surface_id == active_surface_id)
+                and len(preview.overbuild_handle_points) == 4
+            ),
+            np.zeros((0, 3), dtype=float),
+        )
+        self._loft_overbuild_handle_points = np.asarray(
+            selected_handles, dtype=float
+        ).reshape((-1, 3))
+
         actors = [
             actor
             for preview in renderable_previews
             for actor in _surface_preview_actors(
                 preview,
+                colors=self._display_colors,
+                reference_extent=self._view_extent,
                 selected=bool(
                     preview.selected or preview.source_surface_id == active_surface_id
                 ),
@@ -1527,6 +1624,7 @@ class EmbeddedVTKViewport:
 
         key = (
             "curve_results",
+            self._display_colors.key(),
             tuple(
                 (
                     category,
@@ -1548,7 +1646,10 @@ class EmbeddedVTKViewport:
             geometries.append(
                 _polyline_geometry(
                     [result.fitted_points for result in results],
-                    color=style.color,
+                    color=_curve_category_color(
+                        category,
+                        self._display_colors,
+                    ),
                 )
             )
             line_widths.append(style.line_width)
@@ -1577,12 +1678,13 @@ class EmbeddedVTKViewport:
 
         key = (
             "selected_manual_curve_result",
+            self._display_colors.key(),
             tuple(_curve_display_key(result, "manual_overlay") for result in curve_results),
         )
         geometries = [
             _polyline_geometry(
                 [result.fitted_points for result in curve_results],
-                color=ACTIVE_CURVE_COLOR,
+                color=self._display_colors.active_curve_color,
             )
         ]
         line_widths = [MANUAL_CURVE_ACTIVE_LINE_WIDTH]
@@ -2383,7 +2485,7 @@ def _classify_curve_display(
 
     curve_id = _curve_identifier(curve)
     source_ids = {str(source_id) for source_id in (surface_source_curve_ids or ())}
-    category = "normal"
+    category = "manual" if _is_manual_curve_result(curve) else "normal"
     if bool(getattr(curve, "is_tiny_fragment", False)):
         category = "tiny"
     if is_repaired_curve(curve):
@@ -2395,6 +2497,19 @@ def _classify_curve_display(
     if active_curve_id is not None and curve_id == str(active_curve_id):
         category = "active"
     return category
+
+
+def _curve_category_color(
+    category: str,
+    colors: ViewportDisplayColors,
+) -> tuple[float, float, float]:
+    if category == "manual":
+        return colors.manual_curve_color
+    if category == "selected":
+        return colors.selected_curve_color
+    if category == "active":
+        return colors.active_curve_color
+    return CURVE_DISPLAY_STYLES[category].color
 
 
 def _curve_identifier(curve: object) -> str | None:
@@ -2447,6 +2562,7 @@ def _curve_display_key(curve: CurveFitResult, category: str) -> tuple[object, ..
 def _manual_curve_preview_geometries(
     manual_curve_points: Sequence[Sequence[float]] | np.ndarray | None,
     *,
+    colors: ViewportDisplayColors,
     closed: bool,
     plane_normal: Sequence[float] | None,
     snap_to_mesh: bool,
@@ -2521,9 +2637,9 @@ def _manual_curve_preview_geometries(
                     sampled_points,
                     closed=False,
                     color=(
-                        MANUAL_CURVE_SNAP_POLYLINE_COLOR
+                        colors.manual_curve_color
                         if snap_to_mesh
-                        else MANUAL_CURVE_POLYLINE_COLOR
+                        else colors.manual_curve_color
                     ),
                 )
             )
@@ -2534,7 +2650,7 @@ def _manual_curve_preview_geometries(
             _manual_curve_polyline_geometry(
                 np.asarray([points[-1], preview_target], dtype=float),
                 closed=False,
-                color=MANUAL_CURVE_PREVIEW_LINE_COLOR,
+                color=colors.preview_line_color,
             )
         )
         line_widths.append(MANUAL_CURVE_GHOST_LINE_WIDTH)
@@ -2553,6 +2669,7 @@ def _manual_curve_preview_geometries(
         bool(preview_valid),
         bool(preview_snaps_closed),
         round(float(reference_extent), 9),
+        colors.key(),
     )
     return (geometries, line_widths, key)
 
@@ -2599,6 +2716,7 @@ def _manual_curve_preview_point_array(
 def _manual_curve_control_point_actors(
     points: Sequence[Sequence[float]] | np.ndarray,
     *,
+    colors: ViewportDisplayColors,
     point_types: Sequence[str] | None,
     reference_extent: float,
     snap_to_mesh: bool,
@@ -2634,17 +2752,17 @@ def _manual_curve_control_point_actors(
             normal_indices.append(index)
 
     actors: list[vtkActor] = []
-    normal_color = MANUAL_CURVE_POINT_COLOR
+    normal_color = colors.smooth_point_color
     normal_radius = _manual_curve_control_point_radius(reference_extent)
     first_radius = _manual_curve_control_point_radius(reference_extent, prominent=True)
     selected_radius = _manual_curve_control_point_radius(reference_extent, selected=True)
     preview_radius = _manual_curve_control_point_radius(reference_extent, preview=True)
     for indices, color, radius in (
         (normal_indices, normal_color, normal_radius),
-        (corner_indices, MANUAL_CURVE_CORNER_POINT_COLOR, normal_radius * 1.12),
-        (first_indices, MANUAL_CURVE_FIRST_POINT_COLOR, first_radius),
-        (selected_indices, MANUAL_CURVE_SELECTED_POINT_COLOR, selected_radius),
-        (closure_indices, MANUAL_CURVE_PREVIEW_POINT_COLOR, preview_radius),
+        (corner_indices, colors.corner_point_color, normal_radius * 1.12),
+        (first_indices, colors.smooth_point_color, first_radius),
+        (selected_indices, colors.selected_point_color, selected_radius),
+        (closure_indices, colors.preview_point_color, preview_radius),
     ):
         if indices:
             actors.append(
@@ -2659,7 +2777,7 @@ def _manual_curve_control_point_actors(
             _manual_curve_sphere_actor(
                 preview,
                 radius=preview_radius,
-                color=MANUAL_CURVE_PREVIEW_POINT_COLOR,
+                color=colors.preview_point_color,
             )
         )
     return actors
@@ -2967,18 +3085,41 @@ def _mesh_actor(mesh: TriangleMeshData) -> vtkActor:
 def _surface_preview_actors(
     preview: SurfacePreviewMesh,
     *,
+    colors: ViewportDisplayColors,
+    reference_extent: float,
     selected: bool,
 ) -> list[vtkActor]:
-    fill_actor = _surface_preview_actor(preview, selected=selected)
-    boundary = _surface_preview_boundary_geometry(preview, selected=selected)
-    if boundary is None:
-        return [fill_actor]
-    return [fill_actor, _line_actor(boundary, line_width=2.6 if selected else 1.5)]
+    fill_actor = _surface_preview_actor(preview, colors=colors, selected=selected)
+    boundary = _surface_preview_boundary_geometry(
+        preview,
+        colors=colors,
+        selected=selected,
+    )
+    actors = [fill_actor]
+    if boundary is not None:
+        actors.append(_line_actor(boundary, line_width=2.2 if selected else 1.3))
+    if (
+        selected
+        and bool(preview.show_overbuild_handles)
+        and len(preview.overbuild_handle_points) == 4
+    ):
+        actors.append(
+            _manual_curve_sphere_actor(
+                preview.overbuild_handle_points,
+                radius=_manual_curve_control_point_radius(
+                    reference_extent,
+                    selected=True,
+                ),
+                color=colors.preview_point_color,
+            )
+        )
+    return actors
 
 
 def _surface_preview_actor(
     preview: SurfacePreviewMesh,
     *,
+    colors: ViewportDisplayColors,
     selected: bool,
 ) -> vtkActor:
     mapper = vtkPolyDataMapper()
@@ -2991,24 +3132,24 @@ def _surface_preview_actor(
     opacity = _surface_preview_opacity(preview, selected=selected)
     display_role = str(getattr(preview, "display_role", "")).strip().lower()
     if display_role == "brep_visual_preview" and selected:
-        property_.SetColor(*BREP_SELECTED_SURFACE_COLOR)
+        property_.SetColor(*colors.selected_brep_surface_color)
         property_.SetOpacity(max(opacity, 0.5))
-        property_.SetEdgeColor(*BREP_SELECTED_SURFACE_EDGE_COLOR)
+        property_.SetEdgeColor(*_lightened_color(colors.selected_brep_surface_color))
         property_.SetLineWidth(2.8)
     elif display_role == "brep_visual_preview":
-        property_.SetColor(*BREP_SURFACE_COLOR)
+        property_.SetColor(*colors.brep_surface_color)
         property_.SetOpacity(max(opacity, 0.34))
-        property_.SetEdgeColor(*BREP_SURFACE_EDGE_COLOR)
+        property_.SetEdgeColor(*_lightened_color(colors.brep_surface_color))
         property_.SetLineWidth(1.6)
     elif selected:
-        property_.SetColor(0.0, 0.95, 1.0)
+        property_.SetColor(*colors.selected_surface_color)
         property_.SetOpacity(opacity)
-        property_.SetEdgeColor(0.85, 1.0, 1.0)
+        property_.SetEdgeColor(*_lightened_color(colors.selected_surface_color))
         property_.SetLineWidth(2.4)
     else:
-        property_.SetColor(0.12, 0.34, 0.48)
+        property_.SetColor(*colors.surface_color)
         property_.SetOpacity(opacity)
-        property_.SetEdgeColor(0.24, 0.58, 0.78)
+        property_.SetEdgeColor(*_lightened_color(colors.surface_color))
         property_.SetLineWidth(1.1)
     property_.SetRepresentationToSurface()
     if bool(preview.wireframe_overlay):
@@ -3025,6 +3166,7 @@ def _surface_preview_actor(
 def _surface_preview_boundary_geometry(
     preview: SurfacePreviewMesh,
     *,
+    colors: ViewportDisplayColors,
     selected: bool,
 ) -> LineGeometry | None:
     edge_counts: dict[tuple[int, int], int] = {}
@@ -3035,7 +3177,16 @@ def _surface_preview_boundary_geometry(
     boundary_edges = [edge for edge, count in edge_counts.items() if count == 1]
     if not boundary_edges:
         return None
-    color = (0.82, 1.0, 1.0) if selected else (0.28, 0.62, 0.82)
+    display_role = str(getattr(preview, "display_role", "")).strip().lower()
+    if display_role == "brep_visual_preview":
+        base_color = (
+            colors.selected_brep_surface_color
+            if selected
+            else colors.brep_surface_color
+        )
+    else:
+        base_color = colors.selected_surface_color if selected else colors.surface_color
+    color = _lightened_color(base_color)
     return LineGeometry(
         points=preview.vertices,
         lines=np.asarray(boundary_edges, dtype=int).reshape((-1, 2)),
@@ -3175,6 +3326,38 @@ def _rgb_color(
     if len(values) != 3 or not all(np.isfinite(component) for component in values):
         return default
     return tuple(min(max(component, 0.0), 1.0) for component in values)
+
+
+def _viewport_display_colors(
+    values: Mapping[str, object] | None,
+) -> ViewportDisplayColors:
+    defaults = ViewportDisplayColors()
+    if values is None:
+        return defaults
+    return ViewportDisplayColors(
+        **{
+            field_name: _rgb_color(
+                values.get(field_name, getattr(defaults, field_name)),
+                getattr(defaults, field_name),
+            )
+            for field_name in defaults.__dataclass_fields__
+        }
+    )
+
+
+def _rgb_to_hex(color: Sequence[float]) -> str:
+    values = _rgb_color(color, (0.0, 0.0, 0.0))
+    return "#" + "".join(f"{round(component * 255.0):02X}" for component in values)
+
+
+def _lightened_color(
+    color: Sequence[float],
+    *,
+    amount: float = 0.28,
+) -> tuple[float, float, float]:
+    values = np.asarray(_rgb_color(color, (1.0, 1.0, 1.0)), dtype=float)
+    result = values + (1.0 - values) * min(max(float(amount), 0.0), 1.0)
+    return tuple(float(value) for value in result)
 
 
 def _clamped_opacity(value: float, default: float) -> float:

@@ -112,6 +112,13 @@ class EditableSurfaceFeatureTests(unittest.TestCase):
                     "cap_start": True,
                     "cap_end": True,
                     "rebuild_on_source_edit": True,
+                    "overbuild_enabled": True,
+                    "overbuild_amount": 0.2,
+                    "overbuild_u_start": 0.15,
+                    "overbuild_u_end": 0.25,
+                    "overbuild_v_start": 0.1,
+                    "overbuild_v_end": 0.3,
+                    "show_overbuild_handles": True,
                 },
                 brep_surface_id="brep-a",
                 preview_surface_id=None,
@@ -193,6 +200,11 @@ class EditableSurfaceFeatureTests(unittest.TestCase):
             ["curve-a", "curve-b"],
         )
         self.assertTrue(project.loft_features[0].options["cap_end"])
+        self.assertTrue(project.loft_features[0].options["overbuild_enabled"])
+        self.assertAlmostEqual(
+            project.loft_features[0].options["overbuild_u_start"],
+            0.10,
+        )
         self.assertEqual(
             project.four_boundary_patch_features[0].source_curve_ids,
             ["a", "b", "c", "d"],

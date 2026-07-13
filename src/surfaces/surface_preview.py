@@ -18,6 +18,7 @@ AREA_TOLERANCE = 1e-10
 MAX_PREVIEW_POINTS = 256
 MAX_PATCH_GRID_COUNT = 64
 PLANARITY_WARNING_THRESHOLD = 0.02
+DEFAULT_LOFT_OVERBUILD_AMOUNT = 0.10
 
 CLOSED_CURVE_FILL = "closed_curve_fill"
 TWO_CURVE_LOFT = "two_curve_loft"
@@ -53,6 +54,10 @@ class SurfacePreviewMesh:
     opacity: float | None = None
     wireframe_overlay: bool = False
     display_role: str = "preview_surface"
+    overbuild_handle_points: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=float)
+    )
+    show_overbuild_handles: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -64,6 +69,16 @@ class SurfacePreviewMesh:
             self,
             "faces",
             np.asarray(self.faces, dtype=int).reshape((-1, 3)),
+        )
+        object.__setattr__(
+            self,
+            "overbuild_handle_points",
+            np.asarray(self.overbuild_handle_points, dtype=float).reshape((-1, 3)),
+        )
+        object.__setattr__(
+            self,
+            "show_overbuild_handles",
+            bool(self.show_overbuild_handles),
         )
 
 
@@ -543,18 +558,23 @@ def _build_two_curve_loft_result(
     if segment_count < 1:
         return _unavailable("curve has too few points", diagnostics=diagnostics)
 
-    vertices = np.vstack((first_points, second_points))
-    faces: list[tuple[int, int, int]] = []
-    for index in range(segment_count):
-        next_index = (index + 1) % target_count
-        first_start = index
-        first_end = next_index
-        second_start = target_count + index
-        second_end = target_count + next_index
-        faces.append((first_start, first_end, second_end))
-        faces.append((first_start, second_end, second_start))
-
-    faces = _valid_triangle_faces(vertices, faces)
+    overbuild = _loft_overbuild_options(surface.metadata)
+    grid = np.stack((first_points, second_points), axis=0)
+    if overbuild["overbuild_enabled"]:
+        grid = _overbuild_loft_grid(
+            grid,
+            closed_u=closed_loft,
+            u_start=overbuild["overbuild_u_start"],
+            u_end=overbuild["overbuild_u_end"],
+            v_start=overbuild["overbuild_v_start"],
+            v_end=overbuild["overbuild_v_end"],
+        )
+    grid_v_count, grid_u_count = grid.shape[:2]
+    vertices = grid.reshape((-1, 3))
+    faces = _valid_triangle_faces(
+        vertices,
+        _loft_grid_faces(grid_u_count, grid_v_count, closed_u=closed_loft),
+    )
     if not faces:
         return _unavailable("curve is degenerate", diagnostics=diagnostics)
 
@@ -582,6 +602,10 @@ def _build_two_curve_loft_result(
             "resampled_point_count": int(target_count),
             "average_pair_distance": average_pair_distance,
             "max_pair_distance": max_pair_distance,
+            **overbuild,
+            "grid_u_count": int(grid_u_count),
+            "grid_v_count": int(grid_v_count),
+            "overbuild_preview_only": True,
         }
     )
 
@@ -591,12 +615,101 @@ def _build_two_curve_loft_result(
             faces=np.asarray(faces, dtype=int),
             source_surface_id=surface.id,
             selected=bool(surface.selected),
+            overbuild_handle_points=np.asarray(
+                [grid[0, 0], grid[0, -1], grid[-1, 0], grid[-1, -1]],
+                dtype=float,
+            ),
+            show_overbuild_handles=bool(
+                overbuild["overbuild_enabled"]
+                and overbuild["show_overbuild_handles"]
+                and surface.selected
+            ),
         ),
         preview_available=True,
         reason=reason,
         warning=warning,
         diagnostics=diagnostics,
     )
+
+
+def _loft_overbuild_options(metadata: dict[str, object]) -> dict[str, object]:
+    enabled = bool(metadata.get("overbuild_enabled", False))
+    amount = _non_negative_metadata_float(
+        metadata.get("overbuild_amount"),
+        DEFAULT_LOFT_OVERBUILD_AMOUNT,
+    )
+    return {
+        "overbuild_enabled": enabled,
+        "overbuild_amount": amount,
+        "overbuild_u_start": _non_negative_metadata_float(
+            metadata.get("overbuild_u_start"), amount
+        ),
+        "overbuild_u_end": _non_negative_metadata_float(
+            metadata.get("overbuild_u_end"), amount
+        ),
+        "overbuild_v_start": _non_negative_metadata_float(
+            metadata.get("overbuild_v_start"), amount
+        ),
+        "overbuild_v_end": _non_negative_metadata_float(
+            metadata.get("overbuild_v_end"), amount
+        ),
+        "show_overbuild_handles": bool(
+            metadata.get("show_overbuild_handles", True)
+        ),
+    }
+
+
+def _overbuild_loft_grid(
+    grid: np.ndarray,
+    *,
+    closed_u: bool,
+    u_start: float,
+    u_end: float,
+    v_start: float,
+    v_end: float,
+) -> np.ndarray:
+    result = np.asarray(grid, dtype=float).reshape((2, -1, 3)).copy()
+    if not closed_u and result.shape[1] >= 2:
+        start_column = result[:, :1] - float(u_start) * (
+            result[:, 1:2] - result[:, :1]
+        )
+        end_column = result[:, -1:] + float(u_end) * (
+            result[:, -1:] - result[:, -2:-1]
+        )
+        result = np.concatenate((start_column, result, end_column), axis=1)
+    start_row = result[:1] - float(v_start) * (result[1:2] - result[:1])
+    end_row = result[-1:] + float(v_end) * (result[-1:] - result[-2:-1])
+    return np.concatenate((start_row, result, end_row), axis=0)
+
+
+def _loft_grid_faces(
+    u_count: int,
+    v_count: int,
+    *,
+    closed_u: bool,
+) -> list[tuple[int, int, int]]:
+    faces: list[tuple[int, int, int]] = []
+    u_segments = u_count if closed_u else u_count - 1
+    for v_index in range(v_count - 1):
+        for u_index in range(u_segments):
+            next_u = (u_index + 1) % u_count
+            first_start = v_index * u_count + u_index
+            first_end = v_index * u_count + next_u
+            second_start = (v_index + 1) * u_count + u_index
+            second_end = (v_index + 1) * u_count + next_u
+            faces.append((first_start, first_end, second_end))
+            faces.append((first_start, second_end, second_start))
+    return faces
+
+
+def _non_negative_metadata_float(value: object, default: float) -> float:
+    try:
+        number = float(default if value is None else value)
+    except (TypeError, ValueError):
+        number = float(default)
+    if not np.isfinite(number):
+        number = float(default)
+    return min(max(number, 0.0), 10.0)
 
 
 def build_mesh_conforming_loft_preview(

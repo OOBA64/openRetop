@@ -26,6 +26,7 @@ class ProjectDisplaySettings:
     show_grid: bool
     show_axes: bool
     show_normals: bool
+    colors: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

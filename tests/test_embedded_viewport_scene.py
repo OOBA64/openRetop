@@ -52,6 +52,7 @@ from viewer.embedded_viewport import (
     _mesh_polydata,
     _point_to_segment_distance,
     _unit_sphere_mesh,
+    _viewport_display_colors,
 )
 from viewer.overlays import build_bounding_box_outline
 
@@ -191,7 +192,7 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
         self.assertEqual(MANUAL_CURVE_CONTROL_POLYGON_COLOR, (0.65, 0.68, 0.70))
         self.assertEqual(MANUAL_CURVE_PREVIEW_POINT_COLOR, (1.0, 0.48, 0.08))
         self.assertEqual(MANUAL_CURVE_PREVIEW_LINE_COLOR, (1.0, 0.48, 0.08))
-        self.assertLess(MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO, 0.006)
+        self.assertLessEqual(MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO, 0.0025)
         self.assertGreater(
             MANUAL_CURVE_FIRST_POINT_RADIUS_RATIO,
             MANUAL_CURVE_CONTROL_POINT_RADIUS_RATIO,
@@ -200,10 +201,28 @@ class EmbeddedViewportSceneTests(unittest.TestCase):
             MANUAL_CURVE_SELECTED_POINT_RADIUS_RATIO,
             MANUAL_CURVE_FIRST_POINT_RADIUS_RATIO,
         )
-        self.assertLessEqual(MANUAL_CURVE_MIN_POINT_RADIUS, 0.0035)
+        self.assertLessEqual(MANUAL_CURVE_SELECTED_POINT_RADIUS_RATIO, 0.0040)
+        self.assertLessEqual(MANUAL_CURVE_MIN_POINT_RADIUS, 0.0015)
+        self.assertLessEqual(SELECTED_CURVE_LINE_WIDTH, 3.4)
+        self.assertLessEqual(ACTIVE_CURVE_LINE_WIDTH, 2.8)
+        self.assertLessEqual(MANUAL_CURVE_PREVIEW_LINE_WIDTH, 2.2)
+        self.assertLessEqual(SURFACE_SOURCE_CURVE_LINE_WIDTH, 3.0)
         self.assertGreater(MANUAL_CURVE_ACTIVE_LINE_WIDTH, MANUAL_CURVE_PREVIEW_LINE_WIDTH)
         self.assertGreater(len(vertices), 62)
         self.assertGreater(len(faces), 120)
+
+    def test_viewport_palette_converts_hex_colors_and_falls_back_safely(self) -> None:
+        colors = _viewport_display_colors(
+            {
+                "mesh_color": "#123456",
+                "manual_curve_color": "invalid",
+            }
+        )
+
+        self.assertTrue(
+            np.allclose(colors.mesh_color, np.asarray([0x12, 0x34, 0x56]) / 255.0)
+        )
+        self.assertEqual(colors.manual_curve_color, (1.0, 1.0, 1.0))
 
     def _triangle_mesh(self) -> TriangleMeshData:
         return TriangleMeshData(

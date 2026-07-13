@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from tkinter import BooleanVar, StringVar, Toplevel
+from tkinter import BooleanVar, Button, StringVar, Toplevel, colorchooser
 from tkinter import ttk
 from typing import Callable, Sequence
 
 from app.keybinds import KEYBIND_DISPLAY_ORDER
-from settings.settings_data import AppSettings
+from settings.settings_data import AppSettings, DISPLAY_COLOR_FIELDS
+
+
+DISPLAY_COLOR_LABELS = {
+    "mesh_color": "Mesh",
+    "selected_mesh_color": "Selected Mesh",
+    "manual_curve_color": "Manual Curve",
+    "selected_curve_color": "Selected Curve",
+    "active_curve_color": "Active Curve",
+    "smooth_point_color": "Smooth Point",
+    "corner_point_color": "Corner Point",
+    "selected_point_color": "Selected Point",
+    "preview_point_color": "Preview Point",
+    "preview_line_color": "Preview Line",
+    "surface_color": "Surface",
+    "selected_surface_color": "Selected Surface",
+    "brep_surface_color": "BREP Surface",
+    "selected_brep_surface_color": "Selected BREP Surface",
+    "region_selection_color": "Region",
+    "region_selection_edge_color": "Region Edge",
+    "background_color": "Background",
+}
 
 
 @dataclass
@@ -51,14 +72,6 @@ def build_preferences_dialog(
             master=dialog,
             value=settings.display.show_viewcube,
         ),
-        "region_selection_color": StringVar(
-            master=dialog,
-            value=settings.display.region_selection_color,
-        ),
-        "region_selection_edge_color": StringVar(
-            master=dialog,
-            value=settings.display.region_selection_edge_color,
-        ),
         "region_selection_opacity": StringVar(
             master=dialog,
             value=f"{float(settings.display.region_selection_opacity):.2f}",
@@ -68,6 +81,11 @@ def build_preferences_dialog(
             value=settings.import_settings.default_proxy_quality,
         ),
     }
+    for field_name in DISPLAY_COLOR_FIELDS:
+        variables[field_name] = StringVar(
+            master=dialog,
+            value=str(getattr(settings.display, field_name)),
+        )
     for field_name, _label in KEYBIND_DISPLAY_ORDER:
         variables[f"keybind.{field_name}"] = StringVar(
             master=dialog,
@@ -84,6 +102,7 @@ def build_preferences_dialog(
 
     _build_general_tab(notebook, variables, proxy_quality_labels)
     _build_viewport_tab(notebook, variables)
+    _build_display_colors_tab(notebook, variables)
     _build_keybinds_tab(notebook, variables)
     _build_advanced_tab(notebook, placeholder_callback)
 
@@ -169,24 +188,54 @@ def _build_viewport_tab(
         variable=variables["show_viewcube"],
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
     ttk.Separator(tab).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 8))
-    ttk.Label(tab, text="Region Fill Color").grid(row=5, column=0, sticky="w", pady=2)
-    ttk.Entry(
-        tab,
-        textvariable=variables["region_selection_color"],
-        width=12,
-    ).grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=2)
-    ttk.Label(tab, text="Region Edge Color").grid(row=6, column=0, sticky="w", pady=2)
-    ttk.Entry(
-        tab,
-        textvariable=variables["region_selection_edge_color"],
-        width=12,
-    ).grid(row=6, column=1, sticky="ew", padx=(8, 0), pady=2)
-    ttk.Label(tab, text="Region Opacity").grid(row=7, column=0, sticky="w", pady=2)
+    ttk.Label(tab, text="Region Opacity").grid(row=5, column=0, sticky="w", pady=2)
     ttk.Entry(
         tab,
         textvariable=variables["region_selection_opacity"],
         width=12,
-    ).grid(row=7, column=1, sticky="ew", padx=(8, 0), pady=2)
+    ).grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=2)
+
+
+def _build_display_colors_tab(
+    notebook: ttk.Notebook,
+    variables: dict[str, BooleanVar | StringVar],
+) -> None:
+    tab = ttk.Frame(notebook, padding=10)
+    tab.columnconfigure(1, weight=1)
+    notebook.add(tab, text="Display Colors")
+
+    for row, field_name in enumerate(DISPLAY_COLOR_FIELDS):
+        label = DISPLAY_COLOR_LABELS[field_name]
+        variable = variables[field_name]
+        ttk.Label(tab, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        swatch = Button(
+            tab,
+            textvariable=variable,
+            width=11,
+            relief="solid",
+            borderwidth=1,
+            background=variable.get(),
+        )
+
+        def choose_color(
+            *,
+            color_variable: StringVar = variable,
+            color_button: Button = swatch,
+            color_label: str = label,
+        ) -> None:
+            _rgb, chosen = colorchooser.askcolor(
+                color=color_variable.get(),
+                parent=tab,
+                title=f"Choose {color_label} Color",
+            )
+            if not chosen:
+                return
+            normalized = str(chosen).upper()
+            color_variable.set(normalized)
+            color_button.configure(background=normalized, activebackground=normalized)
+
+        swatch.configure(command=choose_color)
+        swatch.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
 
 
 def _build_keybinds_tab(

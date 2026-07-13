@@ -19,6 +19,13 @@ class LoftFeatureOptions:
     ruled: bool = False
     smoothing: str = "normal"
     rebuild_on_source_edit: bool = True
+    overbuild_enabled: bool = True
+    overbuild_amount: float = 0.10
+    overbuild_u_start: float = 0.10
+    overbuild_u_end: float = 0.10
+    overbuild_v_start: float = 0.10
+    overbuild_v_end: float = 0.10
+    show_overbuild_handles: bool = True
     metadata: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -34,7 +41,24 @@ class LoftFeatureOptions:
         self.ruled = bool(self.ruled)
         self.smoothing = str(self.smoothing or "normal")
         self.rebuild_on_source_edit = bool(self.rebuild_on_source_edit)
+        self.overbuild_enabled = bool(self.overbuild_enabled)
+        self.overbuild_amount = _overbuild_value(self.overbuild_amount)
+        self.overbuild_u_start = _overbuild_value(self.overbuild_u_start)
+        self.overbuild_u_end = _overbuild_value(self.overbuild_u_end)
+        self.overbuild_v_start = _overbuild_value(self.overbuild_v_start)
+        self.overbuild_v_end = _overbuild_value(self.overbuild_v_end)
+        self.show_overbuild_handles = bool(self.show_overbuild_handles)
         self.metadata = dict(self.metadata) if isinstance(self.metadata, dict) else {}
+
+
+def _overbuild_value(value: object) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = 0.10
+    if number != number or number in {float("inf"), float("-inf")}:
+        number = 0.10
+    return min(max(number, 0.0), 10.0)
 
 
 @dataclass
@@ -126,4 +150,3 @@ def mark_loft_features_dirty_for_curve(
         ) + 1
         changed.append(feature)
     return changed
-

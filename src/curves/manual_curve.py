@@ -126,6 +126,8 @@ def manual_curve_metadata(
     preserve_corners: bool = True,
     smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
     keep_curve_on_mesh: bool = False,
+    control_point_revision: int = 0,
+    corner_detection_revision: int = 0,
 ) -> dict[str, object]:
     points = _safe_points(control_points)
     method = _normalized_curve_method(curve_method)
@@ -163,12 +165,18 @@ def manual_curve_metadata(
         corner_angle_threshold_degrees=corner_angle_threshold_degrees,
         preserve_corners=preserve_corners,
         smoothness=smoothness,
+        control_point_revision=control_point_revision,
+        corner_detection_revision=corner_detection_revision,
         snap_triangle_indices=snap_triangle_indices,
         snap_normals=snap_normals,
     )
     metadata.update(manual_curve_v2_metadata(control_data))
     metadata["smoothness"] = _normalized_smoothness(smoothness)
     metadata["keep_curve_on_mesh"] = bool(keep_curve_on_mesh)
+    metadata["control_point_revision"] = _normalized_revision(control_point_revision)
+    metadata["corner_detection_revision"] = _normalized_revision(
+        corner_detection_revision
+    )
     return metadata
 
 
@@ -271,6 +279,12 @@ def parse_manual_curve_metadata_v2(curve: object) -> ManualCurveControlDataV2 | 
             ),
             "smoothness": _normalized_smoothness(
                 metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS)
+            ),
+            "control_point_revision": _normalized_revision(
+                metadata.get("control_point_revision", 0)
+            ),
+            "corner_detection_revision": _normalized_revision(
+                metadata.get("corner_detection_revision", 0)
             ),
         },
     )
@@ -432,6 +446,8 @@ def build_manual_stored_curve(
     preserve_corners: bool = True,
     smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
     keep_curve_on_mesh: bool = False,
+    control_point_revision: int = 0,
+    corner_detection_revision: int = 0,
 ) -> StoredCurve:
     control_array = _safe_points(control_points)
     method = _normalized_curve_method(curve_method)
@@ -446,6 +462,8 @@ def build_manual_stored_curve(
         corner_angle_threshold_degrees=corner_angle_threshold_degrees,
         preserve_corners=preserve_corners,
         smoothness=smoothness,
+        control_point_revision=control_point_revision,
+        corner_detection_revision=corner_detection_revision,
         snap_triangle_indices=snap_triangle_indices,
         snap_normals=snap_normals,
     )
@@ -484,6 +502,8 @@ def build_manual_stored_curve(
         preserve_corners=control_data_v2.preserve_corners,
         smoothness=smoothness,
         keep_curve_on_mesh=keep_curve_on_mesh,
+        control_point_revision=control_point_revision,
+        corner_detection_revision=corner_detection_revision,
     )
     metadata.update(hybrid_curve_diagnostics(control_data_v2, fitted_points))
     return StoredCurve(
@@ -513,6 +533,8 @@ def manual_curve_control_data_v2(
     corner_angle_threshold_degrees: float = DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
     preserve_corners: bool = True,
     smoothness: int = DEFAULT_MANUAL_CURVE_SMOOTHNESS,
+    control_point_revision: int = 0,
+    corner_detection_revision: int = 0,
     snap_triangle_indices: Sequence[int | None] | None = None,
     snap_normals: Sequence[Sequence[float] | None] | None = None,
 ) -> ManualCurveControlDataV2:
@@ -527,7 +549,7 @@ def manual_curve_control_data_v2(
     elif _normalized_curve_method(curve_method) == MANUAL_CURVE_METHOD_SMOOTH_GUIDE:
         resolved_types = [CURVE_POINT_SMOOTH for _point in positions]
     else:
-        resolved_types = detect_corner_point_types(
+        resolved_types = detect_corner_point_types_by_angle(
             positions,
             is_closed=bool(is_closed),
             threshold_degrees=threshold,
@@ -560,7 +582,13 @@ def manual_curve_control_data_v2(
         sample_count=sample_count,
         corner_angle_threshold_degrees=threshold,
         preserve_corners=bool(preserve_corners),
-        metadata={"smoothness": _normalized_smoothness(smoothness)},
+        metadata={
+            "smoothness": _normalized_smoothness(smoothness),
+            "control_point_revision": _normalized_revision(control_point_revision),
+            "corner_detection_revision": _normalized_revision(
+                corner_detection_revision
+            ),
+        },
     )
 
 
@@ -592,10 +620,16 @@ def manual_curve_v2_metadata(
         ),
         "preserve_corners": bool(control_data.preserve_corners),
         "manual_curve_v2_metadata": _json_safe_metadata(control_data.metadata),
+        "control_point_revision": _normalized_revision(
+            control_data.metadata.get("control_point_revision", 0)
+        ),
+        "corner_detection_revision": _normalized_revision(
+            control_data.metadata.get("corner_detection_revision", 0)
+        ),
     }
 
 
-def detect_corner_point_types(
+def detect_corner_point_types_by_angle(
     control_points: Sequence[Sequence[float]] | np.ndarray,
     *,
     is_closed: bool,
@@ -617,6 +651,21 @@ def detect_corner_point_types(
     return point_types
 
 
+def detect_corner_point_types(
+    control_points: Sequence[Sequence[float]] | np.ndarray,
+    *,
+    is_closed: bool,
+    threshold_degrees: float = DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
+) -> list[str]:
+    """Compatibility wrapper for the angle-only corner detector."""
+
+    return detect_corner_point_types_by_angle(
+        control_points,
+        is_closed=is_closed,
+        threshold_degrees=threshold_degrees,
+    )
+
+
 def auto_detect_manual_curve_corners(
     control_data: ManualCurveControlDataV2,
     *,
@@ -627,7 +676,7 @@ def auto_detect_manual_curve_corners(
         if threshold_degrees is None
         else threshold_degrees
     )
-    point_types = detect_corner_point_types(
+    point_types = detect_corner_point_types_by_angle(
         control_data.control_points,
         is_closed=control_data.is_closed,
         threshold_degrees=threshold,
@@ -635,13 +684,10 @@ def auto_detect_manual_curve_corners(
     points: list[ManualCurvePoint] = []
     for index, point in enumerate(control_data.points):
         source = manual_curve_point_type_source(point)
-        preserve_manual_corner = bool(
-            point.point_type == CURVE_POINT_CORNER
-            and source == CURVE_POINT_SOURCE_MANUAL
-        )
-        detected_type = point.point_type if preserve_manual_corner else point_types[index]
+        preserve_manual_type = source == CURVE_POINT_SOURCE_MANUAL
+        detected_type = point.point_type if preserve_manual_type else point_types[index]
         metadata = dict(point.metadata)
-        if not preserve_manual_corner and detected_type == CURVE_POINT_CORNER:
+        if not preserve_manual_type:
             metadata["point_type_source"] = CURVE_POINT_SOURCE_AUTO
         points.append(
             ManualCurvePoint(
@@ -662,7 +708,12 @@ def auto_detect_manual_curve_corners(
         sample_count=control_data.sample_count,
         corner_angle_threshold_degrees=threshold,
         preserve_corners=control_data.preserve_corners,
-        metadata=dict(control_data.metadata),
+        metadata={
+            **control_data.metadata,
+            "corner_detection_revision": _normalized_revision(
+                control_data.metadata.get("control_point_revision", 0)
+            ),
+        },
     )
 
 
@@ -1312,6 +1363,14 @@ def _normalized_smoothness(value: object) -> int:
     except (TypeError, ValueError):
         smoothness = DEFAULT_MANUAL_CURVE_SMOOTHNESS
     return min(max(smoothness, 1), 8)
+
+
+def _normalized_revision(value: object) -> int:
+    try:
+        revision = int(value)
+    except (TypeError, ValueError):
+        revision = 0
+    return max(revision, 0)
 
 
 def _normalized_corner_threshold(value: object) -> float:

@@ -1,409 +1,523 @@
 ---
 
----
-
-## Task 72 Rewrite: Manual Curve Workflow Rescue + Mesh-Conforming Loft Preview
+## Task 72: Manual Curve Workflow Rescue, Simple Corner Detection, Loft Overbuild Preview, and Display Customization
 
 Purpose:
-The current manual curve workflow is not usable enough. In curve edit mode, camera movement is blocked or unreliable, clicks sometimes place random points, point editing is unclear, there are too many visible buttons/options, and the curve does not behave like a smooth ExModel-style guide curve.
+The manual curve workflow has become too complicated and still does not behave like the target ExModel-style workflow.
 
-Fix the user workflow before adding more primitives.
+The goal is to simplify and stabilize manual curve creation/editing before adding more primitive fitting or advanced surfacing.
 
-This task has two goals:
+Focus on:
 
-1. Make manual curve creation/editing feel controlled, simple, and smooth.
-2. Add a mesh-conforming loft preview mode for open body-line curves so lofted surfaces can follow the scan body instead of floating/chording through space.
+* simple angle-based corner detection
+* smooth curve behavior that needs fewer points
+* better curve edit/navigation behavior
+* less UI clutter
+* smaller curve/point display
+* color customization
+* surface display that does not show internal triangles by default
+* loft overbuild preview behavior
+* mesh-conforming loft preview for scan/body-line workflows
+* removal or consolidation of redundant/useless code where safe
 
 Do not add cylinder/cone/sphere fitting.
-Do not add overbuild/trim yet.
-Do not refactor MainWindow broadly.
-Do not remove existing BREP functionality.
-Do not remove region select.
-Do not add pboyer/verb.
-Do not make a full UI redesign.
-Do not expose every advanced option by default.
+Do not add full deviation analysis yet.
+Do not add overbuild trimming/intersection yet.
+Do not do the large Tasks 78–80 refactor yet.
+Do not add proprietary/commercial CAD kernel assumptions.
+Use the existing public CAD stack already in the project, currently CadQuery/OCP/OCCT-based.
 
 ---
 
-## Core observed problems
+## Important instruction: audit before adding
 
-Current user issues:
+Before adding new code, inspect the current manual curve, loft, viewport, preferences, and surface-preview code.
 
-* In curve edit mode, camera orbit/pan/zoom is unreliable.
-* Left click may place a random point when the user meant to rotate/select.
-* User gets stuck in the camera position from when edit mode started.
-* Too many curve buttons/options are visible.
-* Most curve options should be automatic unless advanced mode is enabled.
-* Hybrid curves are still sharp where they should be smooth.
-* User must place too many points to trace a smooth body curve.
-* BREP lofts made from open body-line curves do not conform to the scan/body surface.
-* Loft surfaces still feel disconnected from the shape being reverse engineered.
+If existing code is redundant, unused, misleading, or actively making the tool worse, remove or consolidate it.
 
-Primary fix:
-Separate navigation, curve creation, curve editing, and surface preview behavior into clear modes with safe defaults.
+Specifically look for:
 
----
-
-## Part A — Fix viewport navigation during curve modes
-
-Camera movement must always work.
+* duplicate curve modes that behave the same
+* user-facing options that do not materially change behavior
+* unused helper functions
+* repeated corner detection during preview/rendering
+* old curve sampling paths that are no longer needed
+* UI buttons that are almost always disabled
+* display settings hardcoded in viewport files
+* surface wireframe/debug display being shown by default
+* mesh-conforming preview code, if any, that is mislabeled as CAD/BREP
 
 Rules:
 
-* Right mouse drag: orbit camera.
-* Middle mouse drag: pan camera.
-* Mouse wheel: zoom.
-* Shift + left drag: pan camera if supported.
-* Alt + left drag: orbit camera if supported.
-* Esc: cancel current placement/edit submode, not entire app.
-* Left click should only place a curve point when the app is explicitly in Draw/Add Point mode.
-
-Curve edit mode must not hijack all pointer input.
-
-Required behavior:
-
-* User can freely orbit/pan/zoom while creating a curve.
-* User can freely orbit/pan/zoom while editing a curve.
-* No point is placed unless:
-
-  * Create Curve mode is active and Add Points is active, or
-  * Add Point submode is active, or
-  * Insert Point submode is active.
-* Selecting/editing existing control points must not disable camera movement.
-* Dragging a control point only starts when the cursor is actually over a control point.
+* Do not remove working BREP export.
+* Do not remove region select.
+* Do not remove curve projection/rebuild/validation.
+* Do not remove project save/load compatibility.
+* Do not remove old project compatibility.
+* If unsure whether a function is used, leave it and add a short TODO comment.
+* Do not perform broad package refactoring in this task.
+* Keep the changes surgical and workflow-focused.
 
 Acceptance:
 
-* Enter curve edit mode, orbit the camera with right mouse drag.
-* Pan and zoom still work.
-* Clicking empty space does not add a random point.
-* Clicking/dragging a control point selects/moves that point.
-* No accidental point placement while navigating.
+* redundant or misleading curve/UI code is removed or hidden where safe
+* existing project files still load
+* tests pass
+* app launches
 
 ---
 
-## Part B — Replace current cluttered curve UI with simple/advanced workflow
+## Part A — Simplify user-facing manual curve modes
 
-The Manual RE panel should default to a small set of obvious actions.
+The user should not have to choose between several overlapping curve systems.
 
-Default visible controls:
+User-facing curve modes should be reduced to:
+
+1. Smooth Curve
+2. Polyline
+
+Optional/legacy/debug modes may remain internally if needed for old project compatibility or tests, but they should not clutter the normal UI.
+
+Smooth Curve:
+
+* default mode
+* uses simple angle-based corner detection
+* smooths between corners
+* preserves sharp corners
+* should work for body lines, wheel arches, bumpers, fender contours, and scan guide curves
+
+Polyline:
+
+* straight segment chain
+* useful for hard-edged mechanical tracing
+
+Hide/demote:
+
+* Hybrid
+* Catmull-Rom
+* CAD Spline if it is not a true CAD spline yet
+
+Acceptance:
+
+* normal user sees Smooth Curve and Polyline only
+* Smooth Curve is the default
+* old curves still load
+* old internal modes do not break tests
+
+---
+
+## Part B — Use simple angle-based corner detection only
+
+Corner detection should be simple and cheap, similar to what appears to be used in ExModel-style workflows.
+
+Implement or consolidate into one function:
+
+detect_corner_point_types_by_angle(
+control_points,
+*,
+is_closed: bool,
+threshold_degrees: float,
+) -> list[str]
+
+Behavior:
+
+* For each eligible point, compute local angle using previous-current-next.
+* If angle is below threshold, classify as corner.
+* Otherwise classify as smooth.
+* Open-curve endpoints should remain smooth unless manually overridden.
+* Closed curves may evaluate all points.
+* Degenerate/duplicate points should be handled safely.
+* No NaN/inf results.
+* No expensive mesh queries.
+* No curvature optimization.
+* No repeated detection inside display sampling.
+
+Default threshold:
+
+* 135 degrees
+
+Performance requirement:
+
+* O(n)
+* run only when:
+
+  * a control point is added
+  * a control point is deleted
+  * a control point is moved
+  * the threshold changes
+  * the user explicitly presses Auto Detect Corners
+* do not run on every viewport render
+* do not run during every mouse move unless actively dragging a point, and even then throttle or update only the local affected points if possible
+
+Metadata:
+
+* point_types
+* point_type_sources
+* corner_angle_threshold_degrees
+* control_point_revision
+* corner_detection_revision
+
+Point type sources:
+
+* manual
+* auto
+* legacy
+* imported
+
+Rules:
+
+* manually set smooth/corner always overrides auto detection
+* auto-detected corners can be cleared
+* manual corners must not be cleared by Clear Auto Corners
+
+Acceptance:
+
+* creating manual curves with auto corner detection on is interactive
+* detection does not tank performance
+* smooth curves are not accidentally over-segmented
+* obvious hard angles become corners
+* tests verify sampling/rendering does not re-run detection unnecessarily
+
+---
+
+## Part C — Keep smoothing simple and predictable
+
+Do not build a complex tangent-handle system yet.
+
+Use a simple smooth-span approach:
+
+* corners split the curve into spans
+* smooth spans are smoothed/interpolated
+* corners remain exact
+* endpoints remain exact
+* closed curves close cleanly
+
+Preferred sampler:
+
+* current best stable smoother if it already works
+* otherwise use centripetal Catmull-Rom for smooth spans
+
+Rules:
+
+* smoothing must not cross corner points
+* smoothing must not move stored control points
+* smoothing affects fitted/display curve only
+* smoothness slider controls fitted-curve smoothing strength
+* no hidden curve mode behavior
+* no excessive control-point creation
+
+Acceptance:
+
+* sparse wheel-arch/body-line curve looks smooth with fewer points
+* hard corners stay hard
+* smoothness adjustment is visible but predictable
+* no performance regression
+
+---
+
+## Part D — Fix manual curve interaction and camera control
+
+Manual curve creation/editing must not trap the user in one camera position.
+
+Required viewport behavior:
+
+* right mouse drag always orbits
+* middle mouse drag always pans
+* mouse wheel always zooms
+* left click only places a point when drawing/add-point mode is active
+* left click in edit mode selects a control point only if the cursor is over a control point
+* left click empty space in edit mode does nothing
+* left drag moves a control point only if the drag starts on a control point
+* Esc exits active submode first, then exits curve edit/draw mode if pressed again
+
+Manual curve submodes:
+
+* inactive
+* draw_add_points
+* edit_select
+* edit_move_point
+* explicit_add_point
+* explicit_insert_point
+
+Rules:
+
+* Creating a new curve starts in draw_add_points.
+* Editing an existing curve starts in edit_select.
+* Add Point while editing must be explicitly enabled.
+* Insert Point while editing must be explicitly enabled.
+* Clicking empty space while editing must never add a point.
+* Camera navigation must remain available in every submode.
+
+Status text examples:
+
+* "Drawing curve: left-click to add points. Right-drag to orbit."
+* "Editing curve: select or drag control points. Right-drag to orbit."
+* "Add Point active: left-click to append. Esc returns to edit mode."
+* "Insert Point active: click a curve segment. Esc returns to edit mode."
+
+Acceptance:
+
+* user can orbit/pan/zoom during curve drawing
+* user can orbit/pan/zoom during curve editing
+* no random point placement during navigation
+* edit mode does not lock camera control
+
+---
+
+## Part E — Reduce visual size of curve points and lines
+
+The current curve markers and lines are too bulky for scan tracing.
+
+Reduce:
+
+* normal control point radius
+* selected control point radius
+* minimum control point radius
+* active curve line width
+* selected curve line width
+* preview line width
+* surface source curve line width
+
+Suggested defaults:
+
+* selected curve line width: 3.0 to 3.4
+* active/manual curve line width: 2.4 to 2.8
+* preview line width: 2.0 to 2.2
+* control polygon line width: 0.8 to 1.0
+* normal control point radius ratio: about 0.0025
+* selected point radius ratio: about 0.0040
+* minimum point radius: about 0.0015
+
+Visual rules:
+
+* smooth points should be small and readable
+* corner points should be visually distinct but not huge
+* selected point should be obvious but not block the scan
+* control polygon should be thin and muted
+* fitted curve should be clear but not thick like a marker
+
+Acceptance:
+
+* points do not obscure scan geometry
+* curves look more CAD-like
+* selected curves are still visible
+
+---
+
+## Part F — Simplify Manual RE UI
+
+The Manual RE panel currently exposes too many options.
+
+Default visible controls should be:
 
 Manual Curve:
 
 * Create Curve
 * Edit Selected Curve
-* Finish Curve
+* Finish / Done
 * Cancel
 * Undo Last Point
 * Close / Open Curve
+* Convert Selected Curve to Smooth
+* Simplify Selected Curve
+
+Basic options:
+
+* Snap to Mesh
+* Auto Corners
 * Smoothness slider
-* Fit to Mesh toggle
-* Convert Selected Curve to Smooth Guide
 
-Region Selection:
-
-* Region Select
-* Extract Boundary
-* Create BREP Face From Region
-
-Hide advanced point controls behind an "Advanced Curve Controls" collapsible section.
-
-Advanced controls:
+Move these under a collapsible Advanced Curve Controls section:
 
 * Add Point
 * Insert Point
-* Delete Selected Point
+* Delete Point
 * Set Point Smooth
 * Set Point Corner
-* Toggle Smooth/Corner
+* Clear Auto Corners
 * Auto Detect Corners
-* Clear Auto-Detected Corners
-* Straighten Selected Span
-* Smooth Selected Span
+* Straighten Span
 * Sample Count
 * Corner Threshold
-* Preserve Corners
-* Curve Method dropdown
-
-Default state:
-
-* Curve Type: Smooth Guide
-* Fit to Mesh: ON when mesh is loaded
-* Auto corner detection: OFF during creation
-* Preserve manually marked corners: ON
-* Sample count: 128
-* Smoothness: 4
-
-Acceptance:
-
-* Manual RE panel is no longer a wall of buttons.
-* Common workflow is obvious.
-* Advanced options still exist but are hidden unless needed.
-* User does not need to understand every option to make a good curve.
-
----
-
-## Part C — Add explicit tool submodes
-
-Add a small internal manual-curve mode state machine.
-
-Manual curve main modes:
-
-* inactive
-* drawing
-* editing
-
-Manual curve submodes:
-
-* navigate
-* add_point
-* insert_point
-* move_point
-* select_point
+* Debug Curve Method
 
 Rules:
 
-* Creating a new curve starts in drawing/add_point mode.
-* Editing an existing curve starts in editing/select_point mode.
-* After selecting a control point, dragging it moves only that point.
-* Clicking empty space in edit mode does not add a point.
-* Add Point must be explicitly enabled.
-* Insert Point must be explicitly enabled.
-* When Add Point or Insert Point is active, status text must clearly say so.
-* Esc exits Add/Insert submode back to edit/select mode.
-* Esc again exits edit mode.
-
-Status examples:
-
-* "Drawing curve: left-click to add points. Right-drag to orbit."
-* "Editing curve: select or drag control points. Press Add Point to add points."
-* "Add Point active: left-click to append point. Esc to return to edit mode."
-* "Insert Point active: click curve segment to insert. Esc to return to edit mode."
+* common workflow should not require opening Advanced
+* advanced controls remain available
+* disabled buttons should not dominate the UI
+* do not redesign the whole app layout in this task
 
 Acceptance:
 
-* No ambiguous click behavior.
-* User always knows whether a click will place a point.
-* Navigation always remains available.
+* Manual RE panel is shorter and easier to understand
+* common curve workflow is obvious
+* advanced functionality is hidden but available
 
 ---
 
-## Part D — Make Smooth Guide the default curve type
+## Part G — Add Preferences color chooser / color wheel
 
-Current Hybrid behavior is too corner-heavy.
+Add general color customization using Tk’s color chooser:
 
-Add or make primary:
+tkinter.colorchooser.askcolor
 
-MANUAL_CURVE_METHOD_SMOOTH_GUIDE = "smooth_guide"
+Add Preferences section:
+Display Colors
 
-Smooth Guide behavior:
+Color-editable items:
 
-* All points are smooth by default.
-* Curve approximates the intended smooth path.
-* It should not hard-kink unless a point is manually marked Corner.
-* It should require fewer points than current Hybrid.
-* It should work well for wheel arches, bumper contours, body lines, and fender edges.
+* mesh color
+* selected mesh color
+* manual curve color
+* selected curve color
+* active curve color
+* smooth point color
+* corner point color
+* selected point color
+* preview point color
+* preview line color
+* surface color
+* selected surface color
+* BREP surface color
+* selected BREP surface color
+* region color
+* region edge color
+* background color
 
-Implementation:
-
-* Do not auto-detect corners during initial drawing.
-* Keep user control points fixed.
-* Generate the visible fitted curve from a smoothed/fair curve path.
-* Use centripetal Catmull-Rom or constrained smoothing as the first implementation.
-* Apply smoothing to fitted/display curve, not to stored control point positions.
-* Preserve endpoints for open curves.
-* Preserve closure for closed curves.
-* Preserve manual corners exactly.
-
-Acceptance:
-
-* User can trace a smooth wheel arch with 5–8 points.
-* Curve is smooth without needing 30 points.
-* Curve does not kink unless user marks a point as Corner.
-* Existing Hybrid/Polyline options still work.
-
----
-
-## Part E — Disable auto-corner detection during normal drawing
-
-Auto corner detection is currently too aggressive for sparse scan tracing.
-
-Change behavior:
-
-* Auto corner detection is OFF by default.
-* Auto corner detection does not run while placing points unless explicitly enabled.
-* Auto Detect Corners is primarily a command the user can run after the curve is drawn.
-* If auto detection marks points, store those as auto corners, not manual corners.
-
-Metadata:
-
-* point_type_source:
-
-  * manual
-  * auto
-  * legacy
-  * imported
-
-Commands:
-
-* Auto Detect Corners
-* Clear Auto-Detected Corners
+Colors should be stored and saved across projects. Color wheels should exist in preferences, replacing manual hex inputs.
 
 Rules:
 
-* Clear Auto-Detected Corners must not remove manually set corners.
-* User-set corners always override auto logic.
+* old settings must load
+* invalid colors fall back to defaults
+* viewport converts hex colors to RGB
+* if live update is safe, apply immediately
+* otherwise apply after closing Preferences
 
 Acceptance:
 
-* Smooth body curves are no longer accidentally segmented.
-* Auto detection remains available for boxy/sharp shapes.
-* User can repair auto-detected mistakes.
+* user can change curve/point/surface colors
+* preferences persist
+* old settings do not break
+* default colors remain reasonable
 
 ---
 
-## Part F — Always show editable control cage for selected manual curves
+## Part H — Use current public CAD backend only
 
-When a manual curve is selected:
+Use the existing public CAD backend path in the project.
 
-* show fitted curve
-* show control polygon lightly
-* show control points
-* show corner/smooth point markers
-* show selected point if applicable
+Current intended backend:
 
-When not editing:
+* CadQuery/OCP/OCCT
 
-* show the control cage lightly if the curve is selected.
-* show a status hint: "Click Edit Selected Curve to modify control points."
+Do not add proprietary CAD kernel assumptions.
+Do not add commercial SDK integration.
+Do not add unsupported backend UI.
 
-When editing:
-
-* show full control cage clearly.
-* control point clicking must work.
-* selected point type must update in the UI.
-
-Visual rules:
-
-* fitted curve: thick yellow/white
-* control polygon: thin gray
-* smooth points: small white/blue dots
-* corner points: orange square/cube or orange marker
-* selected point: cyan/larger
+The backend abstraction should remain generic enough for future open/public kernels, but it should only expose capabilities that are actually implemented or planned with the current public stack.
 
 Acceptance:
 
-* User can see why the curve is sharp/smooth.
-* User can select points.
-* Selected Point no longer stays "(none)" after clicking control points.
-* Smooth/Corner buttons enable only when a control point is actually selected.
+* CAD/BREP features still work with current installed backend
+* app still launches without CAD backend
+* STEP export still works when backend is installed
+* no confusing unsupported kernel options are added
 
 ---
 
-## Part G — Add one-click repair for bad current curves
+## Part I — Loft overbuild preview and draggable extension handles
 
-Add command:
+ExModel-style lofts appear to overbuild surfaces automatically. Add this as preview/feature behavior first.
 
-Convert Selected Curve to Smooth Guide
+Add editable loft options:
 
-Behavior:
+* overbuild_enabled: bool = True
+* overbuild_amount: float
+* overbuild_u_start: float
+* overbuild_u_end: float
+* overbuild_v_start: float
+* overbuild_v_end: float
+* show_overbuild_handles: bool = True
 
-* Takes selected manual curve.
-* Keeps current control point positions.
-* Sets all auto-detected corners to smooth.
-* Keeps manually marked corners if metadata supports that distinction.
-* Switches method to Smooth Guide.
-* Uses Fit to Mesh if existing curve was mesh-snapped.
-* Recomputes fitted curve.
-* Creates undo step.
-* Refreshes viewport.
+Initial implementation:
 
-Add command:
+* extend loft preview beyond source curves by extrapolating sampled surface rows/columns
+* store overbuild values in loft feature metadata
+* show four corner handles on selected loft preview
+* allow dragging handles outward/inward to change overbuild values
+* update preview after drag
+* mark loft feature dirty/rebuild preview
 
-Reduce/Simplify Selected Guide Curve
+Important:
 
-Behavior:
+* this is not final trim
+* this is not surface-surface intersection
+* this is not final sewn BREP
+* do not claim trimmed/intersected output yet
+* if backend cannot create true overbuilt BREP, keep overbuild as preview metadata only
 
-* Reduces excessive control points while preserving shape.
-* Keeps endpoints.
-* Keeps manual corners.
-* Uses tolerance based on model size.
-* Creates a new simplified guide curve or updates with undo support.
-* Does not destroy original unless user confirms.
+Status text:
+"Overbuild preview extends the loft for later trim/intersection. Final trimming is not implemented yet."
 
 Acceptance:
 
-* User can fix a bad screenshot-style curve without redrawing.
-* User can reduce point count.
-* Curve becomes smoother with fewer hard breaks.
+* loft previews overbuild past curve boundaries by default
+* user can adjust overbuild with handles
+* metadata stores overbuild values
+* no false trim/intersection claims
+* existing BREP loft export still works
 
 ---
 
-## Part H — Improve curve-on-mesh snapping during edit
+## Part J — Hide internal surface triangles by default
 
-When Fit to Mesh is ON:
+Generated surfaces should look like CAD surfaces, not retopology triangle grids.
 
-* added points snap to mesh
-* moved points re-project to mesh
-* inserted points snap/project to mesh
-* fitted curve may optionally be projected to mesh for preview
+Default display:
 
-Do not make every sampled point snap by default unless using mesh-conforming curve mode.
-Store:
-
-* snap triangle indices
-* snap normals
-* projection distance
-* source mesh name
+* smooth shaded surface
+* no internal triangle wireframe
+* boundary edges visible
+* optional sparse U/V isocurves
+* debug tessellation hidden
 
 Add option:
 
-* Keep Curve On Mesh
+* Show Surface Tessellation
 
-Behavior:
+Rules:
 
-* If enabled, after curve fit/smoothing, project sampled fitted curve to the mesh for display.
-* Control points remain editable.
-* This helps body-line curves stay visually on the scan.
+* preview mesh triangles are display-only
+* do not show every triangle edge unless debug option is enabled
+* BREP/preview surfaces should visually resemble smooth CAD surfaces
 
 Acceptance:
 
-* Moved control points stay on body surface when Fit to Mesh is ON.
-* Smooth fitted curve can visually lie on the scan surface.
-* User can turn this off if it causes unwanted noise.
+* loft previews look smooth
+* internal triangle grid is hidden
+* debug wireframe/tessellation can still be enabled
 
 ---
 
-## Part I — Mesh-conforming loft preview for open body-line curves
+## Part K — Mesh-conforming loft preview for open body-line curves
 
-Separate problem:
-Open-curve BREP lofts between body lines may not conform to the scan body. A pure CAD loft interpolates between the curves in free space; it does not know it should follow the scanned body unless additional constraints/projection are applied.
+Problem:
+Open BREP lofts through body-line curves may not conform to the scanned body. This is expected because a CAD loft interpolates through curves in space; it does not automatically know to follow the mesh between open curves.
 
-Add a new preview/build mode:
-
-Mesh-Conforming Loft Preview
-
-Available for:
-
-* two or more open curves
-* curves on or near the mesh
+Add command:
+Create Mesh-Conforming Loft Preview
 
 Behavior:
 
-1. Build normal loft sample grid between source curves.
-2. For each sampled grid point, project it to nearest point on mesh.
-3. Reject or warn if projection distance exceeds threshold.
-4. Display the mesh-conforming preview as shaded surface.
-5. Hide internal triangle edges by default.
-6. Use this preview to evaluate whether source curves are good.
-7. Do not call this a final BREP unless a real CAD fitting step is added.
-
-UI:
-
-* Create Mesh-Conforming Loft Preview
-* Projection Distance Threshold
-* Show Projection Error Heatmap, optional
-* Convert Preview to Surface Fit, optional/future
+1. Build a loft sample grid between selected open curves.
+2. Project grid points to the nearest mesh surface.
+3. Display the projected preview as a smooth shaded surface.
+4. Report projection mean/max distance.
+5. Store projection metrics.
+6. Do not label it as BREP.
+7. Do not export it as STEP unless later fitted into a real CAD surface.
 
 Metadata:
 
@@ -414,161 +528,162 @@ Metadata:
 * failed_projection_count
 * grid_u_count
 * grid_v_count
-* conforming_preview=True
+* conforming_preview = True
+
+Status explanation:
+"BREP loft is a clean CAD surface through curves. Mesh-Conforming Preview projects a loft preview to the scan for body-following evaluation."
 
 Acceptance:
 
-* Open body-line curves create a preview surface that follows the scan better than raw BREP loft.
-* Projection distances are reported.
-* Internal triangle edges are hidden by default.
-* User understands this is a preview/conforming mesh surface, not a clean BREP yet.
+* open body-line curves can create a scan-following preview
+* user can see whether the surface follows the body
+* no false BREP labeling
+* projection metrics are shown
 
 ---
 
-## Part J — Keep BREP loft separate from mesh-conforming preview
+## Part L — Prepare for future deviation analysis
 
-Do not pretend a mesh-projected preview is a clean CAD loft.
+Do not implement full real-time deviation analysis in this task.
+
+Add only a small module target:
+
+src/analysis/deviation.py
+
+Dataclasses:
+
+* DeviationSample
+* DeviationResult
+
+Future concepts:
+
+* curve deviation to mesh
+* surface deviation to mesh
+* BREP deviation to scan
+* color-coded heatmap
 
 Rules:
 
-* BREP Loft:
-
-  * clean CAD surface through source curves
-  * may float/chord if source curves are open and body curvature is not constrained
-  * exportable to STEP
-* Mesh-Conforming Loft Preview:
-
-  * projected onto scan mesh
-  * visually conforms to body
-  * useful for checking/guide surface
-  * not automatically a STEP/BREP surface
-
-Add status explanation:
-"BREP loft is a CAD surface through the curves. Mesh-Conforming Preview projects the loft to the scan for visual/body-following evaluation."
+* no expensive computation yet
+* no full UI yet
+* no performance hit
 
 Acceptance:
 
-* User can choose between CAD loft and conforming preview.
-* No false labeling.
-* This directly addresses why open BREP lofts do not hug the body.
+* future deviation analysis has a clear module target
+* no current workflow slowdown
 
 ---
 
-## Part K — Surface display fix: hide internal triangles by default
-
-Generated surface previews currently look like triangulated retopology meshes.
-
-Change default display:
-
-* shaded smooth surface
-* no internal triangle wireframe
-* show only boundary edges
-* optional sparse U/V isocurves
-* wireframe/debug triangles hidden behind "Show Surface Tessellation"
-
-Rules:
-
-* BREP/preview surfaces should not show every triangle by default.
-* Mesh-conforming preview should also hide internal triangles by default.
-* Debug wireframe remains available.
-
-Acceptance:
-
-* Loft previews look like smooth surfaces instead of triangulated grids.
-* User can still debug tessellation if needed.
-* ExModel-like visual behavior is closer.
-
----
-
-## Part L — Tests
+## Part M — Tests
 
 Add/update tests:
 
-Mode behavior:
+Code cleanup:
 
-* camera navigation events are not consumed by curve edit mode
-* left click empty space in edit mode does not add point
-* Add Point submode adds point
-* Insert Point submode inserts point
-* Esc exits submodes predictably
-* edit mode preserves camera navigation
+* removed/hidden curve modes do not break old project loading
+* internal legacy modes still load if needed
+* no deleted function breaks imports
 
-Smooth guide:
+Corner detection:
 
-* new Smooth Guide curves default all points smooth
-* sparse arch curve produces smooth sampled curve
-* explicit corner remains sharp
-* auto corner detection does not run unless commanded/enabled
-* Convert Selected Curve to Smooth Guide clears auto-corners
-* simplify guide curve reduces points while preserving endpoints/corners
+* angle threshold marks sharp corners
+* smooth point remains smooth
+* open endpoints remain smooth by default
+* manual corners override auto
+* Clear Auto Corners preserves manual corners
+* corner detection does not run during pure sampling/render refresh
+* performance with 100+ points is acceptable
 
-Control cage:
+Smoothing:
 
-* selected manual curve shows control points
-* selected point type updates after click
-* Set Smooth/Corner buttons enable when point selected
-* non-edit selected curve still shows lightweight control cage
+* Smooth Curve is default
+* sparse wheel-arch-like curve is smooth
+* boxy curve gets corners with auto corners enabled
+* smoothing does not cross corners
+* endpoints remain exact
+* stored control points are not moved by smoothing
 
-Snap/edit:
+Interaction:
 
-* moved point reprojects to mesh when Fit to Mesh ON
-* added point snaps to mesh
-* inserted point snaps to mesh
-* Keep Curve On Mesh projects fitted curve for display
+* right-drag orbit works in draw mode
+* right-drag orbit works in edit mode
+* middle-drag pan works in draw/edit mode
+* wheel zoom works in draw/edit mode
+* left-click empty space in edit mode does not add point
+* Add Point mode adds point
+* Insert Point mode inserts point
+* Esc exits submode predictably
 
-Mesh-conforming loft:
+Display:
 
-* open curves generate conforming preview
-* grid points project to mesh
-* projection distance metrics stored
-* failed projection count reported
-* preview does not create BREP record unless explicitly converted
-* internal triangle edges hidden by default
+* reduced line widths applied
+* reduced point radius applied
+* selected curve still visible
+* point markers do not dominate scan
+
+Preferences:
+
+* color chooser saves settings
+* invalid color falls back safely
+* old settings load
+* viewport uses updated colors
+
+CAD backend:
+
+* current CadQuery/OCP/OCCT path still works
+* no unsupported/proprietary backend UI added
+* STEP export still works if backend installed
+* app launches without CAD backend
+
+Loft overbuild:
+
+* loft feature stores overbuild options
+* preview extends beyond source curves
+* handle drag changes overbuild values
+* no trim/intersection claim
 
 Surface display:
 
-* preview surfaces default to no triangle wireframe
-* boundary edges still visible
-* debug wireframe option works
+* internal triangle wireframe hidden by default
+* boundary edges visible
+* debug tessellation option works
+
+Mesh-conforming loft:
+
+* projected preview follows mesh
+* projection metrics stored
+* not exported as BREP
+* not mislabeled as CAD/BREP
 
 Regression:
 
-* manual curves still save/load
-* old curves still load
-* BREP face from curve still works
-* editable BREP loft still works
-* region select still works
-* region-to-BREP planar face still works
-* app launches without CAD kernel
-* app launches with CAD kernel
+* app launches
+* existing manual curves load
+* region select works
+* BREP face from region works
+* BREP loft works
+* editable loft feature records still load
+* project save/load works
+* scene browser works
 * pytest passes
 
 Acceptance:
 
-* user can create/edit curves without losing camera control
-* no random point placement during navigation/editing
-* default curve workflow is simple and automated
-* smooth body guide curves require far fewer points
-* advanced controls are hidden unless needed
-* mesh-conforming loft preview follows the scan body better than raw BREP loft
-* surfaces no longer look like visible triangle grids by default
+* curve system feels simpler and faster
+* corner detection is simple angle-based
+* smooth body curves need fewer points
+* user can still manually override smooth/corner points
+* camera/navigation remain usable
+* points and lines are visually smaller
+* colors can be adjusted in preferences
+* loft overbuild preview exists
+* surface triangle grid is hidden by default
+* mesh-conforming loft preview exists
+* current open-source CAD backend remains functional
 
 ## Stop after this task.
 
-
-
-
-
----
-
-## Future Refactor Phase — Tasks 78–80
-
-Purpose:
-After the manual curve, loft, overbuild, trim, and BREP workflow is functional, perform a full architecture cleanup. The current app has too much tool logic, UI logic, export logic, settings logic, and state coordination inside MainWindow. That must be split into clean, testable modules.
-
-This refactor phase must not change user-visible behavior unless explicitly stated. The goal is separation, maintainability, and safer future development.
-
----
 
 ## Task 78: Application Architecture Refactor — Controllers, Commands, and Services
 

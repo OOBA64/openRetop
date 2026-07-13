@@ -65,6 +65,7 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             "show_grid": bool(project.display.show_grid),
             "show_axes": bool(project.display.show_axes),
             "show_normals": bool(project.display.show_normals),
+            "colors": dict(project.display.colors),
         },
         "section": {
             "axis": project.section.axis,
@@ -276,6 +277,9 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
             _nested_value(display_data, "show_normals", defaults.display.show_normals),
             "display.show_normals",
         ),
+        colors=_display_colors_value(
+            _nested_value(display_data, "colors", defaults.display.colors)
+        ),
     )
     section = ProjectSectionSettings(
         axis=_axis_value(
@@ -341,6 +345,24 @@ def _project_version(value: object) -> int:
     if version != PROJECT_VERSION:
         raise ValueError(f"Unsupported project version: {version}")
     return version
+
+
+def _display_colors_value(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    colors: dict[str, str] = {}
+    for key, color in value.items():
+        if not isinstance(key, str) or not isinstance(color, str):
+            continue
+        normalized = color.strip().upper()
+        if len(normalized) != 7 or not normalized.startswith("#"):
+            continue
+        try:
+            int(normalized[1:], 16)
+        except ValueError:
+            continue
+        colors[key] = normalized
+    return colors
 
 
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, object] | None:

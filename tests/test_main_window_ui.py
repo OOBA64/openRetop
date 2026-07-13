@@ -77,6 +77,11 @@ from sections.section_state import (
 )
 from surfaces.surface_state import SurfacePatch, add_surface
 from surfaces.brep_state import BrepSurfaceRecord, add_brep_surface
+from surfaces.loft_feature import (
+    LoftFeatureOptions,
+    LoftFeatureRecord,
+    add_loft_feature,
+)
 from viewer.embedded_viewport import MeshPickResult
 
 
@@ -168,6 +173,7 @@ class FakeViewport:
         self.projection_calls: list[dict[str, object]] = []
         self.mesh_pick_results: list[MeshPickResult] = []
         self.mesh_pick_calls: list[dict[str, int]] = []
+        self.overbuild_handle_index: int | None = None
 
     def start(self) -> None:
         return None
@@ -206,6 +212,11 @@ class FakeViewport:
         if self.mesh_pick_results:
             return self.mesh_pick_results.pop(0)
         return MeshPickResult(hit=False)
+
+    def loft_overbuild_handle_index_at_screen(
+        self, _x_position: int, _y_position: int
+    ) -> int | None:
+        return self.overbuild_handle_index
 
     def frame_model(self) -> None:
         self.frame_count += 1
@@ -718,13 +729,17 @@ class MainWindowUiTests(unittest.TestCase):
             )
             self.assertIn("Enter=finish", window.hotkey_hint_text.get())
             self.assertIn("0 controls", details)
-            self.assertIn("Fit to Mesh: Off", details)
+            self.assertIn("Snap to Mesh: Off", details)
             self.assertIn("No", details)
             self.assertEqual(str(window.finish_manual_curve_button.cget("state")), "normal")
             self.assertEqual(str(window.cancel_manual_curve_button.cget("state")), "normal")
             self.assertEqual(str(window.remove_manual_point_button.cget("state")), "normal")
             self.assertEqual(str(window.toggle_manual_closed_button.cget("state")), "normal")
-            self.assertEqual(str(window.done_manual_curve_edit_button.cget("state")), "disabled")
+            self.assertIs(
+                window.done_manual_curve_edit_button,
+                window.finish_manual_curve_button,
+            )
+            self.assertEqual(str(window.done_manual_curve_edit_button.cget("state")), "normal")
             self.assertEqual(str(window.add_manual_point_button.cget("state")), "disabled")
             self.assertEqual(str(window.insert_manual_point_button.cget("state")), "disabled")
         finally:
@@ -783,7 +798,7 @@ class MainWindowUiTests(unittest.TestCase):
                     window.preferences_notebook.tab(index, "text")
                     for index in range(window.preferences_notebook.index("end"))
                 ],
-                ["General", "Viewport", "Keybinds", "Advanced"],
+                ["General", "Viewport", "Display Colors", "Keybinds", "Advanced"],
             )
             self.assertEqual(window.preferences_vars["window_mode"].get(), "maximized")
             self.assertTrue(window.preferences_vars["remember_window_size"].get())
@@ -805,8 +820,8 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertTrue(_widgets_with_text(dialog, "Default Show Axes"))
             self.assertTrue(_widgets_with_text(dialog, "Default Show Axis Gizmo"))
             self.assertTrue(_widgets_with_text(dialog, "Default Show View Controls"))
-            self.assertTrue(_widgets_with_text(dialog, "Region Fill Color"))
-            self.assertTrue(_widgets_with_text(dialog, "Region Edge Color"))
+            self.assertTrue(_widgets_with_text(dialog, "Region"))
+            self.assertTrue(_widgets_with_text(dialog, "Region Edge"))
             self.assertTrue(_widgets_with_text(dialog, "Region Opacity"))
             self.assertFalse(_widgets_with_text(dialog, "Startup Show Grid"))
             self.assertFalse(_widgets_with_text(dialog, "Startup Show Axes"))
@@ -887,7 +902,7 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertFalse(window.show_normals.get())
                 self.assertEqual(window.proxy_quality.get(), "Medium")
                 self.assertEqual(window.status_text.get(), "Preferences applied")
-                self.assertEqual(len(window.viewport.scene_calls), scene_call_count)
+                self.assertGreater(len(window.viewport.scene_calls), scene_call_count)
                 self.assertFalse(window.settings.display.show_grid)
                 self.assertFalse(window.settings.display.show_axes)
                 self.assertFalse(window.settings.display.show_normals)
@@ -896,6 +911,12 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(window.settings.display.region_selection_color, "#00FF00")
                 self.assertEqual(window.settings.display.region_selection_edge_color, "#FFFFFF")
                 self.assertEqual(window.settings.display.region_selection_opacity, 1.0)
+                self.assertEqual(
+                    window.viewport.scene_calls[-1]["display_colors"][
+                        "region_selection_color"
+                    ],
+                    "#00FF00",
+                )
                 self.assertEqual(
                     window.settings.import_settings.default_proxy_quality,
                     "Low",
@@ -938,6 +959,35 @@ class MainWindowUiTests(unittest.TestCase):
                 self.assertEqual(restored_window.proxy_quality.get(), "Low")
             finally:
                 restored_window.root.destroy()
+
+    def test_preferences_color_swatch_uses_color_chooser(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            window.open_preferences()
+            dialog = window.preferences_dialog
+            self.assertIsNotNone(dialog)
+            assert dialog is not None
+            swatches = [
+                widget
+                for widget in _widget_descendants(dialog)
+                if widget.winfo_class() == "Button"
+                and str(widget.cget("textvariable"))
+            ]
+            self.assertEqual(len(swatches), 17)
+
+            with patch(
+                "app.preferences_dialog.colorchooser.askcolor",
+                return_value=((18, 52, 86), "#123456"),
+            ):
+                swatches[0].invoke()
+
+            self.assertEqual(window.preferences_vars["mesh_color"].get(), "#123456")
+        finally:
+            if window.preferences_dialog is not None:
+                window._close_preferences_dialog()
+            window.root.destroy()
 
     def test_preferences_rejects_empty_keybinds(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -2635,7 +2685,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertEqual(surface.metadata["build_method"], "two_curve_loft")
             self.assertEqual(surface.metadata["warnings"], ["point counts differ"])
             self.assertEqual(window._brep_runtime_cache[surface.id], cad_object)
-            self.assertIn("BREP loft is a CAD surface", window.status_text.get())
+            self.assertIn("BREP loft is a clean CAD surface", window.status_text.get())
 
             surface_node = surface_node_id(surface.id)
             self.assertIn(
@@ -5186,6 +5236,79 @@ class MainWindowUiTests(unittest.TestCase):
         finally:
             window.root.destroy()
 
+    def test_selected_loft_overbuild_handle_drag_updates_preview_metadata(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            surface = BrepSurfaceRecord(
+                id="brep-loft",
+                name="Editable Loft",
+                source_curve_ids=["a", "b"],
+                brep_type="loft_surface",
+                backend="FakeCAD",
+                metadata={"creation_type": "editable_loft_feature"},
+            )
+            feature = LoftFeatureRecord(
+                id="feature-loft",
+                name="Editable Loft",
+                options=LoftFeatureOptions(source_curve_ids=["a", "b"]),
+                brep_surface_id=surface.id,
+                last_build_success=True,
+            )
+            add_brep_surface(window.app_state.brep_surface_collection, surface)
+            add_loft_feature(window.app_state.loft_feature_collection, feature)
+            window.select_surface(surface.id)
+            window.viewport.overbuild_handle_index = 3
+
+            self.assertTrue(window._on_viewport_pointer_event("left_press", 10, 10))
+            self.assertTrue(window._on_viewport_pointer_event("motion", 30, 30))
+            self.assertTrue(window._on_viewport_pointer_event("left_release", 30, 30))
+
+            self.assertAlmostEqual(feature.options.overbuild_u_end, 0.30)
+            self.assertAlmostEqual(feature.options.overbuild_v_end, 0.30)
+            self.assertAlmostEqual(surface.metadata["overbuild_u_end"], 0.30)
+            self.assertIn("Final trimming is not implemented", window.status_text.get())
+        finally:
+            window.root.destroy()
+
+    def test_selected_preview_loft_overbuild_handle_drag_updates_surface(self) -> None:
+        with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
+            window = _create_window()
+
+        try:
+            _load_sample_model(window)
+            surface = SurfacePatch(
+                id="surface-loft-preview",
+                name="Loft Preview",
+                source_curve_ids=["a", "b"],
+                surface_type="preview_loft",
+                metadata={
+                    "preview_mode": "two_curve_loft",
+                    "overbuild_enabled": True,
+                    "overbuild_u_start": 0.10,
+                    "overbuild_u_end": 0.10,
+                    "overbuild_v_start": 0.10,
+                    "overbuild_v_end": 0.10,
+                    "show_overbuild_handles": True,
+                },
+            )
+            add_surface(window.app_state.surface_collection, surface)
+            window.select_surface(surface.id)
+            window.viewport.overbuild_handle_index = 0
+
+            self.assertTrue(window._on_viewport_pointer_event("left_press", 20, 20))
+            self.assertTrue(window._on_viewport_pointer_event("motion", 0, 0))
+            self.assertTrue(window._on_viewport_pointer_event("left_release", 0, 0))
+
+            self.assertAlmostEqual(surface.metadata["overbuild_u_start"], 0.30)
+            self.assertAlmostEqual(surface.metadata["overbuild_v_start"], 0.30)
+            self.assertGreater(surface.metadata["overbuild_preview_revision"], 0)
+            self.assertIn("Final trimming is not implemented", window.status_text.get())
+        finally:
+            window.root.destroy()
+
     def test_patch_surface_commands_create_diagnostics_and_undoable_surfaces(self) -> None:
         with patch("app.main_window.EmbeddedVTKViewport", FakeViewport):
             window = _create_window()
@@ -7635,10 +7758,10 @@ class MainWindowUiTests(unittest.TestCase):
 
             window._handle_shortcut("Esc")
             self.assertTrue(window._manual_curve_active)
-            self.assertEqual(window._manual_curve_submode, "navigate")
+            self.assertEqual(window._manual_curve_submode, "inactive")
             self.assertEqual(
                 window.status_text.get(),
-                "Navigate active: point placement paused.",
+                "Point placement paused. Press Add Point to continue.",
             )
 
             window._handle_shortcut("Esc")
@@ -7797,7 +7920,7 @@ class MainWindowUiTests(unittest.TestCase):
             self.assertFalse(window._manual_curve_placing_enabled)
             self.assertEqual(window.current_workbench.get(), "Manual RE")
             self.assertEqual(window.current_mode_text.get(), "Manual Curve Edit")
-            self.assertEqual(window.finish_manual_curve_button.cget("text"), "Apply Edits")
+            self.assertEqual(window.finish_manual_curve_button.cget("text"), "Done Editing")
             self.assertEqual(window.cancel_manual_curve_button.cget("text"), "Cancel Edit")
             self.assertEqual(str(window.done_manual_curve_edit_button.cget("state")), "normal")
             self.assertEqual(str(window.add_manual_point_button.cget("state")), "normal")
@@ -7977,7 +8100,7 @@ class MainWindowUiTests(unittest.TestCase):
 
         try:
             window.root.update_idletasks()
-            self.assertEqual(window.manual_curve_type_text.get(), "Smooth Guide")
+            self.assertEqual(window.manual_curve_type_text.get(), "Smooth Curve")
             self.assertEqual(
                 window.manual_curve_sample_count_text.get(),
                 str(DEFAULT_MANUAL_CURVE_SAMPLE_COUNT),
@@ -8046,14 +8169,14 @@ class MainWindowUiTests(unittest.TestCase):
 
             self.assertEqual(len(window._manual_curve_points), before_count)
             self.assertEqual(len(curve.metadata["control_points"]), before_count)
-            self.assertEqual(window._manual_curve_submode, "select_point")
+            self.assertEqual(window._manual_curve_submode, "edit_select")
 
             window.activate_manual_curve_add_point()
-            self.assertEqual(window._manual_curve_submode, "add_point")
+            self.assertEqual(window._manual_curve_submode, "explicit_add_point")
             self.assertIn("Add Point active", window.status_text.get())
             window._handle_manual_curve_shortcut("Esc")
             self.assertTrue(window._manual_curve_edit_active)
-            self.assertEqual(window._manual_curve_submode, "select_point")
+            self.assertEqual(window._manual_curve_submode, "edit_select")
             window._handle_manual_curve_shortcut("Esc")
             self.assertFalse(window._manual_curve_edit_active)
         finally:
@@ -8738,7 +8861,7 @@ class MainWindowUiTests(unittest.TestCase):
             window.start_manual_curve_edit_mode()
             self.assertTrue(window._manual_curve_edit_active)
             self.assertEqual(window.status_text.get(), "Editing Region Boundary 1")
-            window.manual_curve_type_text.set("Smooth Guide")
+            window.manual_curve_type_text.set("Smooth Curve")
             window._on_manual_curve_type_changed()
             window.apply_manual_curve_edits()
 
