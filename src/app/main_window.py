@@ -24,6 +24,7 @@ from cad_kernel.backend import (
 from cad_kernel.types import CadBuildResult, CadCurveInput, curve_points_from_stored_curve
 from app.app_state import AppState
 from app.keybinds import KEYBIND_DISPLAY_ORDER, action_for_shortcut, shortcut_from_tk_event
+from app.manual_curve_controller import ManualCurveActionResult, ManualCurveController
 from app.menus import build_menu_bar
 from app.object_state import MeshObjectState
 from app.preferences_dialog import build_preferences_dialog
@@ -79,7 +80,6 @@ from app.transforms import (
     mesh_rotate_delta,
     normalized_vector,
     rotate_vector_around_axis,
-    rotation_matrix,
     transform_bounds,
     transform_point,
     world_axis_vector,
@@ -107,12 +107,9 @@ from curves.curve_state import (
     remove_curve,
     set_active_curve,
     set_selected_curves,
-    simplify_curve,
     smooth_curve,
 )
 from curves.manual_curve import (
-    CURVE_POINT_SOURCE_AUTO,
-    CURVE_POINT_SOURCE_MANUAL,
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     DEFAULT_CORNER_ANGLE_THRESHOLD_DEGREES,
@@ -128,18 +125,13 @@ from curves.manual_curve import (
     ManualCurvePoint,
     auto_detect_manual_curve_corners,
     build_manual_stored_curve,
-    clear_auto_detected_manual_curve_corners,
     ensure_manual_curve_storage,
-    hybrid_curve_diagnostics,
     is_manual_curve_like,
     manual_curve_close_threshold,
-    parse_manual_curve_metadata,
     parse_manual_curve_metadata_v2,
     sample_hybrid_manual_curve,
-    simplify_manual_curve_control_data,
-    should_snap_closed_to_first_point,
 )
-from curves.projection import project_curve_points_to_mesh, project_stored_curve_to_mesh
+from curves.projection import project_stored_curve_to_mesh
 from curves.rebuild import rebuild_stored_curve
 from curves.validation import (
     CurveSurfaceReadiness,
@@ -430,8 +422,89 @@ def _center_toplevel_over_parent(window: Toplevel, parent: Tk) -> None:
         return
 
 
+def _manual_curve_session_property(field_name: str) -> property:
+    """Compatibility access that never stores manual-curve state on the window."""
+
+    def getter(window: "OpenRetopWindow") -> object:
+        return getattr(window.manual_curve_controller.session, field_name)
+
+    def setter(window: "OpenRetopWindow", value: object) -> None:
+        setattr(window.manual_curve_controller.session, field_name, value)
+        window.manual_curve_controller.invalidate_display_cache()
+
+    return property(getter, setter)
+
+
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
+
+    _manual_curve_active = _manual_curve_session_property("active")
+    _manual_curve_edit_active = _manual_curve_session_property("editing")
+    _manual_curve_edit_curve_id = _manual_curve_session_property("edit_curve_id")
+    _manual_curve_submode = _manual_curve_session_property("submode")
+    _manual_curve_points = _manual_curve_session_property("control_points")
+    _manual_curve_point_types = _manual_curve_session_property("point_types")
+    _manual_curve_point_type_sources = _manual_curve_session_property(
+        "point_type_sources"
+    )
+    _manual_curve_closed = _manual_curve_session_property("is_closed")
+    _manual_curve_curve_method = _manual_curve_session_property("curve_method")
+    _manual_curve_sample_count = _manual_curve_session_property("sample_count")
+    _manual_curve_plane_origin = _manual_curve_session_property("plane_origin")
+    _manual_curve_plane_normal = _manual_curve_session_property("plane_normal")
+    _manual_curve_plane_type = _manual_curve_session_property("plane_type")
+    _manual_curve_plane_label = _manual_curve_session_property("plane_label")
+    _manual_curve_source_section_plane_id = _manual_curve_session_property(
+        "source_section_plane_id"
+    )
+    _manual_curve_snap_point_count = _manual_curve_session_property(
+        "snapped_point_count"
+    )
+    _manual_curve_snap_flags = _manual_curve_session_property("snap_flags")
+    _manual_curve_snap_triangle_indices = _manual_curve_session_property(
+        "snap_triangle_indices"
+    )
+    _manual_curve_snap_normals = _manual_curve_session_property("snap_normals")
+    _manual_curve_projection_distances = _manual_curve_session_property(
+        "projection_distances"
+    )
+    _manual_curve_selected_control_point_index = _manual_curve_session_property(
+        "selected_control_point_index"
+    )
+    _manual_curve_hover_control_point_index = _manual_curve_session_property(
+        "hover_control_point_index"
+    )
+    _manual_curve_drag_candidate_index = _manual_curve_session_property(
+        "drag_candidate_index"
+    )
+    _manual_curve_drag_active = _manual_curve_session_property("drag_active")
+    _manual_curve_left_press_position = _manual_curve_session_property(
+        "left_press_position"
+    )
+    _manual_curve_left_dragged = _manual_curve_session_property("left_dragged")
+    _manual_curve_placing_enabled = _manual_curve_session_property("placing_enabled")
+    _manual_curve_add_point_active = _manual_curve_session_property("add_point_active")
+    _manual_curve_insert_point_active = _manual_curve_session_property(
+        "insert_point_active"
+    )
+    _manual_curve_preview_point = _manual_curve_session_property("preview_point")
+    _manual_curve_preview_valid = _manual_curve_session_property("preview_valid")
+    _manual_curve_preview_snaps_closed = _manual_curve_session_property(
+        "preview_snaps_closed"
+    )
+    _manual_curve_preview_snaps_to_mesh = _manual_curve_session_property(
+        "preview_snaps_to_mesh"
+    )
+    _manual_curve_preview_triangle_index = _manual_curve_session_property(
+        "preview_triangle_index"
+    )
+    _manual_curve_preview_normal = _manual_curve_session_property("preview_normal")
+    _manual_curve_control_point_revision = _manual_curve_session_property(
+        "control_point_revision"
+    )
+    _manual_curve_corner_detection_revision = _manual_curve_session_property(
+        "corner_detection_revision"
+    )
 
     def __init__(self, *, settings_path: Path | None = None) -> None:
         self.root = Tk()
@@ -447,6 +520,9 @@ class OpenRetopWindow:
         self.mesh_state = MeshState()
         self.app_state = AppState()
         self.mesh_query_service = MeshQueryService()
+        self.manual_curve_controller = ManualCurveController(
+            mesh_query_service=self.mesh_query_service
+        )
         self._mesh_query_world_mesh: TriangleMeshData | None = None
         self._mesh_query_world_mesh_revision: object | None = None
         self.undo_stack = UndoStack()
@@ -454,49 +530,12 @@ class OpenRetopWindow:
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
         self._active_transform_angle_delta: float | None = None
-        self._manual_curve_active = False
-        self._manual_curve_points: list[np.ndarray] = []
-        self._manual_curve_point_types: list[str] = []
-        self._manual_curve_point_type_sources: list[str] = []
-        self._manual_curve_closed = False
-        self._manual_curve_plane_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
-        self._manual_curve_plane_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
-        self._manual_curve_plane_type = "world_xy"
-        self._manual_curve_plane_label = "world XY plane"
-        self._manual_curve_source_section_plane_id: str | None = None
-        self._manual_curve_snap_point_count = 0
-        self._manual_curve_snap_flags: list[bool] = []
-        self._manual_curve_snap_triangle_indices: list[int | None] = []
-        self._manual_curve_snap_normals: list[list[float] | None] = []
-        self._manual_curve_projection_distances: list[float | None] = []
-        self._manual_curve_edit_active = False
-        self._manual_curve_edit_curve_id: str | None = None
-        self._manual_curve_selected_control_point_index: int | None = None
-        self._manual_curve_hover_control_point_index: int | None = None
-        self._manual_curve_drag_active = False
-        self._manual_curve_drag_candidate_index: int | None = None
-        self._manual_curve_submode = "inactive"
-        self._manual_curve_control_point_revision = 0
-        self._manual_curve_corner_detection_revision = 0
-        self._manual_curve_placing_enabled = True
-        self._manual_curve_add_point_active = False
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_curve_method = DEFAULT_MANUAL_CURVE_METHOD
-        self._manual_curve_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
         self._loft_rebuild_counter = 0
         self._loft_overbuild_drag_handle_index: int | None = None
         self._loft_overbuild_drag_start: tuple[int, int] | None = None
         self._loft_overbuild_drag_initial_values: tuple[float, float] | None = None
-        self._manual_curve_left_press_position: tuple[int, int] | None = None
-        self._manual_curve_left_dragged = False
         self._manual_curve_context_menu: Menu | None = None
         self._manual_curve_last_context_actions: tuple[str, ...] = ()
-        self._manual_curve_preview_point: np.ndarray | None = None
-        self._manual_curve_preview_valid = False
-        self._manual_curve_preview_snaps_closed = False
-        self._manual_curve_preview_snaps_to_mesh = False
-        self._manual_curve_preview_triangle_index: int | None = None
-        self._manual_curve_preview_normal: list[float] | None = None
         self._region_select_active = False
         self._region_select_left_press_position: tuple[int, int] | None = None
         self._region_select_left_dragged = False
@@ -5267,12 +5306,6 @@ class OpenRetopWindow:
     @staticmethod
     def _is_projected_curve(curve: StoredCurve) -> bool:
         metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-        self._manual_curve_control_point_revision = self._manual_curve_revision_value(
-            metadata.get("control_point_revision", 0)
-        )
-        self._manual_curve_corner_detection_revision = self._manual_curve_revision_value(
-            metadata.get("corner_detection_revision", 0)
-        )
         return str(metadata.get("creation_type", "")).strip().lower() == "projected_curve"
 
     @staticmethod
@@ -6807,27 +6840,22 @@ class OpenRetopWindow:
         selected_curve = selected_curves[0]
         refresh_curve_diagnostics(selected_curve)
         tolerance = self._curve_simplify_tolerance(selected_curve)
-        source_point_count = selected_curve.point_count
-        try:
-            generated_curve = simplify_curve(
-                selected_curve,
-                curve_id=f"curve-{uuid4().hex}",
-                name=self._next_repaired_curve_name("Simplified Curve"),
-                tolerance=tolerance,
-            )
-        except CurveProcessingError as exc:
-            self.status_text.set(f"{exc} Tolerance: {tolerance:.3f}")
+        result = self.manual_curve_controller.simplify_stored_curve(
+            selected_curve,
+            curve_id=f"curve-{uuid4().hex}",
+            name=self._next_repaired_curve_name("Simplified Curve"),
+            tolerance=tolerance,
+        )
+        generated_curve = result.created_curve
+        if not result.success or generated_curve is None:
+            self.status_text.set(f"{result.status} Tolerance: {tolerance:.3f}")
             return
 
         add_curve(self.app_state.curve_collection, generated_curve)
         self._sync_visible_curve_results()
         self.select_curve(generated_curve.id)
         self._push_created_curve_command(generated_curve)
-        self.status_text.set(
-            f"Created simplified curve "
-            f"({source_point_count} -> {generated_curve.point_count} points, "
-            f"tolerance {tolerance:.3f})"
-        )
+        self.status_text.set(result.status)
         self._set_project_dirty(True)
 
     def convert_selected_curve_to_smooth_guide(self) -> None:
@@ -6837,57 +6865,23 @@ class OpenRetopWindow:
         if curve is None or not self._is_editable_manual_curve(curve):
             self.status_text.set("Select one manual curve to convert to Smooth Curve.")
             return
-        control_data = parse_manual_curve_metadata_v2(curve)
-        if control_data is None:
-            self.status_text.set("Selected curve has no editable control points.")
-            return
-
         before_curve = copy.deepcopy(curve)
-        point_types: list[str] = []
-        point_sources: list[str] = []
-        for point in control_data.points:
-            source = str(
-                point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO)
-            )
-            keep_corner = bool(
-                point.point_type == CURVE_POINT_CORNER
-                and source == CURVE_POINT_SOURCE_MANUAL
-            )
-            point_types.append(CURVE_POINT_CORNER if keep_corner else CURVE_POINT_SMOOTH)
-            point_sources.append(source)
-        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-        snap_to_mesh = bool(
-            metadata.get("snap_to_mesh") or metadata.get("snap_mode") == "mesh"
+        result = self.manual_curve_controller.convert_curve_to_smooth(
+            curve,
+            projection_mesh=self._surface_preview_projection_mesh(),
+            mesh_revision=self._mesh_query_revision(),
         )
-        updated = build_manual_stored_curve(
-            curve_id=curve.id,
-            name=curve.name,
-            control_points=control_data.control_points,
-            is_closed=control_data.is_closed,
-            creation_type=str(metadata.get("creation_type", "manual")),
-            snap_to_mesh=snap_to_mesh,
-            work_plane_type=str(metadata.get("work_plane_type", "mesh" if snap_to_mesh else "world_xy")),
-            source_section_plane_id=metadata.get("source_section_plane_id"),
-            source_mesh_name=metadata.get("source_mesh_name"),
-            snap_triangle_indices=[point.snap_triangle_index for point in control_data.points],
-            snap_normals=[point.snap_normal for point in control_data.points],
-            curve_method=MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
-            sample_count=int(metadata.get("sample_count", DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)),
-            point_types=point_types,
-            point_type_sources=point_sources,
-            preserve_corners=True,
-            smoothness=int(metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS)),
-            keep_curve_on_mesh=bool(metadata.get("keep_curve_on_mesh", snap_to_mesh)),
-        )
-        updated.metadata = {**metadata, **updated.metadata}
-        self._project_manual_curve_fitted_preview_to_mesh(updated)
+        updated = result.updated_curve
+        if not result.success or updated is None:
+            self.status_text.set(result.status)
+            return
         self._replace_curve_geometry(curve, updated)
         after_curve = copy.deepcopy(curve)
         self._push_curve_snapshot_undo(
             "Convert Curve to Smooth", before_curve, after_curve
         )
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Converted selected curve to Smooth Curve.")
+        self.status_text.set(result.status)
         self._set_project_dirty(True)
         self._sync_workflow_ui()
 
@@ -6897,51 +6891,19 @@ class OpenRetopWindow:
         )
         if source_curve is None:
             return
-        control_data = parse_manual_curve_metadata_v2(source_curve)
-        if control_data is None:
-            self.status_text.set("Selected curve has no editable control points.")
-            return
         tolerance = self._curve_simplify_tolerance(source_curve)
-        reduced = simplify_manual_curve_control_data(
-            control_data,
-            tolerance=tolerance,
-        )
-        metadata = source_curve.metadata if isinstance(source_curve.metadata, dict) else {}
-        snap_to_mesh = bool(
-            metadata.get("snap_to_mesh") or metadata.get("snap_mode") == "mesh"
-        )
-        generated = build_manual_stored_curve(
+        result = self.manual_curve_controller.simplify_guide_curve(
+            source_curve,
             curve_id=f"curve-{uuid4().hex}",
             name=self._next_derived_curve_name("Simplified Guide"),
-            control_points=reduced.control_points,
-            is_closed=reduced.is_closed,
-            creation_type="manual",
-            snap_to_mesh=snap_to_mesh,
-            work_plane_type=str(metadata.get("work_plane_type", "mesh" if snap_to_mesh else "world_xy")),
-            source_mesh_name=metadata.get("source_mesh_name"),
-            snap_triangle_indices=[point.snap_triangle_index for point in reduced.points],
-            snap_normals=[point.snap_normal for point in reduced.points],
-            curve_method=MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
-            sample_count=int(metadata.get("sample_count", DEFAULT_MANUAL_CURVE_SAMPLE_COUNT)),
-            point_types=[point.point_type for point in reduced.points],
-            point_type_sources=[
-                str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
-                for point in reduced.points
-            ],
-            preserve_corners=True,
-            smoothness=int(metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS)),
-            keep_curve_on_mesh=bool(metadata.get("keep_curve_on_mesh", False)),
+            tolerance=tolerance,
+            projection_mesh=self._surface_preview_projection_mesh(),
+            mesh_revision=self._mesh_query_revision(),
         )
-        generated.metadata.update(
-            {
-                "source_curve_id": source_curve.id,
-                "source_curve_name": source_curve.name,
-                "simplification_tolerance": tolerance,
-                "source_control_point_count": len(control_data.points),
-                "result_control_point_count": len(reduced.points),
-            }
-        )
-        self._project_manual_curve_fitted_preview_to_mesh(generated)
+        generated = result.created_curve
+        if not result.success or generated is None:
+            self.status_text.set(result.status)
+            return
         add_curve(self.app_state.curve_collection, generated)
         self.select_curve(generated.id)
         self._push_created_curve_command(
@@ -6949,9 +6911,7 @@ class OpenRetopWindow:
             command_name="Simplify Guide Curve",
         )
         self._refresh_viewport(reset_camera=False)
-        self.status_text.set(
-            f"Created simplified guide ({len(control_data.points)} -> {len(reduced.points)} controls)."
-        )
+        self.status_text.set(result.status)
         self._set_project_dirty(True)
 
     @staticmethod
@@ -9105,10 +9065,14 @@ class OpenRetopWindow:
         shift_pressed: bool,
         ctrl_pressed: bool,
     ) -> bool:
+        if event_type in {"right_press", "right_release"}:
+            return self.manual_curve_controller.route_pointer_event(
+                event_type,
+                button="right",
+            ).consumed
+
         if event_type == "left_press":
-            self._manual_curve_left_press_position = (int(x_position), int(y_position))
-            self._manual_curve_left_dragged = False
-            self._manual_curve_drag_candidate_index = None
+            candidate = None
             if (
                 self._manual_curve_edit_active
                 and not self._manual_curve_add_point_active
@@ -9117,19 +9081,28 @@ class OpenRetopWindow:
                 candidate = self._manual_curve_control_point_index_at_screen(
                     int(x_position), int(y_position)
                 )
-                if candidate is not None:
-                    self._manual_curve_drag_candidate_index = candidate
-                    self._manual_curve_selected_control_point_index = candidate
-                    self.manual_curve_selected_point_type_text.set(
-                        self._manual_curve_point_types[candidate]
-                    )
-                    self._manual_curve_submode = "edit_move_point"
-                    self._refresh_viewport(reset_camera=False)
-            return True
+            decision = self.manual_curve_controller.route_pointer_event(
+                "left_press",
+                button="left",
+                control_point_index=candidate,
+                press_position=(int(x_position), int(y_position)),
+            )
+            if decision.action == "begin_drag" and candidate is not None:
+                self.manual_curve_selected_point_type_text.set(
+                    self._manual_curve_point_types[candidate]
+                )
+                self._refresh_viewport(reset_camera=False)
+            return decision.consumed
 
         if event_type == "motion":
             self._update_manual_curve_drag_state(int(x_position), int(y_position))
-            if self._should_drag_manual_curve_selected_point():
+            should_drag = self._should_drag_manual_curve_selected_point()
+            decision = self.manual_curve_controller.route_pointer_event(
+                "motion",
+                button="left",
+                dragged=should_drag,
+            )
+            if decision.action == "move_point":
                 self._clear_manual_curve_preview_state()
                 self._drag_manual_curve_selected_point(int(x_position), int(y_position))
             else:
@@ -9137,7 +9110,7 @@ class OpenRetopWindow:
                     int(x_position),
                     int(y_position),
                 )
-            return True
+            return decision.consumed
 
         if event_type == "left_release":
             if self._manual_curve_edit_active and self._manual_curve_drag_active:
@@ -9147,61 +9120,45 @@ class OpenRetopWindow:
                 self.status_text.set(self._manual_curve_status())
                 self._sync_workflow_ui()
                 return True
-            if self._manual_curve_edit_active:
-                if (
-                    self._manual_curve_drag_candidate_index is not None
-                    and not self._manual_curve_add_point_active
-                    and not self._manual_curve_insert_point_active
-                ):
-                    selected_index = self._manual_curve_drag_candidate_index
-                    self._manual_curve_drag_candidate_index = None
-                    self._manual_curve_submode = "edit_select"
-                    self.status_text.set(
-                        f"Selected control point {selected_index + 1}: "
-                        f"{self.manual_curve_selected_point_type_text.get()}"
-                    )
-                    self._sync_workflow_ui()
-                    return True
+            candidate = self._manual_curve_drag_candidate_index
+            if candidate is None and self._manual_curve_edit_active:
+                candidate = self._manual_curve_control_point_index_at_screen(
+                    int(x_position), int(y_position)
+                )
+            decision = self.manual_curve_controller.route_pointer_event(
+                "left_release",
+                button="left",
+                control_point_index=candidate,
+            )
+            if decision.action == "select_point":
+                self._apply_manual_curve_control_point_selection(
+                    decision.control_point_index
+                )
+                return decision.consumed
+            if decision.action in {"add_point", "insert_point"} and self._manual_curve_edit_active:
                 self._handle_manual_curve_edit_click(
                     int(x_position),
                     int(y_position),
                     ctrl_pressed=ctrl_pressed,
                 )
-                return True
-            if self._manual_curve_placing_enabled:
+                return decision.consumed
+            if decision.action == "add_point":
                 self._place_manual_curve_point(int(x_position), int(y_position))
-            return True
-
-        if event_type == "right_press":
-            return False
-
-        if event_type == "right_release":
-            return False
+            return decision.consumed
 
         if event_type == "leave":
-            if self._clear_manual_curve_preview_state():
+            decision = self.manual_curve_controller.route_pointer_event("leave")
+            if decision.action == "clear_preview":
                 self._refresh_viewport(reset_camera=False)
-            return True
+            return decision.consumed
 
         return False
 
     def _update_manual_curve_drag_state(self, x_position: int, y_position: int) -> None:
-        if self._manual_curve_left_press_position is None:
-            return
-
-        start_x, start_y = self._manual_curve_left_press_position
-        distance = abs(int(x_position) - start_x) + abs(int(y_position) - start_y)
-        if distance > 4:
-            self._manual_curve_left_dragged = True
+        self.manual_curve_controller.update_drag_state(x_position, y_position)
 
     def _should_drag_manual_curve_selected_point(self) -> bool:
-        return bool(
-            self._manual_curve_edit_active
-            and self._manual_curve_left_dragged
-            and self._manual_curve_drag_candidate_index is not None
-            and not self._manual_curve_add_point_active
-            and not self._manual_curve_insert_point_active
-        )
+        return self.manual_curve_controller.should_drag_selected_point()
 
     def _drag_manual_curve_selected_point(self, x_position: int, y_position: int) -> None:
         selected_index = self._manual_curve_drag_candidate_index
@@ -9214,15 +9171,13 @@ class OpenRetopWindow:
         if not valid or point is None:
             return
 
-        self._manual_curve_drag_active = True
-        self._manual_curve_points[selected_index] = point
-        self._manual_curve_snap_flags[selected_index] = bool(snapped)
-        self._manual_curve_snap_triangle_indices[selected_index] = triangle_index
-        self._manual_curve_snap_normals[selected_index] = normal
-        self._manual_curve_projection_distances[selected_index] = (
-            0.0 if snapped else None
+        self.manual_curve_controller.move_drag_candidate(
+            point,
+            snapped=snapped,
+            triangle_index=triangle_index,
+            normal=normal,
+            projection_distance=0.0 if snapped else None,
         )
-        self._manual_curve_snap_point_count = sum(self._manual_curve_snap_flags)
         if selected_index != 0:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
         self._refresh_viewport(reset_camera=False)
@@ -9231,12 +9186,9 @@ class OpenRetopWindow:
 
     def _finish_manual_curve_point_drag(self) -> None:
         selected_index = self._manual_curve_selected_control_point_index
-        self._manual_curve_drag_active = False
-        self._manual_curve_drag_candidate_index = None
-        self._manual_curve_submode = "edit_select"
-        self._manual_curve_left_press_position = None
-        self._manual_curve_left_dragged = False
-        self._mark_manual_curve_controls_changed(detect_all=True)
+        result = self.manual_curve_controller.finish_drag()
+        if result.needs_viewport_refresh:
+            self._refresh_viewport(reset_camera=False)
         if selected_index is None:
             self.status_text.set("Moved control point")
         else:
@@ -9244,14 +9196,7 @@ class OpenRetopWindow:
         self._sync_workflow_ui()
 
     def _manual_curve_release_is_click(self, x_position: int, y_position: int) -> bool:
-        if self._manual_curve_left_press_position is None:
-            return False
-
-        self._update_manual_curve_drag_state(x_position, y_position)
-        is_click = not self._manual_curve_left_dragged
-        self._manual_curve_left_press_position = None
-        self._manual_curve_left_dragged = False
-        return is_click
+        return self.manual_curve_controller.release_is_click(x_position, y_position)
 
     def _update_manual_curve_preview_from_screen(
         self,
@@ -9281,8 +9226,7 @@ class OpenRetopWindow:
             self._sync_manual_curve_preview_status(status_signature)
             return
 
-        snaps_closed = should_snap_closed_to_first_point(
-            self._manual_curve_points,
+        snaps_closed = self.manual_curve_controller.should_snap_closed(
             point,
             model_extent=self._manual_curve_model_extent(),
         )
@@ -9417,53 +9361,35 @@ class OpenRetopWindow:
         triangle_index: int | None = None,
         normal: list[float] | None = None,
     ) -> bool:
-        point_array = None if point is None else np.asarray(point, dtype=float).reshape(3)
-        changed = self._manual_curve_preview_state_changed(
-            point_array,
+        result = self.manual_curve_controller.set_preview(
+            point=point,
             valid=valid,
             snaps_closed=snaps_closed,
             snaps_to_mesh=snaps_to_mesh,
             triangle_index=triangle_index,
             normal=normal,
         )
-        self._manual_curve_preview_point = point_array if valid else None
-        self._manual_curve_preview_valid = bool(valid)
-        self._manual_curve_preview_snaps_closed = bool(snaps_closed and valid)
-        self._manual_curve_preview_snaps_to_mesh = bool(snaps_to_mesh and valid)
-        self._manual_curve_preview_triangle_index = triangle_index if valid else None
-        self._manual_curve_preview_normal = list(normal) if valid and normal is not None else None
-        return changed
-
-    def _manual_curve_preview_state_changed(
-        self,
-        point: np.ndarray | None,
-        *,
-        valid: bool,
-        snaps_closed: bool,
-        snaps_to_mesh: bool,
-        triangle_index: int | None,
-        normal: list[float] | None,
-    ) -> bool:
-        if self._manual_curve_preview_valid != bool(valid):
-            return True
-        if self._manual_curve_preview_snaps_closed != bool(snaps_closed and valid):
-            return True
-        if self._manual_curve_preview_snaps_to_mesh != bool(snaps_to_mesh and valid):
-            return True
-        if self._manual_curve_preview_triangle_index != (triangle_index if valid else None):
-            return True
-        current_normal = self._manual_curve_preview_normal
-        next_normal = list(normal) if valid and normal is not None else None
-        if current_normal != next_normal:
-            return True
-        if not valid:
-            return self._manual_curve_preview_point is not None
-        if point is None or self._manual_curve_preview_point is None:
-            return True
-        return not bool(np.allclose(self._manual_curve_preview_point, point))
+        return result.changed
 
     def _clear_manual_curve_preview_state(self) -> bool:
-        return self._set_manual_curve_preview_state(valid=False)
+        return self.manual_curve_controller.clear_preview().changed
+
+    def _apply_manual_curve_action_result(
+        self,
+        result: ManualCurveActionResult,
+        *,
+        status: str | None = None,
+    ) -> bool:
+        if result.needs_viewport_refresh:
+            self._refresh_viewport(reset_camera=False)
+        status_value = result.status if status is None else status
+        if status_value:
+            self.status_text.set(status_value)
+        if result.project_dirty:
+            self._set_project_dirty(True)
+        if result.needs_ui_sync:
+            self._sync_workflow_ui()
+        return result.success
 
     def start_manual_curve_mode(self) -> None:
         if self.app_state.mesh_object is None:
@@ -9479,44 +9405,27 @@ class OpenRetopWindow:
         if self._region_select_active:
             self._exit_region_select_mode()
 
-        (
-            self._manual_curve_plane_origin,
-            self._manual_curve_plane_normal,
-            self._manual_curve_plane_type,
-            self._manual_curve_plane_label,
-            self._manual_curve_source_section_plane_id,
-        ) = self._manual_curve_work_plane()
-        self._manual_curve_active = True
-        self._manual_curve_edit_active = False
-        self._manual_curve_submode = "draw_add_points"
-        self._manual_curve_control_point_revision = 0
-        self._manual_curve_corner_detection_revision = 0
-        self._manual_curve_edit_curve_id = None
-        self._manual_curve_selected_control_point_index = None
-        self._manual_curve_hover_control_point_index = None
-        self._manual_curve_drag_active = False
-        self._manual_curve_placing_enabled = True
-        self._manual_curve_add_point_active = False
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_curve_method = self._manual_curve_method_from_label()
-        self._manual_curve_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
-        self._manual_curve_left_press_position = None
-        self._manual_curve_left_dragged = False
-        self._clear_manual_curve_preview_state()
-        self._manual_curve_points = []
-        self._manual_curve_point_types = []
-        self._manual_curve_point_type_sources = []
-        self._manual_curve_closed = False
-        self._manual_curve_snap_point_count = 0
-        self._manual_curve_snap_flags = []
-        self._manual_curve_snap_triangle_indices = []
-        self._manual_curve_snap_normals = []
-        self._manual_curve_projection_distances = []
+        plane_origin_value, plane_normal_value, plane_type, plane_label, plane_id = (
+            self._manual_curve_work_plane()
+        )
+        result = self.manual_curve_controller.begin_new_curve(
+            plane_origin=plane_origin_value,
+            plane_normal=plane_normal_value,
+            plane_type=plane_type,
+            plane_label=plane_label,
+            source_section_plane_id=plane_id,
+            snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
+            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
+            curve_method=self._manual_curve_method_from_label(),
+            sample_count=self._manual_curve_sample_count_value(),
+            smoothness=self._manual_curve_smoothness_value(),
+            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
+            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
+            auto_detect_corners=bool(self.manual_curve_auto_detect_corners.get()),
+        )
         self._configure_manual_curve_placement_plane()
         self._set_active_workbench("Manual RE", set_status=False)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._manual_curve_status())
-        self._sync_workflow_ui()
+        self._apply_manual_curve_action_result(result)
 
     def _on_manual_curve_snap_to_mesh_changed(self) -> None:
         if self.app_state.mesh_object is None:
@@ -9526,6 +9435,9 @@ class OpenRetopWindow:
             return
 
         if self._manual_curve_active:
+            self.manual_curve_controller.configure(
+                snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get())
+            )
             self._clear_manual_curve_preview_state()
             self._refresh_viewport(reset_camera=False)
             self.status_text.set(self._manual_curve_status())
@@ -9549,18 +9461,21 @@ class OpenRetopWindow:
         placement = self.manual_curve_placement_text.get().strip().lower()
         if placement == "free 3d":
             camera = self.viewport.get_camera_vectors()
-            self._manual_curve_plane_origin = (
+            origin = (
                 self._manual_curve_points[0].copy()
                 if self._manual_curve_points
                 else np.asarray(camera.focal_point, dtype=float).reshape(3)
             )
-            self._manual_curve_plane_normal = normalized_vector(
+            normal = normalized_vector(
                 np.asarray(camera.forward, dtype=float).reshape(3),
                 fallback=np.asarray([0.0, 0.0, -1.0], dtype=float),
             )
-            self._manual_curve_plane_type = "free_3d"
-            self._manual_curve_plane_label = "camera-aligned free 3D plane"
-            self._manual_curve_source_section_plane_id = None
+            self.manual_curve_controller.set_work_plane(
+                plane_origin=origin,
+                plane_normal=normal,
+                plane_type="free_3d",
+                plane_label="camera-aligned free 3D plane",
+            )
             return
 
         active_curve = self._active_manual_edit_curve()
@@ -9569,13 +9484,14 @@ class OpenRetopWindow:
             if active_curve is not None
             else self._manual_curve_work_plane()
         )
-        (
-            self._manual_curve_plane_origin,
-            self._manual_curve_plane_normal,
-            self._manual_curve_plane_type,
-            self._manual_curve_plane_label,
-            self._manual_curve_source_section_plane_id,
-        ) = plane
+        origin, normal, plane_type, plane_label, plane_id = plane
+        self.manual_curve_controller.set_work_plane(
+            plane_origin=origin,
+            plane_normal=normal,
+            plane_type=plane_type,
+            plane_label=plane_label,
+            source_section_plane_id=plane_id,
+        )
 
     def _manual_curve_work_plane(
         self,
@@ -9623,12 +9539,6 @@ class OpenRetopWindow:
         )
 
     def _begin_manual_curve_edit_mode(self, curve: StoredCurve, *, status: str) -> None:
-        control_data = self._manual_curve_control_data_for_curve(curve)
-        if control_data is None:
-            self.status_text.set("Manual curve has no editable control points.")
-            self._sync_workflow_ui()
-            return
-
         if self.app_state.transform_state is not None:
             self._end_active_transform(commit=False, status="Transform cancelled")
         if self._region_select_active:
@@ -9637,32 +9547,27 @@ class OpenRetopWindow:
         self.app_state.active_transform_axis = None
         self._active_transform_angle_delta = None
 
-        (
-            self._manual_curve_plane_origin,
-            self._manual_curve_plane_normal,
-            self._manual_curve_plane_type,
-            self._manual_curve_plane_label,
-            self._manual_curve_source_section_plane_id,
-        ) = self._manual_curve_work_plane_for_curve(curve)
-        self._manual_curve_active = True
-        self._manual_curve_edit_active = True
-        self._manual_curve_submode = "edit_select"
-        self._manual_curve_edit_curve_id = curve.id
-        self._manual_curve_selected_control_point_index = None
-        self._manual_curve_hover_control_point_index = None
-        self._manual_curve_drag_active = False
-        self._manual_curve_placing_enabled = False
-        self._manual_curve_add_point_active = False
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_left_press_position = None
-        self._manual_curve_left_dragged = False
-        self._clear_manual_curve_preview_state()
-        self._load_manual_curve_edit_working_copy(curve, control_data=control_data)
+        plane_origin_value, plane_normal_value, plane_type, plane_label, plane_id = (
+            self._manual_curve_work_plane_for_curve(curve)
+        )
+        result = self.manual_curve_controller.begin_edit_curve(
+            curve,
+            plane_origin=plane_origin_value,
+            plane_normal=plane_normal_value,
+            plane_type=plane_type,
+            plane_label=plane_label,
+            source_section_plane_id=plane_id,
+        )
+        if not result.success:
+            self._apply_manual_curve_action_result(result)
+            return
+        self.manual_curve_controller.session.auto_detect_corners = bool(
+            self.manual_curve_auto_detect_corners.get()
+        )
+        self._sync_manual_curve_ui_from_session()
         self._configure_manual_curve_placement_plane()
         self._set_active_workbench("Manual RE", set_status=False)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(status)
-        self._sync_workflow_ui()
+        self._apply_manual_curve_action_result(result, status=status)
 
     def _load_manual_curve_edit_working_copy(
         self,
@@ -9670,129 +9575,57 @@ class OpenRetopWindow:
         *,
         control_data: ManualCurveControlData | ManualCurveControlDataV2 | None = None,
     ) -> bool:
-        control_data = control_data or self._manual_curve_control_data_for_curve(curve)
+        control_data = control_data or self.manual_curve_controller.control_data_for_curve(
+            curve
+        )
         if control_data is None:
             return False
-
-        self._manual_curve_points = [
-            np.asarray(point, dtype=float).reshape(3)
-            for point in np.asarray(control_data.control_points, dtype=float).reshape((-1, 3))
-        ]
-        if isinstance(control_data, ManualCurveControlDataV2):
-            self._manual_curve_point_types = [
-                point.point_type for point in control_data.points
-            ]
-            self._manual_curve_point_type_sources = [
-                str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
-                for point in control_data.points
-            ]
-            self.manual_curve_preserve_corners.set(control_data.preserve_corners)
-            self.manual_curve_corner_threshold_text.set(
-                f"{control_data.corner_angle_threshold_degrees:.0f}"
-            )
-        else:
-            self._manual_curve_point_types = [
-                CURVE_POINT_SMOOTH for _point in self._manual_curve_points
-            ]
-            self._manual_curve_point_type_sources = [
-                CURVE_POINT_SOURCE_AUTO for _point in self._manual_curve_points
-            ]
-        self._manual_curve_closed = bool(control_data.is_closed)
-        self._manual_curve_curve_method = str(control_data.curve_method)
-        self._manual_curve_sample_count = int(control_data.sample_count)
-        self.manual_curve_sample_count_text.set(str(self._manual_curve_sample_count))
-        self._set_manual_curve_type_label(self._manual_curve_curve_method)
         metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-        self.manual_curve_smoothness.set(
-            float(metadata.get("smoothness", DEFAULT_MANUAL_CURVE_SMOOTHNESS))
+        if not isinstance(control_data, ManualCurveControlDataV2):
+            control_data = ManualCurveControlDataV2(
+                points=[
+                    ManualCurvePoint(position=point)
+                    for point in np.asarray(control_data.control_points, dtype=float).reshape((-1, 3))
+                ],
+                is_closed=control_data.is_closed,
+                curve_method=control_data.curve_method,
+                sample_count=control_data.sample_count,
+            )
+        self.manual_curve_controller.session.load_control_data_v2(
+            control_data,
+            metadata=metadata,
         )
-        self.manual_curve_keep_on_mesh.set(
-            bool(metadata.get("keep_curve_on_mesh", False))
+        self.manual_curve_controller.invalidate_display_cache()
+        self._sync_manual_curve_ui_from_session()
+        return True
+
+    def _sync_manual_curve_ui_from_session(self) -> None:
+        session = self.manual_curve_controller.session
+        self.manual_curve_preserve_corners.set(session.preserve_corners)
+        self.manual_curve_corner_threshold_text.set(
+            f"{session.corner_angle_threshold_degrees:.0f}"
         )
-        snap_to_mesh = (
-            bool(metadata.get("snap_to_mesh"))
-            or str(metadata.get("snap_mode", "")).strip().lower() == "mesh"
+        self.manual_curve_sample_count_text.set(str(session.sample_count))
+        self.manual_curve_smoothness.set(float(session.smoothness))
+        self.manual_curve_keep_on_mesh.set(session.keep_curve_on_mesh)
+        self.manual_curve_snap_to_mesh.set(session.snap_to_mesh)
+        self._set_manual_curve_type_label(session.curve_method)
+        metadata = self._active_manual_edit_curve()
+        source_metadata = (
+            metadata.metadata
+            if metadata is not None and isinstance(metadata.metadata, dict)
+            else {}
         )
-        self.manual_curve_snap_to_mesh.set(snap_to_mesh)
         self.manual_curve_placement_text.set(
             "Snap to Mesh"
-            if snap_to_mesh
+            if session.snap_to_mesh
             else (
                 "Free 3D"
-                if str(metadata.get("work_plane_type", "")).strip().lower()
+                if str(source_metadata.get("work_plane_type", "")).strip().lower()
                 == "free_3d"
                 else "Work Plane"
             )
         )
-        self._manual_curve_snap_point_count = len(self._manual_curve_points) if snap_to_mesh else 0
-        self._manual_curve_snap_flags = [snap_to_mesh for _point in self._manual_curve_points]
-        self._manual_curve_snap_triangle_indices = self._manual_curve_metadata_list(
-            metadata,
-            "snap_triangle_indices",
-            default=None,
-        )
-        self._manual_curve_snap_normals = self._manual_curve_metadata_list(
-            metadata,
-            "snap_normals",
-            default=None,
-        )
-        self._manual_curve_projection_distances = self._manual_curve_metadata_list(
-            metadata,
-            "snap_projection_distances",
-            default=None,
-        )
-        point_count = len(self._manual_curve_points)
-        self._manual_curve_snap_triangle_indices = (
-            self._manual_curve_snap_triangle_indices + [None] * point_count
-        )[:point_count]
-        self._manual_curve_snap_normals = (
-            self._manual_curve_snap_normals + [None] * point_count
-        )[:point_count]
-        self._manual_curve_projection_distances = (
-            self._manual_curve_projection_distances + [None] * point_count
-        )[:point_count]
-        return True
-
-    def _manual_curve_control_data_for_curve(
-        self,
-        curve: StoredCurve,
-    ) -> ManualCurveControlData | ManualCurveControlDataV2 | None:
-        control_data = parse_manual_curve_metadata_v2(curve)
-        if control_data is not None:
-            return control_data
-
-        points = self._finite_points(curve.original_points)
-        if points is None:
-            points = self._finite_points(curve.fitted_points)
-        if points is None:
-            return None
-
-        return ManualCurveControlDataV2(
-            points=[ManualCurvePoint(position=point) for point in points],
-            is_closed=bool(curve.is_closed),
-            curve_method=MANUAL_CURVE_METHOD_POLYLINE,
-            sample_count=DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
-        )
-
-    @staticmethod
-    def _manual_curve_metadata_list(
-        metadata: dict[str, object],
-        key: str,
-        *,
-        default: object,
-    ) -> list[object]:
-        value = metadata.get(key)
-        if not isinstance(value, list):
-            return []
-        return list(value)
-
-    @staticmethod
-    def _manual_curve_revision_value(value: object) -> int:
-        try:
-            revision = int(value)
-        except (TypeError, ValueError):
-            revision = 0
-        return max(revision, 0)
 
     def _manual_curve_work_plane_for_curve(
         self,
@@ -9814,19 +9647,7 @@ class OpenRetopWindow:
 
     @staticmethod
     def _is_editable_manual_curve(curve: StoredCurve) -> bool:
-        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-        creation_type = str(metadata.get("creation_type", "")).strip().lower()
-        return bool(
-            creation_type in {
-                "manual",
-                "curve_on_mesh",
-                "region_boundary",
-                "projected_curve",
-                "rebuilt_curve",
-            }
-            or "control_points" in metadata
-            or is_manual_curve_like(curve)
-        )
+        return ManualCurveController.is_editable_curve(curve)
 
     def _handle_manual_curve_shortcut(self, key: str) -> None:
         if self._manual_curve_edit_active:
@@ -9886,8 +9707,7 @@ class OpenRetopWindow:
         self._set_manual_curve_preview_state(
             point=point,
             valid=True,
-            snaps_closed=should_snap_closed_to_first_point(
-                self._manual_curve_points,
+            snaps_closed=self.manual_curve_controller.should_snap_closed(
                 point,
                 model_extent=self._manual_curve_model_extent(),
             ),
@@ -9927,53 +9747,6 @@ class OpenRetopWindow:
             snapped=snapped,
             triangle_index=triangle_index,
             normal=normal,
-        )
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._manual_curve_status())
-        self._sync_workflow_ui()
-
-    def _place_manual_curve_mesh_point(self, x_position: int, y_position: int) -> None:
-        pick_result = self.viewport.pick_mesh_at_screen_point(int(x_position), int(y_position))
-        if not bool(getattr(pick_result, "hit", False)):
-            self.status_text.set("No mesh under cursor.")
-            self._sync_workflow_ui()
-            return
-
-        position = getattr(pick_result, "position", None)
-        if position is None:
-            self.status_text.set("No mesh under cursor.")
-            self._sync_workflow_ui()
-            return
-
-        try:
-            point_array = np.asarray(position, dtype=float).reshape(3)
-        except (TypeError, ValueError):
-            self.status_text.set("No mesh under cursor.")
-            self._sync_workflow_ui()
-            return
-        if not np.all(np.isfinite(point_array)):
-            self.status_text.set("No mesh under cursor.")
-            self._sync_workflow_ui()
-            return
-
-        if self._snap_manual_curve_closed_to_first_point(point_array):
-            self._clear_manual_curve_preview_state()
-            return
-
-        triangle_index = getattr(pick_result, "triangle_index", None)
-        try:
-            triangle_value = None if triangle_index is None else int(triangle_index)
-        except (TypeError, ValueError):
-            triangle_value = None
-        normal_value = self._manual_curve_pick_normal_value(
-            getattr(pick_result, "normal", None)
-        )
-        self._clear_manual_curve_preview_state()
-        self._append_manual_curve_point(
-            point_array,
-            snapped=True,
-            triangle_index=triangle_value,
-            normal=normal_value,
         )
         self._refresh_viewport(reset_camera=False)
         self.status_text.set(self._manual_curve_status())
@@ -10055,10 +9828,7 @@ class OpenRetopWindow:
             return
         if self._manual_curve_preview_snaps_closed:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
-            self._manual_curve_add_point_active = False
-            self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "edit_select"
-            self._clear_manual_curve_preview_state()
+            self.manual_curve_controller.complete_explicit_point_action()
             return
 
         snapped = bool(self._manual_curve_preview_snaps_to_mesh)
@@ -10071,10 +9841,10 @@ class OpenRetopWindow:
             triangle_index=triangle_index,
             normal=normal,
         )
-        self._manual_curve_selected_control_point_index = len(self._manual_curve_points) - 1
-        self._manual_curve_add_point_active = False
-        self._manual_curve_placing_enabled = False
-        self._manual_curve_submode = "edit_select"
+        self.manual_curve_controller.session.select_point(
+            len(self._manual_curve_points) - 1
+        )
+        self.manual_curve_controller.complete_explicit_point_action()
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Point added. Add Point mode off.")
         self._sync_workflow_ui()
@@ -10092,10 +9862,7 @@ class OpenRetopWindow:
             return
         if self._manual_curve_preview_snaps_closed:
             self._snap_manual_curve_closed_to_first_point(point, edit_status=True)
-            self._manual_curve_insert_point_active = False
-            self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "edit_select"
-            self._clear_manual_curve_preview_state()
+            self.manual_curve_controller.complete_explicit_point_action()
             return
 
         snapped = bool(self._manual_curve_preview_snaps_to_mesh)
@@ -10110,69 +9877,31 @@ class OpenRetopWindow:
             triangle_index=triangle_index,
             normal=normal,
         )
-        self._manual_curve_selected_control_point_index = insert_index
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_placing_enabled = False
-        self._manual_curve_submode = "edit_select"
+        self.manual_curve_controller.session.select_point(insert_index)
+        self.manual_curve_controller.complete_explicit_point_action()
         self._refresh_viewport(reset_camera=False)
         self.status_text.set("Point inserted. Insert mode off.")
         self._sync_workflow_ui()
 
     def _manual_curve_insert_index_for_point(self, point: np.ndarray) -> int:
-        points = np.asarray(self._manual_curve_points, dtype=float).reshape((-1, 3))
-        if len(points) < 2:
-            return len(points)
-
-        segment_count = len(points) if self._manual_curve_closed and len(points) >= 3 else len(points) - 1
-        best_index = 1
-        best_distance = float("inf")
-        for segment_index in range(segment_count):
-            start = points[segment_index]
-            end = points[(segment_index + 1) % len(points)]
-            distance = self._distance_to_segment(point, start, end)
-            if distance < best_distance:
-                best_distance = distance
-                best_index = segment_index + 1
-        return min(best_index, len(points))
-
-    @staticmethod
-    def _distance_to_segment(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> float:
-        segment = end - start
-        length_squared = float(np.dot(segment, segment))
-        if length_squared <= 1e-12:
-            return float(np.linalg.norm(point - start))
-        projection = float(np.dot(point - start, segment) / length_squared)
-        projection = min(max(projection, 0.0), 1.0)
-        closest = start + projection * segment
-        return float(np.linalg.norm(point - closest))
+        return self.manual_curve_controller.insert_index_for_point(point)
 
     def _select_manual_curve_control_point(self, x_position: int, y_position: int) -> None:
         selected_index = self._manual_curve_control_point_index_at_screen(
             x_position, y_position
         )
-        if selected_index is None:
-            self._manual_curve_selected_control_point_index = None
-            self._manual_curve_drag_candidate_index = None
-            self._manual_curve_submode = "edit_select"
-            self._refresh_viewport(reset_camera=False)
-            self.status_text.set("No control point selected")
-            self._sync_workflow_ui()
-            return
+        self._apply_manual_curve_control_point_selection(selected_index)
 
-        self._manual_curve_selected_control_point_index = selected_index
-        self._manual_curve_drag_candidate_index = None
-        self._manual_curve_submode = "edit_select"
-        self.manual_curve_selected_point_type_text.set(
-            self._manual_curve_point_types[selected_index]
-            if selected_index < len(self._manual_curve_point_types)
-            else CURVE_POINT_SMOOTH
-        )
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(
-            f"Selected control point {selected_index + 1}: "
-            f"{self.manual_curve_selected_point_type_text.get()}"
-        )
-        self._sync_workflow_ui()
+    def _apply_manual_curve_control_point_selection(
+        self,
+        selected_index: int | None,
+    ) -> None:
+        result = self.manual_curve_controller.select_point(selected_index)
+        if selected_index is not None:
+            self.manual_curve_selected_point_type_text.set(
+                self._manual_curve_point_types[selected_index]
+            )
+        self._apply_manual_curve_action_result(result)
 
     def _manual_curve_control_point_index_at_screen(
         self,
@@ -10206,77 +9935,19 @@ class OpenRetopWindow:
         return None
 
     def activate_manual_curve_add_point(self) -> None:
-        if not self._manual_curve_active:
-            self.status_text.set("Create or edit a manual curve before adding points.")
-            self._sync_workflow_ui()
-            return
-
-        self._manual_curve_add_point_active = True
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_placing_enabled = True
-        self._manual_curve_submode = "explicit_add_point"
-        self.status_text.set(
-            "Add Point active: left-click to append. Esc returns to edit mode."
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.activate_add_point()
         )
-        self._sync_workflow_ui()
 
     def activate_manual_curve_insert_point(self) -> None:
-        if not self._manual_curve_edit_active:
-            self.status_text.set("Edit a manual curve before inserting points.")
-            self._sync_workflow_ui()
-            return
-
-        self._manual_curve_insert_point_active = True
-        self._manual_curve_add_point_active = False
-        self._manual_curve_placing_enabled = True
-        self._manual_curve_submode = "explicit_insert_point"
-        self.status_text.set(
-            "Insert Point active: click a curve segment. Esc returns to edit mode."
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.activate_insert_point()
         )
-        self._sync_workflow_ui()
 
     def delete_selected_manual_curve_point(self) -> None:
-        if not self._manual_curve_edit_active:
-            self.status_text.set("Edit a manual curve before deleting control points.")
-            self._sync_workflow_ui()
-            return
-        if self._manual_curve_selected_control_point_index is None:
-            self.status_text.set("No control point selected")
-            self._sync_workflow_ui()
-            return
-
-        minimum = 3 if self._manual_curve_closed else 2
-        if len(self._manual_curve_points) <= minimum:
-            self.status_text.set("Cannot delete point: curve needs more control points")
-            self._sync_workflow_ui()
-            return
-
-        removed_index = self._manual_curve_selected_control_point_index
-        self._manual_curve_points.pop(removed_index)
-        if removed_index < len(self._manual_curve_point_types):
-            self._manual_curve_point_types.pop(removed_index)
-        if removed_index < len(self._manual_curve_point_type_sources):
-            self._manual_curve_point_type_sources.pop(removed_index)
-        if removed_index < len(self._manual_curve_snap_flags):
-            was_snapped = self._manual_curve_snap_flags.pop(removed_index)
-            if was_snapped:
-                self._manual_curve_snap_point_count = max(
-                    0,
-                    self._manual_curve_snap_point_count - 1,
-                )
-        if removed_index < len(self._manual_curve_snap_triangle_indices):
-            self._manual_curve_snap_triangle_indices.pop(removed_index)
-        if removed_index < len(self._manual_curve_snap_normals):
-            self._manual_curve_snap_normals.pop(removed_index)
-        if removed_index < len(self._manual_curve_projection_distances):
-            self._manual_curve_projection_distances.pop(removed_index)
-        if removed_index >= len(self._manual_curve_points):
-            removed_index = len(self._manual_curve_points) - 1
-        self._manual_curve_selected_control_point_index = removed_index
-        self._mark_manual_curve_controls_changed(detect_all=True)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(f"Deleted control point {removed_index + 1}")
-        self._sync_workflow_ui()
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.delete_selected_point()
+        )
 
     def set_selected_manual_curve_point_smooth(self) -> None:
         self._set_selected_manual_curve_point_type(CURVE_POINT_SMOOTH)
@@ -10316,164 +9987,38 @@ class OpenRetopWindow:
             )
             self._sync_workflow_ui()
             return
-        index = self._manual_curve_selected_control_point_index
-        if index is None or not (0 <= index < len(self._manual_curve_points)):
-            self.status_text.set("No control point selected")
-            self._sync_workflow_ui()
-            return
-        while len(self._manual_curve_point_types) < len(self._manual_curve_points):
-            self._manual_curve_point_types.append(CURVE_POINT_SMOOTH)
-        while len(self._manual_curve_point_type_sources) < len(self._manual_curve_points):
-            self._manual_curve_point_type_sources.append(CURVE_POINT_SOURCE_AUTO)
-        self._manual_curve_point_types[index] = point_type
-        self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
-        self.manual_curve_selected_point_type_text.set(point_type)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(f"Control point {index + 1}: {point_type}")
-        self._sync_workflow_ui()
+        result = self.manual_curve_controller.set_selected_point_type(point_type)
+        if result.success:
+            self.manual_curve_selected_point_type_text.set(point_type)
+        self._apply_manual_curve_action_result(result)
 
     def auto_detect_manual_curve_corners(self) -> None:
-        self._auto_detect_working_curve_corners(set_status=True)
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.auto_detect_corners()
+        )
+        self._sync_selected_manual_curve_type_text()
 
     def clear_auto_detected_manual_curve_corners(self) -> None:
-        if not self._manual_curve_active:
-            self.status_text.set("Edit a manual curve before clearing auto corners.")
-            return
-        cleared = clear_auto_detected_manual_curve_corners(
-            self._working_manual_curve_control_data_v2()
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.clear_auto_corners()
         )
-        self._manual_curve_point_types = [point.point_type for point in cleared.points]
-        self._manual_curve_point_type_sources = [
-            str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
-            for point in cleared.points
-        ]
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Cleared auto-detected corners; manual corners preserved.")
-        self._sync_workflow_ui()
+        self._sync_selected_manual_curve_type_text()
 
-    def _auto_detect_working_curve_corners(self, *, set_status: bool) -> None:
-        if len(self._manual_curve_points) < 3:
-            if set_status:
-                self.status_text.set("Corner detection requires at least 3 points.")
-            return
-        control_data = self._working_manual_curve_control_data_v2()
-        detected = auto_detect_manual_curve_corners(
-            control_data,
-            threshold_degrees=self._manual_curve_corner_threshold(),
-        )
-        self._manual_curve_point_types = [point.point_type for point in detected.points]
-        self._manual_curve_point_type_sources = [
-            str(point.metadata.get("point_type_source", CURVE_POINT_SOURCE_AUTO))
-            for point in detected.points
-        ]
-        self._manual_curve_corner_detection_revision = self._manual_curve_revision_value(
-            detected.metadata.get("corner_detection_revision", 0)
-        )
+    def _sync_selected_manual_curve_type_text(self) -> None:
         index = self._manual_curve_selected_control_point_index
         if index is not None and index < len(self._manual_curve_point_types):
             self.manual_curve_selected_point_type_text.set(
                 self._manual_curve_point_types[index]
             )
-        self._refresh_viewport(reset_camera=False)
-        if set_status:
-            corner_count = sum(
-                point_type == CURVE_POINT_CORNER
-                for point_type in self._manual_curve_point_types
-            )
-            self.status_text.set(f"Detected {corner_count} corner points.")
-        self._sync_workflow_ui()
-
-    def _mark_manual_curve_controls_changed(self, *, detect_all: bool) -> None:
-        self._manual_curve_control_point_revision += 1
-        if (
-            detect_all
-            and bool(self.manual_curve_auto_detect_corners.get())
-            and len(self._manual_curve_points) >= 3
-        ):
-            self._auto_detect_working_curve_corners(set_status=False)
 
     def smooth_selected_manual_curve_span(self) -> None:
-        indices = self._selected_manual_curve_span_indices()
-        if len(indices) < 2:
-            self.status_text.set("Select a point inside a curve span first.")
-            return
-        for index in indices[1:-1]:
-            self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
-            self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Selected span set to smooth; corner endpoints preserved.")
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.smooth_selected_span()
+        )
 
     def straighten_selected_manual_curve_span(self) -> None:
-        indices = self._selected_manual_curve_span_indices()
-        if len(indices) < 2:
-            self.status_text.set("Select a point inside a curve span first.")
-            return
-        start = self._manual_curve_points[indices[0]].copy()
-        end = self._manual_curve_points[indices[-1]].copy()
-        for offset, index in enumerate(indices[1:-1], start=1):
-            factor = offset / float(len(indices) - 1)
-            self._manual_curve_points[index] = start * (1.0 - factor) + end * factor
-            self._manual_curve_point_types[index] = CURVE_POINT_SMOOTH
-            self._manual_curve_point_type_sources[index] = CURVE_POINT_SOURCE_MANUAL
-        self._mark_manual_curve_controls_changed(detect_all=True)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Selected span straightened; endpoints preserved.")
-
-    def _selected_manual_curve_span_indices(self) -> list[int]:
-        selected = self._manual_curve_selected_control_point_index
-        count = len(self._manual_curve_points)
-        if selected is None or count < 2:
-            return []
-        corners = {
-            index
-            for index, point_type in enumerate(self._manual_curve_point_types)
-            if point_type == CURVE_POINT_CORNER
-        }
-        if not self._manual_curve_closed:
-            left = max([0, *[index for index in corners if index <= selected]])
-            right = min([count - 1, *[index for index in corners if index >= selected]])
-            return list(range(left, right + 1))
-        if not corners:
-            return list(range(count))
-        left = selected
-        while left not in corners:
-            left = (left - 1) % count
-        right = selected
-        while right not in corners or right == left:
-            right = (right + 1) % count
-            if right == left:
-                return list(range(count))
-        result = [left]
-        while result[-1] != right:
-            result.append((result[-1] + 1) % count)
-        return result
-
-    def _working_manual_curve_control_data_v2(self) -> ManualCurveControlDataV2:
-        while len(self._manual_curve_point_types) < len(self._manual_curve_points):
-            self._manual_curve_point_types.append(CURVE_POINT_SMOOTH)
-        while len(self._manual_curve_point_type_sources) < len(self._manual_curve_points):
-            self._manual_curve_point_type_sources.append(CURVE_POINT_SOURCE_AUTO)
-        return ManualCurveControlDataV2(
-            points=[
-                ManualCurvePoint(
-                    position=point,
-                    point_type=self._manual_curve_point_types[index],
-                    metadata={
-                        "point_type_source": self._manual_curve_point_type_sources[index]
-                    },
-                )
-                for index, point in enumerate(self._manual_curve_points)
-            ],
-            is_closed=self._manual_curve_closed,
-            curve_method=self._manual_curve_curve_method,
-            sample_count=self._manual_curve_sample_count,
-            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
-            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
-            metadata={
-                "smoothness": self._manual_curve_smoothness_value(),
-                "control_point_revision": self._manual_curve_control_point_revision,
-                "corner_detection_revision": self._manual_curve_corner_detection_revision,
-            },
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.straighten_selected_span()
         )
 
     def _manual_curve_corner_threshold(self) -> float:
@@ -10492,7 +10037,6 @@ class OpenRetopWindow:
             value = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
         value = min(max(value, 16), 2048)
         self.manual_curve_sample_count_text.set(str(value))
-        self._manual_curve_sample_count = value
         return value
 
     def _manual_curve_smoothness_value(self) -> int:
@@ -10504,81 +10048,11 @@ class OpenRetopWindow:
         self.manual_curve_smoothness.set(float(value))
         return value
 
-    def _update_manual_curve_snap_metadata(self, curve: StoredCurve) -> None:
-        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-        distances = [
-            None if value is None else float(value)
-            for value in self._manual_curve_projection_distances
-        ]
-        metadata["snap_triangle_indices"] = list(
-            self._manual_curve_snap_triangle_indices
-        )
-        metadata["snap_normals"] = list(self._manual_curve_snap_normals)
-        metadata["snap_projection_distances"] = distances
-        finite_distances = [value for value in distances if value is not None]
-        metadata["projection_distance"] = (
-            max(finite_distances) if finite_distances else 0.0
-        )
-        mesh_object = self.app_state.mesh_object
-        if mesh_object is not None and bool(self.manual_curve_snap_to_mesh.get()):
-            metadata["source_mesh_name"] = mesh_object.name
-        curve.metadata = metadata
-
-    def _project_manual_curve_fitted_preview_to_mesh(self, curve: StoredCurve) -> None:
-        if not bool(curve.metadata.get("keep_curve_on_mesh", False)):
-            return
-        mesh_object = self.app_state.mesh_object
-        if mesh_object is None:
-            return
-        world_mesh = self._surface_preview_projection_mesh()
-        projection = project_curve_points_to_mesh(
-            curve.fitted_points,
-            world_mesh,
-            preserve_missed_points=True,
-            mesh_query_service=self.mesh_query_service,
-            mesh_revision=self._mesh_query_revision(),
-        )
-        curve.fitted_points = projection.projected_points
-        curve.metadata.update(
-            {
-                "keep_curve_on_mesh": True,
-                "source_mesh_name": mesh_object.name,
-                "projection_projected_count": projection.projected_count,
-                "projection_missed_count": projection.missed_count,
-                "projection_mean_distance": projection.mean_distance,
-                "projection_max_distance": projection.max_distance,
-                "projection_warnings": list(projection.warnings),
-                "projection_failed_indices": list(projection.failed_indices),
-                "projection_index_build_time_seconds": projection.build_time_seconds,
-                "projection_query_time_seconds": projection.query_time_seconds,
-                "projection_backend": projection.backend,
-            }
-        )
-        refresh_curve_diagnostics(curve)
-
     def _next_manual_curve_point_type(self) -> str:
         return (
             CURVE_POINT_CORNER
             if self.manual_curve_next_point_type_text.get().strip().lower() == "corner"
             else CURVE_POINT_SMOOTH
-        )
-
-    def _auto_update_previous_manual_curve_point_type(self) -> None:
-        if not bool(self.manual_curve_auto_detect_corners.get()) or len(self._manual_curve_points) < 3:
-            return
-        detected = auto_detect_manual_curve_corners(
-            self._working_manual_curve_control_data_v2(),
-            threshold_degrees=self._manual_curve_corner_threshold(),
-        )
-        previous_index = len(self._manual_curve_points) - 2
-        self._manual_curve_point_types[previous_index] = detected.points[previous_index].point_type
-        self._manual_curve_point_type_sources[previous_index] = str(
-            detected.points[previous_index].metadata.get(
-                "point_type_source", CURVE_POINT_SOURCE_AUTO
-            )
-        )
-        self._manual_curve_corner_detection_revision = (
-            self._manual_curve_control_point_revision
         )
 
     def _snap_manual_curve_closed_to_first_point(
@@ -10590,23 +10064,15 @@ class OpenRetopWindow:
         if len(self._manual_curve_points) < 3:
             return False
 
-        if not should_snap_closed_to_first_point(
-            self._manual_curve_points,
+        if not self.manual_curve_controller.should_snap_closed(
             point,
             model_extent=self._manual_curve_model_extent(),
         ):
             return False
 
-        if self._manual_curve_closed:
-            self.status_text.set("Manual Curve: already closed")
-        else:
-            self._manual_curve_closed = True
-            self._mark_manual_curve_controls_changed(detect_all=True)
-            self.status_text.set("Curve closed to first point")
-        self._manual_curve_selected_control_point_index = 0 if edit_status else None
-        self._clear_manual_curve_preview_state()
-        self._refresh_viewport(reset_camera=False)
-        self._sync_workflow_ui()
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.snap_closed(edit_status=edit_status)
+        )
         return True
 
     def _manual_curve_model_extent(self) -> float | None:
@@ -10635,22 +10101,15 @@ class OpenRetopWindow:
         triangle_index: int | None = None,
         normal: list[float] | None = None,
     ) -> None:
-        self._manual_curve_points.append(np.asarray(point, dtype=float).reshape(3))
-        self._manual_curve_point_types.append(self._next_manual_curve_point_type())
-        self._manual_curve_point_type_sources.append(
-            CURVE_POINT_SOURCE_MANUAL
-            if self._next_manual_curve_point_type() == CURVE_POINT_CORNER
-            else CURVE_POINT_SOURCE_AUTO
+        self._sync_manual_curve_controller_options()
+        self.manual_curve_controller.append_point(
+            point,
+            point_type=self._next_manual_curve_point_type(),
+            snapped=snapped,
+            triangle_index=triangle_index,
+            normal=normal,
+            projection_distance=0.0 if snapped else None,
         )
-        snapped = bool(snapped)
-        self._manual_curve_snap_flags.append(snapped)
-        self._manual_curve_snap_triangle_indices.append(triangle_index)
-        self._manual_curve_snap_normals.append(normal)
-        self._manual_curve_projection_distances.append(0.0 if snapped else None)
-        if snapped:
-            self._manual_curve_snap_point_count += 1
-        self._mark_manual_curve_controls_changed(detect_all=False)
-        self._auto_update_previous_manual_curve_point_type()
 
     def _insert_manual_curve_point(
         self,
@@ -10661,31 +10120,16 @@ class OpenRetopWindow:
         triangle_index: int | None = None,
         normal: list[float] | None = None,
     ) -> None:
-        insert_index = min(max(int(index), 0), len(self._manual_curve_points))
-        self._manual_curve_points.insert(
-            insert_index,
-            np.asarray(point, dtype=float).reshape(3),
+        self._sync_manual_curve_controller_options()
+        self.manual_curve_controller.insert_point(
+            index,
+            point,
+            point_type=self._next_manual_curve_point_type(),
+            snapped=snapped,
+            triangle_index=triangle_index,
+            normal=normal,
+            projection_distance=0.0 if snapped else None,
         )
-        self._manual_curve_point_types.insert(
-            insert_index,
-            self._next_manual_curve_point_type(),
-        )
-        self._manual_curve_point_type_sources.insert(
-            insert_index,
-            CURVE_POINT_SOURCE_MANUAL
-            if self._next_manual_curve_point_type() == CURVE_POINT_CORNER
-            else CURVE_POINT_SOURCE_AUTO,
-        )
-        snapped = bool(snapped)
-        self._manual_curve_snap_flags.insert(insert_index, snapped)
-        self._manual_curve_snap_triangle_indices.insert(insert_index, triangle_index)
-        self._manual_curve_snap_normals.insert(insert_index, normal)
-        self._manual_curve_projection_distances.insert(
-            insert_index, 0.0 if snapped else None
-        )
-        if snapped:
-            self._manual_curve_snap_point_count += 1
-        self._mark_manual_curve_controls_changed(detect_all=True)
 
     @staticmethod
     def _manual_curve_pick_normal_value(normal: object) -> list[float] | None:
@@ -10701,118 +10145,46 @@ class OpenRetopWindow:
         return [float(value) for value in normal_array]
 
     def _remove_last_manual_curve_point(self) -> None:
-        if not self._manual_curve_points:
-            self.status_text.set("Manual Curve: no pending points")
-            self._sync_workflow_ui()
-            return
-
-        self._manual_curve_points.pop()
-        if self._manual_curve_point_types:
-            self._manual_curve_point_types.pop()
-        if self._manual_curve_point_type_sources:
-            self._manual_curve_point_type_sources.pop()
-        if self._manual_curve_snap_flags:
-            was_snapped = self._manual_curve_snap_flags.pop()
-            if was_snapped:
-                self._manual_curve_snap_point_count = max(
-                    0,
-                    self._manual_curve_snap_point_count - 1,
-                )
-        if self._manual_curve_snap_triangle_indices:
-            self._manual_curve_snap_triangle_indices.pop()
-        if self._manual_curve_snap_normals:
-            self._manual_curve_snap_normals.pop()
-        if self._manual_curve_projection_distances:
-            self._manual_curve_projection_distances.pop()
-        if len(self._manual_curve_points) < 3:
-            self._manual_curve_closed = False
-        self._mark_manual_curve_controls_changed(detect_all=True)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._manual_curve_status())
-        self._sync_workflow_ui()
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.remove_last_point()
+        )
 
     def _toggle_manual_curve_closed(self) -> None:
-        if len(self._manual_curve_points) < 3:
-            self.status_text.set("Manual Curve: need at least 3 points to close")
-            self._sync_workflow_ui()
-            return
-
-        self._manual_curve_closed = not self._manual_curve_closed
-        self._mark_manual_curve_controls_changed(detect_all=True)
-        self._refresh_viewport(reset_camera=False)
-        if self._manual_curve_edit_active:
-            self.status_text.set("Curve closed" if self._manual_curve_closed else "Curve opened")
-        else:
-            self.status_text.set(self._manual_curve_status())
-        self._sync_workflow_ui()
+        self._apply_manual_curve_action_result(
+            self.manual_curve_controller.toggle_closed()
+        )
 
     def _confirm_manual_curve(self) -> None:
         if self._manual_curve_edit_active:
             self.apply_manual_curve_edits()
             return
-
-        point_count = len(self._manual_curve_points)
-        if self._manual_curve_closed:
-            if point_count < 3:
-                self.status_text.set("Manual Curve: closed curve needs at least 3 points")
-                self._sync_workflow_ui()
-                return
-        elif point_count < 2:
-            self.status_text.set("Manual Curve: open curve needs at least 2 points")
-            self._sync_workflow_ui()
-            return
-
-        points = np.asarray(self._manual_curve_points, dtype=float).reshape((-1, 3))
-        snap_to_mesh = self._manual_curve_snap_point_count > 0
+        self._sync_manual_curve_controller_options()
         mesh_object = self.app_state.mesh_object
-        curve = build_manual_stored_curve(
+        result = self.manual_curve_controller.build_new_curve(
             curve_id=f"curve-{uuid4().hex}",
             name=self._next_manual_curve_name(),
-            control_points=points,
-            is_closed=bool(self._manual_curve_closed),
-            creation_type="curve_on_mesh" if snap_to_mesh else "manual",
-            snap_to_mesh=snap_to_mesh,
-            work_plane_type="mesh" if snap_to_mesh else self._manual_curve_plane_type,
-            source_section_plane_id=(
-                None if snap_to_mesh else self._manual_curve_source_section_plane_id
-            ),
             source_mesh_name=(
-                mesh_object.name
-                if snap_to_mesh and mesh_object is not None and mesh_object.name
+                mesh_object.name if mesh_object is not None and mesh_object.name
                 else None
             ),
-            snap_triangle_indices=(
-                list(self._manual_curve_snap_triangle_indices)
-                if snap_to_mesh
-                and any(index is not None for index in self._manual_curve_snap_triangle_indices)
+            projection_mesh=(
+                self._surface_preview_projection_mesh()
+                if self.manual_curve_controller.session.keep_curve_on_mesh
                 else None
             ),
-            snap_normals=(
-                list(self._manual_curve_snap_normals)
-                if snap_to_mesh
-                and any(normal is not None for normal in self._manual_curve_snap_normals)
-                else None
-            ),
-            curve_method=self._manual_curve_curve_method,
-            sample_count=self._manual_curve_sample_count_value(),
-            point_types=list(self._manual_curve_point_types),
-            point_type_sources=list(self._manual_curve_point_type_sources),
-            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
-            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
-            smoothness=self._manual_curve_smoothness_value(),
-            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
-            control_point_revision=self._manual_curve_control_point_revision,
-            corner_detection_revision=self._manual_curve_corner_detection_revision,
+            mesh_revision=self._mesh_query_revision(),
         )
-        self._update_manual_curve_snap_metadata(curve)
-        self._project_manual_curve_fitted_preview_to_mesh(curve)
+        curve = result.created_curve
+        if not result.success or curve is None:
+            self._apply_manual_curve_action_result(result)
+            return
         add_curve(self.app_state.curve_collection, curve)
         self._sync_visible_curve_results()
         self.select_curve(curve.id)
         self._push_created_curve_command(curve, command_name="Create Manual Curve")
         self._begin_manual_curve_edit_mode(
             curve,
-            status=f"Created {curve.name}. Editing curve.",
+            status=result.status,
         )
         self._set_project_dirty(True)
         self._sync_workflow_ui()
@@ -10830,75 +10202,24 @@ class OpenRetopWindow:
             self.status_text.set("No manual curve is being edited")
             self._sync_workflow_ui()
             return False
-
-        point_count = len(self._manual_curve_points)
-        if self._manual_curve_closed and point_count < 3:
-            self.status_text.set("Manual Curve: closed curve needs at least 3 points")
-            self._sync_workflow_ui()
-            return False
-        if not self._manual_curve_closed and point_count < 2:
-            self.status_text.set("Manual Curve: open curve needs at least 2 points")
-            self._sync_workflow_ui()
-            return False
-
-        metadata = active_curve.metadata if isinstance(active_curve.metadata, dict) else {}
-        snap_to_mesh = bool(self.manual_curve_snap_to_mesh.get())
+        self._sync_manual_curve_controller_options()
         before_curve = copy.deepcopy(active_curve)
-        updated_curve = build_manual_stored_curve(
-            curve_id=active_curve.id,
-            name=active_curve.name,
-            control_points=np.asarray(self._manual_curve_points, dtype=float).reshape((-1, 3)),
-            is_closed=bool(self._manual_curve_closed),
-            creation_type=str(
-                metadata.get(
-                    "creation_type",
-                    "curve_on_mesh" if snap_to_mesh else "manual",
-                )
+        mesh_object = self.app_state.mesh_object
+        result = self.manual_curve_controller.build_updated_curve(
+            active_curve,
+            projection_mesh=(
+                self._surface_preview_projection_mesh()
+                if self.manual_curve_controller.session.keep_curve_on_mesh
+                else None
             ),
-            snap_to_mesh=snap_to_mesh,
-            work_plane_type=str(
-                metadata.get(
-                    "work_plane_type",
-                    "mesh" if snap_to_mesh else self._manual_curve_plane_type,
-                )
-            ),
-            source_section_plane_id=(
-                None
-                if snap_to_mesh
-                else metadata.get("source_section_plane_id")
-                or self._manual_curve_source_section_plane_id
-            ),
-            source_mesh_name=metadata.get("source_mesh_name"),
-            snap_triangle_indices=list(self._manual_curve_snap_triangle_indices),
-            snap_normals=list(self._manual_curve_snap_normals),
-            curve_method=self._manual_curve_curve_method,
-            sample_count=self._manual_curve_sample_count_value(),
-            point_types=list(self._manual_curve_point_types),
-            point_type_sources=list(self._manual_curve_point_type_sources),
-            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
-            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
-            smoothness=self._manual_curve_smoothness_value(),
-            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
-            control_point_revision=self._manual_curve_control_point_revision,
-            corner_detection_revision=self._manual_curve_corner_detection_revision,
+            mesh_revision=self._mesh_query_revision(),
+            source_mesh_name=(mesh_object.name if mesh_object is not None else None),
         )
-        self._update_manual_curve_snap_metadata(updated_curve)
-        self._project_manual_curve_fitted_preview_to_mesh(updated_curve)
-        active_curve.original_points = updated_curve.original_points
-        active_curve.fitted_points = updated_curve.fitted_points
-        active_curve.mean_error = updated_curve.mean_error
-        active_curve.max_error = updated_curve.max_error
-        active_curve.is_closed = updated_curve.is_closed
-        active_curve.metadata = self._merged_manual_curve_edit_metadata(
-            original_metadata=metadata,
-            updated_metadata=updated_curve.metadata,
-            updated_points=updated_curve.fitted_points,
-            is_closed=bool(updated_curve.is_closed),
-        )
-        active_curve.metadata["source_curve_revision"] = int(
-            metadata.get("source_curve_revision", 0)
-        ) + 1
-        refresh_curve_diagnostics(active_curve)
+        updated_curve = result.updated_curve
+        if not result.success or updated_curve is None:
+            self._apply_manual_curve_action_result(result)
+            return False
+        self._replace_curve_geometry(active_curve, updated_curve)
         after_curve = copy.deepcopy(active_curve)
         self._push_undo_command(
             CallbackUndoCommand(
@@ -10920,56 +10241,6 @@ class OpenRetopWindow:
         self._set_project_dirty(True)
         self._sync_workflow_ui()
         return True
-
-    def _merged_manual_curve_edit_metadata(
-        self,
-        *,
-        original_metadata: dict[str, object],
-        updated_metadata: dict[str, object],
-        updated_points: np.ndarray,
-        is_closed: bool,
-    ) -> dict[str, object]:
-        metadata = dict(updated_metadata)
-        creation_type = str(original_metadata.get("creation_type", "")).strip().lower()
-        if creation_type not in {
-            "region_boundary",
-            "hybrid_region_guide",
-            "projected_curve",
-            "rebuilt_curve",
-        }:
-            return metadata
-
-        preserve_keys = (
-            "creation_type",
-            "source_curve_id",
-            "source_curve_name",
-            "source_curve_creation_type",
-            "source_region_id",
-            "source_region_name",
-            "source_mesh_name",
-            "region_triangle_count",
-            "source_region_triangle_count",
-            "source_curve_tags",
-            "boundary_index",
-            "projection_projected_count",
-            "projection_missed_count",
-            "projection_mean_distance",
-            "projection_max_distance",
-            "projection_warnings",
-            "rebuild_source_point_count",
-            "rebuild_target_control_point_count",
-            "rebuild_method",
-            "rebuild_warnings",
-        )
-        for key in preserve_keys:
-            if key in original_metadata:
-                metadata[key] = original_metadata[key]
-        metadata["creation_type"] = creation_type
-        if creation_type == "region_boundary":
-            metadata["boundary_point_count"] = int(len(np.asarray(updated_points).reshape((-1, 3))))
-            metadata["boundary_closed"] = bool(is_closed)
-            metadata["boundary_perimeter"] = _polyline_perimeter(updated_points, closed=is_closed)
-        return metadata
 
     def _active_manual_edit_curve(self) -> StoredCurve | None:
         if self._manual_curve_edit_curve_id is None:
@@ -11076,43 +10347,15 @@ class OpenRetopWindow:
         self._sync_workflow_ui()
 
     def _cancel_manual_curve_subaction(self, *, status: str) -> bool:
-        if self._manual_curve_drag_active:
-            self._manual_curve_drag_active = False
-            self._manual_curve_drag_candidate_index = None
-            self._manual_curve_submode = "edit_select"
-            self._clear_manual_curve_preview_state()
-            self.status_text.set(status)
-            self._sync_workflow_ui()
-            return True
-        if (
-            not self._manual_curve_edit_active
-            and self._manual_curve_submode == "draw_add_points"
-            and self._manual_curve_placing_enabled
-        ):
-            self._manual_curve_add_point_active = False
-            self._manual_curve_insert_point_active = False
-            self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = "inactive"
-            self._clear_manual_curve_preview_state()
-            self.status_text.set(status)
-            self._refresh_viewport(reset_camera=False)
-            self._sync_workflow_ui()
-            return True
-        if self._manual_curve_add_point_active or self._manual_curve_insert_point_active:
-            self._manual_curve_add_point_active = False
-            self._manual_curve_insert_point_active = False
-            self._manual_curve_placing_enabled = False
-            self._manual_curve_submode = (
-                "edit_select" if self._manual_curve_edit_active else "inactive"
-            )
-            self._clear_manual_curve_preview_state()
-            self.status_text.set(status)
-            self._sync_workflow_ui()
-            return True
-        return False
+        result = self.manual_curve_controller.cancel_subaction(status=status)
+        if result.success:
+            self._apply_manual_curve_action_result(result)
+        return result.success
 
     def _on_manual_curve_type_changed(self, _event: object | None = None) -> None:
-        self._manual_curve_curve_method = self._manual_curve_method_from_label()
+        self.manual_curve_controller.configure(
+            curve_method=self._manual_curve_method_from_label()
+        )
         if self._manual_curve_active:
             self._refresh_viewport(reset_camera=False)
             self.status_text.set(f"Curve type: {self.manual_curve_type_text.get()}")
@@ -11149,42 +10392,48 @@ class OpenRetopWindow:
         self._on_sidebar_content_configure()
 
     def _on_manual_curve_smoothness_changed(self, _value: object | None = None) -> None:
-        self._manual_curve_smoothness_value()
+        self.manual_curve_controller.configure(
+            smoothness=self._manual_curve_smoothness_value()
+        )
         if self._manual_curve_active:
             self._refresh_viewport(reset_camera=False)
 
     def _on_manual_curve_sample_count_changed(self, _event: object | None = None) -> None:
-        self._manual_curve_sample_count_value()
+        self.manual_curve_controller.configure(
+            sample_count=self._manual_curve_sample_count_value()
+        )
         if self._manual_curve_active:
             self._refresh_viewport(reset_camera=False)
 
     def _on_manual_curve_corner_threshold_changed(
         self, _event: object | None = None
     ) -> None:
-        self._manual_curve_corner_threshold()
-        if self._manual_curve_active and bool(
-            self.manual_curve_auto_detect_corners.get()
-        ):
-            self._auto_detect_working_curve_corners(set_status=False)
+        result = self.manual_curve_controller.configure(
+            corner_angle_threshold_degrees=self._manual_curve_corner_threshold()
+        )
         if self._manual_curve_active:
-            self._refresh_viewport(reset_camera=False)
+            self._apply_manual_curve_action_result(result)
 
     def _on_manual_curve_auto_corners_changed(self) -> None:
-        if (
-            self._manual_curve_active
-            and bool(self.manual_curve_auto_detect_corners.get())
-            and len(self._manual_curve_points) >= 3
-        ):
-            self._auto_detect_working_curve_corners(set_status=False)
-        self._refresh_viewport(reset_camera=False)
-        self._sync_workflow_ui()
+        result = self.manual_curve_controller.configure(
+            auto_detect_corners=bool(self.manual_curve_auto_detect_corners.get())
+        )
+        if self._manual_curve_active:
+            self._apply_manual_curve_action_result(result)
+        else:
+            self._sync_workflow_ui()
 
     def _on_manual_curve_keep_on_mesh_changed(self) -> None:
         if bool(self.manual_curve_keep_on_mesh.get()):
             self.manual_curve_snap_to_mesh.set(True)
+        result = self.manual_curve_controller.configure(
+            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
+            snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
+        )
         if self._manual_curve_active:
-            self._refresh_viewport(reset_camera=False)
-        self._sync_workflow_ui()
+            self._apply_manual_curve_action_result(result)
+        else:
+            self._sync_workflow_ui()
 
     def _manual_curve_method_from_label(self) -> str:
         value = self.manual_curve_type_text.get().strip().lower()
@@ -11282,59 +10531,12 @@ class OpenRetopWindow:
         )
 
     def _clear_manual_curve_state(self, *, reset_snap: bool = False) -> None:
-        self._manual_curve_active = False
-        self._manual_curve_edit_active = False
-        self._manual_curve_submode = "inactive"
-        self._manual_curve_control_point_revision = 0
-        self._manual_curve_corner_detection_revision = 0
-        self._manual_curve_edit_curve_id = None
-        self._manual_curve_selected_control_point_index = None
-        self._manual_curve_hover_control_point_index = None
-        self._manual_curve_drag_active = False
-        self._manual_curve_drag_candidate_index = None
-        self._manual_curve_placing_enabled = True
-        self._manual_curve_add_point_active = False
-        self._manual_curve_insert_point_active = False
-        self._manual_curve_curve_method = DEFAULT_MANUAL_CURVE_METHOD
-        self._manual_curve_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
-        self._manual_curve_left_press_position = None
-        self._manual_curve_left_dragged = False
-        self._manual_curve_points = []
-        self._manual_curve_point_types = []
-        self._manual_curve_point_type_sources = []
-        self._manual_curve_closed = False
-        self._manual_curve_plane_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
-        self._manual_curve_plane_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
-        self._manual_curve_plane_type = "world_xy"
-        self._manual_curve_plane_label = "world XY plane"
-        self._manual_curve_source_section_plane_id = None
-        self._manual_curve_snap_point_count = 0
-        self._manual_curve_snap_flags = []
-        self._manual_curve_snap_triangle_indices = []
-        self._manual_curve_snap_normals = []
-        self._manual_curve_projection_distances = []
-        self._clear_manual_curve_preview_state()
+        self.manual_curve_controller.exit()
         if reset_snap:
             self.manual_curve_snap_to_mesh.set(False)
 
     def _manual_curve_status(self) -> str:
-        point_count = len(self._manual_curve_points)
-        point_label = "point" if point_count == 1 else "points"
-        closed_label = "closed" if self._manual_curve_closed else "open"
-        snap_label = (
-            "Snap to Mesh: On"
-            if bool(self.manual_curve_snap_to_mesh.get())
-            else "Snap to Mesh: Off"
-        )
-        if self._manual_curve_edit_active:
-            if self._manual_curve_add_point_active:
-                return "Add Point active: left-click to append. Esc returns to edit mode."
-            if self._manual_curve_insert_point_active:
-                return "Insert Point active: click a curve segment. Esc returns to edit mode."
-            return "Editing curve: select or drag control points. Right-drag to orbit."
-        if self._manual_curve_submode == "inactive":
-            return "Point placement paused. Press Add Point to continue."
-        return "Drawing curve: left-click to add points. Right-drag to orbit."
+        return self.manual_curve_controller.status()
 
     def _curve_repair_tolerance(self) -> float:
         mesh_object = self.app_state.mesh_object
@@ -12404,6 +11606,18 @@ class OpenRetopWindow:
     def reset_camera(self) -> None:
         self.reset_view()
 
+    def _sync_manual_curve_controller_options(self) -> ManualCurveActionResult:
+        return self.manual_curve_controller.configure(
+            curve_method=self._manual_curve_method_from_label(),
+            sample_count=self._manual_curve_sample_count_value(),
+            smoothness=self._manual_curve_smoothness_value(),
+            preserve_corners=bool(self.manual_curve_preserve_corners.get()),
+            corner_angle_threshold_degrees=self._manual_curve_corner_threshold(),
+            auto_detect_corners=bool(self.manual_curve_auto_detect_corners.get()),
+            snap_to_mesh=bool(self.manual_curve_snap_to_mesh.get()),
+            keep_curve_on_mesh=bool(self.manual_curve_keep_on_mesh.get()),
+        )
+
     def set_named_view(self, name: str) -> None:
         view_name = str(name).strip().lower()
         try:
@@ -12461,36 +11675,37 @@ class OpenRetopWindow:
         manual_selected_index: int | None = None
         manual_method = DEFAULT_MANUAL_CURVE_METHOD
         manual_sample_count = DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
+        manual_preview_point: object | None = None
+        manual_preview_valid = False
+        manual_preview_snaps_closed = False
+        manual_preview_snaps_to_mesh = False
         if self._manual_curve_active:
-            manual_points = self._manual_curve_points
-            manual_point_types = self._manual_curve_point_types
-            manual_closed = self._manual_curve_closed
-            manual_plane_normal = self._manual_curve_plane_normal
-            manual_snap = bool(self.manual_curve_snap_to_mesh.get())
-            manual_selected_index = (
-                self._manual_curve_selected_control_point_index
-                if self._manual_curve_edit_active
+            self._sync_manual_curve_controller_options()
+            projection_mesh = (
+                self._surface_preview_projection_mesh()
+                if self.manual_curve_controller.session.keep_curve_on_mesh
                 else None
             )
-            manual_method = self._manual_curve_curve_method
-            manual_sample_count = self._manual_curve_sample_count
-            if len(self._manual_curve_points) >= 2:
-                manual_fitted_points = sample_hybrid_manual_curve(
-                    self._working_manual_curve_control_data_v2()
-                )
-            if (
-                bool(self.manual_curve_keep_on_mesh.get())
-                and manual_fitted_points is not None
-            ):
-                mesh = self._surface_preview_projection_mesh()
-                if mesh is not None:
-                    manual_fitted_points = project_curve_points_to_mesh(
-                        manual_fitted_points,
-                        mesh,
-                        preserve_missed_points=True,
-                        mesh_query_service=self.mesh_query_service,
-                        mesh_revision=self._mesh_query_revision(),
-                    ).projected_points
+            mesh_revision = (
+                self._mesh_query_revision() if projection_mesh is not None else None
+            )
+            display_state = self.manual_curve_controller.display_state(
+                projection_mesh=projection_mesh,
+                mesh_revision=mesh_revision,
+            )
+            manual_points = display_state.control_points
+            manual_point_types = display_state.point_types
+            manual_fitted_points = display_state.fitted_points
+            manual_closed = display_state.is_closed
+            manual_plane_normal = display_state.plane_normal
+            manual_snap = display_state.snap_to_mesh
+            manual_selected_index = display_state.selected_point_index
+            manual_method = display_state.curve_method
+            manual_sample_count = display_state.sample_count
+            manual_preview_point = display_state.preview_point
+            manual_preview_valid = display_state.preview_valid
+            manual_preview_snaps_closed = display_state.preview_snaps_closed
+            manual_preview_snaps_to_mesh = display_state.preview_snaps_to_mesh
         elif self.app_state.selected_item == SELECT_CURVE:
             selected_curve = self._active_curve()
             if selected_curve is not None and is_manual_curve_like(selected_curve):
@@ -12551,17 +11766,11 @@ class OpenRetopWindow:
             manual_curve_method=manual_method,
             manual_curve_sample_count=manual_sample_count,
             manual_curve_preview_point=(
-                self._manual_curve_preview_point
-                if self._manual_curve_active and self._manual_curve_preview_valid
-                else None
+                manual_preview_point if manual_preview_valid else None
             ),
-            manual_curve_preview_valid=(
-                self._manual_curve_preview_valid
-                if self._manual_curve_active
-                else False
-            ),
-            manual_curve_preview_snaps_closed=self._manual_curve_preview_snaps_closed,
-            manual_curve_preview_snaps_to_mesh=self._manual_curve_preview_snaps_to_mesh,
+            manual_curve_preview_valid=manual_preview_valid,
+            manual_curve_preview_snaps_closed=manual_preview_snaps_closed,
+            manual_curve_preview_snaps_to_mesh=manual_preview_snaps_to_mesh,
             display_colors={
                 field_name: getattr(self.settings.display, field_name)
                 for field_name in DISPLAY_COLOR_FIELDS

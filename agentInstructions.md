@@ -1,516 +1,652 @@
 ---
 
-## Task 73: Accelerated Mesh Query Engine and Performance Verification
+## Task 74: Manual Curve Controller Extraction and Behavior-Preserving Architecture Pass
 
 Purpose:
-Task 72 introduced manual-curve projection, Keep Curve On Mesh behavior, mesh-conforming loft previews, future deviation-analysis contracts, and additional surface workflows.
+The manual curve workflow now has substantially better behavior, but its state, input routing, geometry operations, metadata handling, viewport preparation, status messages, and UI synchronization remain embedded directly inside `OpenRetopWindow`.
 
-The current nearest-mesh projection implementation performs a Python loop over every mesh triangle for every query point. This is not viable for realistic scan meshes and will prevent future curve fitting, surface fitting, deviation analysis, and primitive recognition from performing acceptably.
+This makes further curve improvements risky and continues expanding `main_window.py`.
 
-Replace the brute-force nearest-surface implementation with a reusable, cached, accelerated mesh spatial-query engine.
+Extract the manual curve workflow into a dedicated, testable controller and session-state system without changing its user-visible behavior.
 
-This is a foundation and stabilization task.
+This is an architecture and stabilization task.
 
+Do not add new manual curve features.
+Do not change the current smoothing algorithm.
+Do not add tangent handles or NURBS editing.
 Do not add primitives.
 Do not add surface trimming or intersection.
-Do not add new surfacing tools.
+Do not refactor region selection yet.
+Do not refactor surface creation yet.
 Do not redesign the UI.
-Do not perform the full Tasks 78–80 refactor.
-Do not change normal user workflows unless required to fix correctness or responsiveness.
 Do not rewrite the viewport.
-Do not introduce duplicate mesh-state systems.
+Do not change project file formats.
+Do not fix camera framing in this task.
 
-Use the VTK stack already required by the application. Prefer `vtkStaticCellLocator` for immutable loaded scan meshes, with `vtkCellLocator` only if there is a concrete compatibility reason.
+Known separate issue:
 
----
-
-## Part A — Establish a correctness baseline
-
-Before replacing the current projection implementation:
-
-1. Preserve the existing brute-force closest-point behavior as a test-only reference implementation.
-2. Add correctness tests comparing the accelerated implementation against the reference on small known meshes.
-3. Cover:
-
-   * point above triangle interior
-   * point nearest triangle edge
-   * point nearest triangle vertex
-   * multiple disconnected triangles
-   * degenerate/invalid triangles
-   * empty mesh
-   * finite and non-finite query points
-   * maximum-distance rejection
-   * normal calculation
-   * source triangle index reporting
-
-The brute-force implementation must not remain in the normal runtime path after this task.
-
-Acceptance:
-
-* accelerated and reference results agree within a defined tolerance
-* expected triangle IDs agree
-* expected distances agree
-* invalid inputs fail safely
-* tests exist before runtime replacement
+* Frame All and Frame Selected are currently unreliable.
+* Loaded projects are not consistently framed around their restored scene.
+* That will receive a separate focused task after this extraction.
 
 ---
 
-## Part B — Create a reusable spatial index
+## Part A — Create authoritative manual curve session state
 
 Create:
 
-src/mesh/spatial_index.py
-
-Add dataclass:
-
-MeshClosestPointResult
-
-Fields:
-
-* source_points: np.ndarray
-* closest_points: np.ndarray
-* distances: np.ndarray
-* hit_mask: np.ndarray
-* triangle_indices: np.ndarray
-* normals: np.ndarray
-* queried_point_count: int
-* hit_count: int
-* missed_count: int
-* build_time_seconds: float
-* query_time_seconds: float
-* backend: str
-* metadata: dict[str, object]
-
-Add class:
-
-MeshSpatialIndex
-
-Responsibilities:
-
-* accept a validated `TriangleMeshData`
-* convert the mesh once to VTK polydata
-* build a `vtkStaticCellLocator`
-* retain the source mesh identity/revision information
-* answer repeated closest-point queries without rebuilding the locator
-* return closest surface point, triangle ID, distance, and triangle normal
-* support one query point or a batch of query points
-* support an optional maximum search distance
-* preserve or reject missed source points according to caller preference
-* never scan all mesh triangles in Python
-
-Suggested public API:
-
-MeshSpatialIndex.from_mesh(mesh)
-
-MeshSpatialIndex.query_closest_points(
-points,
-*,
-max_distance: float | None = None,
-preserve_missed_points: bool = True,
-) -> MeshClosestPointResult
-
-Properties:
-
-* triangle_count
-* vertex_count
-* build_time_seconds
-* valid
-* source_signature
-
-Rules:
-
-* locator construction may perform preprocessing once
-* query execution may loop over query points if required by VTK
-* query execution must not loop over all triangles
-* return NumPy arrays with stable shapes and dtypes
-* invalid triangles must be excluded during index construction
-* output triangle indices must map back to original `TriangleMeshData.triangles`
-* normal calculation must use the matched source triangle
-* no NaN/inf output
-* duplicate query points must work
-* empty query sets must work
-
-Acceptance:
-
-* one spatial index can serve repeated queries
-* no per-query mesh rebuild
-* no Python triangle scan
-* original source triangle indices are preserved
-
----
-
-## Part C — Add a cached mesh-query service
-
-Create:
-
-src/mesh/query_service.py
-
-Add class:
-
-MeshQueryService
-
-Responsibilities:
-
-* lazily build and cache a `MeshSpatialIndex`
-* return the cached index for the current source mesh
-* invalidate the index when source mesh geometry changes
-* avoid invalidation for display-only changes such as color, opacity, or selection
-* expose cache/build diagnostics
-* centralize mesh-query ownership instead of building locators independently in multiple tools
-
-Suggested API:
-
-get_index(mesh, *, mesh_revision=None) -> MeshSpatialIndex
-
-invalidate()
-
-query_closest_points(
-mesh,
-points,
-*,
-mesh_revision=None,
-max_distance=None,
-preserve_missed_points=True,
-) -> MeshClosestPointResult
-
-Diagnostics:
-
-* cache_hit
-* index_build_count
-* last_build_time
-* last_query_time
-* triangle_count
-* queried_point_count
-* backend
-
-Rules:
-
-* do not hash every vertex/triangle on every request
-* use stable mesh identity plus an explicit revision or replacement event
-* document coordinate-space assumptions
-* curve points and mesh geometry must be queried in the same coordinate system
-* if mesh transforms are applied outside source geometry, preserve the current projection semantics exactly
-
-Acceptance:
-
-* repeated curve/surface queries reuse one index
-* loading or replacing a mesh invalidates the index
-* visual preference changes do not invalidate it
-* cache behavior is testable
-
----
-
-## Part D — Replace curve projection internals
-
-Update:
-
-src/curves/projection.py
-
-Keep the public contracts compatible where practical:
-
-* `CurveProjectionResult`
-* `project_curve_points_to_mesh`
-* `project_stored_curve_to_mesh`
-
-Replace the brute-force internals with the spatial query service/index.
-
-Requirements:
-
-* preserve projected points
-* preserve triangle indices
-* preserve normals
-* preserve distance calculations
-* preserve maximum-distance behavior
-* preserve missed-point behavior
-* preserve existing metadata names where possible
-
-Improve warning behavior:
-
-* do not create thousands of individual warning strings for large batches
-* retain detailed warnings for small requests
-* aggregate large failures, for example:
-
-  * "238 of 4096 points exceeded the projection threshold."
-* store failed indices separately when useful
-
-Remove the old runtime `_closest_mesh_point` triangle loop after correctness tests are established.
-
-Acceptance:
-
-* existing callers continue working
-* projection output remains compatible
-* large projection requests no longer scale linearly with every mesh triangle
-* existing project and curve metadata remain readable
-
----
-
-## Part E — Route all scan-conforming tools through the service
-
-Audit every current nearest-mesh or projection path.
-
-At minimum, update:
-
-1. Manual curve projection
-2. Keep Curve On Mesh fitted-curve projection
-3. Project Selected Curve to Mesh
-4. Mesh-Conforming Loft Preview
-5. Any region-boundary projection using the same nearest-surface logic
-6. Future deviation-analysis computation helpers added in this task
-
-Do not create separate spatial locators for each feature.
-
-Mesh-Conforming Loft Preview:
-
-* build the loft grid as it does currently
-* send the full point batch through MeshQueryService
-* reuse the cached locator
-* preserve projection threshold behavior
-* preserve projection mean/max diagnostics
-* preserve failed projection count
-* preserve smooth shaded display
-* preserve non-BREP labeling
-
-Acceptance:
-
-* all nearest-surface tools use the same query engine
-* locator is not rebuilt for each curve or surface
-* mesh-conforming loft performance is suitable for interactive use on realistic scans
-
----
-
-## Part F — Add foundational deviation computation
-
-Extend:
-
-src/analysis/deviation.py
-
-The existing dataclasses may remain, but add a computation function using the new mesh query service:
-
-compute_point_deviation_to_mesh(
-source_points,
-mesh_or_index,
-*,
-max_distance: float | None = None,
-signed: bool = False,
-) -> DeviationResult
-
-Requirements:
-
-* no viewport/UI heatmap yet
-* no continuous real-time mode yet
-* use accelerated nearest-surface queries
-* calculate:
-
-  * mean absolute distance
-  * maximum absolute distance
-  * RMS distance
-  * failed sample count
-* optionally calculate signed distance only when a reliable normal/sign convention is available
-* if signed distance is not reliable, leave it `None` rather than inventing a sign
-* include query/build timing and backend information in metadata
-
-Purpose:
-This establishes the real computational foundation for the later color-coded deviation tool without adding that UI yet.
-
-Acceptance:
-
-* deviation computation uses the spatial index
-* results are numerically tested
-* no duplicated closest-point code exists in the analysis module
-
----
-
-## Part G — Add performance instrumentation
-
-Add timing diagnostics around:
-
-* index construction
-* batch query
-* curve projection
-* mesh-conforming loft projection
-
-Do not print timing information continuously to stdout.
-
-Store timing in result metadata and expose it through existing diagnostics/status systems where appropriate.
+src/curves/manual_curve_session.py
 
 Add:
 
-benchmarks/benchmark_mesh_queries.py
+ManualCurveSessionState
 
-The benchmark should:
+This must become the authoritative source of transient manual-curve state.
 
-* generate or load a representative triangulated mesh
-* query several point counts
-* report:
+Suggested fields:
 
-  * triangle count
-  * query point count
-  * index build time
-  * first query time
-  * repeated cached query time
-  * hit/miss count
-* optionally compare against brute force only on a small mesh
-* never run the brute-force reference on a production-sized benchmark
+Workflow state:
 
-Suggested benchmark cases:
+* active: bool
+* editing: bool
+* edit_curve_id: str | None
+* submode: str
 
-* 10,000 triangles / 100 points
-* 100,000 triangles / 1,000 points
-* larger case when memory permits
+Geometry:
 
-Do not add fragile microsecond-level timing assertions to normal CI.
+* control_points: list[np.ndarray]
+* point_types: list[str]
+* point_type_sources: list[str]
+* is_closed: bool
+* curve_method: str
+* sample_count: int
+* smoothness: int
+* preserve_corners: bool
 
-Acceptance:
+Work-plane state:
 
-* benchmark can be run directly
-* cached queries are visibly faster than rebuilding
-* performance characteristics are measurable
+* plane_origin: np.ndarray
+* plane_normal: np.ndarray
+* plane_type: str
+* plane_label: str
+* source_section_plane_id: str | None
 
----
+Snapping:
 
-## Part H — Add meaningful automated tests
+* snap_to_mesh: bool
+* keep_curve_on_mesh: bool
+* snap_flags: list[bool]
+* snap_triangle_indices: list[int | None]
+* snap_normals: list[list[float] | None]
+* projection_distances: list[float | None]
+* snapped_point_count: int
 
-Add tests for:
+Selection and dragging:
 
-Spatial index:
+* selected_control_point_index: int | None
+* hover_control_point_index: int | None
+* drag_candidate_index: int | None
+* drag_active: bool
+* left_press_position: tuple[int, int] | None
+* left_dragged: bool
 
-* correct closest points
-* correct triangle IDs
-* correct distances
-* correct normals
-* empty mesh
-* invalid triangles
-* empty point batch
-* maximum-distance rejection
-* duplicate points
-* missed-point preservation
+Placement modes:
 
-Cache:
+* placing_enabled: bool
+* add_point_active: bool
+* insert_point_active: bool
 
-* first query builds one index
-* repeated query reuses it
-* mesh replacement invalidates it
-* display setting change does not invalidate it
+Preview:
 
-Projection:
+* preview_point: np.ndarray | None
+* preview_valid: bool
+* preview_snaps_closed: bool
+* preview_snaps_to_mesh: bool
+* preview_triangle_index: int | None
+* preview_normal: list[float] | None
 
-* existing `CurveProjectionResult` behavior remains compatible
-* projected stored curves retain lineage
-* large batches produce aggregated warnings
-* no brute-force runtime triangle loop is called
+Revisions:
 
-Mesh-conforming loft:
+* control_point_revision: int
+* corner_detection_revision: int
 
-* uses MeshQueryService
-* reuses cached locator
-* retains projection diagnostics
-* remains non-BREP
-* remains wireframe-off by default
+Required methods:
 
-Deviation:
+* reset()
+* begin_new_curve(...)
+* begin_edit_curve(...)
+* exit()
+* clear_preview()
+* set_preview(...)
+* append_point(...)
+* insert_point(...)
+* remove_point(...)
+* move_point(...)
+* select_point(...)
+* normalize_parallel_arrays()
+* mark_controls_changed()
+* validate_invariants()
+* to_control_data_v2()
+* load_control_data_v2(...)
 
-* mean/max/RMS are correct
-* failed samples are counted
-* timing/backend metadata exists
+Invariants:
 
-Performance structure:
+* point type count equals control point count
+* point type source count equals control point count
+* snap flag count equals control point count
+* triangle index count equals control point count
+* normal count equals control point count
+* projection distance count equals control point count
+* selected/hover/drag indices are either valid or None
+* snapped_point_count equals the number of true snap flags
+* closed curves require at least three points
+* all point positions are finite
+* plane origin and normal are finite
+* plane normal is normalized or safely replaced with a fallback
 
-* patch or instrument locator construction to prove it is built once
-* patch the old brute-force helper to prove production code does not call it
-* avoid unreliable strict wall-clock assertions in CI
-
-Regression:
-
-* manual curve tests pass
-* Task 72 tests pass
-* region selection tests pass
-* surface preview tests pass
-* BREP tests pass
-* project IO tests pass
-* settings tests pass
-* app imports and launches
-
----
-
-## Part I — Add continuous integration
-
-The repository currently lacks automated commit checks.
-
-Add a GitHub Actions workflow appropriate to the existing project:
-
-.github/workflows/tests.yml
-
-Requirements:
-
-* run on push and pull request
-* use the project’s supported Python version
-* install project requirements
-* run the complete test suite
-* use a Linux virtual display for Tk/VTK tests if required
-* cache pip downloads where straightforward
-* fail on test failures
-* do not silently skip the core geometry tests
-
-If full GUI tests cannot run reliably in CI:
-
-* run all headless geometry/state/project tests
-* clearly separate GUI-dependent tests
-* document the local command for the complete suite
+Do not silently allow parallel arrays to become misaligned.
 
 Acceptance:
 
-* future commits receive an automated pass/fail result
-* geometry-query tests run in CI
-* no dependency on proprietary software
+* one object owns all transient manual-curve data
+* session invariants are directly testable
+* no Tk or VTK imports exist in this module
 
 ---
 
-## Part J — Limited cleanup only
+## Part B — Create a manual curve workflow controller
 
-While replacing the projection engine:
+Create:
 
-Remove or consolidate only code directly made redundant by this task:
+src/app/manual_curve_controller.py
 
-* brute-force runtime nearest-triangle loops
-* duplicate closest-point result conversions
-* duplicate warning generation
-* duplicate mesh-query preparation
-* unused imports/helpers caused by the replacement
+Add:
 
-Do not start the full application refactor here.
-Do not broadly move UI panels.
-Do not rewrite MainWindow.
-Do not rename unrelated systems.
-Do not combine this with primitive recognition or trim tools.
+ManualCurveController
 
-It is acceptable to give MainWindow one `MeshQueryService` instance and pass it into projection/surface commands.
+Responsibilities:
+
+* own one `ManualCurveSessionState`
+* start a new curve
+* load an existing curve for editing
+* transition between manual-curve submodes
+* append, insert, select, move and delete points
+* close/open curves
+* maintain corner classifications and revisions
+* apply automatic corner detection
+* preserve manual corner overrides
+* clear only automatically detected corners
+* build sampled curve geometry
+* build/update `StoredCurve` records
+* prepare snapping metadata
+* simplify selected curves through existing helpers
+* convert selected curves to Smooth Curve
+* finish, apply or cancel the workflow
+* provide status/diagnostic information to MainWindow
+
+The controller must use existing geometry functions from:
+
+* `curves.manual_curve`
+* `curves.curve_state`
+* `curves.projection`
+* `curves.validation`
+
+Do not duplicate:
+
+* angle corner detection
+* smooth-span sampling
+* stored-curve construction
+* projection implementation
+* mesh spatial queries
+* curve diagnostics
+
+The controller must not import:
+
+* Tk
+* ttk
+* messagebox
+* file dialogs
+* scene browser
+* VTK actors
+* `OpenRetopWindow`
+
+Use action-result objects rather than direct UI mutations where practical.
+
+Suggested result type:
+
+ManualCurveActionResult
+
+Fields:
+
+* success: bool
+* changed: bool
+* status: str
+* needs_viewport_refresh: bool
+* needs_ui_sync: bool
+* project_dirty: bool
+* created_curve: StoredCurve | None
+* updated_curve: StoredCurve | None
+* completed_curve_id: str | None
+* warnings: tuple[str, ...]
+* metadata: dict[str, object]
 
 Acceptance:
 
-* one authoritative nearest-surface implementation
-* no duplicated production projection engines
-* unrelated behavior remains unchanged
+* controller behavior can be tested without constructing a Tk window
+* controller does not directly manipulate widgets
+* controller does not own application-wide selection or project dialogs
+
+---
+
+## Part C — Preserve the current submode behavior
+
+Keep the current submodes:
+
+* inactive
+* draw_add_points
+* edit_select
+* edit_move_point
+* explicit_add_point
+* explicit_insert_point
+
+Required behavior must remain unchanged:
+
+New curve:
+
+* starts in `draw_add_points`
+* left click places a point
+* right drag remains camera orbit
+* middle drag remains camera pan
+* wheel remains camera zoom
+
+Existing curve edit:
+
+* starts in `edit_select`
+* clicking empty space does not add a point
+* dragging starts only on a control point
+* Add Point must be explicitly activated
+* Insert Point must be explicitly activated
+* Esc exits the current submode before exiting the workflow
+
+The controller should determine whether a left-button event:
+
+* selects a point
+* begins a point drag
+* places a point
+* inserts a point
+* does nothing
+
+MainWindow or the viewport adapter may still provide:
+
+* screen-to-work-plane projection
+* mesh picking
+* screen-space point hit testing
+* screen-space curve-segment hit testing
+
+The controller receives the resolved geometric result and updates its session.
+
+Acceptance:
+
+* manual curve input behavior remains identical to Task 72
+* right/middle/wheel events are never consumed by the controller
+* no random point placement returns
+
+---
+
+## Part D — Integrate the accelerated mesh-query service
+
+Manual curve projection must continue using the per-window:
+
+MeshQueryService
+
+MainWindow should inject or pass the service into controller operations that require it.
+
+Preserve:
+
+* Snap to Mesh point metadata
+* Keep Curve On Mesh
+* projection triangle indices
+* projection normals
+* mean/max projection distance
+* failed projection indices
+* query backend
+* index build/query timing
+* mesh revision handling
+
+Do not:
+
+* create another global locator
+* create one locator per curve
+* introduce another mesh cache
+* revert to brute-force projection
+
+Acceptance:
+
+* repeated manual-curve projections reuse the window’s spatial index
+* transformed mesh revisions still invalidate correctly
+* Task 73 mesh-query tests remain valid
+
+---
+
+## Part E — Reduce MainWindow to integration and UI adapters
+
+Replace the manual-curve state fields currently stored directly on `OpenRetopWindow` with:
+
+self.manual_curve_controller
+
+MainWindow should retain only:
+
+* Tk variables
+* widget references
+* dialogs and context menus
+* viewport calls
+* scene browser calls
+* application selection integration
+* undo-stack integration
+* project-dirty integration
+* work-plane and mesh-pick adapters
+* thin command wrappers used by menus and existing tests
+
+Existing command methods may remain as compatibility wrappers, for example:
+
+start_manual_curve_mode()
+start_manual_curve_edit_mode()
+activate_manual_curve_add_point()
+activate_manual_curve_insert_point()
+delete_selected_manual_curve_point()
+auto_detect_manual_curve_corners()
+clear_auto_detected_manual_curve_corners()
+apply_manual_curve_edits()
+done_manual_curve_editing()
+
+Each wrapper should:
+
+1. gather UI values or external geometry
+2. call the controller
+3. apply the returned result
+4. refresh viewport/UI only when requested
+
+Do not keep duplicated shadow state in MainWindow.
+
+Temporary compatibility properties are acceptable when required by existing tests, but they must directly forward to the controller session.
+
+Example:
+
+@property
+def _manual_curve_points(self):
+return self.manual_curve_controller.session.control_points
+
+Do not store a second `_manual_curve_points` list.
+
+Acceptance:
+
+* controller/session is the only manual-curve state source
+* MainWindow wrappers are small
+* manual-curve algorithms no longer exist inside MainWindow
+* Tk-specific behavior remains in MainWindow
+* no broad unrelated MainWindow refactor occurs
+
+---
+
+## Part F — Extract viewport-state preparation
+
+Add a controller method or pure helper that produces a display snapshot:
+
+ManualCurveDisplayState
+
+Fields:
+
+* active
+* editing
+* control_points
+* point_types
+* fitted_points
+* is_closed
+* plane_normal
+* snap_to_mesh
+* selected_point_index
+* curve_method
+* sample_count
+* preview_point
+* preview_valid
+* preview_snaps_closed
+* preview_snaps_to_mesh
+
+MainWindow’s `_refresh_viewport()` should request this snapshot instead of rebuilding manual-curve state and fitted geometry inline.
+
+Keep Curve On Mesh projection may occur while producing this snapshot, but:
+
+* it must use the shared mesh query service
+* it should avoid recomputation when neither controls nor mesh revision changed
+* it must not alter stored control points
+
+Add a small display cache keyed by:
+
+* control point revision
+* curve method
+* sample count
+* smoothness
+* point types
+* closure state
+* Keep Curve On Mesh state
+* mesh revision
+
+Acceptance:
+
+* ordinary viewport refreshes do not repeatedly resample or reproject an unchanged manual curve
+* moving a point invalidates the display snapshot
+* changing smoothing/method/sample count invalidates it
+* camera movement alone does not invalidate curve geometry
+
+---
+
+## Part G — Preserve storage and backward compatibility
+
+Do not change the project format.
+
+Preserve existing metadata fields:
+
+* creation_type
+* control_points
+* control_points_v2
+* point_types
+* point_type_sources
+* corner_angle_threshold_degrees
+* control_point_revision
+* corner_detection_revision
+* curve_method
+* sample_count
+* smoothness
+* preserve_corners
+* snap_to_mesh
+* snap_mode
+* snap_triangle_indices
+* snap_normals
+* snap_projection_distances
+* keep_curve_on_mesh
+* source_mesh_name
+* source_section_plane_id
+* projection statistics
+* region/source lineage
+
+Existing legacy curves must still upgrade through the existing parser/storage helpers.
+
+Preserve:
+
+* manual curves
+* curve-on-mesh records
+* region boundaries converted to editable curves
+* projected curves
+* rebuilt curves
+* old polyline/manual projects
+* hidden legacy Hybrid and Catmull-Rom modes
+
+Acceptance:
+
+* old projects load
+* save/load round trips retain all manual curve metadata
+* editing a restored curve does not erase source lineage
+
+---
+
+## Part H — Preserve undo and dependent-feature rebuild behavior
+
+Manual curve operations must continue participating in undo/redo.
+
+Preserve undo behavior for:
+
+* creating a curve
+* applying edits
+* deleting points
+* converting to Smooth Curve
+* simplifying a curve
+* changing persistent curve geometry
+
+Preserve source-dependent updates:
+
+* linked editable lofts become dirty
+* automatic loft rebuild behavior remains
+* four-boundary features become dirty
+* surface source selection remains valid
+
+The controller should not own the global undo stack.
+
+It should return before/after records or action information so MainWindow can create the existing undo commands.
+
+Acceptance:
+
+* undo/redo restores geometry and metadata
+* editing a loft source still rebuilds or marks the loft dirty
+* no dependent feature silently keeps stale geometry
+
+---
+
+## Part I — Remove redundant code after migration
+
+After all callers have moved to the controller/session:
+
+Remove or consolidate:
+
+* duplicated manual curve state initialization
+* duplicated reset logic
+* duplicated parallel-array maintenance
+* duplicated preview-state mutation
+* repeated point append/insert/delete bookkeeping
+* repeated state-transition conditionals
+* repeated fitted-curve construction in MainWindow
+* obsolete compatibility helpers with no callers
+* unused imports created by extraction
+
+Rules:
+
+* search all references before removing a method
+* retain thin compatibility wrappers where external commands/tests use them
+* do not game line-count reduction by compressing formatting
+* do not move code without improving ownership
+* do not delete tests to make the refactor pass
+
+Expected result:
+
+* a meaningful reduction in `main_window.py`
+* preferably at least roughly 1,500 lines moved or removed
+* exact line count is secondary to correct ownership and behavior
+
+---
+
+## Part J — Tests
+
+Add:
+
+tests/test_manual_curve_session.py
+tests/test_manual_curve_controller.py
+
+Session tests:
+
+* defaults are valid
+* reset clears all transient state
+* begin-new initializes the correct submode
+* begin-edit loads all curve metadata
+* parallel arrays remain aligned
+* invalid selected indices are cleared
+* snap count remains accurate
+* closing with fewer than three points is rejected
+* non-finite points are rejected
+* preview reset is complete
+
+Controller workflow tests:
+
+* create open smooth curve
+* create closed smooth curve
+* create polyline
+* load existing curve for editing
+* select point
+* move point
+* append point
+* insert point
+* delete point
+* finish/apply
+* cancel
+* angle corner detection
+* manual corner override
+* clear auto corners
+* change smoothness
+* change sample count
+* simplify
+* convert to Smooth Curve
+* Snap to Mesh metadata
+* Keep Curve On Mesh projection
+* projection cache reuse
+
+Input-routing tests:
+
+* edit empty-space click does nothing
+* drawing click adds point
+* explicit Add Point adds point
+* explicit Insert Point inserts point
+* point drag begins only from a point
+* right mouse input is not consumed
+* middle mouse input is not consumed
+* wheel input is not consumed
+* Esc exits submode in the correct order
+
+Integration/regression:
+
+* all existing Task 72 tests pass
+* all Task 73 mesh-query tests pass
+* existing MainWindow manual-curve tests pass
+* region selection still works
+* project save/load still works
+* BREP creation/export paths still import
+* loft source edits still trigger dependent rebuild handling
+* preferences still work
+* app launches
+
+Add an architectural test or inspection assertion confirming:
+
+* `OpenRetopWindow.__dict__` does not contain independent manual curve point/type/snap arrays
+* compatibility properties, if retained, reference controller session data
+* `manual_curve_controller.py` imports no Tk or VTK UI classes
 
 ---
 
 ## Final acceptance
 
-Task 73 is complete when:
+Task 74 is complete when:
 
-* closest-point projection no longer loops through every triangle in Python
-* a cached VTK spatial locator is used
-* curve projection uses the locator
-* Keep Curve On Mesh uses the locator
-* mesh-conforming loft uses the locator
-* deviation computation uses the locator
-* repeated queries reuse the same index
-* mesh replacement invalidates the index
-* correctness matches the reference implementation
-* benchmarks demonstrate the new scaling behavior
-* Task 72 behavior remains intact
-* the complete test suite passes
-* CI is added and passes
+* one session object owns transient manual curve state
+* one controller owns manual curve workflow behavior
+* MainWindow contains only UI/application adapters and thin command wrappers
+* no duplicated manual curve state remains
+* viewport refresh no longer rebuilds unchanged manual curve geometry
+* Task 72 behavior is unchanged
+* Task 73 accelerated projection remains in use
+* legacy projects still load
+* save/load preserves manual curve metadata
+* undo/redo still works
+* dependent loft/patch features still react to source edits
+* all tests pass
+* CI passes
 * app launches
-* no primitives, trimming, or new surfacing features were added
+* no primitives, trimming, camera refactor or unrelated UI redesign was added
 
 ## Stop after this task.
