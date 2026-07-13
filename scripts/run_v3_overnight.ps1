@@ -111,12 +111,23 @@ for ($Task = $StartTask; $Task -le $EndTask; $Task++) {
                 "-"
             )
 
-            $Prompt |
-                & codex @CodexArgs `
-                    1>> $Stdout `
-                    2>> $Stderr
+            $PreviousErrorActionPreference = $ErrorActionPreference
 
-            $Code = $LASTEXITCODE
+try {
+    # Codex writes normal startup information to stderr.
+    # Do not treat that output as a terminating PowerShell error.
+    $ErrorActionPreference = "Continue"
+
+    $Prompt |
+        & codex @CodexArgs `
+            1>> $Stdout `
+            2>> $Stderr
+
+    $Code = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
         }
         finally { Pop-Location }
 
