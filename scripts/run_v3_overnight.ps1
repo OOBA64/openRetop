@@ -94,7 +94,7 @@ for ($Task = $StartTask; $Task -le $EndTask; $Task++) {
 
     Write-Host ""
     Write-Host "============================================================"
-    Write-Host "Task $Task: $($TaskTitles[$Task])"
+    Write-Host "Task ${Task}: $($TaskTitles[$Task])"
     Write-Host "Base: $StartSha"
     Write-Host "Logs: $Dir"
     Write-Host "============================================================"
