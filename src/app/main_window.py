@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, DoubleVar, Menu, StringVar, TclError, Tk, Toplevel, filedialog
 from tkinter import messagebox, simpledialog, ttk
@@ -21,7 +22,10 @@ from application.actions import (
     ActionContext,
     create_core_action_registry,
 )
+from application.analysis_controller import AnalysisController
+from application.brep_controller import BrepController, FunctionCadBackend
 from application.commands import Command, CommandDispatcher, CommandRequest
+from application.curve_controller import CurveController
 from application.dependencies import ApplicationDependencies
 from application.events import (
     DirtyChangedEvent,
@@ -36,7 +40,14 @@ from application.results import (
     ViewportRequest,
     ViewportRequestKind,
 )
+from application.region_controller import RegionController
+from application.scene_controller import SceneController
+from application.section_controller import SectionController
 from application.selection import CallbackSelectionProvider, SelectionSnapshot
+from application.selection_controller import SelectionController
+from application.surface_controller import SurfaceController
+from application.transform_controller import TransformController
+from application.visibility_controller import VisibilityController
 from cad_kernel.backend import (
     build_cad_wire_from_curve,
     build_loft_surface_from_cad_wires,
@@ -95,45 +106,29 @@ from app.selection_types import (
     SELECT_SECTION_RESULT,
     SELECT_SURFACE,
 )
-from app.transform_state import ActiveTransformState
 from app.transforms import (
-    axis_constrained_camera_move_delta,
     build_object_transform_matrix,
-    calculate_geometry_centering_delta,
-    calculate_location_for_origin_change,
-    calculate_origin_to_world_origin,
-    camera_relative_move_delta,
-    mesh_rotate_delta,
     normalized_vector,
-    rotate_vector_around_axis,
-    transform_bounds,
-    transform_point,
     world_axis_vector,
 )
 from app.undo import CallbackUndoCommand, UndoCommand, UndoStack
 from curves.curve_state import (
     CurveCollection,
-    CurveProcessingError,
-    CurveRepairError,
     DEFAULT_CURVE_REPAIR_TOLERANCE,
     DEFAULT_CURVE_SIMPLIFY_TOLERANCE,
     DEFAULT_CURVE_SMOOTH_ITERATIONS,
     StoredCurve,
     add_curve,
-    auto_close_curve,
-    clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
     get_selected_curves,
     get_tiny_curves,
     get_visible_curves,
     is_repaired_curve,
-    join_curves,
     refresh_curve_diagnostics,
     remove_curve,
     set_active_curve,
     set_selected_curves,
-    smooth_curve,
 )
 from curves.manual_curve import (
     CURVE_POINT_CORNER,
@@ -149,29 +144,22 @@ from curves.manual_curve import (
     ManualCurveControlData,
     ManualCurveControlDataV2,
     ManualCurvePoint,
-    auto_detect_manual_curve_corners,
     build_manual_stored_curve,
     ensure_manual_curve_storage,
     is_manual_curve_like,
     manual_curve_close_threshold,
     parse_manual_curve_metadata_v2,
-    sample_hybrid_manual_curve,
 )
-from curves.projection import project_stored_curve_to_mesh
-from curves.rebuild import rebuild_stored_curve
 from curves.validation import (
     CurveSurfaceReadiness,
     validate_curve_for_fill,
     validate_curves_for_loft,
 )
-from geometry.curves import fit_section_polylines
 from geometry.sections import (
     AXIS_TO_INDEX,
     SECTION_AXES,
     SectionPolyline,
     SectionResult,
-    extract_section,
-    extract_section_by_plane,
     normalize_axis,
 )
 from mesh.display_proxy import (
@@ -191,7 +179,6 @@ from regions.region_state import (
     DEFAULT_REGION_MAX_TRIANGLES,
     DEFAULT_REGION_THRESHOLD_DEGREES,
     RegionSelection,
-    create_region_selection,
 )
 from regions.boundary import RegionBoundaryPolyline, extract_region_boundary_polylines
 from regions.primitive_fit import (
@@ -216,21 +203,15 @@ from sections.section_state import (
     StoredSectionResult,
     add_plane,
     add_result,
-    clear_plane_selection,
     clear_results_for_plane,
-    clear_result_selection,
     create_default_section_plane,
     get_active_plane,
     get_active_result,
     plane_normal,
     plane_origin,
-    remove_plane,
     set_active_plane,
     set_plane_axis_offset,
-    set_plane_origin_normal,
     set_active_result,
-    set_selected_planes,
-    set_selected_results,
 )
 from surfaces.brep_state import (
     BREP_TYPE_LOFT_SURFACE,
@@ -241,44 +222,30 @@ from surfaces.brep_state import (
     clear_brep_surface_selection,
     get_active_brep_surface,
     remove_brep_surface,
-    set_active_brep_surface,
     set_selected_brep_surfaces,
 )
 from surfaces.loft_feature import (
     LoftFeatureCollection,
     LoftFeatureOptions,
     LoftFeatureRecord,
-    add_loft_feature,
     loft_feature_for_brep_surface,
-    mark_loft_features_dirty_for_curve,
-    remove_loft_feature,
 )
 from surfaces.four_boundary_feature import (
     FourBoundaryPatchFeatureCollection,
     FourBoundaryPatchFeatureRecord,
-    add_four_boundary_feature,
-    mark_four_boundary_features_dirty_for_curve,
 )
 from surfaces.surface_state import (
     SurfaceCollection,
     SurfacePatch,
     add_surface,
-    clear_surface_selection,
     clear_surfaces_for_curve,
     get_active_surface,
     remove_surface,
-    set_active_surface,
-    set_selected_surfaces,
 )
 from surfaces.surface_preview import (
-    BOUNDARY_PATCH,
-    CURVE_NETWORK_PATCH,
-    FOUR_CURVE_PATCH,
-    MESH_CONFORMING_LOFT,
     SurfacePreviewMesh,
     TWO_CURVE_LOFT,
     CLOSED_CURVE_FILL,
-    build_surface_preview,
     build_surface_preview_mesh,
 )
 from viewer.embedded_viewport import EmbeddedVTKViewport
@@ -461,6 +428,30 @@ def _manual_curve_session_property(field_name: str) -> property:
     return property(getter, setter)
 
 
+def _region_session_property(field_name: str) -> property:
+    """Compatibility access that forwards to RegionController session state."""
+
+    def getter(window: "OpenRetopWindow") -> object:
+        return getattr(window.region_controller.session, field_name)
+
+    def setter(window: "OpenRetopWindow", value: object) -> None:
+        setattr(window.region_controller.session, field_name, value)
+
+    return property(getter, setter)
+
+
+def _transform_controller_property(field_name: str) -> property:
+    """Compatibility access for legacy transform presentation readouts."""
+
+    def getter(window: "OpenRetopWindow") -> object:
+        return getattr(window.transform_controller, field_name)
+
+    def setter(window: "OpenRetopWindow", value: object) -> None:
+        setattr(window.transform_controller, field_name, value)
+
+    return property(getter, setter)
+
+
 class OpenRetopWindow:
     """One-window app with context-sensitive selection controls."""
 
@@ -531,6 +522,29 @@ class OpenRetopWindow:
     _manual_curve_corner_detection_revision = _manual_curve_session_property(
         "corner_detection_revision"
     )
+    _region_select_active = _region_session_property("active")
+    _region_select_left_press_position = _region_session_property(
+        "left_press_position"
+    )
+    _region_select_left_dragged = _region_session_property("left_dragged")
+    _region_select_current_seed_triangle_index = _region_session_property(
+        "current_seed_triangle_index"
+    )
+    _region_select_last_hit_triangle_index = _region_session_property(
+        "last_hit_triangle_index"
+    )
+    _last_valid_region_threshold = _region_session_property("threshold_degrees")
+    _last_valid_region_max_triangle_count = _region_session_property(
+        "max_triangle_count"
+    )
+    _last_transform_readout = _transform_controller_property("_last_readout")
+    _active_transform_angle_delta = _transform_controller_property("_angle_delta")
+
+    @property
+    def _brep_runtime_cache(self) -> dict[str, object]:
+        """Compatibility alias for the BrepController-owned runtime mapping."""
+
+        return self.brep_controller.runtime_objects
 
     def __init__(self, *, settings_path: Path | None = None) -> None:
         self.root = Tk()
@@ -546,22 +560,79 @@ class OpenRetopWindow:
         self.mesh_state = MeshState()
         self.app_state = AppState()
         self.mesh_query_service = MeshQueryService()
+        self.event_publisher = EventPublisher()
         self.manual_curve_controller = ManualCurveController(
             mesh_query_service=self.mesh_query_service
+        )
+        self.scene_controller = SceneController(self.app_state, self.event_publisher)
+        self.selection_controller = SelectionController(
+            self.app_state,
+            self.event_publisher,
+        )
+        self.visibility_controller = VisibilityController(
+            self.app_state,
+            self.event_publisher,
+        )
+        self.transform_controller = TransformController(
+            self.app_state,
+            self.event_publisher,
+            mesh_query_invalidator=self._invalidate_mesh_query_cache,
+        )
+        self.section_controller = SectionController(
+            self.app_state,
+            self.event_publisher,
+        )
+        self.curve_controller = CurveController(
+            self.app_state,
+            events=self.event_publisher,
+            mesh_query_service=self.mesh_query_service,
+        )
+        self.region_controller = RegionController(
+            self.app_state,
+            events=self.event_publisher,
+        )
+        self.surface_controller = SurfaceController(
+            self.app_state,
+            self.event_publisher,
+            mesh_query_service=self.mesh_query_service,
+        )
+        self.brep_controller = BrepController(
+            self.app_state,
+            self.event_publisher,
+            cad_backend=FunctionCadBackend(
+                planar_face_builder=self._controller_build_planar_face,
+                loft_builder=self._controller_build_loft,
+                step_exporter=export_step,
+            ),
+        )
+        self.analysis_controller = AnalysisController(
+            self.app_state,
+            events=self.event_publisher,
+            mesh_query_service=self.mesh_query_service,
+        )
+        self._workflow_controllers = (
+            self.scene_controller,
+            self.selection_controller,
+            self.visibility_controller,
+            self.transform_controller,
+            self.section_controller,
+            self.curve_controller,
+            self.region_controller,
+            self.surface_controller,
+            self.brep_controller,
+            self.analysis_controller,
         )
         self._mesh_query_world_mesh: TriangleMeshData | None = None
         self._mesh_query_world_mesh_revision: object | None = None
         self.undo_stack = UndoStack()
-        self.event_publisher = EventPublisher()
         self.action_registry = create_core_action_registry()
         self.application_dependencies = ApplicationDependencies(
             events=self.event_publisher,
-            selection=CallbackSelectionProvider(self._application_selection_snapshot),
+            selection=CallbackSelectionProvider(self.selection_controller.snapshot),
             undo=self.undo_stack,
         )
         self.command_dispatcher = CommandDispatcher(self.application_dependencies)
         self._register_representative_commands()
-        self._brep_runtime_cache: dict[str, object] = {}
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
         self._active_transform_angle_delta: float | None = None
@@ -571,11 +642,6 @@ class OpenRetopWindow:
         self._loft_overbuild_drag_initial_values: tuple[float, float] | None = None
         self._manual_curve_context_menu: Menu | None = None
         self._manual_curve_last_context_actions: tuple[str, ...] = ()
-        self._region_select_active = False
-        self._region_select_left_press_position: tuple[int, int] | None = None
-        self._region_select_left_dragged = False
-        self._region_select_current_seed_triangle_index: int | None = None
-        self._region_select_last_hit_triangle_index: int | None = None
         self._region_select_context_menu: Menu | None = None
         self._is_loading_model = False
         self._start_viewport_after_id: str | None = None
@@ -802,6 +868,95 @@ class OpenRetopWindow:
         except TclError:
             return
 
+    @staticmethod
+    def _controller_build_planar_face(curve: StoredCurve) -> CadBuildResult:
+        """Adapt a stored curve to the existing CAD infrastructure backend."""
+
+        wire_result = build_cad_wire_from_curve(curve)
+        if wire_result.success and wire_result.cad_object is not None:
+            return build_planar_face_from_cad_wire(
+                wire_result.cad_object,
+                source_metadata=dict(wire_result.metadata),
+            )
+        try:
+            curve_input = curve_points_from_stored_curve(curve)
+        except ValueError as exc:
+            return CadBuildResult(False, None, str(exc))
+        result = build_planar_face_from_curve(curve_input)
+        if result.success and parse_manual_curve_metadata_v2(curve) is not None:
+            result.warnings = list(
+                dict.fromkeys(
+                    [
+                        *result.warnings,
+                        "Used sampled curve fallback; inspect sharp corners.",
+                    ]
+                )
+            )
+        return result
+
+    @staticmethod
+    def _controller_build_loft(
+        curves: Sequence[StoredCurve],
+        options: LoftFeatureOptions | None,
+    ) -> CadBuildResult:
+        """Adapt stored loft sources and explicit options to CAD infrastructure."""
+
+        source_curves = list(curves)
+        if len(source_curves) != 2:
+            return CadBuildResult(
+                False,
+                None,
+                "BREP loft requires exactly two source curves.",
+            )
+        try:
+            curve_inputs = [
+                curve_points_from_stored_curve(curve) for curve in source_curves
+            ]
+        except ValueError as exc:
+            return CadBuildResult(False, None, str(exc))
+
+        wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
+        if all(item.success and item.cad_object is not None for item in wire_results):
+            loft_options = (
+                options
+                if options is not None
+                else LoftFeatureOptions(
+                    source_curve_ids=[curve.id for curve in source_curves]
+                )
+            )
+            return build_loft_surface_from_cad_wires(
+                [item.cad_object for item in wire_results],
+                closed_profiles=bool(
+                    curve_inputs[0].is_closed and curve_inputs[1].is_closed
+                ),
+                cap_start=bool(loft_options.cap_start),
+                cap_end=bool(loft_options.cap_end),
+                create_solid_if_closed=bool(loft_options.create_solid_if_closed),
+                ruled=bool(loft_options.ruled),
+                source_metadata={
+                    "source_curve_ids": [curve.id for curve in source_curves]
+                },
+            )
+
+        result = build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
+        if result.success and any(
+            parse_manual_curve_metadata_v2(curve) is not None
+            for curve in source_curves
+        ):
+            result.warnings = list(
+                dict.fromkeys(
+                    [
+                        *result.warnings,
+                        "Used sampled curve fallback; inspect sharp corners.",
+                    ]
+                )
+            )
+        return result
+
+    def _rebind_workflow_controller_state(self) -> None:
+        for controller in self._workflow_controllers:
+            controller.rebind_state(self.app_state)
+
     def _start_viewport(self) -> None:
         self._start_viewport_after_id = None
         try:
@@ -828,6 +983,48 @@ class OpenRetopWindow:
             definition = self.action_registry.require(action_id)
             self.command_dispatcher.register(definition.command_id, handler)
 
+        registered = set(self.command_dispatcher.handler_ids)
+        for definition in self.action_registry.definitions:
+            if definition.command_id in registered:
+                continue
+            self.command_dispatcher.register(
+                definition.command_id,
+                self._legacy_action_command_handler(definition),
+            )
+            registered.add(definition.command_id)
+
+    def _legacy_action_command_handler(self, definition: object):
+        """Bridge registered V3 actions to compatibility adapter methods."""
+
+        metadata = definition.metadata
+        handler_name = str(metadata.get("legacy_handler", ""))
+        handler_args = tuple(metadata.get("handler_args", ()))
+        handler_kwargs = dict(metadata.get("handler_kwargs", {}))
+        requires_payload = bool(metadata.get("requires_payload", False))
+
+        def handle(
+            command: Command,
+            _dependencies: ApplicationDependencies,
+        ) -> CommandResult:
+            if requires_payload and not command.payload:
+                return CommandResult.failure(
+                    f"{definition.label} requires presentation input."
+                )
+            callback = getattr(self, handler_name, None)
+            if callback is None:
+                return CommandResult.failure(
+                    f"Action adapter is unavailable: {definition.id}"
+                )
+            call_kwargs = dict(handler_kwargs)
+            if requires_payload:
+                call_kwargs.update(command.payload)
+            callback_result = callback(*handler_args, **call_kwargs)
+            if isinstance(callback_result, CommandResult):
+                return callback_result
+            return CommandResult.ok(status=self.status_text.get())
+
+        return handle
+
     def _application_selection_snapshot(self) -> SelectionSnapshot:
         if hasattr(self, "scene_browser"):
             node_ids = self._scene_visibility_target_node_ids()
@@ -837,11 +1034,95 @@ class OpenRetopWindow:
 
     def _application_action_context(self) -> ActionContext:
         selection = self.application_dependencies.selection.snapshot()
+        curve_ids = set(self.app_state.curve_collection.selected_curve_ids)
+        selected_curves = [
+            curve
+            for curve in self.app_state.curve_collection.curves
+            if curve.id in curve_ids
+        ]
+        selected_curve = selected_curves[0] if len(selected_curves) == 1 else None
+        active_curve = self._active_curve()
+        preview_surface_ids = set(
+            self.app_state.surface_collection.selected_surface_ids
+        )
+        brep_surface_ids = set(
+            self.app_state.brep_surface_collection.selected_surface_ids
+        )
+        active_surface = self._active_surface_record()
+        active_feature = self._active_loft_feature()
+        source_curve_ids = (
+            () if active_surface is None else tuple(active_surface.source_curve_ids)
+        )
+        can_transform = bool(
+            self.app_state.mesh_object is not None
+            and self.app_state.selected_item in {SELECT_MODEL, SELECT_SECTION_PLANE}
+        )
+        manual_curve_active = bool(self._manual_curve_active)
+        manual_curve_editing = bool(self._manual_curve_edit_active)
+        active_region = self.app_state.region_collection.active_region
+        region_boundary_curves = (
+            ()
+            if active_region is None
+            else tuple(self._boundary_curves_for_region(active_region.id))
+        )
         return ActionContext(
-            has_scene_objects=bool(self._all_visibility_object_node_ids()),
+            has_scene_objects=bool(
+                self.app_state.mesh_object is not None
+                or self.app_state.section_collection.results
+                or self.app_state.curve_collection.curves
+                or self.app_state.surface_collection.surfaces
+                or self.app_state.brep_surface_collection.surfaces
+                or self.app_state.region_collection.active_region is not None
+            ),
             has_scene_selection=selection.has_selection,
             can_undo=self.undo_stack.can_undo,
             can_redo=self.undo_stack.can_redo,
+            mesh_loaded=self.app_state.mesh_object is not None,
+            busy=bool(getattr(self, "_is_loading_model", False)),
+            selection_count=len(selection.ids),
+            has_section_plane=bool(self.app_state.section_collection.planes),
+            has_section_result=bool(self.app_state.section_collection.results),
+            has_curves=bool(self.app_state.curve_collection.curves),
+            selected_curve_count=len(selected_curves),
+            selected_curve_closed=bool(
+                selected_curve is not None and selected_curve.is_closed
+            ),
+            selected_curve_open=bool(
+                selected_curve is not None and not selected_curve.is_closed
+            ),
+            selected_curve_editable=bool(
+                selected_curve is not None
+                and self._is_editable_manual_curve(selected_curve)
+            ),
+            selected_surface_count=len(preview_surface_ids | brep_surface_ids),
+            has_region=active_region is not None,
+            selected_brep_count=len(brep_surface_ids),
+            has_loft_feature=active_feature is not None,
+            has_source_curves=bool(source_curve_ids),
+            can_transform=can_transform,
+            transform_active=self.transform_controller.active,
+            manual_curve_active=manual_curve_active,
+            manual_curve_idle=not manual_curve_active,
+            manual_curve_creating=manual_curve_active and not manual_curve_editing,
+            manual_curve_editing=manual_curve_editing,
+            can_add_manual_point=bool(
+                manual_curve_editing
+                or (manual_curve_active and not self._manual_curve_placing_enabled)
+            ),
+            has_manual_control_point=bool(
+                manual_curve_editing
+                and self._manual_curve_selected_control_point_index is not None
+            ),
+            region_tool_active=bool(self._region_select_active),
+            has_region_boundary_curves=bool(region_boundary_curves),
+            selected_region_boundary_curve=bool(
+                active_curve is not None
+                and self._is_region_boundary_curve(active_curve)
+            ),
+            cad_available=is_cad_kernel_available(),
+            has_runtime_brep=bool(
+                brep_surface_ids & set(self._brep_runtime_cache)
+            ),
         )
 
     def _dispatch_action(self, action_id: str) -> CommandResult:
@@ -856,8 +1137,35 @@ class OpenRetopWindow:
         return result
 
     def _apply_command_result(self, result: CommandResult) -> None:
-        if result.undo_payload is not None:
-            self._push_undo_command(result.undo_payload)
+        undo_payload = result.undo_payload
+        removed_brep_ids = tuple(
+            str(value)
+            for value in result.metadata.get("removed_brep_surface_ids", ())
+        )
+        removed_runtime_objects = {
+            surface_id: self._brep_runtime_cache.pop(surface_id)
+            for surface_id in removed_brep_ids
+            if surface_id in self._brep_runtime_cache
+        }
+        if undo_payload is not None and removed_runtime_objects:
+            source_payload = undo_payload
+
+            def undo_with_runtime_restore() -> None:
+                source_payload.undo()
+                self._brep_runtime_cache.update(removed_runtime_objects)
+
+            def redo_with_runtime_removal() -> None:
+                source_payload.redo()
+                for surface_id in removed_runtime_objects:
+                    self._brep_runtime_cache.pop(surface_id, None)
+
+            undo_payload = CallbackUndoCommand(
+                source_payload.name,
+                undo_action=undo_with_runtime_restore,
+                redo_action=redo_with_runtime_removal,
+            )
+        if undo_payload is not None:
+            self._push_undo_command(undo_payload)
 
         viewport = getattr(self, "viewport", None)
         for request in result.viewport_requests:
@@ -954,20 +1262,7 @@ class OpenRetopWindow:
         _command: Command,
         _dependencies: ApplicationDependencies,
     ) -> CommandResult:
-        target_node_ids = self._all_visibility_object_node_ids()
-        before = self._visibility_snapshot(target_node_ids)
-        changed_count = self._set_scene_visibility(target_node_ids, True)
-        after = self._visibility_snapshot(target_node_ids)
-        self._push_visibility_command("Show Visibility", before, after)
-        self._sync_after_scene_visibility_change()
-        return CommandResult.ok(
-            status="All scene items visible",
-            changed=bool(changed_count),
-            dirty=bool(
-                changed_count
-                and self._has_persistent_visibility_target(target_node_ids)
-            ),
-        )
+        return self.visibility_controller.show_all()
 
     def _command_toggle_visibility(
         self,
@@ -978,22 +1273,7 @@ class OpenRetopWindow:
         if not node_ids:
             return CommandResult.ok(status="No selection")
 
-        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
-        before = self._visibility_snapshot(expanded_node_ids)
-        changed_count = self._toggle_scene_visibility(expanded_node_ids)
-        after = self._visibility_snapshot(expanded_node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
-        self._sync_after_scene_visibility_change()
-        return CommandResult.ok(
-            status=self._visibility_status(
-                "Toggled", changed_count, "selected item"
-            ),
-            changed=bool(changed_count),
-            dirty=bool(
-                changed_count
-                and self._has_persistent_visibility_target(expanded_node_ids)
-            ),
-        )
+        return self.visibility_controller.toggle(node_ids)
 
     def _command_undo(
         self,
@@ -1123,12 +1403,13 @@ class OpenRetopWindow:
     def _clear_scene_data(self, *, reset_camera: bool) -> None:
         self._invalidate_mesh_query_cache()
         self.mesh_state = MeshState()
+        self._brep_runtime_cache.clear()
         self.app_state = AppState(
             section_collection=SectionCollection(),
             curve_collection=CurveCollection(),
             surface_collection=SurfaceCollection(),
         )
-        self._brep_runtime_cache.clear()
+        self._rebind_workflow_controller_state()
         self._last_transform_readout = None
         self._active_transform_angle_delta = None
         self._clear_manual_curve_state(reset_snap=True)
@@ -2040,40 +2321,6 @@ class OpenRetopWindow:
             )
         )
 
-    def _push_created_brep_surface_command(
-        self,
-        surface: BrepSurfaceRecord,
-        cad_object: object | None,
-    ) -> None:
-        surface_index = next(
-            (
-                index
-                for index, existing in enumerate(
-                    self.app_state.brep_surface_collection.surfaces
-                )
-                if existing.id == surface.id
-            ),
-            len(self.app_state.brep_surface_collection.surfaces),
-        )
-        captured_surface = copy.deepcopy(surface)
-        self._push_undo_command(
-            CallbackUndoCommand(
-                "Create BREP Surface",
-                undo_action=lambda: self._remove_brep_surface_for_undo(
-                    captured_surface.id,
-                ),
-                redo_action=lambda: self._restore_brep_surface_at_index(
-                    copy.deepcopy(captured_surface),
-                    surface_index,
-                    cad_object,
-                ),
-            )
-        )
-
-    def _remove_brep_surface_for_undo(self, surface_id: str) -> None:
-        remove_brep_surface(self.app_state.brep_surface_collection, surface_id)
-        self._brep_runtime_cache.pop(surface_id, None)
-
     def _sync_after_undoable_scene_change(self) -> None:
         existing_brep_ids = {
             surface.id for surface in self.app_state.brep_surface_collection.surfaces
@@ -2109,6 +2356,13 @@ class OpenRetopWindow:
                 self._load_manual_curve_edit_working_copy(active_curve)
         self._set_display_section_result(self._latest_stored_section_result())
         self._sync_visible_curve_results()
+        self._set_transform_inputs_from_object()
+        if self.app_state.mesh_object is not None:
+            self.mesh_state = MeshState.from_mesh(
+                self.app_state.mesh_object.display_mesh,
+                file_path=self.app_state.mesh_object.file_path,
+            )
+        self._update_stats()
         self._sync_section_controls_from_active_plane()
         self._sync_section_result_context_from_active_result()
         self._sync_curve_context_from_active_curve()
@@ -4722,34 +4976,43 @@ class OpenRetopWindow:
         self.status_text.set(stage)
         progress.update_stage(stage)
 
-    def select_model(self) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
+    def _prepare_controller_selection(self) -> None:
+        """End presentation-owned tools before changing persistent selection."""
 
-        self._set_selected_item(SELECT_MODEL, status=f"Selected: {self.app_state.mesh_object.name}")
+        if self.app_state.transform_state is not None:
+            self._end_active_transform(commit=False, status="Transform cancelled")
+        if self._manual_curve_active:
+            self._clear_manual_curve_state()
+        if self._region_select_active:
+            self.region_controller.exit(status="")
+
+    def _apply_selection_result(self, result: CommandResult) -> None:
+        self._apply_command_result(result)
+        readiness = result.metadata.get("readiness")
+        if isinstance(readiness, (list, tuple)) and readiness:
+            self._set_curve_readiness_display(
+                readiness,
+                mode="fill" if len(readiness) == 1 else "loft",
+            )
+        if not result.success:
+            self._refresh_scene_browser()
+            return
+        if get_active_plane(self.app_state.section_collection) is not None:
+            self._sync_section_controls_from_active_plane()
+        self._sync_section_result_context_from_active_result()
+        self._sync_curve_context_from_active_curve()
+        self._sync_surface_context_from_active_surface()
+        self._show_context(self.app_state.selected_item)
+
+    def select_model(self) -> None:
+        self._prepare_controller_selection()
+        self._apply_selection_result(self.selection_controller.select_model())
 
     def select_section_plane(self, plane_id: str | None = None) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        if plane_id is not None:
-            try:
-                set_active_plane(self.app_state.section_collection, plane_id)
-            except ValueError:
-                self._refresh_scene_browser()
-                self.status_text.set("Section plane not found")
-                return
-        else:
-            active_plane = get_active_plane(self.app_state.section_collection)
-            if active_plane is None:
-                self._set_selected_item(None, status="No selection")
-                return
-            set_active_plane(self.app_state.section_collection, active_plane.id)
-
-        self._sync_section_controls_from_active_plane()
-        self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_section_plane(plane_id)
+        )
 
     def select_section_planes(
         self,
@@ -4757,66 +5020,18 @@ class OpenRetopWindow:
         *,
         active_plane_id: str | None = None,
     ) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-        if not plane_ids:
-            self.status_text.set("No section planes available")
-            return
-
-        try:
-            set_selected_planes(
-                self.app_state.section_collection,
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_section_planes(
                 plane_ids,
                 active_plane_id=active_plane_id,
             )
-        except ValueError:
-            self._refresh_scene_browser()
-            self.status_text.set("Section plane not found")
-            return
-
-        self._sync_section_controls_from_active_plane()
-        count = len(self.app_state.section_collection.selected_plane_ids)
-        status = "Selected: Section Plane" if count == 1 else f"Selected: {count} section planes"
-        self._set_selected_item(SELECT_SECTION_PLANE, status=status)
+        )
 
     def select_section_result(self, result_id: str | None = None) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        if result_id is not None:
-            try:
-                set_active_result(self.app_state.section_collection, result_id)
-            except ValueError:
-                self._refresh_scene_browser()
-                self.status_text.set("Section result not found")
-                return
-
-        active_result = self._active_section_result()
-        if active_result is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        self._set_display_section_result(active_result)
-        child_curve_ids = [
-            curve.id
-            for curve in self.app_state.curve_collection.curves
-            if curve.section_result_id == active_result.id
-        ]
-        if child_curve_ids:
-            set_selected_curves(
-                self.app_state.curve_collection,
-                child_curve_ids,
-                active_curve_id=child_curve_ids[0],
-            )
-        else:
-            clear_curve_selection(self.app_state.curve_collection)
-        self._sync_section_result_context_from_active_result()
-        self._set_selected_item(
-            SELECT_SECTION_RESULT,
-            status=f"Selected: {active_result.name}",
-            preserve_curve_selection=True,
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_section_result(result_id)
         )
 
     def select_section_results(
@@ -4825,82 +5040,21 @@ class OpenRetopWindow:
         *,
         active_result_id: str | None = None,
     ) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-        if not result_ids:
-            self.status_text.set("No section results available")
-            return
-
-        try:
-            set_selected_results(
-                self.app_state.section_collection,
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_section_results(
                 result_ids,
                 active_result_id=active_result_id,
             )
-        except ValueError:
-            self._refresh_scene_browser()
-            self.status_text.set("Section result not found")
-            return
-
-        active_result = self._active_section_result()
-        self.app_state.section_result = (
-            active_result.result
-            if active_result is not None and active_result.visible
-            else None
-        )
-        if active_result is not None:
-            self.section_result_text.set(self._section_result_summary(active_result))
-        else:
-            self.section_result_text.set("Section result: none")
-        self._sync_visible_curve_results()
-        child_curve_ids = [
-            curve.id
-            for curve in self.app_state.curve_collection.curves
-            if curve.section_result_id in self.app_state.section_collection.selected_result_ids
-        ]
-        if child_curve_ids:
-            set_selected_curves(
-                self.app_state.curve_collection,
-                child_curve_ids,
-                active_curve_id=child_curve_ids[0],
-            )
-        else:
-            clear_curve_selection(self.app_state.curve_collection)
-        self._sync_section_result_context_from_active_result()
-        count = len(self.app_state.section_collection.selected_result_ids)
-        status = "Selected: Section Result" if count == 1 else f"Selected: {count} section results"
-        self._set_selected_item(
-            SELECT_SECTION_RESULT,
-            status=status,
-            preserve_curve_selection=True,
         )
 
     def select_curve(self, curve_id: str | None = None) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        if curve_id is not None:
-            try:
-                set_active_curve(self.app_state.curve_collection, curve_id)
-            except ValueError:
-                self._refresh_scene_browser()
-                self.status_text.set("Curve not found")
-                return
-
+        self._prepare_controller_selection()
+        result = self.selection_controller.select_curve(curve_id)
+        self._apply_selection_result(result)
         active_curve = self._active_curve()
-        if active_curve is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        self._sync_curve_context_from_active_curve()
-        status = (
-            "Click Edit Selected Curve to modify control points."
-            if is_manual_curve_like(active_curve)
-            else f"Selected: {active_curve.name}"
-        )
-        self._set_selected_item(SELECT_CURVE, status=status)
+        if result.success and active_curve is not None and is_manual_curve_like(active_curve):
+            self.status_text.set("Click Edit Selected Curve to modify control points.")
 
     def select_curves(
         self,
@@ -4908,82 +5062,19 @@ class OpenRetopWindow:
         *,
         active_curve_id: str | None = None,
     ) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        if not curve_ids:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        try:
-            set_selected_curves(
-                self.app_state.curve_collection,
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_curves(
                 curve_ids,
                 active_curve_id=active_curve_id,
             )
-        except ValueError:
-            self._refresh_scene_browser()
-            self.status_text.set("Curve not found")
-            return
-
-        active_curve = self._active_curve()
-        if active_curve is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        self._sync_curve_context_from_active_curve()
-        selected_count = len(self.app_state.curve_collection.selected_curve_ids)
-        status = (
-            f"Selected: {active_curve.name}"
-            if selected_count == 1
-            else f"Selected: {selected_count} curves"
         )
-        self._set_selected_item(SELECT_CURVE, status=status)
 
     def select_surface(self, surface_id: str | None = None) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        if surface_id is not None:
-            if any(
-                surface.id == surface_id
-                for surface in self.app_state.surface_collection.surfaces
-            ):
-                try:
-                    set_active_surface(self.app_state.surface_collection, surface_id)
-                except ValueError:
-                    self._refresh_scene_browser()
-                    self.status_text.set("Surface not found")
-                    return
-                clear_brep_surface_selection(self.app_state.brep_surface_collection)
-            elif any(
-                surface.id == surface_id
-                for surface in self.app_state.brep_surface_collection.surfaces
-            ):
-                try:
-                    set_active_brep_surface(
-                        self.app_state.brep_surface_collection,
-                        surface_id,
-                    )
-                except ValueError:
-                    self._refresh_scene_browser()
-                    self.status_text.set("Surface not found")
-                    return
-                clear_surface_selection(self.app_state.surface_collection)
-            else:
-                self._refresh_scene_browser()
-                self.status_text.set("Surface not found")
-                return
-
-        active_surface = self._active_surface_record()
-        if active_surface is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        self._sync_surface_context_from_active_surface()
-        self._set_selected_item(SELECT_SURFACE, status=f"Selected: {active_surface.name}")
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_surface(surface_id)
+        )
 
     def select_surfaces(
         self,
@@ -4991,103 +5082,19 @@ class OpenRetopWindow:
         *,
         active_surface_id: str | None = None,
     ) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-        if not surface_ids:
-            self.status_text.set("No surfaces available")
-            return
-
-        preview_surface_ids = {
-            surface.id for surface in self.app_state.surface_collection.surfaces
-        }
-        brep_surface_ids = {
-            surface.id
-            for surface in self.app_state.brep_surface_collection.surfaces
-        }
-        preview_ids = [
-            surface_id for surface_id in surface_ids if surface_id in preview_surface_ids
-        ]
-        brep_ids = [
-            surface_id for surface_id in surface_ids if surface_id in brep_surface_ids
-        ]
-        if len(preview_ids) + len(brep_ids) != len(surface_ids):
-            self._refresh_scene_browser()
-            self.status_text.set("Surface not found")
-            return
-
-        active_surface_candidate = (
-            active_surface_id
-            if active_surface_id in surface_ids
-            else surface_ids[0]
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_surfaces(
+                surface_ids,
+                active_surface_id=active_surface_id,
+            )
         )
-        try:
-            if preview_ids:
-                set_selected_surfaces(
-                    self.app_state.surface_collection,
-                    preview_ids,
-                    active_surface_id=(
-                        active_surface_candidate
-                        if active_surface_candidate in preview_ids
-                        else preview_ids[0]
-                    ),
-                )
-            else:
-                clear_surface_selection(self.app_state.surface_collection)
-            if brep_ids:
-                set_selected_brep_surfaces(
-                    self.app_state.brep_surface_collection,
-                    brep_ids,
-                    active_surface_id=(
-                        active_surface_candidate
-                        if active_surface_candidate in brep_ids
-                        else brep_ids[0]
-                    ),
-                )
-            else:
-                clear_brep_surface_selection(self.app_state.brep_surface_collection)
-        except ValueError:
-            self._refresh_scene_browser()
-            self.status_text.set("Surface not found")
-            return
-
-        if preview_ids and brep_ids:
-            if active_surface_candidate in preview_ids:
-                self.app_state.brep_surface_collection.active_surface_id = None
-            elif active_surface_candidate in brep_ids:
-                self.app_state.surface_collection.active_surface_id = None
-
-        active_surface = self._active_surface_record()
-        if active_surface is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        self._sync_surface_context_from_active_surface()
-        count = len(self._selected_surface_ids_for_scene())
-        status = (
-            f"Selected: {active_surface.name}"
-            if count == 1
-            else f"Selected: {count} surfaces"
-        )
-        self._set_selected_item(SELECT_SURFACE, status=status)
 
     def select_region(self, region_id: str | None = None) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        region = self.app_state.region_collection.active_region
-        if region is None:
-            self._set_selected_item(None, status="No selection")
-            return
-        if region_id is not None and region.id != region_id:
-            self._refresh_scene_browser()
-            self.status_text.set("Region not found")
-            return
-
-        region.selected = True
-        self._set_selected_item(SELECT_REGION, status=f"Selected: {region.name or 'Region 1'}")
-        self._sync_region_panel()
+        self._prepare_controller_selection()
+        self._apply_selection_result(
+            self.selection_controller.select_region(region_id)
+        )
 
     def select_source_curves_for_active_surface(
         self,
@@ -5125,21 +5132,21 @@ class OpenRetopWindow:
             return
 
         source_curve_ids = {curve.id for curve in source_curves}
-        node_id_set = {
-            curve_node_id(curve.id)
+        values = {
+            curve_node_id(curve.id): curve.id in source_curve_ids
             for curve in self.app_state.curve_collection.curves
         }
-        before = self._visibility_snapshot(node_id_set)
-        for curve in self.app_state.curve_collection.curves:
-            curve.visible = curve.id in source_curve_ids
-        after = self._visibility_snapshot(node_id_set)
-        self._push_visibility_command("Isolate Source Curves", before, after)
-        self._sync_after_scene_visibility_change()
-        self.status_text.set(
+        status = (
             f"Isolated source curves for {surface.name}"
             f"{self._missing_source_curve_suffix(missing_curve_ids)}"
         )
-        self._set_project_dirty(True)
+        self._apply_command_result(
+            self.visibility_controller.set_values(
+                values,
+                operation="Isolate Source Curves",
+                status=status,
+            )
+        )
 
     def show_source_curves_for_active_surface(
         self,
@@ -5155,19 +5162,17 @@ class OpenRetopWindow:
             self.status_text.set(self._source_curve_missing_status(surface, missing_curve_ids))
             return
 
-        node_id_set = {curve_node_id(curve.id) for curve in source_curves}
-        before = self._visibility_snapshot(node_id_set)
-        for curve in source_curves:
-            curve.visible = True
-        after = self._visibility_snapshot(node_id_set)
-        self._push_visibility_command("Show Source Curves", before, after)
-        self._sync_after_scene_visibility_change()
-        self.status_text.set(
+        status = (
             f"Shown source curves for {surface.name}"
             f"{self._missing_source_curve_suffix(missing_curve_ids)}"
         )
-        if before != after:
-            self._set_project_dirty(True)
+        self._apply_command_result(
+            self.visibility_controller.set_values(
+                {curve_node_id(curve.id): True for curve in source_curves},
+                operation="Show Source Curves",
+                status=status,
+            )
+        )
 
     def frame_source_curves_for_active_surface(
         self,
@@ -5272,33 +5277,22 @@ class OpenRetopWindow:
         return f"No source curves found for {surface.name}{suffix}"
 
     def add_section_plane(self) -> None:
-        if self.app_state.mesh_object is None:
-            self._set_selected_item(None, status="No selection")
-            return
-
-        plane = create_default_section_plane(
+        result = self.section_controller.add_plane(
             axis=self.section_axis.get(),
             offset=self.section_offset.get(),
+            visible=bool(self.show_section_plane.get()),
         )
-        plane.name = self._next_section_plane_name()
-        plane.visible = bool(self.show_section_plane.get())
-        add_plane(self.app_state.section_collection, plane)
-        set_active_plane(self.app_state.section_collection, plane.id)
-        self._sync_section_controls_from_active_plane()
-        self._set_selected_item(SELECT_SECTION_PLANE, status=f"Added: {plane.name}")
-        self._set_project_dirty(True)
+        self._apply_command_result(result)
+        if result.success:
+            self._sync_section_controls_from_active_plane()
+            self._show_context(self.app_state.selected_item)
 
     def _next_section_plane_name(self) -> str:
-        existing_names = {
-            plane.name for plane in self.app_state.section_collection.planes
-        }
-        index = 1
-        while f"Section Plane {index}" in existing_names:
-            index += 1
-        return f"Section Plane {index}"
+        return self.section_controller.next_plane_name()
 
     def clear_selection(self) -> None:
-        self._set_selected_item(None, status="No selection")
+        self._prepare_controller_selection()
+        self._apply_selection_result(self.selection_controller.clear())
 
     def _set_selected_item(
         self,
@@ -5307,49 +5301,50 @@ class OpenRetopWindow:
         status: str | None = None,
         preserve_curve_selection: bool = False,
     ) -> None:
-        if self.app_state.transform_state is not None:
-            self._end_active_transform(commit=False, status="Transform cancelled")
-        if self._manual_curve_active:
-            self._clear_manual_curve_state()
-        if self._region_select_active:
-            self._exit_region_select_mode()
-
-        keep_selection_families: set[str] = set()
-        if selected_item == SELECT_SECTION_PLANE:
-            keep_selection_families.add("section_planes")
-        if selected_item == SELECT_SECTION_RESULT:
-            keep_selection_families.add("section_results")
-        if selected_item == SELECT_CURVE or preserve_curve_selection:
-            keep_selection_families.add("curves")
-        if selected_item == SELECT_SURFACE:
-            keep_selection_families.add("surfaces")
-        if selected_item == SELECT_REGION:
-            keep_selection_families.add("regions")
-        self._clear_selection_families(keep=keep_selection_families)
-        self.app_state.selected_item = selected_item
-        self.app_state.active_transform_mode = None
-        self.app_state.active_transform_axis = None
-        self.app_state.transform_state = None
-        self._active_transform_angle_delta = None
-        self._show_context(selected_item)
-        self._refresh_viewport(reset_camera=False)
+        del preserve_curve_selection  # Controller resolves family preservation.
+        self._prepare_controller_selection()
+        if selected_item is None:
+            result = self.selection_controller.clear(status=status or "No selection")
+        elif selected_item == SELECT_MODEL:
+            result = self.selection_controller.select_model()
+        elif selected_item == SELECT_SECTION_PLANE:
+            ids = tuple(self.app_state.section_collection.selected_plane_ids)
+            active_id = self.app_state.section_collection.active_plane_id
+            result = self.selection_controller.select_section_planes(
+                ids or (() if active_id is None else (active_id,)),
+                active_plane_id=active_id,
+            )
+        elif selected_item == SELECT_SECTION_RESULT:
+            ids = tuple(self.app_state.section_collection.selected_result_ids)
+            active_id = self.app_state.section_collection.active_result_id
+            result = self.selection_controller.select_section_results(
+                ids or (() if active_id is None else (active_id,)),
+                active_result_id=active_id,
+            )
+        elif selected_item == SELECT_CURVE:
+            ids = tuple(self.app_state.curve_collection.selected_curve_ids)
+            active_id = self.app_state.curve_collection.active_curve_id
+            result = self.selection_controller.select_curves(
+                ids or (() if active_id is None else (active_id,)),
+                active_curve_id=active_id,
+            )
+        elif selected_item == SELECT_SURFACE:
+            ids = tuple(self._selected_surface_ids_for_scene())
+            active = self._active_surface_record()
+            result = self.selection_controller.select_surfaces(
+                ids or (() if active is None else (active.id,)),
+                active_surface_id=None if active is None else active.id,
+            )
+        elif selected_item == SELECT_REGION:
+            region = self.app_state.region_collection.active_region
+            result = self.selection_controller.select_region(
+                None if region is None else region.id
+            )
+        else:
+            result = self.selection_controller.clear(status=status or "No selection")
+        self._apply_selection_result(result)
         if status is not None:
             self.status_text.set(status)
-
-    def _clear_selection_families(self, *, keep: set[str]) -> None:
-        if "section_planes" not in keep:
-            clear_plane_selection(self.app_state.section_collection)
-        if "section_results" not in keep:
-            clear_result_selection(self.app_state.section_collection)
-        if "curves" not in keep:
-            clear_curve_selection(self.app_state.curve_collection)
-        if "surfaces" not in keep:
-            clear_surface_selection(self.app_state.surface_collection)
-            clear_brep_surface_selection(self.app_state.brep_surface_collection)
-        if "regions" not in keep:
-            active_region = self.app_state.region_collection.active_region
-            if active_region is not None:
-                active_region.selected = False
 
     def _on_viewport_selection(self, selected_item: str | None) -> None:
         if self._region_select_active:
@@ -5757,26 +5752,14 @@ class OpenRetopWindow:
         self._refresh_viewport(reset_camera=False)
 
     def start_region_select_mode(self) -> None:
-        if self.app_state.mesh_object is None:
-            self.status_text.set("Region selection requires a loaded mesh.")
-            self._sync_workflow_ui()
-            return
-
         if self.app_state.transform_state is not None:
             self._end_active_transform(commit=False, status="Transform cancelled")
         if self._manual_curve_active:
             self._clear_manual_curve_state()
-        self.app_state.active_transform_mode = None
-        self.app_state.active_transform_axis = None
-        self._active_transform_angle_delta = None
-        self._region_select_active = True
-        self._region_select_left_press_position = None
-        self._region_select_left_dragged = False
-        self._region_select_last_hit_triangle_index = None
-        self._set_active_workbench("Manual RE", set_status=False)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Region Select: click a mesh area.")
-        self._sync_workflow_ui()
+        result = self.region_controller.start()
+        self._apply_command_result(result)
+        if result.success:
+            self._set_active_workbench("Manual RE", set_status=False)
 
     def configure_region_threshold(self) -> None:
         value = simpledialog.askfloat(
@@ -5817,56 +5800,16 @@ class OpenRetopWindow:
         self._sync_workflow_ui()
 
     def clear_region_selection(self) -> None:
-        had_region = self.app_state.region_collection.active_region is not None
-        self.app_state.region_collection.clear()
-        self._region_select_current_seed_triangle_index = None
-        self._region_select_last_hit_triangle_index = None
-        if self.app_state.selected_item == SELECT_REGION:
-            self.app_state.selected_item = None
-        self._refresh_viewport(reset_camera=False)
-        self._refresh_scene_browser()
-        self.status_text.set(
-            "Region selection cleared." if had_region else "No region selection"
-        )
-        self._sync_workflow_ui()
+        self._apply_command_result(self.region_controller.clear())
 
     def hide_region_selection(self) -> None:
-        region = self.app_state.region_collection.active_region
-        if region is None:
-            self.status_text.set("No region selection")
-            self._sync_workflow_ui()
-            return
-
-        region.visible = False
-        self._refresh_viewport(reset_camera=False)
-        self._refresh_scene_browser()
-        self.status_text.set("Region hidden.")
-        self._sync_workflow_ui()
+        self._apply_command_result(self.region_controller.hide())
 
     def show_region_selection(self) -> None:
-        region = self.app_state.region_collection.active_region
-        if region is None:
-            self.status_text.set("No region selection")
-            self._sync_workflow_ui()
-            return
-
-        region.visible = True
-        self._refresh_viewport(reset_camera=False)
-        self._refresh_scene_browser()
-        self.status_text.set("Region shown.")
-        self._sync_workflow_ui()
+        self._apply_command_result(self.region_controller.show())
 
     def delete_region_selection(self) -> None:
-        had_region = self.app_state.region_collection.active_region is not None
-        self.app_state.region_collection.clear()
-        self._region_select_current_seed_triangle_index = None
-        self._region_select_last_hit_triangle_index = None
-        if self.app_state.selected_item == SELECT_REGION:
-            self.app_state.selected_item = None
-        self._refresh_viewport(reset_camera=False)
-        self._refresh_scene_browser()
-        self.status_text.set("Region deleted." if had_region else "No region selection")
-        self._sync_workflow_ui()
+        self._apply_command_result(self.region_controller.delete())
 
     def frame_selected_region(self) -> None:
         self._apply_command_result(self._frame_selected_region_result())
@@ -5901,174 +5844,36 @@ class OpenRetopWindow:
         )
 
     def recompute_region_selection(self) -> None:
-        active_region = self.app_state.region_collection.active_region
-        mesh_object = self.app_state.mesh_object
-        if active_region is None or mesh_object is None:
-            self.status_text.set("No region selection")
-            self._sync_workflow_ui()
-            return
-
-        seed_triangle_index = active_region.seed_triangle_index
-        if seed_triangle_index is None:
-            self.status_text.set("Active region has no seed triangle")
-            self._sync_workflow_ui()
-            return
-
         controls = self._validated_region_controls()
         if controls is None:
             self._sync_workflow_ui()
             return
         threshold_degrees, max_triangle_count = controls
-
-        region = create_region_selection(
-            mesh_object.display_mesh,
-            seed_triangle_index,
-            source_mesh_identifier=active_region.source_mesh_identifier
-            or self._region_source_mesh_identifier(),
-            source_mesh_name=active_region.source_mesh_name or mesh_object.name,
+        self.region_controller.configure(
             threshold_degrees=threshold_degrees,
             max_triangle_count=max_triangle_count,
-            name=active_region.name or "Region 1",
         )
-        if region is None:
-            self.status_text.set("Region Select: no region found")
-            self._sync_workflow_ui()
-            return
-
-        region.id = active_region.id
-        region.visible = bool(active_region.visible)
-        region.selected = True
-        self.app_state.region_collection.set_active(region)
-        self._region_select_current_seed_triangle_index = seed_triangle_index
-        self._region_select_last_hit_triangle_index = seed_triangle_index
-        self._refresh_viewport(reset_camera=False)
-        self._refresh_scene_browser()
-        self.status_text.set(self._region_result_status("Recomputed region", region))
-        self._sync_workflow_ui()
+        self._apply_command_result(self.region_controller.recompute())
 
     def extract_region_boundary(self) -> None:
         mesh_object = self.app_state.mesh_object
-        region = self.app_state.region_collection.active_region
-        if mesh_object is None:
-            self.status_text.set("Region boundary extraction requires a loaded mesh.")
-            self._sync_workflow_ui()
-            return
-        if region is None:
-            self.status_text.set("No active region to extract.")
-            self._sync_workflow_ui()
-            return
-
-        boundary_mesh = mesh_object.display_mesh.copy()
-        boundary_mesh.transform(self._current_object_matrix())
-        boundaries = extract_region_boundary_polylines(boundary_mesh, region)
-        if not boundaries:
-            self.status_text.set("No boundary edges found.")
-            self._sync_workflow_ui()
-            return
-
-        names = self._region_boundary_curve_names(len(boundaries))
-        created_curves = [
-            self._stored_curve_from_region_boundary(boundary, index, name)
-            for index, (boundary, name) in enumerate(zip(boundaries, names), start=1)
-        ]
-        clear_curve_selection(self.app_state.curve_collection)
-        for curve in created_curves:
-            add_curve(self.app_state.curve_collection, curve)
-
-        created_curve_ids = [curve.id for curve in created_curves]
-        self._sync_visible_curve_results()
-        self.select_curves(created_curve_ids, active_curve_id=created_curve_ids[0])
-        self._push_created_curves_command(
-            created_curves,
-            command_name="Extract Region Boundary",
+        boundary_mesh = None
+        if mesh_object is not None:
+            boundary_mesh = mesh_object.display_mesh.copy()
+            boundary_mesh.transform(self._current_object_matrix())
+        self._apply_curve_controller_result(
+            self.region_controller.extract_boundary(boundary_mesh)
         )
-        self._set_project_dirty(True)
-        self.status_text.set(self._region_boundary_extraction_status(created_curves))
-        self._sync_workflow_ui()
 
     def select_boundary_curves_for_active_region(self) -> None:
-        region = self.app_state.region_collection.active_region
-        if region is None:
-            self.status_text.set("No active region to extract.")
-            self._sync_workflow_ui()
-            return
-
-        curve_ids = [curve.id for curve in self._boundary_curves_for_region(region.id)]
-        if not curve_ids:
-            self.status_text.set("No boundary curves linked to active region.")
-            self._sync_workflow_ui()
-            return
-
-        self.select_curves(curve_ids, active_curve_id=curve_ids[0])
-        self.status_text.set(
-            "Selected 1 boundary curve."
-            if len(curve_ids) == 1
-            else f"Selected {len(curve_ids)} boundary curves."
+        self._apply_curve_controller_result(
+            self.region_controller.select_boundary_curves()
         )
-        self._sync_workflow_ui()
 
     def convert_boundary_to_hybrid_guide_curve(self) -> None:
-        source_curve = self._active_curve()
-        if source_curve is None or not self._is_region_boundary_curve(source_curve):
-            self.status_text.set("Select a region boundary curve to convert.")
-            return
-        control_data = parse_manual_curve_metadata_v2(source_curve)
-        if control_data is None:
-            points = self._finite_points(source_curve.fitted_points)
-            if points is None:
-                self.status_text.set("Selected boundary curve has no usable points.")
-                return
-            control_data = ManualCurveControlDataV2(
-                points=[ManualCurvePoint(position=point) for point in points],
-                is_closed=bool(source_curve.is_closed),
-                curve_method=MANUAL_CURVE_METHOD_HYBRID,
-                sample_count=DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
-            )
-        if len(control_data.points) > 64:
-            sample_indices = np.linspace(
-                0,
-                len(control_data.points) - 1,
-                64,
-                dtype=int,
-            )
-            control_data.points = [
-                copy.deepcopy(control_data.points[int(index)])
-                for index in sample_indices
-            ]
-        control_data.curve_method = MANUAL_CURVE_METHOD_HYBRID
-        control_data = auto_detect_manual_curve_corners(control_data)
-        guide = build_manual_stored_curve(
-            curve_id=f"curve-{uuid4().hex}",
-            name=self._next_derived_curve_name(f"{source_curve.name} Guide"),
-            control_points=control_data.control_points,
-            is_closed=control_data.is_closed,
-            creation_type="hybrid_region_guide",
-            snap_to_mesh=bool(source_curve.metadata.get("snap_to_mesh", False)),
-            work_plane_type=str(source_curve.metadata.get("work_plane_type", "mesh")),
-            source_mesh_name=source_curve.metadata.get("source_mesh_name"),
-            curve_method=MANUAL_CURVE_METHOD_HYBRID,
-            sample_count=control_data.sample_count,
-            point_types=[point.point_type for point in control_data.points],
-            corner_angle_threshold_degrees=control_data.corner_angle_threshold_degrees,
-            preserve_corners=True,
+        self._apply_curve_controller_result(
+            self.region_controller.convert_boundary_to_hybrid_guide()
         )
-        guide.metadata.update(
-            {
-                "source_curve_id": source_curve.id,
-                "source_region_id": source_curve.metadata.get("source_region_id", ""),
-                "source_region_name": source_curve.metadata.get("source_region_name", ""),
-                "source_curve_tags": ["region_boundary", "hybrid_guide"],
-            }
-        )
-        add_curve(self.app_state.curve_collection, guide)
-        self._sync_visible_curve_results()
-        self.select_curve(guide.id)
-        self._push_created_curve_command(
-            guide,
-            command_name="Convert Boundary to Hybrid Guide Curve",
-        )
-        self.status_text.set(f"Created hybrid guide curve: {guide.name}")
-        self._set_project_dirty(True)
 
     def _boundary_curves_for_region(self, region_id: str) -> list[StoredCurve]:
         return [
@@ -6178,16 +5983,7 @@ class OpenRetopWindow:
         if candidate is None or candidate == region.name:
             return
 
-        old_name = region.name
-        region.name = candidate
-        self._push_rename_command(
-            region_node_id(region.id),
-            "Rename Region",
-            old_name,
-            candidate,
-        )
-        self._refresh_scene_browser()
-        self.status_text.set(f"Selected: {region.name}")
+        self._apply_command_result(self.region_controller.rename(candidate))
 
     def _select_region_at_screen_point(self, x_position: int, y_position: int) -> None:
         mesh_object = self.app_state.mesh_object
@@ -6217,36 +6013,18 @@ class OpenRetopWindow:
             self.status_text.set("No mesh under cursor.")
             self._sync_workflow_ui()
             return
-        self._region_select_last_hit_triangle_index = seed_triangle_index
-
-        active_region = self.app_state.region_collection.active_region
-        name = active_region.name if active_region is not None and active_region.name else "Region 1"
-
-        region = create_region_selection(
-            mesh_object.display_mesh,
+        self.region_controller.configure(
+            threshold_degrees=threshold_degrees,
+            max_triangle_count=max_triangle_count,
+        )
+        result = self.region_controller.select_seed(
             seed_triangle_index,
             source_mesh_identifier=self._region_source_mesh_identifier(),
             source_mesh_name=mesh_object.name,
-            threshold_degrees=threshold_degrees,
-            max_triangle_count=max_triangle_count,
-            name=name,
         )
-        if region is None:
-            self.status_text.set("Region Select: no region found")
-            self._sync_workflow_ui()
-            return
-
-        region.visible = True
-        region.selected = True
-        self.app_state.region_collection.set_active(region)
-        self._region_select_current_seed_triangle_index = seed_triangle_index
-        self.app_state.selected_item = SELECT_REGION
-        self._clear_selection_families(keep={"regions"})
-        self._show_context(SELECT_REGION)
-        self._refresh_viewport(reset_camera=False)
-        self._refresh_scene_browser()
-        self.status_text.set(self._region_result_status("Selected region", region))
-        self._sync_workflow_ui()
+        self._apply_command_result(result)
+        if result.success:
+            self._show_context(SELECT_REGION)
 
     def _handle_region_select_pointer_event(
         self,
@@ -6254,55 +6032,23 @@ class OpenRetopWindow:
         x_position: int,
         y_position: int,
     ) -> bool:
-        if event_type == "left_press":
-            self._region_select_left_press_position = (int(x_position), int(y_position))
-            self._region_select_left_dragged = False
-            return True
-
-        if event_type == "motion":
-            if self._region_select_left_press_position is None:
-                return False
-            self._update_region_select_drag_state(int(x_position), int(y_position))
-            return True
-
-        if event_type == "left_release":
-            if not self._region_select_release_is_click(int(x_position), int(y_position)):
-                self.status_text.set(self._region_select_status())
-                self._sync_workflow_ui()
-                return True
-            self._select_region_at_screen_point(int(x_position), int(y_position))
-            return True
-
         if event_type == "right_press":
             return True
-
         if event_type == "right_release":
             self._show_region_select_context_menu(int(x_position), int(y_position))
             return True
-
-        if event_type == "leave":
-            self._region_select_left_press_position = None
-            self._region_select_left_dragged = False
-            return False
-
-        return False
-
-    def _update_region_select_drag_state(self, x_position: int, y_position: int) -> None:
-        if self._region_select_left_press_position is None:
-            return
-        start_x, start_y = self._region_select_left_press_position
-        distance = abs(int(x_position) - start_x) + abs(int(y_position) - start_y)
-        if distance > 4:
-            self._region_select_left_dragged = True
-
-    def _region_select_release_is_click(self, x_position: int, y_position: int) -> bool:
-        if self._region_select_left_press_position is None:
-            return False
-        self._update_region_select_drag_state(x_position, y_position)
-        is_click = not self._region_select_left_dragged
-        self._region_select_left_press_position = None
-        self._region_select_left_dragged = False
-        return is_click
+        result = self.region_controller.handle_pointer_event(
+            event_type,
+            int(x_position),
+            int(y_position),
+        )
+        if event_type == "left_release":
+            if bool(result.metadata.get("is_click", False)):
+                self._select_region_at_screen_point(int(x_position), int(y_position))
+            else:
+                self._apply_command_result(result)
+                self.status_text.set(self._region_select_status())
+        return bool(result.metadata.get("consumed", False))
 
     def _show_region_select_context_menu(self, x_position: int, y_position: int) -> None:
         menu = self._build_region_select_context_menu()
@@ -6347,21 +6093,14 @@ class OpenRetopWindow:
         return region
 
     def _exit_region_select_mode(self, *, status: str | None = None) -> None:
-        self._region_select_active = False
-        self._region_select_left_press_position = None
-        self._region_select_left_dragged = False
-        self._region_select_current_seed_triangle_index = None
-        self._region_select_last_hit_triangle_index = None
-        if status is not None:
-            self.status_text.set(status)
-        self._sync_workflow_ui()
+        self._apply_command_result(
+            self.region_controller.exit(
+                status="" if status is None else status
+            )
+        )
 
     def _clear_region_selection_state(self) -> None:
-        self._region_select_active = False
-        self._region_select_left_press_position = None
-        self._region_select_left_dragged = False
-        self._region_select_current_seed_triangle_index = None
-        self._region_select_last_hit_triangle_index = None
+        self.region_controller.session.reset()
         self.app_state.region_collection.clear()
 
     def _region_select_status(self) -> str:
@@ -6412,7 +6151,7 @@ class OpenRetopWindow:
 
     def _set_region_threshold_value(self, value: object, *, set_status: bool) -> None:
         threshold = self._clamped_region_threshold(value)
-        self._last_valid_region_threshold = threshold
+        self.region_controller.configure(threshold_degrees=threshold)
         self.region_threshold_degrees.set(threshold)
         self.region_threshold_text.set(f"{threshold:.1f}")
         self.region_threshold_display_text.set(f"{threshold:.1f} deg")
@@ -6424,8 +6163,8 @@ class OpenRetopWindow:
             number = int(value)
         except (TypeError, ValueError):
             number = DEFAULT_REGION_MAX_TRIANGLES
-        number = max(1, number)
-        self._last_valid_region_max_triangle_count = number
+        number = min(max(1, number), 10_000_000)
+        self.region_controller.configure(max_triangle_count=number)
         self.region_max_triangle_count.set(str(number))
         self.region_max_triangle_cap_text.set(f"{number:,}")
         if set_status:
@@ -6522,27 +6261,30 @@ class OpenRetopWindow:
         if offset is None:
             return
         active_plane = get_active_plane(self.app_state.section_collection)
+        if active_plane is None:
+            self.status_text.set("No section plane")
+            return
         sync_plane_from_controls = (
-            active_plane is not None
-            and active_plane.axis == normalize_axis(self.section_axis.get())
+            active_plane.axis == normalize_axis(self.section_axis.get())
             and np.allclose(
                 plane_normal(active_plane),
                 world_axis_vector(self.section_axis.get()),
                 atol=1e-6,
             )
         )
-        self._set_section_offset(
-            offset,
-            clamp=True,
-            refresh=False,
-            clear_section=False,
-            sync_plane=sync_plane_from_controls,
-        )
-
-        active_plane = get_active_plane(self.app_state.section_collection)
-        if active_plane is None:
-            self.status_text.set("No section plane")
-            return
+        if sync_plane_from_controls:
+            plane_result = self.section_controller.set_axis_offset(
+                axis=self.section_axis.get(),
+                offset=offset,
+                offset_bounds=self._section_offset_bounds,
+                clamp=True,
+                visible=bool(self.show_section_plane.get()),
+            )
+            if not plane_result.success:
+                self._apply_command_result(plane_result)
+                return
+            if plane_result.changed:
+                self._apply_command_result(plane_result)
 
         progress: ComputationProgressDialog | None = None
         try:
@@ -6554,46 +6296,13 @@ class OpenRetopWindow:
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[0])
             section_mesh = self._transformed_source_mesh()
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[1])
-            active_plane_origin = plane_origin(active_plane)
-            active_plane_normal = plane_normal(active_plane)
-            is_arbitrary_plane = not self._section_plane_is_axis_aligned(active_plane)
-            if is_arbitrary_plane:
-                section_result = extract_section_by_plane(
-                    section_mesh,
-                    active_plane_origin,
-                    active_plane_normal,
-                    axis=active_plane.axis,
-                    offset=active_plane.offset,
-                )
-            else:
-                section_result = extract_section(
-                    section_mesh,
-                    axis=active_plane.axis,
-                    offset=active_plane.offset,
-                )
-            stored_result = StoredSectionResult(
-                id=f"section-result-{uuid4().hex}",
-                name=self._next_section_result_name(),
-                plane_id=active_plane.id,
-                axis=active_plane.axis,
-                offset=active_plane.offset,
-                result=section_result,
-                plane_origin=active_plane_origin,
-                plane_normal=active_plane_normal,
-                is_arbitrary_plane=is_arbitrary_plane,
-            )
-            add_result(self.app_state.section_collection, stored_result)
+            result = self.section_controller.compute(section_mesh)
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[2])
-            self._store_curves_for_section_result(stored_result)
-            self._set_display_section_result(stored_result)
-            self._update_section_plane_label(set_status=False)
             self._set_progress_stage(progress, COMPUTE_SECTION_PROGRESS_STAGES[3])
-            self._refresh_viewport(reset_camera=False)
-            self.status_text.set(
-                self._arbitrary_section_status(active_plane)
-                if stored_result.is_arbitrary_plane
-                else self._section_result_status(stored_result)
-            )
+            self._apply_command_result(result)
+            if result.success:
+                self._set_display_section_result(self._active_section_result())
+                self._update_section_plane_label(set_status=False)
         finally:
             if progress is not None:
                 progress.close()
@@ -6602,87 +6311,27 @@ class OpenRetopWindow:
         self.clear_active_section_result()
 
     def clear_active_section_result(self) -> None:
-        self._clear_active_section_results()
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Section cleared")
+        self._apply_command_result(self.section_controller.clear_active_results())
+        self._set_display_section_result(self._active_section_result())
 
     def clear_all_section_results(self) -> None:
-        self.app_state.section_collection.results = []
-        self.app_state.section_collection.active_result_id = None
-        self.app_state.curve_collection.curves = []
-        self.app_state.curve_collection.active_curve_id = None
-        self.app_state.curve_collection.selected_curve_ids.clear()
-        self.app_state.surface_collection.surfaces = []
-        self.app_state.surface_collection.active_surface_id = None
-        self.app_state.surface_collection.selected_surface_ids.clear()
-        self.app_state.brep_surface_collection.surfaces = []
-        self.app_state.brep_surface_collection.active_surface_id = None
-        self.app_state.brep_surface_collection.selected_surface_ids.clear()
-        self.app_state.loft_feature_collection = LoftFeatureCollection()
-        self.app_state.four_boundary_feature_collection = FourBoundaryPatchFeatureCollection()
-        self._brep_runtime_cache.clear()
+        self._apply_command_result(self.section_controller.clear_all_results())
         self._set_display_section_result(None)
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("All section results cleared")
 
     def delete_active_section_plane(self) -> None:
-        if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
+        result = self.section_controller.delete_plane()
+        self._apply_command_result(result)
+        if not result.success:
             return
-
-        active_plane = get_active_plane(self.app_state.section_collection)
-        if active_plane is None:
-            self._ensure_default_section_plane()
-            self._sync_section_controls_from_active_plane()
-            self._set_selected_item(SELECT_SECTION_PLANE, status="Selected: Section Plane")
-            return
-
-        removed_name = active_plane.name or "Section Plane"
-        curve_ids = [
-            curve.id
-            for curve in self.app_state.curve_collection.curves
-            if curve.plane_id == active_plane.id
-        ]
-        self._clear_surfaces_for_curve_ids(curve_ids)
-        clear_curves_for_plane(self.app_state.curve_collection, active_plane.id)
-        remove_plane(self.app_state.section_collection, active_plane.id)
-        self._ensure_default_section_plane()
         self._set_display_section_result(self._latest_stored_section_result())
         self._sync_section_controls_from_active_plane()
-        self._set_selected_item(SELECT_SECTION_PLANE, status=f"Deleted: {removed_name}")
-        self._set_project_dirty(True)
+        self._show_context(self.app_state.selected_item)
 
     def _ensure_default_section_plane(self) -> None:
-        if self.app_state.section_collection.planes:
-            if self.app_state.section_collection.active_plane_id is None:
-                set_active_plane(
-                    self.app_state.section_collection,
-                    self.app_state.section_collection.planes[0].id,
-                )
-            return
-
-        add_plane(
-            self.app_state.section_collection,
-            create_default_section_plane(),
-        )
+        self.section_controller.ensure_default_plane()
 
     def _next_section_result_name(self) -> str:
-        existing_names = {
-            result.name for result in self.app_state.section_collection.results
-        }
-        index = 1
-        prefix = "Section "
-        for name in existing_names:
-            if not name.startswith(prefix):
-                continue
-
-            suffix = name[len(prefix) :]
-            if suffix.isdigit():
-                index = max(index, int(suffix) + 1)
-
-        while f"Section {index}" in existing_names:
-            index += 1
-        return f"Section {index}"
+        return self.section_controller.next_result_name()
 
     def _latest_stored_section_result(self) -> StoredSectionResult | None:
         if not self.app_state.section_collection.results:
@@ -6710,29 +6359,6 @@ class OpenRetopWindow:
         self.section_result_text.set(self._section_result_summary(stored_result))
         self._sync_section_result_context_from_active_result()
         self._sync_visible_curve_results()
-
-    def _store_curves_for_section_result(
-        self,
-        stored_result: StoredSectionResult,
-    ) -> None:
-        for index, curve_fit in enumerate(
-            fit_section_polylines(stored_result.result.polylines),
-            start=1,
-        ):
-            add_curve(
-                self.app_state.curve_collection,
-                StoredCurve(
-                    id=f"curve-{uuid4().hex}",
-                    name=f"{stored_result.name} Curve {index}",
-                    section_result_id=stored_result.id,
-                    plane_id=stored_result.plane_id,
-                    original_points=curve_fit.original_points,
-                    fitted_points=curve_fit.fitted_points,
-                    mean_error=curve_fit.mean_error,
-                    max_error=curve_fit.max_error,
-                    is_closed=curve_fit.is_closed,
-                ),
-            )
 
     def _sync_visible_curve_results(self) -> None:
         for curve in self.app_state.curve_collection.curves:
@@ -6995,17 +6621,9 @@ class OpenRetopWindow:
         if candidate is None:
             return
 
-        old_name = active_curve.name
-        active_curve.name = candidate
-        self._push_rename_command(
-            curve_node_id(active_curve.id),
-            "Rename Curve",
-            old_name,
-            candidate,
+        self._apply_command_result(
+            self.scene_controller.rename(curve_node_id(active_curve.id), candidate)
         )
-        self._refresh_scene_browser()
-        self.status_text.set(f"Selected: {active_curve.name}")
-        self._set_project_dirty(True)
 
     def _on_curve_visibility_changed(self) -> None:
         active_curve = self._active_curve()
@@ -7013,84 +6631,39 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        node_ids = {curve_node_id(active_curve.id)}
-        before = self._visibility_snapshot(node_ids)
-        active_curve.visible = bool(self.curve_visible.get())
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
+        self._apply_command_result(
+            self.visibility_controller.set_visibility(
+                (curve_node_id(active_curve.id),),
+                bool(self.curve_visible.get()),
+            )
+        )
         self._sync_visible_curve_results()
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Selected: {active_curve.name}")
-        self._set_project_dirty(True)
 
     def join_selected_curves(self) -> None:
-        selected_curves = get_selected_curves(self.app_state.curve_collection)
-        if len(selected_curves) < 2:
-            self.status_text.set("Select at least two curves to join")
-            return
-
         tolerance = self._curve_repair_tolerance()
-        try:
-            repaired_curve = join_curves(
-                selected_curves,
-                curve_id=f"curve-{uuid4().hex}",
+        self._apply_curve_controller_result(
+            self.curve_controller.join_selected(
                 name=self._next_repaired_curve_name("Joined Curve"),
                 tolerance=tolerance,
             )
-        except CurveRepairError as exc:
-            self.status_text.set(f"{exc} Tolerance: {tolerance:.3f}")
-            return
-
-        add_curve(self.app_state.curve_collection, repaired_curve)
-        self._sync_visible_curve_results()
-        self.select_curve(repaired_curve.id)
-        self._push_created_curve_command(repaired_curve)
-        source_count = len(selected_curves)
-        self.status_text.set(
-            f"Created joined curve from {source_count} curves "
-            f"(tolerance {tolerance:.3f})"
         )
-        self._set_project_dirty(True)
 
     def auto_close_selected_curve(self) -> None:
-        selected_curves = get_selected_curves(self.app_state.curve_collection)
-        if len(selected_curves) != 1:
-            self.status_text.set("Select exactly one open curve to auto-close")
-            return
-
-        selected_curve = selected_curves[0]
-        refresh_curve_diagnostics(selected_curve)
         tolerance = self._curve_repair_tolerance()
-        endpoint_gap = selected_curve.endpoint_distance
-        if selected_curve.is_closed:
-            self.status_text.set("Selected curve is already closed")
-            return
-        if endpoint_gap > tolerance:
-            self.status_text.set(
-                f"Endpoint gap {endpoint_gap:.3f} exceeds tolerance {tolerance:.3f}"
-            )
-            return
-
-        try:
-            repaired_curve = auto_close_curve(
-                selected_curve,
-                curve_id=f"curve-{uuid4().hex}",
+        self._apply_curve_controller_result(
+            self.curve_controller.auto_close_selected(
                 name=self._next_repaired_curve_name("Auto-Closed Curve"),
                 tolerance=tolerance,
             )
-        except CurveRepairError as exc:
-            self.status_text.set(f"{exc} Tolerance: {tolerance:.3f}")
-            return
-
-        add_curve(self.app_state.curve_collection, repaired_curve)
-        self._sync_visible_curve_results()
-        self.select_curve(repaired_curve.id)
-        self._push_created_curve_command(repaired_curve)
-        self.status_text.set(
-            f"Created auto-closed curve "
-            f"(gap {endpoint_gap:.3f}, tolerance {tolerance:.3f})"
         )
-        self._set_project_dirty(True)
+
+    def _apply_curve_controller_result(self, result: CommandResult) -> None:
+        self._apply_command_result(result)
+        self._sync_visible_curve_results()
+        self._sync_curve_context_from_active_curve()
+        self._sync_surface_context_from_active_surface()
+        self._show_context(self.app_state.selected_item)
 
     def simplify_selected_curve(self) -> None:
         selected_curves = get_selected_curves(self.app_state.curve_collection)
@@ -7101,6 +6674,14 @@ class OpenRetopWindow:
         selected_curve = selected_curves[0]
         refresh_curve_diagnostics(selected_curve)
         tolerance = self._curve_simplify_tolerance(selected_curve)
+        if not is_manual_curve_like(selected_curve):
+            self._apply_curve_controller_result(
+                self.curve_controller.simplify_selected(
+                    name=self._next_repaired_curve_name("Simplified Curve"),
+                    tolerance=tolerance,
+                )
+            )
+            return
         result = self.manual_curve_controller.simplify_stored_curve(
             selected_curve,
             curve_id=f"curve-{uuid4().hex}",
@@ -7204,133 +6785,50 @@ class OpenRetopWindow:
         )
 
     def smooth_selected_curve(self) -> None:
-        selected_curves = get_selected_curves(self.app_state.curve_collection)
-        if len(selected_curves) != 1:
-            self.status_text.set("Select exactly one curve to smooth")
-            return
-
-        selected_curve = selected_curves[0]
-        try:
-            generated_curve = smooth_curve(
-                selected_curve,
-                curve_id=f"curve-{uuid4().hex}",
+        self._apply_curve_controller_result(
+            self.curve_controller.smooth_selected(
                 name=self._next_repaired_curve_name("Smoothed Curve"),
                 iterations=DEFAULT_CURVE_SMOOTH_ITERATIONS,
             )
-        except CurveProcessingError as exc:
-            self.status_text.set(str(exc))
-            return
-
-        add_curve(self.app_state.curve_collection, generated_curve)
-        self._sync_visible_curve_results()
-        self.select_curve(generated_curve.id)
-        self._push_created_curve_command(generated_curve)
-        self.status_text.set(
-            f"Created smoothed curve "
-            f"({generated_curve.point_count} points, "
-            f"{DEFAULT_CURVE_SMOOTH_ITERATIONS} iterations)"
         )
-        self._set_project_dirty(True)
 
     def project_selected_curve_to_mesh(self) -> None:
         mesh_object = self.app_state.mesh_object
-        if mesh_object is None:
-            self.status_text.set("Load a mesh before projecting curves.")
-            self._sync_workflow_ui()
-            return
-
-        source_curve = self._single_curve_for_surface_prep("Select one curve to project.")
-        if source_curve is None:
-            return
-
-        boundary_mesh = self._surface_preview_projection_mesh()
-        projected_curve = project_stored_curve_to_mesh(
-            source_curve,
-            boundary_mesh,
-            curve_id=f"curve-{uuid4().hex}",
-            name=self._next_derived_curve_name("Projected Curve"),
-            source_mesh_name=mesh_object.name,
-            mesh_query_service=self.mesh_query_service,
-            mesh_revision=self._mesh_query_revision(),
+        self._apply_curve_controller_result(
+            self.curve_controller.project_selected_to_mesh(
+                None if mesh_object is None else self._surface_preview_projection_mesh(),
+                source_mesh_name="" if mesh_object is None else mesh_object.name,
+                mesh_revision=self._mesh_query_revision(),
+                name=self._next_derived_curve_name("Projected Curve"),
+            )
         )
-        add_curve(self.app_state.curve_collection, projected_curve)
-        self._sync_visible_curve_results()
-        self.select_curve(projected_curve.id)
-        self._push_created_curve_command(
-            projected_curve,
-            command_name="Project Curve to Mesh",
-        )
-        self.status_text.set(
-            "Projected "
-            f"{projected_curve.metadata.get('projection_projected_count', 0)} points "
-            f"to {projected_curve.name}."
-        )
-        self._set_project_dirty(True)
-        self._sync_workflow_ui()
 
     def rebuild_selected_curve(self) -> None:
-        source_curve = self._single_curve_for_surface_prep("Select one curve to rebuild.")
-        if source_curve is None:
-            return
-
         target_count = self._rebuild_target_control_point_count()
         sample_count = self._rebuild_sample_count_value()
         curve_method = self._rebuild_curve_method()
-        rebuilt_curve = rebuild_stored_curve(
-            source_curve,
-            curve_id=f"curve-{uuid4().hex}",
-            name=self._next_derived_curve_name("Rebuilt Curve"),
-            target_control_point_count=target_count,
-            curve_method=curve_method,
-            sample_count=sample_count,
+        self._apply_curve_controller_result(
+            self.curve_controller.rebuild_selected(
+                target_control_point_count=target_count,
+                curve_method=curve_method,
+                sample_count=sample_count,
+                name=self._next_derived_curve_name("Rebuilt Curve"),
+            )
         )
-        add_curve(self.app_state.curve_collection, rebuilt_curve)
-        self._sync_visible_curve_results()
-        self.select_curve(rebuilt_curve.id)
-        self._push_created_curve_command(
-            rebuilt_curve,
-            command_name="Rebuild Curve",
-        )
-        self.status_text.set(
-            f"Rebuilt {source_curve.name} into {rebuilt_curve.name} "
-            f"({rebuilt_curve.metadata.get('rebuild_target_control_point_count', 0)} controls)."
-        )
-        self._set_project_dirty(True)
-        self._sync_workflow_ui()
 
     def validate_selected_curve(self) -> None:
-        source_curve = self._single_curve_for_surface_prep("Select curve(s) to validate.")
-        if source_curve is None:
-            return
-
-        readiness = validate_curve_for_fill(source_curve)
-        self._set_curve_readiness_display([readiness], mode="fill")
-        if readiness.errors:
-            self.status_text.set(readiness.errors[0])
-        elif readiness.warnings:
-            self.status_text.set(readiness.warnings[0])
-        else:
-            self.status_text.set("Ready for Fill")
-        self._sync_workflow_ui()
+        result = self.curve_controller.validate_selected_for_fill()
+        self._apply_command_result(result)
+        readiness = result.metadata.get("readiness", ())
+        if readiness:
+            self._set_curve_readiness_display(list(readiness), mode="fill")
 
     def validate_selected_curves_for_loft(self) -> None:
-        curves = self._surface_source_curves_from_selection()
-        if not curves:
-            self.status_text.set("Select curve(s) to validate.")
-            self._sync_workflow_ui()
-            return
-
-        readiness = validate_curves_for_loft(curves)
-        self._set_curve_readiness_display(readiness, mode="loft")
-        first_error = self._first_readiness_error(readiness)
-        first_warning = self._first_readiness_warning(readiness)
-        if first_error:
-            self.status_text.set(first_error)
-        elif first_warning:
-            self.status_text.set(first_warning)
-        else:
-            self.status_text.set("Ready for Loft")
-        self._sync_workflow_ui()
+        result = self.curve_controller.validate_selected_for_loft()
+        self._apply_command_result(result)
+        readiness = result.metadata.get("readiness", ())
+        if readiness:
+            self._set_curve_readiness_display(list(readiness), mode="loft")
 
     def _single_curve_for_surface_prep(self, message: str) -> StoredCurve | None:
         selected_curves = get_selected_curves(self.app_state.curve_collection)
@@ -7388,90 +6886,40 @@ class OpenRetopWindow:
 
     def fill_closed_curve(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        if len(source_curves) != 1:
-            self.status_text.set("Select exactly one closed curve to fill")
-            return
-
-        source_curve = source_curves[0]
-        refresh_curve_diagnostics(source_curve)
-        readiness = validate_curve_for_fill(source_curve)
-        if readiness.errors:
-            self._set_curve_readiness_display([readiness], mode="fill")
-            self.status_text.set(readiness.errors[0])
-            return
-
-        self._create_surface_preview(
-            source_curves,
-            surface_type="preview_fill",
-            preview_mode=CLOSED_CURVE_FILL,
-            source_label="selected_curve",
-            name_prefix="Fill Surface",
-            success_action="Filled",
-            validation_readiness=[readiness],
+        self._run_surface_controller_build(
+            lambda: self.surface_controller.create_fill(
+                curve_ids=[curve.id for curve in source_curves],
+                name=self._next_surface_name("Fill Surface"),
+            )
         )
 
     def loft_between_two_curves(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        if len(source_curves) != 2:
-            self.status_text.set("Select exactly two curves to loft")
-            return
-        readiness = validate_curves_for_loft(source_curves)
-        first_error = self._first_readiness_error(readiness)
-        if first_error:
-            self._set_curve_readiness_display(readiness, mode="loft")
-            self.status_text.set(first_error)
-            return
-
-        surface = self._create_surface_preview(
-            source_curves,
-            surface_type="preview_loft",
-            preview_mode=TWO_CURVE_LOFT,
-            source_label="selected_curves",
-            name_prefix="Loft Surface",
-            success_action="Lofted",
-            validation_readiness=readiness,
+        surface = self._run_surface_controller_build(
+            lambda: self.surface_controller.create_loft(
+                curve_ids=[curve.id for curve in source_curves],
+                name=self._next_surface_name("Loft Surface"),
+            )
         )
         if surface is not None:
             self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
 
     def create_mesh_conforming_loft_preview(self) -> None:
         mesh_object = self.app_state.mesh_object
-        if mesh_object is None:
-            self.status_text.set("Load a mesh before creating a conforming loft preview.")
-            return
         source_curves = self._surface_source_curves_from_selection()
-        if len(source_curves) < 2:
-            self.status_text.set(
-                "Select at least two open curves for a mesh-conforming loft preview."
-            )
-            return
-        if any(curve.is_closed for curve in source_curves):
-            self.status_text.set("Mesh-conforming loft preview requires open curves.")
-            return
         threshold = self._conforming_projection_threshold()
-        surface = self._create_surface_preview(
-            source_curves,
-            surface_type="mesh_conforming_loft_preview",
-            preview_mode=MESH_CONFORMING_LOFT,
-            source_label="selected_open_curves",
-            name_prefix="Conforming Loft Preview",
-            success_action="Created",
-            extra_metadata={
-                "conforming_preview": True,
-                "source_mesh_name": mesh_object.name,
-                "projection_distance_threshold": threshold,
-                "show_projection_error_heatmap": bool(
+        surface = self._run_surface_controller_build(
+            lambda: self.surface_controller.create_mesh_conforming_loft(
+                curve_ids=[curve.id for curve in source_curves],
+                mesh=self._surface_preview_projection_mesh(),
+                mesh_revision=self._mesh_query_revision(),
+                source_mesh_name="" if mesh_object is None else mesh_object.name,
+                projection_distance_threshold=threshold,
+                show_projection_error_heatmap=bool(
                     self.conforming_projection_heatmap.get()
                 ),
-                "wireframe_overlay": False,
-                "is_brep": False,
-            },
+                name=self._next_surface_name("Conforming Loft Preview"),
+            )
         )
         if surface is None:
             return
@@ -7498,49 +6946,20 @@ class OpenRetopWindow:
             return
 
         source_curve = source_curves[0]
-        try:
-            curve_input = curve_points_from_stored_curve(source_curve)
-        except ValueError as exc:
-            self.status_text.set(str(exc))
-            return
-
-        wire_result = build_cad_wire_from_curve(source_curve)
-        if wire_result.success and wire_result.cad_object is not None:
-            result = build_planar_face_from_cad_wire(
-                wire_result.cad_object,
-                source_metadata=dict(wire_result.metadata),
-            )
-            result.warnings = self._merged_metadata_strings(
-                wire_result.warnings,
-                result.warnings,
-            )
-        else:
-            result = build_planar_face_from_curve(curve_input)
-            if result.success and parse_manual_curve_metadata_v2(source_curve) is not None:
-                result.warnings = self._merged_metadata_strings(
-                    result.warnings,
-                    ["Used sampled curve fallback; inspect sharp corners."],
-                )
-                result.metadata["cad_wire_fallback_reason"] = wire_result.reason
-        if not self._brep_build_succeeded(result):
-            self.status_text.set(result.reason)
-            return
-
-        surface = self._create_brep_surface_record(
-            name_prefix="BREP Face",
-            source_curves=[source_curve],
-            build_result=result,
-            fallback_brep_type=BREP_TYPE_PLANAR_FACE,
+        result = self.brep_controller.create_face(
+            curve_id=source_curve.id,
+            name=self._next_brep_surface_name("BREP Face"),
         )
-        self._finish_created_brep_surface(
-            surface,
-            result,
-            status=(
-                "Used sampled curve fallback; inspect sharp corners."
-                if "Used sampled curve fallback; inspect sharp corners." in result.warnings
+        self._apply_command_result(result)
+        if result.success:
+            fallback_warning = "Used sampled curve fallback; inspect sharp corners."
+            self.status_text.set(
+                fallback_warning
+                if fallback_warning in result.warnings
                 else f"Created BREP planar face from {source_curve.name}."
-            ),
-        )
+            )
+            self._sync_surface_context_from_active_surface()
+            self._show_context(self.app_state.selected_item)
     def create_brep_face_from_selected_region(self) -> None:
         mesh_object = self.app_state.mesh_object
         region = self.app_state.region_collection.active_region
@@ -7661,32 +7080,31 @@ class OpenRetopWindow:
                 command_name="Create Region BREP Boundary",
             )
 
-        surface = self._create_brep_surface_record(
-            name_prefix="Region Plane",
-            source_curves=[boundary_curve],
-            build_result=result,
-            fallback_brep_type=BREP_TYPE_PLANAR_FACE,
-        )
         warnings = self._merged_metadata_strings(result.warnings, boundary_warnings)
-        surface.metadata.update(
-            self._region_plane_brep_metadata(
-                plane_fit,
-                region=region,
-                source_mesh_name=region.source_mesh_name or mesh_object.name,
-                boundary_curve=boundary_curve,
-                boundary_point_count=len(projected_points),
-                backend=surface.backend,
-                warnings=warnings,
-            )
+        extra_metadata = self._region_plane_brep_metadata(
+            plane_fit,
+            region=region,
+            source_mesh_name=region.source_mesh_name or mesh_object.name,
+            boundary_curve=boundary_curve,
+            boundary_point_count=len(projected_points),
+            backend=str(result.metadata.get("backend", "")),
+            warnings=warnings,
         )
-        self._finish_created_brep_surface(
-            surface,
+        result.warnings = warnings
+        command_result = self.brep_controller.adopt_planar_face_build(
             result,
-            status=(
+            curve_id=boundary_curve.id,
+            name=self._next_brep_surface_name("Region Plane"),
+            extra_metadata=extra_metadata,
+        )
+        self._apply_command_result(command_result)
+        if command_result.success:
+            self._sync_surface_context_from_active_surface()
+            self._show_context(self.app_state.selected_item)
+            self.status_text.set(
                 "Created BREP planar face from region: "
                 f"RMS {plane_fit.rms_error:.6g}, Max {plane_fit.max_error:.6g}."
-            ),
-        )
+            )
 
     def _reusable_closed_region_boundary_curve(
         self,
@@ -7762,57 +7180,20 @@ class OpenRetopWindow:
             self.status_text.set("Select exactly two curves for BREP loft")
             return
 
-        try:
-            first_curve_input = curve_points_from_stored_curve(source_curves[0])
-            second_curve_input = curve_points_from_stored_curve(source_curves[1])
-        except ValueError as exc:
-            self.status_text.set(str(exc))
-            return
-
-        wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
-        if all(result.success and result.cad_object is not None for result in wire_results):
-            result = build_loft_surface_from_cad_wires(
-                [wire_result.cad_object for wire_result in wire_results],
-                closed_profiles=bool(first_curve_input.is_closed and second_curve_input.is_closed),
-                source_metadata={
-                    "source_curve_ids": [curve.id for curve in source_curves],
-                    "cad_wire_metadata": [wire_result.metadata for wire_result in wire_results],
-                },
+        result = self.brep_controller.create_loft(
+            curve_ids=[curve.id for curve in source_curves],
+            name=self._next_brep_surface_name("BREP Loft"),
+        )
+        self._apply_command_result(result)
+        if result.success:
+            fallback_warning = "Used sampled curve fallback; inspect sharp corners."
+            self.status_text.set(
+                fallback_warning
+                if fallback_warning in result.warnings
+                else LOFT_MODE_EXPLANATION
             )
-        else:
-            result = build_loft_surface_from_curves(first_curve_input, second_curve_input)
-            if result.success and any(
-                parse_manual_curve_metadata_v2(curve) is not None
-                for curve in source_curves
-            ):
-                result.warnings = self._merged_metadata_strings(
-                    result.warnings,
-                    ["Used sampled curve fallback; inspect sharp corners."],
-                )
-                result.metadata["cad_wire_fallback_reasons"] = [
-                    wire_result.reason for wire_result in wire_results if not wire_result.success
-                ]
-        if not self._brep_build_succeeded(result):
-            self.status_text.set(result.reason)
-            return
-
-        surface = self._create_brep_surface_record(
-            name_prefix="BREP Loft",
-            source_curves=source_curves,
-            build_result=result,
-            fallback_brep_type=BREP_TYPE_LOFT_SURFACE,
-        )
-        self._finish_created_brep_surface(
-            surface,
-            result,
-            status=(
-                "Used sampled curve fallback; inspect sharp corners."
-                if "Used sampled curve fallback; inspect sharp corners." in result.warnings
-                else "Created BREP loft surface from 2 curves."
-            ),
-        )
-        if "Used sampled curve fallback; inspect sharp corners." not in result.warnings:
-            self.status_text.set(LOFT_MODE_EXPLANATION)
+            self._sync_surface_context_from_active_surface()
+            self._show_context(self.app_state.selected_item)
 
     def create_editable_brep_loft_from_curves(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
@@ -7851,71 +7232,17 @@ class OpenRetopWindow:
             ),
             show_overbuild_handles=bool(self.loft_show_overbuild_handles.get()),
         )
-        self._create_editable_loft_feature_from_options(options)
-
-    def _create_editable_loft_feature_from_options(
-        self,
-        options: LoftFeatureOptions,
-        *,
-        name: str | None = None,
-    ) -> LoftFeatureRecord | None:
-        feature = LoftFeatureRecord(
-            id=f"loft-feature-{uuid4().hex}",
-            name=name or self._next_loft_feature_name(),
-            options=copy.deepcopy(options),
-            last_build_reason="Build pending.",
-            metadata={"loft_feature_dirty": True, "last_rebuild_session": 0},
+        result = self.brep_controller.create_editable_loft(
+            curve_ids=[curve.id for curve in source_curves],
+            options=options,
+            name=self._next_loft_feature_name(),
+            surface_name=self._next_brep_surface_name("Editable BREP Loft"),
         )
-        source_curves, missing_ids = self._curves_for_ids(feature.options.source_curve_ids)
-        if missing_ids:
-            feature.last_build_reason = f"Missing loft source curve: {missing_ids[0]}"
-            self.status_text.set(feature.last_build_reason)
-            return None
-        result = self._build_editable_loft_feature(feature, source_curves)
-        feature.last_build_success = result.success and result.cad_object is not None
-        feature.last_build_reason = result.reason
-        feature.last_build_warnings = list(result.warnings)
-        if not feature.last_build_success:
-            self.status_text.set(result.reason)
-            return None
-
-        surface = self._create_brep_surface_record(
-            name_prefix="Editable BREP Loft",
-            source_curves=source_curves,
-            build_result=result,
-            fallback_brep_type=BREP_TYPE_LOFT_SURFACE,
-        )
-        feature.brep_surface_id = surface.id
-        feature.metadata["loft_feature_dirty"] = False
-        surface.metadata.update(
-            {
-                "creation_type": "editable_loft_feature",
-                "loft_feature_id": feature.id,
-                "loft_feature_dirty": False,
-                "editable_feature": True,
-                **self._loft_overbuild_metadata(feature.options),
-            }
-        )
-        add_loft_feature(self.app_state.loft_feature_collection, feature)
-        open_sheet_warning = next(
-            (
-                warning
-                for warning in result.warnings
-                if "open sheet" in warning.lower()
-            ),
-            None,
-        )
-        self._finish_created_brep_surface(
-            surface,
-            result,
-            status=(
-                f"Created editable BREP loft: {feature.name}. {open_sheet_warning}"
-                if open_sheet_warning
-                else f"Created editable BREP loft: {feature.name}."
-            ),
-        )
-        self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
-        return feature
+        self._apply_command_result(result)
+        if result.success:
+            self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
+            self._sync_surface_context_from_active_surface()
+            self._show_context(self.app_state.selected_item)
 
     @staticmethod
     def _loft_overbuild_metadata(options: LoftFeatureOptions) -> dict[str, object]:
@@ -7941,151 +7268,6 @@ class OpenRetopWindow:
         value = min(max(value, 0.0), 10.0)
         variable.set(f"{value:.3f}")
         return value
-
-    def _build_editable_loft_feature(
-        self,
-        feature: LoftFeatureRecord,
-        source_curves: Sequence[StoredCurve],
-    ) -> CadBuildResult:
-        if len(source_curves) > 2:
-            return CadBuildResult(
-                success=False,
-                cad_object=None,
-                reason="Multi-section editable loft not implemented yet.",
-            )
-        if len(source_curves) < 2:
-            return CadBuildResult(False, None, "Editable loft requires at least two curves.")
-        source_curves = self._prepared_loft_source_curves(feature, source_curves)
-        closed_values = [bool(curve.is_closed) for curve in source_curves]
-        if any(closed_values) and not all(closed_values):
-            return CadBuildResult(
-                False,
-                None,
-                "Editable loft requires source curves to be consistently open or closed.",
-            )
-        if not all(closed_values) and (
-            feature.options.cap_start
-            or feature.options.cap_end
-            or feature.options.create_solid_if_closed
-        ):
-            return CadBuildResult(
-                False,
-                None,
-                "Open curve loft creates an open sheet. Use four-boundary patch or add rails to close sides.",
-            )
-
-        wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
-        if feature.options.use_cad_wires and all(
-            result.success and result.cad_object is not None for result in wire_results
-        ):
-            result = build_loft_surface_from_cad_wires(
-                [wire_result.cad_object for wire_result in wire_results],
-                closed_profiles=all(closed_values),
-                cap_start=feature.options.cap_start,
-                cap_end=feature.options.cap_end,
-                create_solid_if_closed=feature.options.create_solid_if_closed,
-                ruled=feature.options.ruled,
-                source_metadata={
-                    "loft_feature_id": feature.id,
-                    "source_curve_ids": list(feature.options.source_curve_ids),
-                    "preserve_corners": feature.options.preserve_corners,
-                    "match_curve_directions": feature.options.match_curve_directions,
-                    "align_closed_curve_seams": feature.options.align_closed_curve_seams,
-                    "cad_wire_metadata": [wire_result.metadata for wire_result in wire_results],
-                },
-            )
-            result.warnings = self._merged_metadata_strings(
-                [warning for wire_result in wire_results for warning in wire_result.warnings],
-                result.warnings,
-            )
-            return result
-
-        try:
-            curve_inputs = [curve_points_from_stored_curve(curve) for curve in source_curves]
-        except ValueError as exc:
-            return CadBuildResult(False, None, str(exc))
-        result = build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
-        if result.success:
-            result.warnings = self._merged_metadata_strings(
-                result.warnings,
-                ["Used sampled curve fallback; inspect sharp corners."],
-            )
-            result.metadata.update(
-                {
-                    "loft_feature_id": feature.id,
-                    "source_curve_ids": list(feature.options.source_curve_ids),
-                    "loft_result_type": "closed_shell" if all(closed_values) else "open_sheet",
-                    "cad_wire_fallback_reasons": [
-                        wire_result.reason for wire_result in wire_results if not wire_result.success
-                    ],
-                }
-            )
-        return result
-
-    def _prepared_loft_source_curves(
-        self,
-        feature: LoftFeatureRecord,
-        source_curves: Sequence[StoredCurve],
-    ) -> list[StoredCurve]:
-        prepared = [copy.deepcopy(curve) for curve in source_curves]
-        if len(prepared) < 2:
-            return prepared
-        reference_points = np.asarray(prepared[0].fitted_points, dtype=float).reshape((-1, 3))
-        for index in range(1, len(prepared)):
-            curve = prepared[index]
-            points = np.asarray(curve.fitted_points, dtype=float).reshape((-1, 3))
-            if len(reference_points) < 2 or len(points) < 2:
-                continue
-            if feature.options.match_curve_directions:
-                direct = float(
-                    np.linalg.norm(reference_points[0] - points[0])
-                    + np.linalg.norm(reference_points[-1] - points[-1])
-                )
-                reversed_distance = float(
-                    np.linalg.norm(reference_points[0] - points[-1])
-                    + np.linalg.norm(reference_points[-1] - points[0])
-                )
-                if reversed_distance < direct:
-                    self._reverse_curve_geometry_in_place(curve)
-                    points = np.asarray(curve.fitted_points, dtype=float).reshape((-1, 3))
-            if feature.options.align_closed_curve_seams and curve.is_closed:
-                controls = parse_manual_curve_metadata_v2(curve)
-                if controls is not None and controls.points:
-                    target = reference_points[0]
-                    seam_index = int(
-                        np.argmin(
-                            np.linalg.norm(controls.control_points - target, axis=1)
-                        )
-                    )
-                    controls.points = controls.points[seam_index:] + controls.points[:seam_index]
-                    curve.metadata["control_points"] = controls.control_points.tolist()
-                    curve.metadata["control_points_v2"] = [
-                        {
-                            "position": point.position.tolist(),
-                            "point_type": point.point_type,
-                            "weight": point.weight,
-                            "tangent_in": None if point.tangent_in is None else point.tangent_in.tolist(),
-                            "tangent_out": None if point.tangent_out is None else point.tangent_out.tolist(),
-                            "snap_triangle_index": point.snap_triangle_index,
-                            "snap_normal": point.snap_normal,
-                            "metadata": dict(point.metadata),
-                        }
-                        for point in controls.points
-                    ]
-                    curve.metadata["point_types"] = [point.point_type for point in controls.points]
-                    curve.fitted_points = sample_hybrid_manual_curve(controls)
-        return prepared
-
-    @staticmethod
-    def _reverse_curve_geometry_in_place(curve: StoredCurve) -> None:
-        curve.original_points = np.asarray(curve.original_points, dtype=float)[::-1].copy()
-        curve.fitted_points = np.asarray(curve.fitted_points, dtype=float)[::-1].copy()
-        metadata = dict(curve.metadata)
-        for key in ("control_points", "control_points_v2", "point_types", "snap_triangle_indices", "snap_normals"):
-            value = metadata.get(key)
-            if isinstance(value, list):
-                metadata[key] = list(reversed(value))
-        curve.metadata = metadata
 
     def _curves_for_ids(
         self,
@@ -8128,59 +7310,48 @@ class OpenRetopWindow:
             self.status_text.set("STEP export cancelled.")
             return
 
-        result = export_step(cad_object, Path(selected_path))
-        if not result.success:
-            self.status_text.set(result.reason)
-            return
-
-        assert result.path is not None
-        surface.metadata["last_export_path"] = result.path
-        surface.metadata["last_export_reason"] = result.reason
-        self._sync_surface_context_from_active_surface()
-        self._refresh_scene_browser()
-        self.status_text.set(f"Exported STEP: {result.path}")
-        self._set_project_dirty(True)
+        result = self.brep_controller.export_surface(
+            Path(selected_path),
+            surface.id,
+        )
+        self._apply_command_result(result)
+        if result.success:
+            export_path = str(result.metadata.get("export_path", selected_path))
+            self._sync_surface_context_from_active_surface()
+            self.status_text.set(f"Exported STEP: {export_path}")
 
     def rebuild_selected_brep_surface(self) -> None:
         surface = self._selected_single_brep_surface()
         if surface is None:
             self.status_text.set("Select a BREP surface to rebuild.")
             return
-        if loft_feature_for_brep_surface(
-            self.app_state.loft_feature_collection,
-            surface.id,
-        ) is not None:
-            self.rebuild_selected_loft_feature()
-            return
-
         region_derived = (
             str(surface.metadata.get("creation_type", ""))
             == "region_plane_fit_brep"
         )
-        result = self._rebuild_brep_surface(surface)
-        if not result.success or result.cad_object is None:
-            surface.metadata["build_reason"] = result.reason
-            if result.warnings:
-                surface.metadata["warnings"] = list(result.warnings)
-            self._sync_surface_context_from_active_surface()
-            self.status_text.set(result.reason)
-            return
-
-        self._brep_runtime_cache[surface.id] = result.cad_object
-        surface.backend = str(result.metadata.get("backend", surface.backend))
-        surface.metadata.update(result.metadata)
-        surface.metadata["warnings"] = list(result.warnings)
-        surface.metadata["runtime_status"] = "ready"
-        surface.metadata["build_reason"] = result.reason
+        result = (
+            self.brep_controller.adopt_rebuild_build(
+                surface.id,
+                self._rebuild_region_plane_brep_surface(surface),
+            )
+            if region_derived
+            else self.brep_controller.rebuild_surface(surface.id)
+        )
+        self._apply_command_result(result)
         self._sync_surface_context_from_active_surface()
-        self._refresh_scene_browser()
-        self._refresh_viewport(reset_camera=False)
+        if not result.success:
+            if region_derived and result.metadata.get("missing_curve_ids"):
+                self.status_text.set(
+                    "Cannot rebuild BREP: missing source region and boundary curve."
+                )
+            return
         self.status_text.set(
-            "Rebuilt BREP planar face from region metadata."
+            "Rebuilt editable BREP loft from source curves."
+            if self._active_loft_feature() is not None
+            else "Rebuilt BREP planar face from region metadata."
             if region_derived
             else "Rebuilt BREP surface."
         )
-        self._set_project_dirty(True)
 
     def _active_loft_feature(self) -> LoftFeatureRecord | None:
         surface = self._selected_single_brep_surface()
@@ -8196,41 +7367,11 @@ class OpenRetopWindow:
         if feature is None:
             self.status_text.set("Select an editable loft feature to rebuild.")
             return
-        source_curves, missing = self._curves_for_ids(feature.options.source_curve_ids)
-        if missing:
-            self.status_text.set(f"Missing loft source curve: {missing[0]}")
-            return
-        result = self._build_editable_loft_feature(feature, source_curves)
-        feature.last_build_success = result.success and result.cad_object is not None
-        feature.last_build_reason = result.reason
-        feature.last_build_warnings = list(result.warnings)
-        surface = self._brep_surface_by_id(feature.brep_surface_id)
-        if not feature.last_build_success or surface is None:
-            feature.metadata["loft_feature_dirty"] = True
-            self.status_text.set(result.reason)
-            self._sync_surface_context_from_active_surface()
-            return
-        self._loft_rebuild_counter += 1
-        feature.metadata["loft_feature_dirty"] = False
-        feature.metadata["last_rebuild_session"] = self._loft_rebuild_counter
-        self._brep_runtime_cache[surface.id] = result.cad_object
-        surface.backend = str(result.metadata.get("backend", surface.backend))
-        surface.source_curve_ids = list(feature.options.source_curve_ids)
-        surface.metadata.update(result.metadata)
-        surface.metadata.update(
-            {
-                "loft_feature_id": feature.id,
-                "loft_feature_dirty": False,
-                "runtime_status": "ready",
-                "build_reason": result.reason,
-                "warnings": list(result.warnings),
-                **self._loft_overbuild_metadata(feature.options),
-            }
-        )
+        result = self.brep_controller.rebuild_loft_feature(feature.id)
+        self._apply_command_result(result)
         self._sync_surface_context_from_active_surface()
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Rebuilt editable BREP loft from source curves.")
-        self._set_project_dirty(True)
+        if result.success:
+            self.status_text.set("Rebuilt editable BREP loft from source curves.")
 
     def _brep_surface_by_id(self, surface_id: str | None) -> BrepSurfaceRecord | None:
         if surface_id is None:
@@ -8248,46 +7389,42 @@ class OpenRetopWindow:
         feature = self._active_loft_feature()
         if feature is None:
             return
-        feature.name = self.loft_feature_name_text.get().strip() or feature.name
-        feature.options.preserve_corners = bool(self.loft_preserve_corners.get())
-        feature.options.match_curve_directions = bool(self.loft_match_directions.get())
-        feature.options.align_closed_curve_seams = bool(self.loft_align_closed_seams.get())
-        feature.options.cap_start = bool(self.loft_cap_start.get())
-        feature.options.cap_end = bool(self.loft_cap_end.get())
-        feature.options.create_solid_if_closed = bool(self.loft_create_solid.get())
-        feature.options.ruled = bool(self.loft_ruled.get())
-        feature.options.smoothing = "ruled" if feature.options.ruled else "normal"
-        feature.options.rebuild_on_source_edit = bool(self.loft_rebuild_on_source_edit.get())
-        feature.options.overbuild_enabled = bool(self.loft_overbuild_enabled.get())
-        feature.options.overbuild_amount = self._loft_overbuild_value(
+        options = copy.deepcopy(feature.options)
+        options.preserve_corners = bool(self.loft_preserve_corners.get())
+        options.match_curve_directions = bool(self.loft_match_directions.get())
+        options.align_closed_curve_seams = bool(self.loft_align_closed_seams.get())
+        options.cap_start = bool(self.loft_cap_start.get())
+        options.cap_end = bool(self.loft_cap_end.get())
+        options.create_solid_if_closed = bool(self.loft_create_solid.get())
+        options.ruled = bool(self.loft_ruled.get())
+        options.smoothing = "ruled" if options.ruled else "normal"
+        options.rebuild_on_source_edit = bool(self.loft_rebuild_on_source_edit.get())
+        options.overbuild_enabled = bool(self.loft_overbuild_enabled.get())
+        options.overbuild_amount = self._loft_overbuild_value(
             self.loft_overbuild_amount_text
         )
-        feature.options.overbuild_u_start = self._loft_overbuild_value(
+        options.overbuild_u_start = self._loft_overbuild_value(
             self.loft_overbuild_u_start_text
         )
-        feature.options.overbuild_u_end = self._loft_overbuild_value(
+        options.overbuild_u_end = self._loft_overbuild_value(
             self.loft_overbuild_u_end_text
         )
-        feature.options.overbuild_v_start = self._loft_overbuild_value(
+        options.overbuild_v_start = self._loft_overbuild_value(
             self.loft_overbuild_v_start_text
         )
-        feature.options.overbuild_v_end = self._loft_overbuild_value(
+        options.overbuild_v_end = self._loft_overbuild_value(
             self.loft_overbuild_v_end_text
         )
-        feature.options.show_overbuild_handles = bool(
+        options.show_overbuild_handles = bool(
             self.loft_show_overbuild_handles.get()
         )
-        feature.metadata["loft_feature_dirty"] = True
-        feature.metadata["overbuild_preview_revision"] = int(
-            feature.metadata.get("overbuild_preview_revision", 0)
-        ) + 1
-        surface = self._brep_surface_by_id(feature.brep_surface_id)
-        if surface is not None:
-            surface.metadata["loft_feature_dirty"] = True
-            surface.metadata.update(self._loft_overbuild_metadata(feature.options))
-        self._refresh_viewport(reset_camera=False)
+        result = self.brep_controller.update_loft_feature(
+            feature.id,
+            options=options,
+            name=self.loft_feature_name_text.get().strip() or feature.name,
+        )
+        self._apply_command_result(result)
         self.status_text.set(LOFT_OVERBUILD_EXPLANATION)
-        self._set_project_dirty(True)
 
     def reverse_selected_loft_source_curve_direction(self) -> None:
         feature = self._active_loft_feature()
@@ -8295,28 +7432,15 @@ class OpenRetopWindow:
             self.status_text.set("Select an editable loft feature first.")
             return
         curve_id = self._selected_loft_source_curve_id(feature)
-        curves, missing = self._curves_for_ids([curve_id])
-        if missing or not curves:
-            self.status_text.set("Loft source curve is missing.")
-            return
-        curve = curves[0]
-        curve.original_points = np.asarray(curve.original_points, dtype=float)[::-1].copy()
-        curve.fitted_points = np.asarray(curve.fitted_points, dtype=float)[::-1].copy()
-        metadata = dict(curve.metadata)
-        for key in ("control_points", "control_points_v2", "point_types", "snap_triangle_indices", "snap_normals"):
-            value = metadata.get(key)
-            if isinstance(value, list):
-                metadata[key] = list(reversed(value))
-        metadata["curve_direction_reversed"] = not bool(
-            metadata.get("curve_direction_reversed", False)
+        result = self.brep_controller.reverse_source_curve(
+            curve_id,
+            feature_id=feature.id,
         )
-        metadata["source_curve_revision"] = int(metadata.get("source_curve_revision", 0)) + 1
-        curve.metadata = metadata
-        refresh_curve_diagnostics(curve)
-        mark_loft_features_dirty_for_curve(self.app_state.loft_feature_collection, curve.id)
-        self.status_text.set("Reversed loft source curve direction; rebuild loft.")
-        self._refresh_viewport(reset_camera=False)
-        self._set_project_dirty(True)
+        self._apply_command_result(result)
+        if result.success:
+            self.status_text.set(
+                "Reversed loft source curve direction; rebuild loft."
+            )
 
     def edit_first_source_curve_for_active_loft(self) -> None:
         feature = self._active_loft_feature()
@@ -8343,23 +7467,19 @@ class OpenRetopWindow:
             self.status_text.set("Select an editable loft feature first.")
             return
         curve_id = self._selected_loft_source_curve_id(feature)
-        index = feature.options.source_curve_ids.index(curve_id)
-        target = min(max(index + int(offset), 0), len(feature.options.source_curve_ids) - 1)
-        if target == index:
-            self.status_text.set("Source curve is already at that end of the loft order.")
-            return
-        feature.options.source_curve_ids[index], feature.options.source_curve_ids[target] = (
-            feature.options.source_curve_ids[target],
-            feature.options.source_curve_ids[index],
+        result = self.brep_controller.reorder_source_curve(
+            feature.id,
+            curve_id,
+            offset,
         )
-        feature.metadata["loft_feature_dirty"] = True
-        surface = self._brep_surface_by_id(feature.brep_surface_id)
-        if surface is not None:
-            surface.source_curve_ids = list(feature.options.source_curve_ids)
-            surface.metadata["loft_feature_dirty"] = True
+        self._apply_command_result(result)
         self._sync_surface_context_from_active_surface()
-        self.status_text.set("Reordered loft source curves; rebuild loft.")
-        self._set_project_dirty(True)
+        if result.success and result.changed:
+            self.status_text.set("Reordered loft source curves; rebuild loft.")
+        elif result.success:
+            self.status_text.set(
+                "Source curve is already at that end of the loft order."
+            )
 
     def _selected_loft_source_curve_id(self, feature: LoftFeatureRecord) -> str:
         active_curve = self._active_curve()
@@ -8372,119 +7492,27 @@ class OpenRetopWindow:
         if feature is None:
             self.status_text.set("Select an editable loft feature to duplicate.")
             return
-        self._create_editable_loft_feature_from_options(
-            copy.deepcopy(feature.options),
+        result = self.brep_controller.duplicate_loft_feature(
+            feature.id,
             name=f"{feature.name} Copy",
+            surface_name=self._next_brep_surface_name("Editable BREP Loft"),
         )
+        self._apply_command_result(result)
+        if result.success:
+            self._sync_surface_context_from_active_surface()
+            self._show_context(self.app_state.selected_item)
 
     def delete_selected_loft_feature(self) -> None:
         feature = self._active_loft_feature()
         if feature is None:
             self.status_text.set("Select an editable loft feature to delete.")
             return
-        surface_id = feature.brep_surface_id
-        remove_loft_feature(self.app_state.loft_feature_collection, feature.id)
-        if surface_id is not None:
-            remove_brep_surface(self.app_state.brep_surface_collection, surface_id)
-            self._brep_runtime_cache.pop(surface_id, None)
+        result = self.brep_controller.delete_loft_feature(feature.id)
+        self._apply_command_result(result)
         self._sync_surface_context_from_active_surface()
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set("Deleted editable loft feature.")
-        self._set_project_dirty(True)
-
-    def _rebuild_brep_surface(self, surface: BrepSurfaceRecord) -> CadBuildResult:
-        loft_feature = loft_feature_for_brep_surface(
-            self.app_state.loft_feature_collection,
-            surface.id,
-        )
-        if loft_feature is not None:
-            source_curves, missing = self._curves_for_ids(
-                loft_feature.options.source_curve_ids
-            )
-            if missing:
-                return CadBuildResult(
-                    False,
-                    None,
-                    f"Missing loft source curve: {missing[0]}",
-                )
-            return self._build_editable_loft_feature(loft_feature, source_curves)
-        if (
-            str(surface.metadata.get("creation_type", ""))
-            == "region_plane_fit_brep"
-        ):
-            return self._rebuild_region_plane_brep_surface(surface)
-
-        source_curves, missing_curve_ids = self._source_curves_for_surface(surface)
-        if missing_curve_ids:
-            return CadBuildResult(
-                success=False,
-                cad_object=None,
-                reason=self._source_curve_missing_status(surface, missing_curve_ids),
-            )
-
-        try:
-            curve_inputs = [
-                curve_points_from_stored_curve(curve)
-                for curve in source_curves
-            ]
-        except ValueError as exc:
-            return CadBuildResult(success=False, cad_object=None, reason=str(exc))
-
-        if surface.brep_type == BREP_TYPE_PLANAR_FACE:
-            if len(curve_inputs) != 1:
-                return CadBuildResult(
-                    success=False,
-                    cad_object=None,
-                    reason="Planar BREP face rebuild requires one source curve.",
-                )
-            wire_result = build_cad_wire_from_curve(source_curves[0])
-            if wire_result.success and wire_result.cad_object is not None:
-                return build_planar_face_from_cad_wire(
-                    wire_result.cad_object,
-                    source_metadata=dict(wire_result.metadata),
-                )
-            result = build_planar_face_from_curve(curve_inputs[0])
-            if result.success and parse_manual_curve_metadata_v2(source_curves[0]) is not None:
-                result.warnings = self._merged_metadata_strings(
-                    result.warnings,
-                    ["Used sampled curve fallback; inspect sharp corners."],
-                )
-            return result
-
-        if surface.brep_type == BREP_TYPE_LOFT_SURFACE:
-            if len(curve_inputs) != 2:
-                return CadBuildResult(
-                    success=False,
-                    cad_object=None,
-                    reason="Loft BREP surface rebuild requires two source curves.",
-                )
-            wire_results = [build_cad_wire_from_curve(curve) for curve in source_curves]
-            if all(item.success and item.cad_object is not None for item in wire_results):
-                return build_loft_surface_from_cad_wires(
-                    [item.cad_object for item in wire_results],
-                    closed_profiles=bool(
-                        curve_inputs[0].is_closed and curve_inputs[1].is_closed
-                    ),
-                    source_metadata={
-                        "source_curve_ids": [curve.id for curve in source_curves]
-                    },
-                )
-            result = build_loft_surface_from_curves(curve_inputs[0], curve_inputs[1])
-            if result.success and any(
-                parse_manual_curve_metadata_v2(curve) is not None
-                for curve in source_curves
-            ):
-                result.warnings = self._merged_metadata_strings(
-                    result.warnings,
-                    ["Used sampled curve fallback; inspect sharp corners."],
-                )
-            return result
-
-        return CadBuildResult(
-            success=False,
-            cad_object=None,
-            reason=f"Cannot rebuild unsupported BREP type: {surface.brep_type}",
-        )
+        self._show_context(self.app_state.selected_item)
+        if result.success:
+            self.status_text.set("Deleted editable loft feature.")
 
     def _rebuild_region_plane_brep_surface(
         self,
@@ -8701,164 +7729,32 @@ class OpenRetopWindow:
 
     def create_boundary_patch_from_curve(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        if len(source_curves) != 1:
-            self.status_text.set("Create Boundary Patch requires one closed curve.")
-            return
-
-        readiness = validate_curve_for_fill(source_curves[0])
-        if readiness.errors:
-            self._set_curve_readiness_display([readiness], mode="fill")
-            if not readiness.is_closed:
-                self.status_text.set("Create Boundary Patch requires one closed curve.")
-            else:
-                self.status_text.set(readiness.errors[0])
-            return
-
-        source_curve = source_curves[0]
-        self._create_surface_preview(
-            source_curves,
-            surface_type="preview_boundary_patch",
-            preview_mode=BOUNDARY_PATCH,
-            source_label="selected_curve",
-            name_prefix="Boundary Patch",
-            success_action="Created",
-            validation_readiness=[readiness],
-            extra_metadata={
-                "boundary_curve_id": source_curve.id,
-                "boundary_curve_name": source_curve.name,
-            },
+        self._run_surface_controller_build(
+            lambda: self.surface_controller.create_boundary_patch(
+                curve_ids=[curve.id for curve in source_curves],
+                name=self._next_surface_name("Boundary Patch"),
+            )
         )
 
     def create_four_curve_patch(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        warnings, errors = self._surface_patch_validation_messages(
-            source_curves,
-            preview_mode=FOUR_CURVE_PATCH,
-        )
-        if errors:
-            self.status_text.set(errors[0])
-            return
-
-        surface = self._create_surface_preview(
-            source_curves,
-            surface_type="preview_four_curve_patch",
-            preview_mode=FOUR_CURVE_PATCH,
-            source_label="selected_curves",
-            name_prefix="Four-Curve Patch",
-            success_action="Created",
-            validation_warnings=warnings,
-            validation_errors=errors,
-            extra_metadata={"curve_order": [curve.id for curve in source_curves]},
-        )
-        if surface is not None:
-            feature = FourBoundaryPatchFeatureRecord(
-                id=f"four-boundary-feature-{uuid4().hex}",
-                name=surface.name,
-                source_curve_ids=[curve.id for curve in source_curves],
-                preserve_corners=True,
-                match_directions=True,
-                fill_method="coons_preview",
-                preview_surface_id=surface.id,
-                last_build_status="Four-boundary patch preview built.",
-                metadata={"four_boundary_feature_dirty": False},
+        self._run_surface_controller_build(
+            lambda: self.surface_controller.create_four_curve_patch(
+                curve_ids=[curve.id for curve in source_curves],
+                name=self._next_surface_name("Four-Curve Patch"),
             )
-            add_four_boundary_feature(
-                self.app_state.four_boundary_feature_collection,
-                feature,
-            )
-            surface.metadata["four_boundary_feature_id"] = feature.id
-            surface.metadata["editable_feature"] = True
+        )
 
     def create_curve_network_patch(self) -> None:
         source_curves = self._surface_source_curves_from_selection()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        warnings, errors = self._surface_patch_validation_messages(
-            source_curves,
-            preview_mode=CURVE_NETWORK_PATCH,
-        )
-        if errors:
-            self.status_text.set(errors[0])
-            return
-
-        self._create_surface_preview(
-            source_curves,
-            surface_type="preview_curve_network_patch",
-            preview_mode=CURVE_NETWORK_PATCH,
-            source_label="selected_curves",
-            name_prefix="Network Patch",
-            success_action="Created",
-            validation_warnings=warnings,
-            validation_errors=errors,
+        self._run_surface_controller_build(
+            lambda: self.surface_controller.create_curve_network_patch(
+                curve_ids=[curve.id for curve in source_curves],
+                name=self._next_surface_name("Network Patch"),
+            )
         )
 
-    def _create_surface_preview(
-        self,
-        source_curves: list[StoredCurve],
-        *,
-        surface_type: str,
-        preview_mode: str,
-        source_label: str,
-        name_prefix: str,
-        success_action: str,
-        validation_readiness: Sequence[CurveSurfaceReadiness] | None = None,
-        validation_warnings: Sequence[str] | None = None,
-        validation_errors: Sequence[str] | None = None,
-        extra_metadata: dict[str, object] | None = None,
-    ) -> SurfacePatch | None:
-        source_curve_names = [curve.name for curve in source_curves]
-        metadata: dict[str, object] = {
-            "curve_count": len(source_curves),
-            "source_curve_count": len(source_curves),
-            "source_curve_ids": [curve.id for curve in source_curves],
-            "source_curve_names": source_curve_names,
-            "source": source_label,
-            "preview_mode": preview_mode,
-            "source_curve_validation_warnings": [],
-            "source_curve_validation_errors": [],
-        }
-        if preview_mode == TWO_CURVE_LOFT:
-            metadata.update(
-                {
-                    "overbuild_enabled": True,
-                    "overbuild_amount": 0.10,
-                    "overbuild_u_start": 0.10,
-                    "overbuild_u_end": 0.10,
-                    "overbuild_v_start": 0.10,
-                    "overbuild_v_end": 0.10,
-                    "show_overbuild_handles": True,
-                    "overbuild_preview_only": True,
-                }
-            )
-        metadata.update(self._surface_source_lineage_metadata(source_curves))
-        if validation_readiness is not None:
-            metadata.update(self._surface_validation_metadata(validation_readiness))
-        if validation_warnings:
-            metadata["source_curve_validation_warnings"] = self._merged_metadata_strings(
-                metadata.get("source_curve_validation_warnings"),
-                validation_warnings,
-            )
-        if validation_errors:
-            metadata["source_curve_validation_errors"] = self._merged_metadata_strings(
-                metadata.get("source_curve_validation_errors"),
-                validation_errors,
-            )
-        if extra_metadata:
-            metadata.update(extra_metadata)
-        surface = SurfacePatch(
-            id=f"surface-{uuid4().hex}",
-            name=self._next_surface_name(name_prefix),
-            source_curve_ids=[curve.id for curve in source_curves],
-            surface_type=surface_type,
-            metadata=metadata,
-        )
+    def _run_surface_controller_build(self, result_factory: object) -> SurfacePatch | None:
         progress: ComputationProgressDialog | None = None
         try:
             progress = ComputationProgressDialog(
@@ -8868,135 +7764,33 @@ class OpenRetopWindow:
             )
             self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[0])
             self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[1])
-            preview_result = build_surface_preview(
-                surface,
-                self.app_state.curve_collection.curves,
-                mesh=self._surface_preview_projection_mesh(),
-                mesh_query_service=self.mesh_query_service,
-                mesh_revision=self._mesh_query_revision(),
-            )
+            result = result_factory()
             self._set_progress_stage(progress, SURFACE_PREVIEW_PROGRESS_STAGES[2])
         finally:
             if progress is not None:
                 progress.close()
-
-        surface.metadata["preview_available"] = bool(preview_result.preview_available)
-        surface.metadata["preview_reason"] = preview_result.reason
-        surface.metadata.update(preview_result.diagnostics)
-        surface.metadata["preview_warning"] = preview_result.warning or ""
-        backend_warnings = preview_result.diagnostics.get("warnings")
-        if isinstance(backend_warnings, list):
-            surface.metadata["source_curve_validation_warnings"] = self._merged_metadata_strings(
-                surface.metadata.get("source_curve_validation_warnings"),
-                backend_warnings,
-            )
-        if preview_result.mesh is None:
-            self.status_text.set(f"Surface preview unavailable: {preview_result.reason}")
+        self._apply_command_result(result)
+        if not result.success:
             return None
-
-        add_surface(self.app_state.surface_collection, surface)
-        self._push_created_surface_command(surface)
+        surface = result.metadata.get("surface")
+        if not isinstance(surface, SurfacePatch):
+            self.status_text.set("Surface preview did not return a surface record.")
+            return None
         self._sync_surface_context_from_active_surface()
-        curve_label = "curve" if len(source_curves) == 1 else "curves"
-        status = f"{success_action} {surface.name} from {len(source_curves)} {curve_label}"
-        self._set_selected_item(SELECT_SURFACE, status=status)
-        self._set_project_dirty(True)
+        self._show_context(self.app_state.selected_item)
         return surface
 
     def rebuild_selected_four_boundary_patch_feature(self) -> None:
-        active_surface = self._active_surface()
-        if active_surface is None:
-            self.status_text.set("Select a four-boundary patch feature to rebuild.")
-            return
-        feature = next(
-            (
-                item
-                for item in self.app_state.four_boundary_feature_collection.features
-                if item.preview_surface_id == active_surface.id
-            ),
-            None,
-        )
-        if feature is None:
-            self.status_text.set("Selected surface is not an editable four-boundary patch.")
-            return
-        result = build_surface_preview(
-            active_surface,
-            self.app_state.curve_collection.curves,
+        result = self.surface_controller.rebuild_four_boundary_feature(
             mesh=self._surface_preview_projection_mesh(),
-            mesh_query_service=self.mesh_query_service,
             mesh_revision=self._mesh_query_revision(),
         )
-        active_surface.metadata.update(result.diagnostics)
-        active_surface.metadata["preview_available"] = result.preview_available
-        active_surface.metadata["preview_reason"] = result.reason
-        feature.last_build_status = result.reason
-        feature.metadata["four_boundary_feature_dirty"] = not result.preview_available
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(
-            "Rebuilt four-boundary patch feature."
-            if result.preview_available
-            else result.reason
-        )
-        self._set_project_dirty(True)
+        self._apply_command_result(result)
+        self._sync_surface_context_from_active_surface()
 
     @staticmethod
     def _brep_build_succeeded(result: CadBuildResult) -> bool:
         return bool(result.success and result.cad_object is not None)
-
-    def _create_brep_surface_record(
-        self,
-        *,
-        name_prefix: str,
-        source_curves: Sequence[StoredCurve],
-        build_result: CadBuildResult,
-        fallback_brep_type: str,
-    ) -> BrepSurfaceRecord:
-        metadata = dict(build_result.metadata)
-        if build_result.warnings:
-            metadata["warnings"] = list(build_result.warnings)
-        metadata.update(self._surface_source_lineage_metadata(source_curves))
-        metadata["source_curve_ids"] = [curve.id for curve in source_curves]
-        metadata["source_curve_names"] = [curve.name for curve in source_curves]
-        metadata["source_curve_count"] = len(source_curves)
-        metadata["runtime_status"] = "ready"
-        metadata["build_reason"] = build_result.reason
-        if fallback_brep_type == BREP_TYPE_LOFT_SURFACE:
-            metadata.update(
-                {
-                    "overbuild_enabled": True,
-                    "overbuild_amount": 0.10,
-                    "overbuild_u_start": 0.10,
-                    "overbuild_u_end": 0.10,
-                    "overbuild_v_start": 0.10,
-                    "overbuild_v_end": 0.10,
-                    "show_overbuild_handles": False,
-                    "overbuild_preview_only": True,
-                }
-            )
-        return BrepSurfaceRecord(
-            id=f"brep-{uuid4().hex}",
-            name=self._next_brep_surface_name(name_prefix),
-            source_curve_ids=[curve.id for curve in source_curves],
-            brep_type=str(metadata.get("brep_type", fallback_brep_type)),
-            backend=str(metadata.get("backend", "")),
-            metadata=metadata,
-        )
-
-    def _finish_created_brep_surface(
-        self,
-        surface: BrepSurfaceRecord,
-        build_result: CadBuildResult,
-        *,
-        status: str,
-    ) -> None:
-        add_brep_surface(self.app_state.brep_surface_collection, surface)
-        set_active_brep_surface(self.app_state.brep_surface_collection, surface.id)
-        self._brep_runtime_cache[surface.id] = build_result.cad_object
-        self._push_created_brep_surface_command(surface, build_result.cad_object)
-        clear_surface_selection(self.app_state.surface_collection)
-        self._sync_surface_context_from_active_surface()
-        self._set_selected_item(SELECT_SURFACE, status=status)
-        self._set_project_dirty(True)
 
     def _surface_source_curves_from_selection(self) -> list[StoredCurve]:
         selected_curves = get_selected_curves(self.app_state.curve_collection)
@@ -9005,243 +7799,6 @@ class OpenRetopWindow:
 
         active_curve = self._active_curve()
         return [] if active_curve is None else [active_curve]
-
-    def _surface_patch_validation_messages(
-        self,
-        curves: Sequence[StoredCurve],
-        *,
-        preview_mode: str,
-    ) -> tuple[list[str], list[str]]:
-        warnings: list[str] = []
-        errors: list[str] = []
-        if preview_mode == FOUR_CURVE_PATCH and len(curves) != 4:
-            errors.append("Select exactly four curves for a four-curve patch.")
-        if preview_mode == CURVE_NETWORK_PATCH and len(curves) < 3:
-            errors.append("Select at least three curves for a curve network patch.")
-        if errors:
-            return warnings, errors
-
-        curve_points: list[np.ndarray] = []
-        for curve in curves:
-            points = self._surface_patch_curve_points(curve)
-            if len(points) < 2:
-                errors.append(f"{curve.name} has too few usable points.")
-                continue
-            if self._surface_patch_curve_length(points) <= 1e-8:
-                errors.append(f"{curve.name} is degenerate.")
-                continue
-            curve_points.append(points)
-        if errors:
-            return warnings, errors
-
-        warnings.extend(self._surface_source_mismatch_warnings(curves))
-        closed_values = [self._curve_is_closed_for_fill(curve) for curve in curves]
-        if any(closed_values) and not all(closed_values):
-            warnings.append("Surface patch mixes open and closed curves.")
-
-        point_counts = [len(points) for points in curve_points]
-        if point_counts and self._surface_count_ratio(min(point_counts), max(point_counts)) > 3.0:
-            warnings.append("Surface patch source curves have very different point counts.")
-
-        if preview_mode == FOUR_CURVE_PATCH:
-            warnings.append("Curve order inferred from scene order; inspect patch.")
-            corner_gaps = self._four_curve_corner_gaps(curve_points)
-            if corner_gaps:
-                average_length = max(
-                    float(
-                        np.mean(
-                            [
-                                self._surface_patch_curve_length(points)
-                                for points in curve_points
-                            ]
-                        )
-                    ),
-                    1e-8,
-                )
-                if max(corner_gaps) > average_length * 0.25:
-                    warnings.append("Four-curve patch endpoint gaps are large.")
-
-        if preview_mode == CURVE_NETWORK_PATCH:
-            spacing_ratio = self._curve_network_spacing_ratio(curve_points)
-            if spacing_ratio > 3.0:
-                warnings.append("Curve network spacing varies heavily; inspect patch.")
-
-        return list(dict.fromkeys(warnings)), []
-
-    @staticmethod
-    def _surface_patch_curve_points(curve: StoredCurve) -> np.ndarray:
-        try:
-            points = np.asarray(curve.fitted_points, dtype=float)
-        except (TypeError, ValueError):
-            return np.zeros((0, 3), dtype=float)
-        if points.size == 0:
-            return np.zeros((0, 3), dtype=float)
-        try:
-            points = points.reshape((-1, 3))
-        except ValueError:
-            return np.zeros((0, 3), dtype=float)
-        points = points[np.all(np.isfinite(points), axis=1)]
-        if len(points) <= 1:
-            return points.astype(float, copy=True)
-        cleaned = [points[0]]
-        for point in points[1:]:
-            if np.linalg.norm(point - cleaned[-1]) > 1e-8:
-                cleaned.append(point)
-        if len(cleaned) > 1 and np.linalg.norm(cleaned[0] - cleaned[-1]) <= 1e-8:
-            cleaned.pop()
-        return np.asarray(cleaned, dtype=float).reshape((-1, 3))
-
-    @staticmethod
-    def _surface_patch_curve_length(points: np.ndarray) -> float:
-        if len(points) < 2:
-            return 0.0
-        return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
-
-    @staticmethod
-    def _surface_count_ratio(first: int | float, second: int | float) -> float:
-        smaller = max(min(float(first), float(second)), 1e-8)
-        larger = max(float(first), float(second), 1e-8)
-        return larger / smaller
-
-    @staticmethod
-    def _four_curve_corner_gaps(curve_points: Sequence[np.ndarray]) -> list[float]:
-        if len(curve_points) != 4:
-            return []
-        bottom, right, top, left = curve_points
-        return [
-            float(np.linalg.norm(bottom[0] - left[0])),
-            float(np.linalg.norm(bottom[-1] - right[0])),
-            float(min(np.linalg.norm(top[0] - left[-1]), np.linalg.norm(top[-1] - left[-1]))),
-            float(min(np.linalg.norm(top[-1] - right[-1]), np.linalg.norm(top[0] - right[-1]))),
-        ]
-
-    def _curve_network_spacing_ratio(self, curve_points: Sequence[np.ndarray]) -> float:
-        if len(curve_points) < 2:
-            return 1.0
-        target_count = min(max(max(len(points) for points in curve_points), 2), 64)
-        resampled: list[np.ndarray] = []
-        for points in curve_points:
-            candidate = self._resample_surface_patch_points(points, target_count)
-            if candidate is None:
-                return 1.0
-            if resampled:
-                direct = float(np.mean(np.linalg.norm(resampled[-1] - candidate, axis=1)))
-                reversed_candidate = candidate[::-1]
-                reversed_distance = float(
-                    np.mean(np.linalg.norm(resampled[-1] - reversed_candidate, axis=1))
-                )
-                if reversed_distance < direct:
-                    candidate = reversed_candidate
-            resampled.append(candidate)
-        strip_distances = [
-            float(np.mean(np.linalg.norm(first - second, axis=1)))
-            for first, second in zip(resampled, resampled[1:])
-        ]
-        if not strip_distances:
-            return 1.0
-        return self._surface_count_ratio(min(strip_distances), max(strip_distances))
-
-    @staticmethod
-    def _resample_surface_patch_points(
-        points: np.ndarray,
-        target_count: int,
-    ) -> np.ndarray | None:
-        if len(points) == target_count:
-            return points.copy()
-        segment_lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
-        total_length = float(np.sum(segment_lengths))
-        if total_length <= 1e-8:
-            return None
-        cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
-        distances = np.linspace(0.0, total_length, target_count)
-        segment_indices = np.searchsorted(cumulative, distances, side="right") - 1
-        segment_indices = np.clip(segment_indices, 0, len(segment_lengths) - 1)
-        local_lengths = segment_lengths[segment_indices].reshape((-1, 1))
-        fractions = np.divide(
-            (distances - cumulative[segment_indices]).reshape((-1, 1)),
-            local_lengths,
-            out=np.zeros((len(distances), 1), dtype=float),
-            where=local_lengths > 1e-8,
-        )
-        lower = segment_indices
-        upper = np.minimum(segment_indices + 1, len(points) - 1)
-        resampled = points[lower] * (1.0 - fractions) + points[upper] * fractions
-        resampled[0] = points[0]
-        resampled[-1] = points[-1]
-        return resampled
-
-    @staticmethod
-    def _surface_source_mismatch_warnings(curves: Sequence[StoredCurve]) -> list[str]:
-        warnings: list[str] = []
-        mesh_names: set[str] = set()
-        region_ids: set[str] = set()
-        for curve in curves:
-            metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-            mesh_name = metadata.get("source_mesh_name")
-            region_id = metadata.get("source_region_id")
-            if mesh_name:
-                mesh_names.add(str(mesh_name))
-            if region_id:
-                region_ids.add(str(region_id))
-        if len(mesh_names) > 1:
-            warnings.append("Surface source curves come from different source meshes.")
-        if len(region_ids) > 1:
-            warnings.append("Surface source curves come from different source regions.")
-        return warnings
-
-    def _surface_source_lineage_metadata(
-        self,
-        source_curves: Sequence[StoredCurve],
-    ) -> dict[str, object]:
-        creation_types: list[str] = []
-        tags: list[str] = []
-        region_ids: list[str] = []
-        mesh_names: list[str] = []
-        for curve in source_curves:
-            metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-            creation_type = str(metadata.get("creation_type", "")).strip()
-            creation_types.append(creation_type)
-            tags.extend(self._surface_source_curve_tags(curve))
-            region_id = metadata.get("source_region_id")
-            mesh_name = metadata.get("source_mesh_name")
-            if region_id:
-                region_ids.append(str(region_id))
-            if mesh_name:
-                mesh_names.append(str(mesh_name))
-        lineage: dict[str, object] = {
-            "source_curve_creation_types": creation_types,
-            "source_curve_tags": list(dict.fromkeys(tags)),
-        }
-        if region_ids:
-            lineage["source_region_ids"] = list(dict.fromkeys(region_ids))
-        if mesh_names:
-            lineage["source_mesh_names"] = list(dict.fromkeys(mesh_names))
-        return lineage
-
-    @staticmethod
-    def _surface_source_curve_tags(curve: StoredCurve) -> list[str]:
-        metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-        explicit_tags = metadata.get("source_curve_tags", metadata.get("tags"))
-        tags: list[str] = []
-        if isinstance(explicit_tags, list):
-            tags.extend(str(tag) for tag in explicit_tags if str(tag))
-        creation_type = str(metadata.get("creation_type", "")).strip().lower()
-        if creation_type == "projected_curve":
-            tags.append("projected")
-        elif creation_type == "rebuilt_curve":
-            tags.append("rebuilt")
-        elif creation_type == "region_boundary" or "source_region_id" in metadata:
-            tags.append("boundary")
-        elif creation_type in {"manual", "curve_on_mesh"}:
-            tags.append("manual")
-        if str(metadata.get("snap_mode", "")).strip().lower() == "mesh" or metadata.get("snap_to_mesh"):
-            tags.append("mesh")
-        curve_method = str(metadata.get("curve_method", "")).strip().lower()
-        if curve_method == "polyline":
-            tags.append("polyline")
-        elif curve_method:
-            tags.append("smooth")
-        return list(dict.fromkeys(tags))
 
     @staticmethod
     def _merged_metadata_strings(
@@ -9255,34 +7812,6 @@ class OpenRetopWindow:
             values.append(str(existing))
         values.extend(str(value) for value in additions if str(value))
         return list(dict.fromkeys(values))
-
-    def _surface_validation_metadata(
-        self,
-        readiness_items: Sequence[CurveSurfaceReadiness],
-    ) -> dict[str, object]:
-        warnings = self._readiness_warnings(readiness_items)
-        errors = self._readiness_errors(readiness_items)
-        planarity_values = [
-            readiness.planarity_error
-            for readiness in readiness_items
-            if readiness.planarity_error is not None
-        ]
-        projection_values = [
-            readiness.mesh_projection_max_distance
-            for readiness in readiness_items
-            if readiness.mesh_projection_max_distance is not None
-        ]
-        metadata: dict[str, object] = {
-            "source_curve_validation_warnings": warnings,
-            "source_curve_validation_errors": errors,
-        }
-        if planarity_values:
-            metadata["source_curve_planarity_error"] = max(float(value) for value in planarity_values)
-        if projection_values:
-            metadata["source_curve_projection_distance"] = max(
-                float(value) for value in projection_values
-            )
-        return metadata
 
     def _next_surface_name(self, prefix: str) -> str:
         existing_names = {
@@ -10481,22 +9010,13 @@ class OpenRetopWindow:
             self._apply_manual_curve_action_result(result)
             return False
         self._replace_curve_geometry(active_curve, updated_curve)
-        after_curve = copy.deepcopy(active_curve)
-        self._push_undo_command(
-            CallbackUndoCommand(
-                "Edit Manual Curve",
-                undo_action=lambda: self._restore_manual_curve_snapshot(
-                    copy.deepcopy(before_curve)
-                ),
-                redo_action=lambda: self._restore_manual_curve_snapshot(
-                    copy.deepcopy(after_curve)
-                ),
-            )
-        )
         self._sync_visible_curve_results()
         self._sync_curve_context_from_active_curve()
         self._refresh_viewport(reset_camera=False)
-        self._handle_source_curve_edit_completion(active_curve.id)
+        self._handle_source_curve_edit_completion(
+            active_curve.id,
+            before_curve=before_curve,
+        )
         if not self.status_text.get().startswith("Loft source curve changed"):
             self.status_text.set("Curve edits saved")
         self._set_project_dirty(True)
@@ -10511,46 +9031,17 @@ class OpenRetopWindow:
                 return curve
         return None
 
-    def _handle_source_curve_edit_completion(self, curve_id: str) -> None:
-        affected = mark_loft_features_dirty_for_curve(
-            self.app_state.loft_feature_collection,
+    def _handle_source_curve_edit_completion(
+        self,
+        curve_id: str,
+        *,
+        before_curve: StoredCurve | None = None,
+    ) -> None:
+        result = self.brep_controller.source_curve_changed(
             curve_id,
+            before_curve=before_curve,
         )
-        mark_four_boundary_features_dirty_for_curve(
-            self.app_state.four_boundary_feature_collection,
-            curve_id,
-        )
-        if not affected:
-            return
-        auto_rebuilt = 0
-        for feature in affected:
-            surface = self._brep_surface_by_id(feature.brep_surface_id)
-            if surface is not None:
-                surface.metadata["loft_feature_dirty"] = True
-            if not feature.options.rebuild_on_source_edit:
-                continue
-            source_curves, missing = self._curves_for_ids(feature.options.source_curve_ids)
-            if missing:
-                continue
-            result = self._build_editable_loft_feature(feature, source_curves)
-            feature.last_build_success = result.success and result.cad_object is not None
-            feature.last_build_reason = result.reason
-            feature.last_build_warnings = list(result.warnings)
-            if not feature.last_build_success or surface is None:
-                continue
-            self._loft_rebuild_counter += 1
-            feature.metadata["loft_feature_dirty"] = False
-            feature.metadata["last_rebuild_session"] = self._loft_rebuild_counter
-            self._brep_runtime_cache[surface.id] = result.cad_object
-            surface.metadata.update(result.metadata)
-            surface.metadata["loft_feature_dirty"] = False
-            surface.metadata["warnings"] = list(result.warnings)
-            auto_rebuilt += 1
-        self.status_text.set(
-            "Loft source curve changed; rebuilt loft."
-            if auto_rebuilt
-            else "Loft source curve changed; rebuild loft."
-        )
+        self._apply_command_result(result)
 
     def _restore_manual_curve_snapshot(self, snapshot: StoredCurve) -> None:
         for index, curve in enumerate(self.app_state.curve_collection.curves):
@@ -10829,16 +9320,10 @@ class OpenRetopWindow:
             return
 
         removed_name = active_curve.name or "Curve"
-        delete_targets = self._delete_targets_for_node_ids((curve_node_id(active_curve.id),))
-        undo_command = self._delete_undo_command_for_targets(delete_targets)
-        self._apply_delete_targets(delete_targets)
-        if undo_command is not None:
-            self._push_undo_command(undo_command)
-        self._sync_visible_curve_results()
-        self._sync_surface_context_from_active_surface()
-        self._select_delete_fallback(delete_targets)
-        self.status_text.set(f"Deleted: {removed_name}")
-        self._set_project_dirty(True)
+        result = self.curve_controller.delete_selected()
+        self._apply_curve_controller_result(result)
+        if result.success and result.changed:
+            self.status_text.set(f"Deleted: {removed_name}")
 
     def _active_surface(self) -> SurfacePatch | None:
         return get_active_surface(self.app_state.surface_collection)
@@ -11071,21 +9556,16 @@ class OpenRetopWindow:
             self.status_text.set("No selected curves")
             return
 
-        node_ids = {curve_node_id(curve_id) for curve_id in selected_ids}
-        before = self._visibility_snapshot(node_ids)
-        for curve in self.app_state.curve_collection.curves:
-            if curve.id in selected_ids:
-                curve.visible = False
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Hide Visibility", before, after)
+        result = self.visibility_controller.hide(
+            curve_node_id(curve_id) for curve_id in selected_ids
+        )
+        self._apply_command_result(result)
         self._sync_curve_context_from_active_curve()
         self._sync_visible_curve_results()
-        self._refresh_viewport(reset_camera=False)
         count = len(selected_ids)
         self.status_text.set(
             "Hidden selected curve" if count == 1 else f"Hidden {count} selected curves"
         )
-        self._set_project_dirty(True)
 
     def hide_unselected_curves(self) -> None:
         selected_ids = set(self.app_state.curve_collection.selected_curve_ids)
@@ -11093,64 +9573,38 @@ class OpenRetopWindow:
             self.status_text.set("No selected curves")
             return
 
-        node_ids = {
+        node_ids = tuple(
             curve_node_id(curve.id)
             for curve in self.app_state.curve_collection.curves
             if curve.id not in selected_ids
-        }
-        before = self._visibility_snapshot(node_ids)
-        hidden_count = 0
-        for curve in self.app_state.curve_collection.curves:
-            if curve.id not in selected_ids and curve.visible:
-                hidden_count += 1
-                curve.visible = False
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Hide Visibility", before, after)
+        )
+        result = self.visibility_controller.hide(node_ids)
+        self._apply_command_result(result)
+        hidden_count = len(result.metadata.get("object_ids", ()))
         self._sync_curve_context_from_active_curve()
         self._sync_visible_curve_results()
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(
             "No unselected visible curves"
             if hidden_count == 0
             else f"Hidden {hidden_count} unselected curves"
         )
-        self._set_project_dirty(True)
 
     def show_all_curves(self) -> None:
         if not self.app_state.curve_collection.curves:
             self.status_text.set("No curves available")
             return
 
-        node_ids = {
+        node_ids = tuple(
             curve_node_id(curve.id)
             for curve in self.app_state.curve_collection.curves
-        }
-        before = self._visibility_snapshot(node_ids)
-        for curve in self.app_state.curve_collection.curves:
-            curve.visible = True
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Show Visibility", before, after)
+        )
+        self._apply_command_result(self.visibility_controller.show(node_ids))
         self._sync_curve_context_from_active_curve()
         self._sync_visible_curve_results()
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set("All curves visible")
-        self._set_project_dirty(True)
 
     def select_tiny_curves(self) -> None:
-        tiny_curves = self._tiny_curves()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        if not tiny_curves:
-            self.status_text.set("No tiny curves found")
-            return
-
-        tiny_curve_ids = [curve.id for curve in tiny_curves]
-        self.select_curves(tiny_curve_ids, active_curve_id=tiny_curve_ids[0])
-        count = len(tiny_curve_ids)
-        self.status_text.set(
-            "Selected tiny curve" if count == 1 else f"Selected {count} tiny curves"
-        )
+        self._apply_curve_controller_result(self.curve_controller.select_tiny())
 
     def hide_tiny_curves(self) -> None:
         tiny_curves = self._tiny_curves()
@@ -11161,18 +9615,13 @@ class OpenRetopWindow:
             self.status_text.set("No tiny curves found")
             return
 
-        node_ids = {curve_node_id(curve.id) for curve in tiny_curves}
-        before = self._visibility_snapshot(node_ids)
-        hidden_count = 0
-        for curve in tiny_curves:
-            if curve.visible:
-                curve.visible = False
-                hidden_count += 1
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Hide Visibility", before, after)
+        result = self.visibility_controller.hide(
+            curve_node_id(curve.id) for curve in tiny_curves
+        )
+        self._apply_command_result(result)
+        hidden_count = len(result.metadata.get("object_ids", ()))
         self._sync_curve_context_from_active_curve()
         self._sync_visible_curve_results()
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(
             "No visible tiny curves"
             if hidden_count == 0
@@ -11182,36 +9631,17 @@ class OpenRetopWindow:
                 else f"Hidden {hidden_count} tiny curves"
             )
         )
-        if hidden_count:
-            self._set_project_dirty(True)
 
     def delete_tiny_curves(self) -> None:
-        tiny_curves = self._tiny_curves()
-        if not self.app_state.curve_collection.curves:
-            self.status_text.set("No curves available")
-            return
-        if not tiny_curves:
-            self.status_text.set("No tiny curves found")
-            return
-
-        tiny_curve_ids = [curve.id for curve in tiny_curves]
-        delete_targets = self._delete_targets_for_node_ids(
-            tuple(curve_node_id(curve_id) for curve_id in tiny_curve_ids)
-        )
-        undo_command = self._delete_undo_command_for_targets(delete_targets)
-        self._apply_delete_targets(delete_targets)
-        if undo_command is not None:
-            self._push_undo_command(undo_command)
-
-        self._sync_visible_curve_results()
-        self._sync_surface_context_from_active_surface()
-        count = len(tiny_curve_ids)
-        status = (
-            "Deleted tiny curve" if count == 1 else f"Deleted {count} tiny curves"
-        )
-        self._select_delete_fallback(delete_targets)
-        self.status_text.set(status)
-        self._set_project_dirty(True)
+        tiny_count = len(self._tiny_curves())
+        result = self.curve_controller.delete_tiny()
+        self._apply_curve_controller_result(result)
+        if result.success and result.changed:
+            self.status_text.set(
+                "Deleted tiny curve"
+                if tiny_count == 1
+                else f"Deleted {tiny_count} tiny curves"
+            )
 
     def _tiny_curves(self) -> list[StoredCurve]:
         for curve in self.app_state.curve_collection.curves:
@@ -11475,17 +9905,9 @@ class OpenRetopWindow:
         if candidate is None or candidate == active_surface.name:
             return
 
-        old_name = active_surface.name
-        active_surface.name = candidate
-        self._push_rename_command(
-            surface_node_id(active_surface.id),
-            "Rename Surface",
-            old_name,
-            candidate,
+        self._apply_command_result(
+            self.scene_controller.rename(surface_node_id(active_surface.id), candidate)
         )
-        self._refresh_scene_browser()
-        self.status_text.set(f"Selected: {active_surface.name}")
-        self._set_project_dirty(True)
 
     @staticmethod
     def _surface_preview_available_summary(metadata: dict[str, object]) -> str:
@@ -11600,12 +10022,20 @@ class OpenRetopWindow:
         if not np.isfinite(opacity):
             opacity = SURFACE_PREVIEW_DEFAULT_OPACITY
         opacity = min(max(opacity, 0.05), 1.0)
-        active_surface.metadata["display_opacity"] = opacity
+        if isinstance(active_surface, SurfacePatch):
+            result = self.surface_controller.update_surface(
+                active_surface.id,
+                opacity=opacity,
+            )
+        else:
+            result = self.brep_controller.update_surface_display(
+                active_surface.id,
+                opacity=opacity,
+            )
+        self._apply_command_result(result)
         self.surface_opacity_text.set(f"{opacity:.2f}")
         self.surface_metadata_text.set(self._surface_metadata_summary(active_surface.metadata))
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Selected: {active_surface.name}")
-        self._set_project_dirty(True)
 
     def _on_surface_wireframe_changed(self) -> None:
         if self._syncing_surface_display_controls:
@@ -11615,11 +10045,20 @@ class OpenRetopWindow:
         if active_surface is None:
             return
 
-        active_surface.metadata["wireframe_overlay"] = bool(self.surface_wireframe_overlay.get())
+        wireframe_overlay = bool(self.surface_wireframe_overlay.get())
+        if isinstance(active_surface, SurfacePatch):
+            result = self.surface_controller.update_surface(
+                active_surface.id,
+                wireframe_overlay=wireframe_overlay,
+            )
+        else:
+            result = self.brep_controller.update_surface_display(
+                active_surface.id,
+                wireframe_overlay=wireframe_overlay,
+            )
+        self._apply_command_result(result)
         self.surface_metadata_text.set(self._surface_metadata_summary(active_surface.metadata))
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Selected: {active_surface.name}")
-        self._set_project_dirty(True)
 
     def _on_surface_visibility_changed(self) -> None:
         active_surface = self._active_surface_record()
@@ -11627,14 +10066,13 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        node_ids = {surface_node_id(active_surface.id)}
-        before = self._visibility_snapshot(node_ids)
-        active_surface.visible = bool(self.surface_visible.get())
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
-        self._refresh_viewport(reset_camera=False)
+        result = self.visibility_controller.set_visibility(
+            (surface_node_id(active_surface.id),),
+            bool(self.surface_visible.get()),
+            operation="Toggle Visibility",
+        )
+        self._apply_command_result(result)
         self.status_text.set(f"Selected: {active_surface.name}")
-        self._set_project_dirty(True)
 
     def delete_selected_surface(self) -> None:
         active_surface = self._active_surface_record()
@@ -11642,16 +10080,12 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        removed_name = active_surface.name or "Surface"
-        delete_targets = self._delete_targets_for_node_ids((surface_node_id(active_surface.id),))
-        undo_command = self._delete_undo_command_for_targets(delete_targets)
-        self._apply_delete_targets(delete_targets)
-        if undo_command is not None:
-            self._push_undo_command(undo_command)
+        result = self.scene_controller.delete(
+            (surface_node_id(active_surface.id),)
+        )
+        self._apply_command_result(result)
         self._sync_surface_context_from_active_surface()
-        self._select_delete_fallback(delete_targets)
-        self.status_text.set(f"Deleted: {removed_name}")
-        self._set_project_dirty(True)
+        self._show_context(self.app_state.selected_item)
 
     @staticmethod
     def _section_result_summary(stored_result: StoredSectionResult) -> str:
@@ -12092,6 +10526,125 @@ class OpenRetopWindow:
         self._sync_region_panel()
         self._update_command_strip()
         self._update_menu_availability()
+        self._sync_registered_action_widget_states()
+
+    def _sync_registered_action_widget_states(self) -> None:
+        """Apply registry-owned enablement to concrete adapter widgets."""
+
+        context = self._application_action_context()
+        widget_actions = {
+            "select_model_button": "scene.select_model",
+            "select_section_plane_button": "scene.select_section_plane",
+            "model_select_section_plane_button": "scene.select_section_plane",
+            "scene_delete_mesh_button": "scene.delete_mesh",
+            "move_transform_button": "transform.move",
+            "rotate_transform_button": "transform.rotate",
+            "set_origin_geometry_button": "transform.origin_to_geometry",
+            "origin_world_button": "transform.origin_to_world",
+            "center_geometry_button": "transform.center_geometry",
+            "reset_object_button": "transform.reset",
+            "section_add_plane_button": "section.add_plane",
+            "section_delete_plane_button": "section.delete_plane",
+            "compute_section_button": "section.compute",
+            "clear_section_button": "section.clear_active",
+            "clear_all_sections_button": "section.clear_all",
+            "project_curve_to_mesh_button": "curve.project",
+            "manual_project_curve_to_mesh_button": "curve.project",
+            "rebuild_curve_button": "curve.rebuild",
+            "manual_rebuild_curve_button": "curve.rebuild",
+            "validate_curve_button": "curve.validate_fill",
+            "validate_loft_curves_button": "curve.validate_loft",
+            "convert_smooth_guide_button": "curve.convert_smooth",
+            "reduce_guide_curve_button": "curve.simplify_guide",
+            "delete_curve_button": "curve.delete_selected",
+            "edit_selected_curve_button": "manual_curve.edit",
+            "edit_manual_curve_button": "manual_curve.edit",
+            "join_curves_button": "curve.join",
+            "auto_close_curve_button": "curve.auto_close",
+            "simplify_curve_button": "curve.simplify",
+            "smooth_curve_button": "curve.smooth",
+            "hide_selected_curves_button": "curve.hide_selected",
+            "hide_unselected_curves_button": "curve.isolate_selected",
+            "show_all_curves_button": "curve.show_all",
+            "select_tiny_curves_button": "curve.select_tiny",
+            "hide_tiny_curves_button": "curve.hide_tiny",
+            "delete_tiny_curves_button": "curve.delete_tiny",
+            "fill_closed_curve_button": "surface.fill",
+            "loft_curves_button": "surface.loft",
+            "mesh_conforming_loft_button": "surface.conforming_loft",
+            "brep_face_button": "surface.brep_face",
+            "brep_face_output_button": "surface.brep_face",
+            "brep_loft_button": "surface.brep_loft",
+            "brep_loft_output_button": "surface.brep_loft",
+            "editable_brep_loft_button": "surface.editable_brep_loft",
+            "boundary_patch_button": "surface.boundary_patch",
+            "four_curve_patch_button": "surface.four_curve_patch",
+            "curve_network_patch_button": "surface.curve_network",
+            "brep_region_face_output_button": "surface.region_brep_face",
+            "create_region_brep_face_button": "surface.region_brep_face",
+            "rebuild_brep_surface_button": "surface.rebuild_brep",
+            "delete_brep_surface_button": "surface.delete",
+            "delete_surface_button": "surface.delete",
+            "rebuild_loft_feature_button": "surface.rebuild_loft",
+            "edit_loft_source_curve_button": "surface.edit_source",
+            "reverse_loft_source_curve_button": "surface.reverse_source",
+            "move_loft_source_up_button": "surface.source_up",
+            "move_loft_source_down_button": "surface.source_down",
+            "duplicate_loft_feature_button": "surface.duplicate_loft",
+            "delete_loft_feature_button": "surface.delete_loft",
+            "select_source_curves_button": "scene.select_source_curves",
+            "isolate_source_curves_button": "scene.isolate_source_curves",
+            "show_source_curves_button": "scene.show_source_curves",
+            "frame_source_curves_button": "view.frame_source_curves",
+            "start_manual_curve_button": "manual_curve.create",
+            "finish_manual_curve_button": "manual_curve.finish",
+            "cancel_manual_curve_button": "manual_curve.cancel",
+            "remove_manual_point_button": "manual_curve.remove_last",
+            "toggle_manual_closed_button": "manual_curve.toggle_closed",
+            "add_manual_point_button": "manual_curve.add_point",
+            "insert_manual_point_button": "manual_curve.insert_point",
+            "delete_manual_point_button": "manual_curve.delete_point",
+            "set_point_smooth_button": "manual_curve.point_smooth",
+            "set_point_corner_button": "manual_curve.point_corner",
+            "toggle_point_type_button": "manual_curve.toggle_point_type",
+            "auto_detect_corners_button": "manual_curve.auto_corners",
+            "clear_auto_corners_button": "manual_curve.clear_auto_corners",
+            "smooth_selected_span_button": "manual_curve.smooth_span",
+            "straighten_selected_span_button": "manual_curve.straighten_span",
+            "manual_curve_smoothness_slider": "manual_curve.smoothness_option",
+            "manual_curve_snap_check": "manual_curve.snap_option",
+            "manual_curve_auto_corner_check": "manual_curve.auto_corners_option",
+            "manual_curve_keep_on_mesh_check": "manual_curve.keep_on_mesh_option",
+            "manual_curve_type_combo": "manual_curve.type_option",
+            "manual_curve_sample_count_entry": "manual_curve.sample_count_option",
+            "manual_curve_corner_threshold_entry": "manual_curve.corner_threshold_option",
+            "manual_curve_placement_combo": "manual_curve.placement_option",
+            "region_select_button": "region.start",
+            "recompute_region_button": "region.recompute",
+            "clear_region_button": "region.clear",
+            "hide_region_button": "region.hide",
+            "show_region_button": "region.show",
+            "delete_region_button": "region.delete",
+            "region_name_entry": "region.rename",
+            "done_region_select_button": "region.finish",
+            "region_threshold_entry": "region.threshold",
+            "region_threshold_slider": "region.threshold",
+            "region_max_triangle_entry": "region.max_triangles",
+            "extract_region_boundary_button": "region.extract_boundary",
+            "select_region_boundary_curves_button": "region.select_boundaries",
+            "convert_boundary_hybrid_button": "region.convert_boundary",
+        }
+        readonly_widgets = {
+            "manual_curve_type_combo",
+            "manual_curve_placement_combo",
+        }
+        for widget_name, action_id in widget_actions.items():
+            widget = getattr(self, widget_name, None)
+            if widget is None:
+                continue
+            enabled = self.action_registry.state(action_id, context).enabled
+            enabled_state = "readonly" if widget_name in readonly_widgets else "normal"
+            widget.configure(state=enabled_state if enabled else "disabled")
 
     def _update_command_strip(self) -> None:
         mode = self._current_mode_label()
@@ -12624,19 +11177,30 @@ class OpenRetopWindow:
             len(scene_node_ids) == 1
             and self.scene_browser._is_renameable_node(scene_node_ids[0])
         )
-        frame_selected_action = self.action_registry.require(ACTION_FRAME_SELECTED)
         action_context = self._application_action_context()
-        frame_selected_enabled = frame_selected_action.resolve(
-            ActionContext(
-                has_scene_objects=action_context.has_scene_objects,
-                has_scene_selection=has_scene_selection,
-                can_undo=action_context.can_undo,
-                can_redo=action_context.can_redo,
-            )
-        ).enabled
+        scene_action_context = replace(
+            action_context,
+            has_scene_selection=has_scene_selection,
+            selection_count=len(scene_node_ids),
+        )
+        rename_action = self.action_registry.require("scene.rename_selected")
+        delete_action = self.action_registry.require("scene.delete_selected")
+        frame_selected_action = self.action_registry.require(ACTION_FRAME_SELECTED)
+        rename_enabled = (
+            can_rename_scene_selection
+            and rename_action.resolve(scene_action_context).enabled
+        )
+        delete_enabled = (
+            has_scene_selection
+            and delete_action.resolve(scene_action_context).enabled
+        )
+        frame_selected_enabled = (
+            has_scene_selection
+            and frame_selected_action.resolve(scene_action_context).enabled
+        )
 
-        self._set_menu_labels_state(self.edit_menu, ("Rename Selected",), can_rename_scene_selection)
-        self._set_menu_labels_state(self.edit_menu, ("Delete Selected",), has_scene_selection)
+        self._set_menu_labels_state(self.edit_menu, (rename_action.label,), rename_enabled)
+        self._set_menu_labels_state(self.edit_menu, (delete_action.label,), delete_enabled)
         self._set_menu_labels_state(
             self.view_menu,
             (frame_selected_action.label,),
@@ -12749,27 +11313,25 @@ class OpenRetopWindow:
     def _on_section_plane_visibility_changed(self) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
         if active_plane is not None:
-            node_ids = {section_plane_node_id(active_plane.id)}
-            before = self._visibility_snapshot(node_ids)
-            active_plane.visible = bool(self.show_section_plane.get())
-            after = self._visibility_snapshot(node_ids)
-            self._push_visibility_command("Toggle Visibility", before, after)
-        self._refresh_viewport(reset_camera=False)
-        self._set_project_dirty(True)
+            self._apply_command_result(
+                self.visibility_controller.set_visibility(
+                    (section_plane_node_id(active_plane.id),),
+                    bool(self.show_section_plane.get()),
+                )
+            )
 
     def _on_mesh_visibility_changed(self) -> None:
         if self.app_state.mesh_object is None:
             self.status_text.set("No selection")
             return
 
-        node_ids = {NODE_MESH}
-        before = self._visibility_snapshot(node_ids)
-        self.app_state.mesh_object.visible = bool(self.mesh_visible.get())
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
-        self._refresh_viewport(reset_camera=False)
+        self._apply_command_result(
+            self.visibility_controller.set_visibility(
+                (NODE_MESH,),
+                bool(self.mesh_visible.get()),
+            )
+        )
         self.status_text.set(f"Selected: {self.app_state.mesh_object.name}")
-        self._set_project_dirty(True)
 
     def _on_mesh_name_changed(self, event: object | None = None) -> None:
         mesh_object = self.app_state.mesh_object
@@ -12785,18 +11347,8 @@ class OpenRetopWindow:
         if candidate is None or candidate == mesh_object.name:
             return
 
-        old_name = mesh_object.name
-        mesh_object.name = candidate
-        self._push_rename_command(
-            NODE_MESH,
-            "Rename Mesh",
-            old_name,
-            candidate,
-        )
+        self._apply_command_result(self.scene_controller.rename(NODE_MESH, candidate))
         self._update_stats()
-        self._refresh_scene_browser()
-        self.status_text.set(f"Selected: {mesh_object.name}")
-        self._set_project_dirty(True)
 
     def _on_section_plane_name_changed(self, event: object | None = None) -> None:
         active_plane = get_active_plane(self.app_state.section_collection)
@@ -12812,19 +11364,14 @@ class OpenRetopWindow:
         if candidate is None or candidate == active_plane.name:
             return
 
-        old_name = active_plane.name
-        active_plane.name = candidate
-        self._push_rename_command(
-            section_plane_node_id(active_plane.id),
-            "Rename Section Plane",
-            old_name,
-            candidate,
+        self._apply_command_result(
+            self.scene_controller.rename(
+                section_plane_node_id(active_plane.id),
+                candidate,
+            )
         )
-        self._refresh_scene_browser()
         self._sync_curve_context_from_active_curve()
         self._sync_section_result_context_from_active_result()
-        self.status_text.set(f"Selected: {active_plane.name}")
-        self._set_project_dirty(True)
 
     def _on_section_result_visibility_changed(self) -> None:
         active_result = self._active_section_result()
@@ -12832,15 +11379,14 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        node_ids = {section_result_node_id(active_result.id)}
-        before = self._visibility_snapshot(node_ids)
-        active_result.visible = bool(self.section_result_visible.get())
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
+        self._apply_command_result(
+            self.visibility_controller.set_visibility(
+                (section_result_node_id(active_result.id),),
+                bool(self.section_result_visible.get()),
+            )
+        )
         self._set_display_section_result(active_result)
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Selected: {active_result.name}")
-        self._set_project_dirty(True)
 
     def _on_section_result_name_changed(self, event: object | None = None) -> None:
         active_result = self._active_section_result()
@@ -12856,19 +11402,14 @@ class OpenRetopWindow:
         if candidate is None or candidate == active_result.name:
             return
 
-        old_name = active_result.name
-        active_result.name = candidate
-        self._push_rename_command(
-            section_result_node_id(active_result.id),
-            "Rename Section Result",
-            old_name,
-            candidate,
+        self._apply_command_result(
+            self.scene_controller.rename(
+                section_result_node_id(active_result.id),
+                candidate,
+            )
         )
         self.section_result_text.set(self._section_result_summary(active_result))
-        self._refresh_scene_browser()
         self._sync_curve_context_from_active_curve()
-        self.status_text.set(f"Selected: {active_result.name}")
-        self._set_project_dirty(True)
 
     def _on_scene_browser_visibility(
         self,
@@ -12917,45 +11458,21 @@ class OpenRetopWindow:
             self.frame_source_curves_for_active_surface(node_ids)
             return
         if action == "toggle_visibility":
-            self.toggle_selected_scene_objects()
+            self._apply_command_result(self.visibility_controller.toggle(node_ids))
             return
         if action == "show_all":
-            self.show_all_scene_objects()
+            self._apply_command_result(self.visibility_controller.show_all())
             return
-
-        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
-        dirty_node_ids = expanded_node_ids
         if action == "hide_selected":
-            before = self._visibility_snapshot(expanded_node_ids)
-            changed_count = self._set_scene_visibility(expanded_node_ids, False)
-            after = self._visibility_snapshot(expanded_node_ids)
-            self._push_visibility_command("Hide Visibility", before, after)
-            status = self._visibility_status("Hidden", changed_count, "selected item")
+            result = self.visibility_controller.hide_selected(node_ids)
         elif action == "show_selected":
-            before = self._visibility_snapshot(expanded_node_ids)
-            changed_count = self._set_scene_visibility(expanded_node_ids, True)
-            after = self._visibility_snapshot(expanded_node_ids)
-            self._push_visibility_command("Show Visibility", before, after)
-            status = self._visibility_status("Shown", changed_count, "selected item")
+            result = self.visibility_controller.show_selected(node_ids)
         elif action == "hide_unselected":
-            target_node_ids = self._all_visibility_object_node_ids()
-            dirty_node_ids = target_node_ids
-            unselected_node_ids = target_node_ids - expanded_node_ids
-            before = self._visibility_snapshot(target_node_ids)
-            hidden_count = self._set_scene_visibility(unselected_node_ids, False)
-            shown_count = self._set_scene_visibility(expanded_node_ids, True)
-            changed_count = hidden_count + shown_count
-            after = self._visibility_snapshot(target_node_ids)
-            self._push_visibility_command("Hide Visibility", before, after)
-            status = self._visibility_status("Hidden", hidden_count, "unselected item")
+            result = self.visibility_controller.hide_unselected(node_ids)
         else:
             self.status_text.set("Unknown visibility command")
             return
-
-        self._sync_after_scene_visibility_change()
-        self.status_text.set(status)
-        if changed_count and self._has_persistent_visibility_target(dirty_node_ids):
-            self._set_project_dirty(True)
+        self._apply_command_result(result)
 
     def _select_scene_browser_nodes(self, node_ids: tuple[str, ...]) -> None:
         if not node_ids:
@@ -13230,15 +11747,12 @@ class OpenRetopWindow:
             self.status_text.set("No selection")
             return
 
-        node_ids = {surface_node_id(active_surface.id)}
-        before = self._visibility_snapshot(node_ids)
-        active_surface.visible = not active_surface.visible
-        after = self._visibility_snapshot(node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
+        result = self.visibility_controller.toggle(
+            (surface_node_id(active_surface.id),)
+        )
+        self._apply_command_result(result)
         self.surface_visible.set(active_surface.visible)
-        self._refresh_viewport(reset_camera=False)
         self.status_text.set(f"Selected: {active_surface.name}")
-        self._set_project_dirty(True)
 
     def start_move_transform(self) -> None:
         self._start_active_transform("move")
@@ -13297,16 +11811,7 @@ class OpenRetopWindow:
         return set()
 
     def _on_section_axis_changed(self, _event: object | None = None) -> None:
-        reset_to_axis_aligned = self._sync_active_section_plane_from_controls()
         self._configure_offset_range(reset=False)
-        self._update_section_plane_label(set_status=True)
-        if reset_to_axis_aligned:
-            self.status_text.set(
-                f"Section plane reset to axis-aligned {self.section_axis.get()} mode"
-            )
-        self._clear_section_for_plane_change()
-        self._refresh_viewport(reset_camera=False)
-        self._set_project_dirty(True)
 
     def _on_offset_slider_changed(self, value: object) -> None:
         if self._updating_offset:
@@ -13353,17 +11858,22 @@ class OpenRetopWindow:
 
         reset_to_axis_aligned = False
         if sync_plane:
-            reset_to_axis_aligned = self._sync_active_section_plane_from_controls()
-        self._update_section_plane_label(set_status=True)
-        if reset_to_axis_aligned:
-            self.status_text.set(
-                f"Section plane reset to axis-aligned {self.section_axis.get()} mode"
+            result = self.section_controller.set_axis_offset(
+                axis=self.section_axis.get(),
+                offset=next_offset,
+                offset_bounds=self._section_offset_bounds,
+                clamp=clamp,
+                visible=bool(self.show_section_plane.get()),
             )
-        if clear_section:
-            self._clear_section_for_plane_change()
-        if refresh:
+            if result.changed or not result.success:
+                self._apply_command_result(result)
+            reset_to_axis_aligned = bool(
+                result.metadata.get("reset_to_axis_aligned", False)
+            )
+        self._update_section_plane_label(set_status=not reset_to_axis_aligned)
+        if refresh and not sync_plane:
             self._refresh_viewport(reset_camera=False)
-        if mark_dirty:
+        if mark_dirty and not sync_plane:
             self._set_project_dirty(True)
 
     def _configure_offset_range(
@@ -13470,12 +11980,26 @@ class OpenRetopWindow:
             return
 
         location, rotation, scale = values
-        self.app_state.mesh_object.location = location
-        self.app_state.mesh_object.rotation = rotation
-        self.app_state.mesh_object.scale = scale
-        self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._model_transform_status("Transforms update live"))
-        self._set_project_dirty(True)
+        self._apply_transform_controller_result(
+            self.transform_controller.set_object_transform(
+                location=location,
+                rotation=rotation,
+                scale=scale,
+            )
+        )
+
+    def _apply_transform_controller_result(self, result: CommandResult) -> None:
+        self._apply_command_result(result)
+        if not result.success:
+            return
+        self._set_transform_inputs_from_object()
+        if self.app_state.mesh_object is not None:
+            self.mesh_state = MeshState.from_mesh(
+                self.app_state.mesh_object.display_mesh,
+                file_path=self.app_state.mesh_object.file_path,
+            )
+        self._update_stats()
+        self._configure_offset_range(reset=False, clear_section=False)
 
     def _parse_object_transform(
         self,
@@ -13551,101 +12075,29 @@ class OpenRetopWindow:
         )
 
     def set_origin_to_geometry(self) -> None:
-        if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
-            return
-
-        minimum_bound, maximum_bound = self._transformed_source_bounds()
-        current_center = (minimum_bound + maximum_bound) * 0.5
-        new_origin = transform_point(
-            np.linalg.inv(self._current_object_matrix()),
-            current_center,
+        self._apply_transform_controller_result(
+            self.transform_controller.set_origin_to_geometry(
+                transformed_bounds=self._transformed_source_bounds()
+            )
         )
-        self._change_origin_keep_geometry(new_origin)
-        self.status_text.set(self._model_transform_status("Origin set to geometry"))
-        self._set_project_dirty(True)
 
     def move_origin_to_world_origin(self) -> None:
-        if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
-            return
-
-        new_origin, new_location = calculate_origin_to_world_origin(
-            self.app_state.mesh_object.origin,
-            self.app_state.mesh_object.location,
-            self.app_state.mesh_object.rotation,
-            self.app_state.mesh_object.scale,
+        self._apply_transform_controller_result(
+            self.transform_controller.move_origin_to_world_origin()
         )
-        self.app_state.mesh_object.origin = new_origin
-        self.app_state.mesh_object.location = new_location
-        self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._model_transform_status("Origin moved to world origin"))
-        self._set_project_dirty(True)
 
     def center_geometry_on_origin(self) -> None:
-        if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
-            return
-
-        bounds = self.app_state.mesh_object.source_mesh.get_axis_aligned_bounding_box()
-        raw_center = np.asarray(bounds.get_center(), dtype=float)
-        delta = calculate_geometry_centering_delta(self.app_state.mesh_object.origin, raw_center)
-        self.app_state.mesh_object.source_mesh.translate(delta.tolist())
-        self.app_state.mesh_object.display_mesh.translate(delta.tolist())
-        self.app_state.mesh_object.source_bounds_min = np.asarray(
-            bounds.get_min_bound(),
-            dtype=float,
-        ) + delta
-        self.app_state.mesh_object.source_bounds_max = np.asarray(
-            bounds.get_max_bound(),
-            dtype=float,
-        ) + delta
-        self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._model_transform_status("Geometry centered on origin"))
-        self._set_project_dirty(True)
+        self._apply_transform_controller_result(
+            self.transform_controller.center_geometry_on_origin()
+        )
 
     def reset_object_transform(self) -> None:
-        if self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
-            return
-
-        self.app_state.mesh_object.location = self.app_state.mesh_object.origin.copy()
-        self.app_state.mesh_object.rotation = np.asarray([0.0, 0.0, 0.0], dtype=float)
-        self.app_state.mesh_object.scale = 1.0
-        self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=True)
-        self.status_text.set(
-            self._model_transform_status("Selected: " + self.app_state.mesh_object.name)
+        self._apply_transform_controller_result(
+            self.transform_controller.reset_object_transform()
         )
-        self._set_project_dirty(True)
-
-    def _change_origin_keep_geometry(self, new_origin: np.ndarray) -> None:
-        if self.app_state.mesh_object is None:
-            return
-
-        old_origin = self.app_state.mesh_object.origin.copy()
-        self.app_state.mesh_object.origin = np.asarray(new_origin, dtype=float)
-        self.app_state.mesh_object.location = calculate_location_for_origin_change(
-            self.app_state.mesh_object.location,
-            self.app_state.mesh_object.rotation,
-            self.app_state.mesh_object.scale,
-            old_origin,
-            self.app_state.mesh_object.origin,
-        )
-        self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
 
     def _current_object_matrix(self) -> np.ndarray:
-        if self.app_state.mesh_object is None:
-            return np.identity(4)
-
-        return build_object_transform_matrix(
-            self.app_state.mesh_object.location,
-            self.app_state.mesh_object.rotation,
-            self.app_state.mesh_object.scale,
-            self.app_state.mesh_object.origin,
-        )
+        return self.transform_controller.current_object_matrix()
 
     def _set_transform_inputs_from_object(self) -> None:
         if self.app_state.mesh_object is None:
@@ -13666,6 +12118,7 @@ class OpenRetopWindow:
         self.scale_value.set(f"{scale:.3f}")
 
     def _update_stats(self) -> None:
+        analysis = self.analysis_controller.snapshot()
         if self.app_state.mesh_object is None:
             loaded_file_name = "(none)"
             object_name = "(none)"
@@ -13678,7 +12131,8 @@ class OpenRetopWindow:
             source_retained = "(none)"
             bbox_extent = "-"
         else:
-            minimum_bound, maximum_bound = self._transformed_source_bounds()
+            minimum_bound = np.asarray(analysis.minimum_bound, dtype=float)
+            maximum_bound = np.asarray(analysis.maximum_bound, dtype=float)
             loaded_file_name = (
                 self.app_state.mesh_object.file_path.name
                 if self.app_state.mesh_object.file_path is not None
@@ -13686,9 +12140,9 @@ class OpenRetopWindow:
             )
             object_name = self.app_state.mesh_object.name
             mesh_visible = bool(self.app_state.mesh_object.visible)
-            vertex_count = _format_count(len(self.app_state.mesh_object.source_mesh.vertices))
-            source_triangles = _format_count(self.app_state.mesh_object.source_triangle_count)
-            display_triangles = _format_count(self.app_state.mesh_object.display_triangle_count)
+            vertex_count = _format_count(analysis.source_vertex_count)
+            source_triangles = _format_count(analysis.source_triangle_count)
+            display_triangles = _format_count(analysis.display_triangle_count)
             reduction = _format_percent(self.app_state.mesh_object.display_reduction_percent)
             display_proxy = (
                 f"Enabled ({self.app_state.mesh_object.proxy_quality})"
@@ -13716,6 +12170,23 @@ class OpenRetopWindow:
         self.selected_display_proxy_text.set(display_proxy)
         self.selected_bbox_size_text.set(bbox_extent)
 
+    def compute_mesh_deviation(
+        self,
+        source_points: object,
+        *,
+        max_distance: float | None = None,
+        signed: bool = False,
+    ) -> CommandResult:
+        """Compute deviation from explicit points using the shared query service."""
+
+        return self.analysis_controller.compute_deviation(
+            source_points,
+            mesh=self._surface_preview_projection_mesh(),
+            mesh_revision=self._mesh_query_revision(),
+            max_distance=max_distance,
+            signed=signed,
+        )
+
     def _display_mesh_status(self, display_result: DisplayMeshResult) -> str:
         proxy_status = (
             f"Proxy {display_result.quality}"
@@ -13730,117 +12201,24 @@ class OpenRetopWindow:
         )
 
     def _transformed_source_bounds(self) -> tuple[np.ndarray, np.ndarray]:
-        if (
-            self.app_state.mesh_object is None
-            or self.app_state.mesh_object.source_bounds_min is None
-            or self.app_state.mesh_object.source_bounds_max is None
-        ):
-            zero = np.asarray([0.0, 0.0, 0.0], dtype=float)
-            return (zero, zero)
-
-        return transform_bounds(
-            self.app_state.mesh_object.source_bounds_min,
-            self.app_state.mesh_object.source_bounds_max,
-            self._current_object_matrix(),
-        )
+        return self.transform_controller.transformed_source_bounds()
 
     def _transformed_source_mesh(self) -> TriangleMeshData:
-        if self.app_state.mesh_object is None:
-            return TriangleMeshData(
-                vertices=np.zeros((0, 3), dtype=float),
-                triangles=np.zeros((0, 3), dtype=int),
-            )
-
-        mesh = self.app_state.mesh_object.source_mesh.copy()
-        mesh.transform(self._current_object_matrix())
-        return mesh
+        return self.transform_controller.transformed_source_mesh()
 
     def _start_active_transform(self, mode: str) -> None:
-        if self.app_state.selected_item is None or self.app_state.mesh_object is None:
-            self.status_text.set("No selection")
-            return
-
-        section_origin = np.asarray([0.0, 0.0, 0.0], dtype=float)
-        section_normal = np.asarray([0.0, 0.0, 1.0], dtype=float)
-        section_axis = self.section_axis.get()
-        section_offset = float(self.section_offset.get())
-        section_plane_id: str | None = None
-        section_plane_name: str | None = None
-        if self.app_state.selected_item == SELECT_SECTION_PLANE:
-            if len(self.app_state.section_collection.selected_plane_ids) != 1:
-                self.status_text.set("Select one section plane to transform.")
-                return
-
-            active_plane = get_active_plane(self.app_state.section_collection)
-            if active_plane is None:
-                self.status_text.set("No section plane")
-                return
-            if active_plane.id not in self.app_state.section_collection.selected_plane_ids:
-                self.status_text.set("Select one section plane to transform.")
-                return
-            section_origin = plane_origin(active_plane)
-            section_normal = plane_normal(active_plane)
-            section_axis = active_plane.axis
-            section_offset = active_plane.offset
-            section_plane_id = active_plane.id
-            section_plane_name = active_plane.name
-
         if self._region_select_active:
             self._exit_region_select_mode()
-
-        self.app_state.transform_state = ActiveTransformState(
-            selected_item=self.app_state.selected_item,
-            mode=mode,
+        result = self.transform_controller.start(
+            mode,
             mouse_start=self._last_viewport_mouse,
-            axis_constraint=None,
-            location=self.app_state.mesh_object.location.copy(),
-            rotation=self.app_state.mesh_object.rotation.copy(),
-            section_axis=section_axis,
-            section_offset=section_offset,
-            section_origin=section_origin,
-            section_normal=section_normal,
-            section_plane_id=section_plane_id,
-            section_plane_name=section_plane_name,
         )
-        self.app_state.active_transform_mode = mode
-        self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
-        self._last_transform_readout = None
-        self._active_transform_angle_delta = 0.0 if mode == "rotate" else None
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
-        self._sync_workflow_ui()
+        self._apply_command_result(result)
 
     def _set_transform_axis_constraint(self, axis: str) -> None:
-        axis = axis.upper()
-        if axis == "N":
-            state = self.app_state.transform_state
-            if (
-                state is None
-                or state.selected_item != SELECT_SECTION_PLANE
-                or state.mode != "move"
-            ):
-                self.status_text.set(
-                    "Move Along Plane Normal is available while moving a section plane"
-                )
-                return
-        elif axis not in {"X", "Y", "Z"}:
-            return
-
-        if self.app_state.transform_state is None:
-            self.app_state.active_transform_axis = axis
-            self.status_text.set(f"Axis constraint: {axis}")
-            return
-
-        next_axis = None if self.app_state.transform_state.axis_constraint == axis else axis
-        self.app_state.transform_state.axis_constraint = next_axis
-        self.app_state.active_transform_axis = self._display_transform_axis(self.app_state.transform_state)
-        self._last_transform_readout = None
-        self._active_transform_angle_delta = (
-            0.0 if self.app_state.transform_state.mode == "rotate" else None
+        self._apply_command_result(
+            self.transform_controller.set_axis_constraint(axis)
         )
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
-        self._update_command_strip()
 
     def _update_active_transform(
         self,
@@ -13848,342 +12226,50 @@ class OpenRetopWindow:
         *,
         fine: bool,
     ) -> None:
+        if self.app_state.transform_state is None:
+            return
+        camera = self.viewport.get_camera_vectors()
+        result = self.transform_controller.update(
+            mouse_position,
+            camera_right=camera.right,
+            camera_up=camera.up,
+            camera_forward=camera.forward,
+            model_bounds=self._transformed_source_bounds(),
+            fine=fine,
+        )
+        self._apply_command_result(result)
         state = self.app_state.transform_state
-        if state is None:
-            return
-
-        if state.selected_item == SELECT_MODEL:
-            if state.mode == "move":
-                self._update_mesh_move_transform(state, mouse_position, fine=fine)
-            elif state.mode == "rotate":
-                self._update_mesh_rotate_transform(state, mouse_position, fine=fine)
-        elif state.selected_item == SELECT_SECTION_PLANE:
-            if state.mode == "move":
-                self._update_section_plane_move_transform(state, mouse_position, fine=fine)
-            elif state.mode == "rotate":
-                self._update_section_plane_rotate_transform(state, mouse_position, fine=fine)
-
-    def _update_mesh_move_transform(
-        self,
-        state: ActiveTransformState,
-        mouse_position: tuple[int, int],
-        *,
-        fine: bool,
-    ) -> None:
-        if self.app_state.mesh_object is None:
-            return
-
-        minimum_bound, maximum_bound = self._transformed_source_bounds()
-        model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
-        camera_vectors = self.viewport.get_camera_vectors()
-        if state.axis_constraint is None:
-            movement, readout = camera_relative_move_delta(
-                state.mouse_start,
-                mouse_position,
-                camera_vectors.right,
-                camera_vectors.up,
-                model_diagonal,
-                fine=fine,
-            )
-        else:
-            movement, amount = axis_constrained_camera_move_delta(
-                state.mouse_start,
-                mouse_position,
-                world_axis_vector(state.axis_constraint),
-                camera_vectors.right,
-                camera_vectors.up,
-                model_diagonal,
-                fine=fine,
-            )
-            readout = f"Delta {state.axis_constraint}: {amount:.2f}"
-
-        self._last_transform_readout = readout
-        self._active_transform_angle_delta = None
-        self.app_state.mesh_object.location = state.location + movement
-        self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
-
-    def _update_mesh_rotate_transform(
-        self,
-        state: ActiveTransformState,
-        mouse_position: tuple[int, int],
-        *,
-        fine: bool,
-    ) -> None:
-        if self.app_state.mesh_object is None:
-            return
-
-        # Rotation remains screen-horizontal for now; camera-relative rotation needs a dedicated pass.
-        axis = self._display_transform_axis(state) or "Z"
-        rotation, angle_delta = mesh_rotate_delta(
-            state.mouse_start,
-            mouse_position,
-            state.rotation,
-            axis,
-            fine=fine,
-        )
-        self.app_state.active_transform_axis = axis
-        self._last_transform_readout = f"{angle_delta:.1f} deg"
-        self._active_transform_angle_delta = angle_delta
-        self.app_state.mesh_object.rotation = rotation
-        self._set_transform_inputs_from_object()
-        self._apply_object_transform(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
-
-    def _update_section_plane_move_transform(
-        self,
-        state: ActiveTransformState,
-        mouse_position: tuple[int, int],
-        *,
-        fine: bool,
-    ) -> None:
-        active_plane = self._section_plane_for_transform_state(state)
-        if active_plane is None:
-            return
-
-        minimum_bound, maximum_bound = self._transformed_source_bounds()
-        model_diagonal = float(np.linalg.norm(maximum_bound - minimum_bound))
-        camera_vectors = self.viewport.get_camera_vectors()
-        if state.axis_constraint is None:
-            movement, readout = camera_relative_move_delta(
-                state.mouse_start,
-                mouse_position,
-                camera_vectors.right,
-                camera_vectors.up,
-                model_diagonal,
-                fine=fine,
-            )
-            readout = self._section_movement_readout(movement)
-        elif state.axis_constraint == "N":
-            movement, amount = axis_constrained_camera_move_delta(
-                state.mouse_start,
-                mouse_position,
-                state.section_normal,
-                camera_vectors.right,
-                camera_vectors.up,
-                model_diagonal,
-                fine=fine,
-            )
-            readout = f"{amount:.3f}"
-        else:
-            movement, amount = axis_constrained_camera_move_delta(
-                state.mouse_start,
-                mouse_position,
-                world_axis_vector(state.axis_constraint),
-                camera_vectors.right,
-                camera_vectors.up,
-                model_diagonal,
-                fine=fine,
-            )
-            readout = f"Delta {state.axis_constraint} {amount:.3f}"
-
-        set_plane_origin_normal(
-            active_plane,
-            state.section_origin + movement,
-            state.section_normal,
-        )
-        self._sync_section_controls_from_plane_orientation(active_plane)
-        self._last_transform_readout = readout
-        self._active_transform_angle_delta = None
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
-
-    def _update_section_plane_rotate_transform(
-        self,
-        state: ActiveTransformState,
-        mouse_position: tuple[int, int],
-        *,
-        fine: bool,
-    ) -> None:
-        active_plane = self._section_plane_for_transform_state(state)
-        if active_plane is None:
-            return
-
-        axis = self._display_transform_axis(state)
-        _rotation_delta, angle_delta = mesh_rotate_delta(
-            state.mouse_start,
-            mouse_position,
-            np.asarray([0.0, 0.0, 0.0], dtype=float),
-            axis or "Z",
-            fine=fine,
-        )
-        rotation_axis = (
-            world_axis_vector(axis)
-            if axis in {"X", "Y", "Z"}
-            else self._section_view_rotation_axis(state)
-        )
-        normal = rotate_vector_around_axis(
-            state.section_normal,
-            rotation_axis,
-            angle_delta,
-        )
-        set_plane_origin_normal(active_plane, state.section_origin, normal)
-        self._sync_section_controls_from_plane_orientation(active_plane)
-        self.app_state.active_transform_axis = axis
-        self._last_transform_readout = f"{angle_delta:.1f} deg"
-        self._active_transform_angle_delta = angle_delta
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(self._active_transform_status())
+        if result.success and result.changed and state is not None:
+            if state.selected_item == SELECT_MODEL:
+                self._set_transform_inputs_from_object()
+            elif state.selected_item == SELECT_SECTION_PLANE:
+                active_plane = get_active_plane(self.app_state.section_collection)
+                if active_plane is not None:
+                    self._sync_section_controls_from_plane_orientation(active_plane)
 
     def _end_active_transform(self, *, commit: bool, status: str) -> None:
         state = self.app_state.transform_state
         if state is None:
             return
-
-        if not commit:
-            self._restore_transform_start_state(state)
-
-        self.app_state.transform_state = None
-        self.app_state.active_transform_mode = None
-        self.app_state.active_transform_axis = None
-        self._last_transform_readout = None
-        self._active_transform_angle_delta = None
-        if commit and state.selected_item == SELECT_SECTION_PLANE:
-            if self._section_transform_changed(state):
-                self._clear_section_for_plane_change()
-            active_plane = self._section_plane_for_transform_state(state)
+        result = self.transform_controller.end(commit=commit, status=status)
+        self._apply_command_result(result)
+        if state.selected_item == SELECT_MODEL:
+            self._set_transform_inputs_from_object()
+        elif state.selected_item == SELECT_SECTION_PLANE:
+            active_plane = get_active_plane(self.app_state.section_collection)
             if active_plane is not None:
                 self._sync_section_controls_from_plane_orientation(active_plane)
-        self._refresh_viewport(reset_camera=False)
-        if commit and state.selected_item == SELECT_MODEL:
-            status = self._model_transform_status(status)
-        self.status_text.set(status)
-        if commit:
-            self._set_project_dirty(True)
-        self._sync_workflow_ui()
-
-    def _restore_transform_start_state(self, state: ActiveTransformState) -> None:
-        if state.selected_item == SELECT_MODEL and self.app_state.mesh_object is not None:
-            self.app_state.mesh_object.location = state.location.copy()
-            self.app_state.mesh_object.rotation = state.rotation.copy()
-            self._set_transform_inputs_from_object()
-            self._apply_object_transform(reset_camera=False)
-            return
-
-        if state.selected_item == SELECT_SECTION_PLANE:
-            active_plane = self._section_plane_for_transform_state(state)
-            if active_plane is None:
-                return
-            active_plane.axis = normalize_axis(state.section_axis)
-            set_plane_origin_normal(
-                active_plane,
-                state.section_origin.copy(),
-                state.section_normal.copy(),
-            )
-            active_plane.offset = float(state.section_offset)
-            self._sync_section_controls_from_plane_orientation(active_plane)
-
-    def _section_transform_changed(self, state: ActiveTransformState) -> bool:
-        active_plane = self._section_plane_for_transform_state(state)
-        if active_plane is None:
-            return False
-
-        return not (
-            np.allclose(plane_origin(active_plane), state.section_origin, atol=1e-8)
-            and np.allclose(plane_normal(active_plane), state.section_normal, atol=1e-8)
-        )
-
-    def _section_plane_for_transform_state(
-        self,
-        state: ActiveTransformState,
-    ) -> SectionPlaneState | None:
-        if state.section_plane_id is not None:
-            for plane in self.app_state.section_collection.planes:
-                if plane.id == state.section_plane_id:
-                    return plane
-
-        return get_active_plane(self.app_state.section_collection)
-
-    def _section_view_rotation_axis(self, state: ActiveTransformState) -> np.ndarray:
-        camera_vectors = self.viewport.get_camera_vectors()
-        plane_normal_vector = normalized_vector(
-            state.section_normal,
-            fallback=np.asarray([0.0, 0.0, 1.0], dtype=float),
-        )
-        for candidate in (camera_vectors.up, camera_vectors.right, camera_vectors.forward):
-            candidate_axis = normalized_vector(
-                np.asarray(candidate, dtype=float),
-                fallback=np.asarray([1.0, 0.0, 0.0], dtype=float),
-            )
-            if abs(float(np.dot(candidate_axis, plane_normal_vector))) < 0.92:
-                return candidate_axis
-
-        return world_axis_vector("X")
 
     def _cycle_section_axis_for_rotation(self) -> None:
-        current_index = SECTION_AXES.index(self.section_axis.get())
-        next_axis = SECTION_AXES[(current_index + 1) % len(SECTION_AXES)]
-        self.section_axis.set(next_axis)
-        self._configure_offset_range(reset=False)
-        self._update_section_plane_label(set_status=False)
-        self._clear_section_for_plane_change()
-        self._refresh_viewport(reset_camera=False)
-        self.status_text.set(f"Section plane axis cycled to {next_axis}")
-        self._set_project_dirty(True)
+        result = self.section_controller.cycle_axis(
+            offset_bounds=self._section_offset_bounds
+        )
+        self._apply_command_result(result)
+        if result.success:
+            self._sync_section_controls_from_active_plane()
 
     def _active_transform_status(self) -> str:
-        if self.app_state.transform_state is None:
-            return "No selection" if self.app_state.selected_item is None else "Transform"
-
-        state = self.app_state.transform_state
-        if state.selected_item == SELECT_SECTION_PLANE:
-            return self._section_plane_transform_status(state)
-
-        mode_label = "Move mode" if state.mode == "move" else "Rotate mode"
-        axis = self._display_transform_axis(state)
-        parts = [mode_label]
-        if axis is not None:
-            parts.append(f"{axis} axis")
-        if self._last_transform_readout is not None:
-            parts.append(self._last_transform_readout)
-        elif state.mode == "move" and axis is None:
-            parts.append(
-                "press X/Y/Z to constrain, Enter/Click to confirm, Esc/Right-click to cancel"
-            )
-        elif state.mode == "rotate":
-            parts.append("move mouse horizontally")
-        return " - ".join(parts)
-
-    def _display_transform_axis(self, state: ActiveTransformState) -> str | None:
-        if state.mode == "rotate":
-            if state.selected_item == SELECT_SECTION_PLANE:
-                return state.axis_constraint
-            return state.axis_constraint or "Z"
-        if state.selected_item == SELECT_SECTION_PLANE:
-            return state.axis_constraint
-        return state.axis_constraint
-
-    def _section_plane_transform_status(self, state: ActiveTransformState) -> str:
-        plane_name = state.section_plane_name or "Section Plane"
-        axis = self._display_transform_axis(state)
-        if state.mode == "move":
-            if self._last_transform_readout is None:
-                if axis == "N":
-                    return f"Moving {plane_name} along normal: drag mouse"
-                if axis in {"X", "Y", "Z"}:
-                    return f"Moving {plane_name} along {axis}: drag mouse"
-                return (
-                    f"Moving {plane_name}: camera-relative grab "
-                    "(X/Y/Z constrain, N normal, Enter/click confirm, Esc cancel)"
-                )
-            if axis == "N":
-                return f"Moving {plane_name} along normal: {self._last_transform_readout}"
-            return f"Moving {plane_name}: {self._last_transform_readout}"
-
-        axis_label = axis if axis in {"X", "Y", "Z"} else "view"
-        if self._last_transform_readout is None:
-            return f"Rotating {plane_name} around {axis_label}: move mouse horizontally"
-        return f"Rotating {plane_name} around {axis_label}: {self._last_transform_readout}"
-
-    @staticmethod
-    def _section_movement_readout(movement: np.ndarray) -> str:
-        values = np.asarray(movement, dtype=float)
-        return (
-            f"Delta X {values[0]:.3f}, "
-            f"Delta Y {values[1]:.3f}, "
-            f"Delta Z {values[2]:.3f}"
-        )
+        return self.transform_controller.active_status()
 
     def rename_selected(self) -> None:
         renameable_node_ids = self._renameable_selected_node_ids()
@@ -14343,227 +12429,16 @@ class OpenRetopWindow:
             self.delete_mesh()
             return
 
-        delete_targets = self._delete_targets_for_node_ids(node_ids)
-        deleted_count = (
-            len(delete_targets["section_planes"])
-            + len(delete_targets["section_results"])
-            + len(delete_targets["curves"])
-            + len(delete_targets["surfaces"])
-            + len(delete_targets["regions"])
-        )
-        if deleted_count == 0:
-            if NODE_MESH in expanded_node_ids:
-                self.status_text.set("Mesh deletion is not implemented yet.")
-            else:
-                self.status_text.set("No deletable selection")
-            return
-
-        undo_command = self._delete_undo_command_for_targets(delete_targets)
-        self._apply_delete_targets(delete_targets)
-        if undo_command is not None:
-            self._push_undo_command(undo_command)
-        self._set_display_section_result(self._latest_stored_section_result())
-        self._sync_visible_curve_results()
-        self._sync_section_controls_from_active_plane()
-        self._sync_section_result_context_from_active_result()
-        self._sync_curve_context_from_active_curve()
-        self._sync_surface_context_from_active_surface()
-        self._select_delete_fallback(delete_targets)
-        self.status_text.set(
-            "Region deleted."
-            if deleted_count == 1 and delete_targets["regions"]
-            else "Deleted selected object"
-            if deleted_count == 1
-            else f"Deleted {deleted_count} selected objects"
-        )
-        if deleted_count != 1 or not delete_targets["regions"]:
-            self._set_project_dirty(True)
-
-    def _delete_targets_for_node_ids(
-        self,
-        node_ids: tuple[str, ...],
-    ) -> dict[str, set[str]]:
-        section_plane_ids: set[str] = set()
-        section_result_ids: set[str] = set()
-        curve_ids: set[str] = set()
-        surface_ids: set[str] = set()
-        region_ids: set[str] = set()
-
-        for node_id in node_ids:
-            plane_id = section_plane_id_from_node(node_id)
-            result_id = section_result_id_from_node(node_id)
-            curve_group_id = curve_group_id_from_node(node_id)
-            curve_id = curve_id_from_node(node_id)
-            surface_id = surface_id_from_node(node_id)
-            region_id = region_id_from_node(node_id)
-            if node_id == NODE_SECTION_PLANES:
-                section_plane_ids.update(
-                    plane.id for plane in self.app_state.section_collection.planes
-                )
-            elif plane_id is not None:
-                section_plane_ids.add(plane_id)
-            elif node_id == NODE_SECTION_RESULTS:
-                section_result_ids.update(
-                    result.id for result in self.app_state.section_collection.results
-                )
-            elif result_id is not None:
-                section_result_ids.add(result_id)
-            elif node_id == NODE_CURVES:
-                curve_ids.update(curve.id for curve in self.app_state.curve_collection.curves)
-            elif curve_group_id is not None:
-                curve_ids.update(self._curve_ids_for_group(curve_group_id))
-            elif curve_id is not None:
-                curve_ids.add(curve_id)
-            elif node_id == NODE_SURFACES:
-                surface_ids.update(
-                    surface.id for surface in self.app_state.surface_collection.surfaces
-                )
-            elif node_id == NODE_BREP_SURFACES:
-                surface_ids.update(
-                    surface.id
-                    for surface in self.app_state.brep_surface_collection.surfaces
-                )
-            elif surface_id is not None:
-                surface_ids.add(surface_id)
-            elif node_id == NODE_REGIONS:
-                region = self.app_state.region_collection.active_region
-                if region is not None:
-                    region_ids.add(region.id)
-            elif region_id is not None:
-                region_ids.add(region_id)
-
-        section_result_ids.update(
-            result.id
-            for result in self.app_state.section_collection.results
-            if result.plane_id in section_plane_ids
-        )
-        curve_ids.update(
-            curve.id
-            for curve in self.app_state.curve_collection.curves
-            if curve.section_result_id in section_result_ids or curve.plane_id in section_plane_ids
-        )
-        surface_ids.update(
-            surface.id
-            for surface in self.app_state.surface_collection.surfaces
-            if any(curve_id in curve_ids for curve_id in surface.source_curve_ids)
-        )
-        surface_ids.update(
-            surface.id
-            for surface in self.app_state.brep_surface_collection.surfaces
-            if any(curve_id in curve_ids for curve_id in surface.source_curve_ids)
-        )
-
-        existing_plane_ids = {plane.id for plane in self.app_state.section_collection.planes}
-        existing_result_ids = {result.id for result in self.app_state.section_collection.results}
-        existing_curve_ids = {curve.id for curve in self.app_state.curve_collection.curves}
-        existing_surface_ids = {
-            surface.id for surface in self.app_state.surface_collection.surfaces
-        } | {
-            surface.id for surface in self.app_state.brep_surface_collection.surfaces
-        }
-        active_region = self.app_state.region_collection.active_region
-        existing_region_ids = {active_region.id} if active_region is not None else set()
-        return {
-            "section_planes": section_plane_ids & existing_plane_ids,
-            "section_results": section_result_ids & existing_result_ids,
-            "curves": curve_ids & existing_curve_ids,
-            "surfaces": surface_ids & existing_surface_ids,
-            "regions": region_ids & existing_region_ids,
-        }
-
-    def _apply_delete_targets(self, targets: dict[str, set[str]]) -> None:
-        plane_ids = targets["section_planes"]
-        result_ids = targets["section_results"]
-        curve_ids = targets["curves"]
-        surface_ids = targets["surfaces"]
-        region_ids = targets["regions"]
-
-        active_region = self.app_state.region_collection.active_region
-        if active_region is not None and active_region.id in region_ids:
-            self.app_state.region_collection.clear()
-            self._region_select_current_seed_triangle_index = None
-            self._region_select_last_hit_triangle_index = None
-
-        self.app_state.surface_collection.surfaces = [
-            surface
-            for surface in self.app_state.surface_collection.surfaces
-            if surface.id not in surface_ids
-        ]
-        self.app_state.surface_collection.selected_surface_ids.difference_update(surface_ids)
-        if self.app_state.surface_collection.active_surface_id in surface_ids:
-            self.app_state.surface_collection.active_surface_id = None
-
-        self.app_state.brep_surface_collection.surfaces = [
-            surface
-            for surface in self.app_state.brep_surface_collection.surfaces
-            if surface.id not in surface_ids
-        ]
-        self.app_state.brep_surface_collection.selected_surface_ids.difference_update(
-            surface_ids
-        )
-        if self.app_state.brep_surface_collection.active_surface_id in surface_ids:
-            self.app_state.brep_surface_collection.active_surface_id = None
-        for surface_id in surface_ids:
-            self._brep_runtime_cache.pop(surface_id, None)
-        self.app_state.loft_feature_collection.features = [
-            feature
-            for feature in self.app_state.loft_feature_collection.features
-            if feature.brep_surface_id not in surface_ids
-        ]
-        self.app_state.four_boundary_feature_collection.features = [
-            feature
-            for feature in self.app_state.four_boundary_feature_collection.features
-            if feature.preview_surface_id not in surface_ids
-            and feature.brep_surface_id not in surface_ids
-        ]
-
-        self.app_state.curve_collection.curves = [
-            curve
-            for curve in self.app_state.curve_collection.curves
-            if curve.id not in curve_ids
-        ]
-        self.app_state.curve_collection.selected_curve_ids.difference_update(curve_ids)
-        if self.app_state.curve_collection.active_curve_id in curve_ids:
-            self.app_state.curve_collection.active_curve_id = None
-
-        self.app_state.section_collection.results = [
-            result
-            for result in self.app_state.section_collection.results
-            if result.id not in result_ids and result.plane_id not in plane_ids
-        ]
-        self.app_state.section_collection.selected_result_ids.difference_update(result_ids)
-        if self.app_state.section_collection.active_result_id in result_ids:
-            self.app_state.section_collection.active_result_id = None
-
-        self.app_state.section_collection.planes = [
-            plane
-            for plane in self.app_state.section_collection.planes
-            if plane.id not in plane_ids
-        ]
-        self.app_state.section_collection.selected_plane_ids.difference_update(plane_ids)
-        if self.app_state.section_collection.active_plane_id in plane_ids:
-            self.app_state.section_collection.active_plane_id = None
-        self._ensure_default_section_plane()
-
-    def _select_delete_fallback(self, targets: dict[str, set[str]]) -> None:
-        if targets["surfaces"] and self.app_state.surface_collection.surfaces:
-            self.select_surface(self.app_state.surface_collection.surfaces[0].id)
-            return
-        if targets["surfaces"] and self.app_state.brep_surface_collection.surfaces:
-            self.select_surface(self.app_state.brep_surface_collection.surfaces[0].id)
-            return
-        if targets["curves"] and self.app_state.curve_collection.curves:
-            curve_id = self.app_state.curve_collection.curves[0].id
-            self.select_curves([curve_id], active_curve_id=curve_id)
-            return
-        if targets["section_results"] and self.app_state.section_collection.results:
-            self.select_section_result(self.app_state.section_collection.results[-1].id)
-            return
-        if targets["section_planes"] and self.app_state.section_collection.planes:
-            plane_id = self.app_state.section_collection.planes[0].id
-            self.select_section_plane(plane_id)
-            return
-        self._set_selected_item(None)
+        result = self.scene_controller.delete(node_ids)
+        self._apply_command_result(result)
+        if result.success:
+            self._set_display_section_result(self._latest_stored_section_result())
+            self._sync_visible_curve_results()
+            self._sync_section_controls_from_active_plane()
+            self._sync_section_result_context_from_active_result()
+            self._sync_curve_context_from_active_curve()
+            self._sync_surface_context_from_active_surface()
+            self._show_context(self.app_state.selected_item)
 
     def _set_selection_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"

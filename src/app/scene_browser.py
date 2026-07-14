@@ -5,6 +5,46 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from tkinter import Menu, ttk
 
+from application.scene_ids import (
+    CURVE_GROUP_MANUAL_ID,
+    CURVE_GROUP_PROJECTED_ID,
+    CURVE_GROUP_REBUILT_ID,
+    CURVE_GROUP_REGION_BOUNDARIES_ID,
+    CURVE_GROUP_REPAIRED_ID,
+    NODE_BREP_SURFACES,
+    NODE_CURVE,
+    NODE_CURVES,
+    NODE_CURVE_GROUP,
+    NODE_CURVE_GROUP_MANUAL,
+    NODE_CURVE_GROUP_PROJECTED,
+    NODE_CURVE_GROUP_REBUILT,
+    NODE_CURVE_GROUP_REGION_BOUNDARIES,
+    NODE_CURVE_GROUP_REPAIRED,
+    NODE_CURVE_GROUP_UNASSIGNED,
+    NODE_EMPTY_SCENE,
+    NODE_MESH,
+    NODE_REGION,
+    NODE_REGIONS,
+    NODE_SCENE,
+    NODE_SECTION_PLANE,
+    NODE_SECTION_PLANES,
+    NODE_SECTION_RESULT,
+    NODE_SECTION_RESULTS,
+    NODE_SURFACE,
+    NODE_SURFACES,
+    curve_group_id_from_node,
+    curve_group_node_id,
+    curve_id_from_node,
+    curve_node_id,
+    region_id_from_node,
+    region_node_id,
+    section_plane_id_from_node,
+    section_plane_node_id,
+    section_result_id_from_node,
+    section_result_node_id,
+    surface_id_from_node,
+    surface_node_id,
+)
 from app.selection_types import (
     SELECT_CURVE,
     SELECT_MODEL,
@@ -20,144 +60,6 @@ from regions.region_state import RegionSelection
 from sections.section_state import SectionPlaneState, StoredSectionResult
 from surfaces.brep_state import BrepSurfaceRecord
 from surfaces.surface_state import SurfacePatch
-
-
-NODE_SCENE = "scene"
-NODE_EMPTY_SCENE = "empty_scene"
-NODE_MESH = "model"
-NODE_SECTION_PLANES = "section_planes"
-NODE_SECTION_PLANE = "section_plane"
-NODE_SECTION_RESULTS = "section_results"
-NODE_SECTION_RESULT = "section_result"
-NODE_CURVES = "curves"
-NODE_CURVE = "curve"
-NODE_CURVE_GROUP = "curve_group"
-NODE_CURVE_GROUP_UNASSIGNED = f"{NODE_CURVE_GROUP}:unassigned"
-NODE_CURVE_GROUP_PROJECTED = f"{NODE_CURVE_GROUP}:projected"
-NODE_CURVE_GROUP_REBUILT = f"{NODE_CURVE_GROUP}:rebuilt"
-NODE_CURVE_GROUP_REGION_BOUNDARIES = f"{NODE_CURVE_GROUP}:region_boundaries"
-NODE_CURVE_GROUP_REPAIRED = f"{NODE_CURVE_GROUP}:repaired"
-NODE_CURVE_GROUP_MANUAL = f"{NODE_CURVE_GROUP}:manual"
-CURVE_GROUP_PROJECTED_ID = "__projected_curves__"
-CURVE_GROUP_REBUILT_ID = "__rebuilt_curves__"
-CURVE_GROUP_REGION_BOUNDARIES_ID = "__region_boundary_curves__"
-CURVE_GROUP_REPAIRED_ID = "__repaired_curves__"
-CURVE_GROUP_MANUAL_ID = "__manual_curves__"
-NODE_SURFACES = "surfaces"
-NODE_BREP_SURFACES = "brep_surfaces"
-NODE_SURFACE = "surface"
-NODE_REGIONS = "regions"
-NODE_REGION = "region"
-
-
-def section_plane_node_id(plane_id: str) -> str:
-    """Return the tree node ID for a section plane."""
-
-    return f"{NODE_SECTION_PLANE}:{plane_id}"
-
-
-def section_plane_id_from_node(node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-
-    prefix = f"{NODE_SECTION_PLANE}:"
-    if not node_id.startswith(prefix):
-        return None
-
-    plane_id = node_id[len(prefix) :]
-    return plane_id or None
-
-
-def section_result_node_id(result_id: str) -> str:
-    return f"{NODE_SECTION_RESULT}:{result_id}"
-
-
-def section_result_id_from_node(node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-
-    prefix = f"{NODE_SECTION_RESULT}:"
-    if not node_id.startswith(prefix):
-        return None
-
-    result_id = node_id[len(prefix) :]
-    return result_id or None
-
-
-def curve_group_node_id(section_result_id: str) -> str:
-    return f"{NODE_CURVE_GROUP}:{section_result_id}"
-
-
-def curve_group_id_from_node(node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-    if node_id == NODE_CURVE_GROUP_UNASSIGNED:
-        return ""
-    if node_id == NODE_CURVE_GROUP_PROJECTED:
-        return CURVE_GROUP_PROJECTED_ID
-    if node_id == NODE_CURVE_GROUP_REBUILT:
-        return CURVE_GROUP_REBUILT_ID
-    if node_id == NODE_CURVE_GROUP_REGION_BOUNDARIES:
-        return CURVE_GROUP_REGION_BOUNDARIES_ID
-    if node_id == NODE_CURVE_GROUP_REPAIRED:
-        return CURVE_GROUP_REPAIRED_ID
-    if node_id == NODE_CURVE_GROUP_MANUAL:
-        return CURVE_GROUP_MANUAL_ID
-
-    prefix = f"{NODE_CURVE_GROUP}:"
-    if not node_id.startswith(prefix):
-        return None
-
-    result_id = node_id[len(prefix) :]
-    return result_id or None
-
-
-def curve_node_id(curve_id: str) -> str:
-    return f"{NODE_CURVE}:{curve_id}"
-
-
-def curve_id_from_node(node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-
-    prefix = f"{NODE_CURVE}:"
-    if not node_id.startswith(prefix):
-        return None
-
-    curve_id = node_id[len(prefix) :]
-    return curve_id or None
-
-
-def surface_node_id(surface_id: str) -> str:
-    return f"{NODE_SURFACE}:{surface_id}"
-
-
-def surface_id_from_node(node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-
-    prefix = f"{NODE_SURFACE}:"
-    if not node_id.startswith(prefix):
-        return None
-
-    surface_id = node_id[len(prefix) :]
-    return surface_id or None
-
-
-def region_node_id(region_id: str) -> str:
-    return f"{NODE_REGION}:{region_id}"
-
-
-def region_id_from_node(node_id: str | None) -> str | None:
-    if node_id is None:
-        return None
-
-    prefix = f"{NODE_REGION}:"
-    if not node_id.startswith(prefix):
-        return None
-
-    region_id = node_id[len(prefix) :]
-    return region_id or None
 
 
 def _visibility_label(label: str, visible: bool) -> str:

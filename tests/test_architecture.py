@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from collections import Counter
 import importlib.util
 import json
@@ -60,6 +61,113 @@ class ArchitectureBaselineTests(unittest.TestCase):
         ]
 
         self.assertEqual(application_violations, [])
+
+    def test_task76_controllers_state_and_support_do_not_import_presentation(self) -> None:
+        application_root = ROOT / "src" / "application"
+        expected_controllers = {
+            "analysis_controller.py",
+            "brep_controller.py",
+            "curve_controller.py",
+            "region_controller.py",
+            "scene_controller.py",
+            "section_controller.py",
+            "selection_controller.py",
+            "surface_controller.py",
+            "transform_controller.py",
+            "visibility_controller.py",
+        }
+        actual_controllers = {
+            path.name for path in application_root.glob("*_controller.py")
+        }
+        self.assertEqual(actual_controllers, expected_controllers)
+
+        protected_names = expected_controllers | {
+            "controller_support.py",
+            "feature_dependencies.py",
+            "region_session.py",
+            "scene_ids.py",
+            "state.py",
+            "transform_math.py",
+        }
+        forbidden_roots = {
+            "app",
+            "viewer",
+            "tkinter",
+            "PyQt5",
+            "PyQt6",
+            "PySide2",
+            "PySide6",
+            "qtpy",
+            "vtk",
+            "vtkmodules",
+            "pyvista",
+        }
+        violations: list[tuple[str, int, str]] = []
+        for name in sorted(protected_names):
+            path = application_root / name
+            self.assertTrue(path.is_file(), name)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    modules = [node.module or ""]
+                else:
+                    continue
+                for module in modules:
+                    root = module.split(".", 1)[0]
+                    if root in forbidden_roots or "main_window" in module:
+                        violations.append((name, node.lineno, module))
+
+        self.assertEqual(violations, [])
+
+    def test_scene_browser_reexports_scene_ids_without_duplicate_codecs(self) -> None:
+        path = ROOT / "src" / "app" / "scene_browser.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        scene_id_imports = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "application.scene_ids"
+            for alias in node.names
+        }
+        required_codecs = {
+            "curve_group_id_from_node",
+            "curve_group_node_id",
+            "curve_id_from_node",
+            "curve_node_id",
+            "region_id_from_node",
+            "region_node_id",
+            "section_plane_id_from_node",
+            "section_plane_node_id",
+            "section_result_id_from_node",
+            "section_result_node_id",
+            "surface_id_from_node",
+            "surface_node_id",
+        }
+        self.assertLessEqual(required_codecs, scene_id_imports)
+
+        local_functions = {
+            node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        local_assignments = {
+            target.id
+            for node in tree.body
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets if isinstance(node, ast.Assign) else (node.target,)
+            )
+            if isinstance(target, ast.Name)
+        }
+        self.assertEqual(local_functions & required_codecs, set())
+        self.assertEqual(
+            {
+                name
+                for name in local_assignments
+                if name.startswith("NODE_") or name.startswith("CURVE_GROUP_")
+            },
+            set(),
+        )
 
     def test_protected_modules_have_no_current_ui_rendering_imports(self) -> None:
         protected_prefixes = ("project/", "settings/", "cad_kernel/")
