@@ -11,6 +11,32 @@ from uuid import uuid4
 
 import numpy as np
 
+from application.actions import (
+    ACTION_FRAME_ALL,
+    ACTION_FRAME_SELECTED,
+    ACTION_REDO,
+    ACTION_SHOW_ALL,
+    ACTION_TOGGLE_VISIBILITY,
+    ACTION_UNDO,
+    ActionContext,
+    create_core_action_registry,
+)
+from application.commands import Command, CommandDispatcher, CommandRequest
+from application.dependencies import ApplicationDependencies
+from application.events import (
+    DirtyChangedEvent,
+    EventPublisher,
+    StatusEvent,
+    StatusLevel,
+)
+from application.results import (
+    CommandResult,
+    UIRequest,
+    UIRequestKind,
+    ViewportRequest,
+    ViewportRequestKind,
+)
+from application.selection import CallbackSelectionProvider, SelectionSnapshot
 from cad_kernel.backend import (
     build_cad_wire_from_curve,
     build_loft_surface_from_cad_wires,
@@ -84,7 +110,7 @@ from app.transforms import (
     transform_point,
     world_axis_vector,
 )
-from app.undo import CallbackUndoCommand, UndoStack
+from app.undo import CallbackUndoCommand, UndoCommand, UndoStack
 from curves.curve_state import (
     CurveCollection,
     CurveProcessingError,
@@ -526,6 +552,15 @@ class OpenRetopWindow:
         self._mesh_query_world_mesh: TriangleMeshData | None = None
         self._mesh_query_world_mesh_revision: object | None = None
         self.undo_stack = UndoStack()
+        self.event_publisher = EventPublisher()
+        self.action_registry = create_core_action_registry()
+        self.application_dependencies = ApplicationDependencies(
+            events=self.event_publisher,
+            selection=CallbackSelectionProvider(self._application_selection_snapshot),
+            undo=self.undo_stack,
+        )
+        self.command_dispatcher = CommandDispatcher(self.application_dependencies)
+        self._register_representative_commands()
         self._brep_runtime_cache: dict[str, object] = {}
         self._last_viewport_mouse = (0, 0)
         self._last_transform_readout: str | None = None
@@ -780,6 +815,226 @@ class OpenRetopWindow:
     def _build_menu_bar(self) -> None:
         self.menu_bar = build_menu_bar(self)
 
+    def _register_representative_commands(self) -> None:
+        handlers = {
+            ACTION_FRAME_ALL: self._command_frame_all,
+            ACTION_FRAME_SELECTED: self._command_frame_selected,
+            ACTION_SHOW_ALL: self._command_show_all,
+            ACTION_TOGGLE_VISIBILITY: self._command_toggle_visibility,
+            ACTION_UNDO: self._command_undo,
+            ACTION_REDO: self._command_redo,
+        }
+        for action_id, handler in handlers.items():
+            definition = self.action_registry.require(action_id)
+            self.command_dispatcher.register(definition.command_id, handler)
+
+    def _application_selection_snapshot(self) -> SelectionSnapshot:
+        if hasattr(self, "scene_browser"):
+            node_ids = self._scene_visibility_target_node_ids()
+        else:
+            node_ids = tuple(self._node_ids_for_active_selection())
+        return SelectionSnapshot.from_ids(node_ids)
+
+    def _application_action_context(self) -> ActionContext:
+        selection = self.application_dependencies.selection.snapshot()
+        return ActionContext(
+            has_scene_objects=bool(self._all_visibility_object_node_ids()),
+            has_scene_selection=selection.has_selection,
+            can_undo=self.undo_stack.can_undo,
+            can_redo=self.undo_stack.can_redo,
+        )
+
+    def _dispatch_action(self, action_id: str) -> CommandResult:
+        definition = self.action_registry.require(action_id)
+        result = self.command_dispatcher.dispatch(
+            CommandRequest(
+                command_id=definition.command_id,
+                action_id=definition.id,
+            )
+        )
+        self._apply_command_result(result)
+        return result
+
+    def _apply_command_result(self, result: CommandResult) -> None:
+        if result.undo_payload is not None:
+            self._push_undo_command(result.undo_payload)
+
+        viewport = getattr(self, "viewport", None)
+        for request in result.viewport_requests:
+            if request.kind is ViewportRequestKind.FRAME_ALL:
+                if viewport is not None:
+                    viewport.frame_model()
+            elif request.kind is ViewportRequestKind.FRAME_BOUNDS:
+                if viewport is None:
+                    continue
+                if hasattr(viewport, "frame_bounds"):
+                    viewport.frame_bounds(
+                        np.asarray(request.minimum_bound, dtype=float),
+                        np.asarray(request.maximum_bound, dtype=float),
+                    )
+                else:
+                    viewport.frame_model()
+            elif request.kind is ViewportRequestKind.REFRESH:
+                self._refresh_viewport(reset_camera=False)
+            elif request.kind is ViewportRequestKind.RENDER and viewport is not None:
+                if hasattr(viewport, "request_render"):
+                    viewport.request_render()
+
+        for request in result.ui_requests:
+            if request.kind is UIRequestKind.REFRESH_ACTIONS:
+                self._update_undo_redo_menu()
+                if hasattr(self, "scene_browser"):
+                    self._update_menu_availability()
+            elif request.kind is UIRequestKind.REFRESH_SCENE_BROWSER:
+                self._refresh_scene_browser()
+            elif request.kind is UIRequestKind.SYNC_WORKFLOW:
+                self._sync_workflow_ui()
+
+        if result.dirty:
+            self._set_project_dirty(True)
+
+        status = result.status
+        if not status and result.errors:
+            status = result.errors[0]
+        if not status and result.warnings:
+            status = result.warnings[0]
+        if status:
+            self.status_text.set(status)
+            status_level = (
+                StatusLevel.ERROR
+                if result.errors
+                else StatusLevel.WARNING if result.warnings else StatusLevel.INFO
+            )
+            self.event_publisher.publish(StatusEvent(status, status_level))
+
+    def _command_frame_all(
+        self,
+        _command: Command,
+        _dependencies: ApplicationDependencies,
+    ) -> CommandResult:
+        return CommandResult.ok(
+            status="View framed",
+            viewport_requests=(ViewportRequest.frame_all(),),
+        )
+
+    def _command_frame_selected(
+        self,
+        _command: Command,
+        dependencies: ApplicationDependencies,
+    ) -> CommandResult:
+        node_ids = dependencies.selection.snapshot().ids
+        if not node_ids:
+            return CommandResult.ok(status="No selection")
+
+        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
+        if any(region_id_from_node(node_id) is not None for node_id in expanded_node_ids):
+            return self._frame_selected_region_result()
+
+        bounds = self._bounds_for_node_ids(expanded_node_ids)
+        if bounds is None:
+            return CommandResult.ok(status="Selected geometry is unavailable")
+
+        minimum_bound, maximum_bound = bounds
+        request = (
+            ViewportRequest.frame_all()
+            if NODE_MESH in expanded_node_ids
+            else ViewportRequest.frame_bounds(
+                tuple(float(value) for value in minimum_bound),
+                tuple(float(value) for value in maximum_bound),
+                metadata={"target": "selection"},
+            )
+        )
+        return CommandResult.ok(
+            status="View framed to selection",
+            viewport_requests=(request,),
+        )
+
+    def _command_show_all(
+        self,
+        _command: Command,
+        _dependencies: ApplicationDependencies,
+    ) -> CommandResult:
+        target_node_ids = self._all_visibility_object_node_ids()
+        before = self._visibility_snapshot(target_node_ids)
+        changed_count = self._set_scene_visibility(target_node_ids, True)
+        after = self._visibility_snapshot(target_node_ids)
+        self._push_visibility_command("Show Visibility", before, after)
+        self._sync_after_scene_visibility_change()
+        return CommandResult.ok(
+            status="All scene items visible",
+            changed=bool(changed_count),
+            dirty=bool(
+                changed_count
+                and self._has_persistent_visibility_target(target_node_ids)
+            ),
+        )
+
+    def _command_toggle_visibility(
+        self,
+        _command: Command,
+        dependencies: ApplicationDependencies,
+    ) -> CommandResult:
+        node_ids = dependencies.selection.snapshot().ids
+        if not node_ids:
+            return CommandResult.ok(status="No selection")
+
+        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
+        before = self._visibility_snapshot(expanded_node_ids)
+        changed_count = self._toggle_scene_visibility(expanded_node_ids)
+        after = self._visibility_snapshot(expanded_node_ids)
+        self._push_visibility_command("Toggle Visibility", before, after)
+        self._sync_after_scene_visibility_change()
+        return CommandResult.ok(
+            status=self._visibility_status(
+                "Toggled", changed_count, "selected item"
+            ),
+            changed=bool(changed_count),
+            dirty=bool(
+                changed_count
+                and self._has_persistent_visibility_target(expanded_node_ids)
+            ),
+        )
+
+    def _command_undo(
+        self,
+        _command: Command,
+        dependencies: ApplicationDependencies,
+    ) -> CommandResult:
+        command = dependencies.undo.undo()
+        if command is None:
+            return CommandResult.ok(
+                status="Nothing to undo",
+                ui_requests=(UIRequest(UIRequestKind.REFRESH_ACTIONS),),
+            )
+
+        self._sync_after_undoable_scene_change()
+        return CommandResult.ok(
+            status=f"Undid {command.name}",
+            changed=True,
+            dirty=True,
+            ui_requests=(UIRequest(UIRequestKind.REFRESH_ACTIONS),),
+        )
+
+    def _command_redo(
+        self,
+        _command: Command,
+        dependencies: ApplicationDependencies,
+    ) -> CommandResult:
+        command = dependencies.undo.redo()
+        if command is None:
+            return CommandResult.ok(
+                status="Nothing to redo",
+                ui_requests=(UIRequest(UIRequestKind.REFRESH_ACTIONS),),
+            )
+
+        self._sync_after_undoable_scene_change()
+        return CommandResult.ok(
+            status=f"Redid {command.name}",
+            changed=True,
+            dirty=True,
+            ui_requests=(UIRequest(UIRequestKind.REFRESH_ACTIONS),),
+        )
+
     def _not_implemented(self, feature_name: str) -> None:
         self.status_text.set(f"{feature_name}: Not implemented yet")
 
@@ -857,8 +1112,13 @@ class OpenRetopWindow:
             )
 
     def _set_project_dirty(self, dirty: bool = True) -> None:
+        previous_dirty = bool(getattr(self, "project_dirty", False))
         self.project_dirty = bool(dirty)
         self._update_window_title()
+        if previous_dirty != self.project_dirty:
+            publisher = getattr(self, "event_publisher", None)
+            if publisher is not None:
+                publisher.publish(DirtyChangedEvent(self.project_dirty))
 
     def _clear_scene_data(self, *, reset_camera: bool) -> None:
         self._invalidate_mesh_query_cache()
@@ -1347,28 +1607,12 @@ class OpenRetopWindow:
         return True
 
     def undo(self) -> None:
-        command = self.undo_stack.undo()
-        self._update_undo_redo_menu()
-        if command is None:
-            self.status_text.set("Nothing to undo")
-            return
-
-        self._sync_after_undoable_scene_change()
-        self.status_text.set(f"Undid {command.name}")
-        self._set_project_dirty(True)
+        self._dispatch_action(ACTION_UNDO)
 
     def redo(self) -> None:
-        command = self.undo_stack.redo()
-        self._update_undo_redo_menu()
-        if command is None:
-            self.status_text.set("Nothing to redo")
-            return
+        self._dispatch_action(ACTION_REDO)
 
-        self._sync_after_undoable_scene_change()
-        self.status_text.set(f"Redid {command.name}")
-        self._set_project_dirty(True)
-
-    def _push_undo_command(self, command: CallbackUndoCommand) -> None:
+    def _push_undo_command(self, command: UndoCommand) -> None:
         self.undo_stack.push(command)
         self._update_undo_redo_menu()
 
@@ -1381,14 +1625,24 @@ class OpenRetopWindow:
         if edit_menu is None:
             return
 
+        context = ActionContext(
+            can_undo=self.undo_stack.can_undo,
+            can_redo=self.undo_stack.can_redo,
+        )
+        undo_enabled = self.action_registry.state(
+            ACTION_UNDO, context
+        ).enabled
+        redo_enabled = self.action_registry.state(
+            ACTION_REDO, context
+        ).enabled
         try:
             edit_menu.entryconfigure(
                 0,
-                state="normal" if self.undo_stack.can_undo else "disabled",
+                state="normal" if undo_enabled else "disabled",
             )
             edit_menu.entryconfigure(
                 1,
-                state="normal" if self.undo_stack.can_redo else "disabled",
+                state="normal" if redo_enabled else "disabled",
             )
         except TclError:
             return
@@ -5615,29 +5869,36 @@ class OpenRetopWindow:
         self._sync_workflow_ui()
 
     def frame_selected_region(self) -> None:
+        self._apply_command_result(self._frame_selected_region_result())
+
+    def _frame_selected_region_result(self) -> CommandResult:
         region = self.app_state.region_collection.active_region
         mesh_object = self.app_state.mesh_object
         if region is None:
-            self.status_text.set("No region selection")
-            return
+            return CommandResult.ok(status="No region selection")
 
         bounds = None
         if mesh_object is not None:
             bounds = self._bounds_for_node_ids({region_node_id(region.id)})
         if bounds is None:
             if mesh_object is not None:
-                self.viewport.frame_model()
-                self.status_text.set("Region framing fallback: framed mesh.")
-            else:
-                self.status_text.set("Region geometry is unavailable")
-            return
+                return CommandResult.ok(
+                    status="Region framing fallback: framed mesh.",
+                    viewport_requests=(ViewportRequest.frame_all(),),
+                )
+            return CommandResult.ok(status="Region geometry is unavailable")
 
         minimum_bound, maximum_bound = bounds
-        if hasattr(self.viewport, "frame_bounds"):
-            self.viewport.frame_bounds(minimum_bound, maximum_bound)
-        else:
-            self.viewport.frame_model()
-        self.status_text.set(f"Framed: {region.name or 'Region 1'}")
+        return CommandResult.ok(
+            status=f"Framed: {region.name or 'Region 1'}",
+            viewport_requests=(
+                ViewportRequest.frame_bounds(
+                    tuple(float(value) for value in minimum_bound),
+                    tuple(float(value) for value in maximum_bound),
+                    metadata={"target": "region", "region_id": region.id},
+                ),
+            ),
+        )
 
     def recompute_region_selection(self) -> None:
         active_region = self.app_state.region_collection.active_region
@@ -11446,33 +11707,10 @@ class OpenRetopWindow:
         self._set_display_section_result(self._latest_stored_section_result())
 
     def frame_all(self) -> None:
-        self.viewport.frame_model()
-        self.status_text.set("View framed")
+        self._dispatch_action(ACTION_FRAME_ALL)
 
     def frame_selected(self) -> None:
-        node_ids = self._scene_visibility_target_node_ids()
-        if not node_ids:
-            self.status_text.set("No selection")
-            return
-
-        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
-        if any(region_id_from_node(node_id) is not None for node_id in expanded_node_ids):
-            self.frame_selected_region()
-            return
-
-        bounds = self._bounds_for_node_ids(expanded_node_ids)
-        if bounds is None:
-            self.status_text.set("Selected geometry is unavailable")
-            return
-
-        minimum_bound, maximum_bound = bounds
-        if NODE_MESH in expanded_node_ids:
-            self.viewport.frame_model()
-        elif hasattr(self.viewport, "frame_bounds"):
-            self.viewport.frame_bounds(minimum_bound, maximum_bound)
-        else:
-            self.viewport.frame_model()
-        self.status_text.set("View framed to selection")
+        self._dispatch_action(ACTION_FRAME_SELECTED)
 
     def _bounds_for_node_ids(
         self,
@@ -12386,10 +12624,24 @@ class OpenRetopWindow:
             len(scene_node_ids) == 1
             and self.scene_browser._is_renameable_node(scene_node_ids[0])
         )
+        frame_selected_action = self.action_registry.require(ACTION_FRAME_SELECTED)
+        action_context = self._application_action_context()
+        frame_selected_enabled = frame_selected_action.resolve(
+            ActionContext(
+                has_scene_objects=action_context.has_scene_objects,
+                has_scene_selection=has_scene_selection,
+                can_undo=action_context.can_undo,
+                can_redo=action_context.can_redo,
+            )
+        ).enabled
 
         self._set_menu_labels_state(self.edit_menu, ("Rename Selected",), can_rename_scene_selection)
         self._set_menu_labels_state(self.edit_menu, ("Delete Selected",), has_scene_selection)
-        self._set_menu_labels_state(self.view_menu, ("Frame Selected",), has_scene_selection)
+        self._set_menu_labels_state(
+            self.view_menu,
+            (frame_selected_action.label,),
+            frame_selected_enabled,
+        )
 
     @staticmethod
     def _set_menu_labels_state(menu: object, labels: tuple[str, ...], enabled: bool) -> None:
@@ -12667,18 +12919,13 @@ class OpenRetopWindow:
         if action == "toggle_visibility":
             self.toggle_selected_scene_objects()
             return
+        if action == "show_all":
+            self.show_all_scene_objects()
+            return
 
         expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
         dirty_node_ids = expanded_node_ids
-        if action == "show_all":
-            target_node_ids = self._all_visibility_object_node_ids()
-            dirty_node_ids = target_node_ids
-            before = self._visibility_snapshot(target_node_ids)
-            changed_count = self._set_scene_visibility(target_node_ids, True)
-            after = self._visibility_snapshot(target_node_ids)
-            self._push_visibility_command("Show Visibility", before, after)
-            status = "All scene items visible"
-        elif action == "hide_selected":
+        if action == "hide_selected":
             before = self._visibility_snapshot(expanded_node_ids)
             changed_count = self._set_scene_visibility(expanded_node_ids, False)
             after = self._visibility_snapshot(expanded_node_ids)
@@ -12972,25 +13219,10 @@ class OpenRetopWindow:
         self._on_scene_browser_visibility("show_selected", tuple(node_ids))
 
     def show_all_scene_objects(self) -> None:
-        self._on_scene_browser_visibility("show_all", ())
+        self._dispatch_action(ACTION_SHOW_ALL)
 
     def toggle_selected_scene_objects(self) -> None:
-        node_ids = self._scene_visibility_target_node_ids()
-        if not node_ids:
-            self.status_text.set("No selection")
-            return
-
-        expanded_node_ids = self._expanded_visibility_node_ids(node_ids)
-        before = self._visibility_snapshot(expanded_node_ids)
-        changed_count = self._toggle_scene_visibility(expanded_node_ids)
-        after = self._visibility_snapshot(expanded_node_ids)
-        self._push_visibility_command("Toggle Visibility", before, after)
-        self._sync_after_scene_visibility_change()
-        self.status_text.set(
-            self._visibility_status("Toggled", changed_count, "selected item")
-        )
-        if changed_count and self._has_persistent_visibility_target(expanded_node_ids):
-            self._set_project_dirty(True)
+        self._dispatch_action(ACTION_TOGGLE_VISIBILITY)
 
     def toggle_active_surface_visibility(self) -> None:
         active_surface = self._active_surface_record()

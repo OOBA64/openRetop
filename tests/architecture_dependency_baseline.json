@@ -1,0 +1,32 @@
+{
+  "_description": "Task 75 architecture allowlist. Entries document existing legacy debt; tests subtract this baseline so removals pass and only new violations fail.",
+  "_ui_import_policy": "Domain/application and protected project, settings, CAD, and mesh-query modules may not add Tk, Qt, PyVista, or VTK rendering/interaction imports. VTK CommonCore/CommonDataModel use by the accelerated spatial index is intentionally allowed.",
+  "ui_imports": [
+    {
+      "path": "app/main_window.py",
+      "module": "tkinter",
+      "count": 2,
+      "reason": "Legacy Tk presentation and bootstrap shell; migration is staged after Task 75."
+    },
+    {
+      "path": "app/menus.py",
+      "module": "tkinter",
+      "count": 1,
+      "reason": "Legacy Tk menu presentation adapter."
+    },
+    {
+      "path": "app/preferences_dialog.py",
+      "module": "tkinter",
+      "count": 2,
+      "reason": "Legacy Tk settings dialog presentation adapter."
+    },
+    {
+      "path": "app/scene_browser.py",
+      "module": "tkinter",
+      "count": 1,
+      "reason": "Legacy Tk scene-tree presentation adapter."
+    }
+  ],
+  "package_cycles": [],
+  "module_cycles": []
+}

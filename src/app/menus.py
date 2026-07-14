@@ -4,6 +4,19 @@ from __future__ import annotations
 
 from tkinter import Menu
 
+from application.actions import (
+    ACTION_FRAME_ALL,
+    ACTION_FRAME_SELECTED,
+    ACTION_REDO,
+    ACTION_SHOW_ALL,
+    ACTION_TOGGLE_VISIBILITY,
+    ACTION_UNDO,
+)
+
+
+def _action_label(app: object, action_id: str) -> str:
+    return app.action_registry.require(action_id).label
+
 
 def build_menu_bar(app: object) -> Menu:
     menu_bar = Menu(app.root, tearoff=False)
@@ -23,16 +36,22 @@ def build_menu_bar(app: object) -> Menu:
     menu_bar.add_cascade(label="File", menu=app.file_menu)
 
     app.edit_menu = Menu(menu_bar, tearoff=False)
-    app.edit_menu.add_command(label="Undo", command=app.undo)
-    app.edit_menu.add_command(label="Redo", command=app.redo)
+    app.edit_menu.add_command(label=_action_label(app, ACTION_UNDO), command=app.undo)
+    app.edit_menu.add_command(label=_action_label(app, ACTION_REDO), command=app.redo)
     app.edit_menu.add_command(label="Rename Selected", command=app.rename_selected)
     app.edit_menu.add_command(label="Delete Selected", command=app._delete_selected_if_safe)
     app.edit_menu.add_command(label="Preferences", command=app.open_preferences)
     menu_bar.add_cascade(label="Edit", menu=app.edit_menu)
 
     app.view_menu = Menu(menu_bar, tearoff=False)
-    app.view_menu.add_command(label="Frame All", command=app.frame_all)
-    app.view_menu.add_command(label="Frame Selected", command=app.frame_selected)
+    app.view_menu.add_command(
+        label=_action_label(app, ACTION_FRAME_ALL),
+        command=app.frame_all,
+    )
+    app.view_menu.add_command(
+        label=_action_label(app, ACTION_FRAME_SELECTED),
+        command=app.frame_selected,
+    )
     app.view_menu.add_command(label="Reset View", command=app.reset_view)
     app.view_menu.add_command(label="Top View", command=lambda: app.set_named_view("top"))
     app.view_menu.add_command(label="Bottom View", command=lambda: app.set_named_view("bottom"))
@@ -83,12 +102,21 @@ def _build_legacy_workbench_command_menus(app: object) -> None:
     app.scene_menu = Menu(app.root, tearoff=False)
     app.scene_menu.add_command(label="Rename Selected", command=app.rename_selected)
     app.scene_menu.add_command(label="Delete Selected", command=app._delete_selected_if_safe)
-    app.scene_menu.add_command(label="Toggle Visibility", command=app.toggle_selected_scene_objects)
+    app.scene_menu.add_command(
+        label=_action_label(app, ACTION_TOGGLE_VISIBILITY),
+        command=app.toggle_selected_scene_objects,
+    )
     app.scene_menu.add_command(label="Hide Selected", command=app.hide_selected_scene_objects)
     app.scene_menu.add_command(label="Show Selected", command=app.show_selected_scene_objects)
     app.scene_menu.add_command(label="Isolate Selected", command=app.hide_unselected_scene_objects)
-    app.scene_menu.add_command(label="Show All", command=app.show_all_scene_objects)
-    app.scene_menu.add_command(label="Frame Selected", command=app.frame_selected)
+    app.scene_menu.add_command(
+        label=_action_label(app, ACTION_SHOW_ALL),
+        command=app.show_all_scene_objects,
+    )
+    app.scene_menu.add_command(
+        label=_action_label(app, ACTION_FRAME_SELECTED),
+        command=app.frame_selected,
+    )
 
     app.sections_menu = Menu(app.root, tearoff=False)
     app.sections_menu.add_command(label="Add Section Plane", command=app.add_section_plane)
