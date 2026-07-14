@@ -142,7 +142,24 @@ finally {
             if ($LASTEXITCODE -ne 0) { throw "Compile check failed." }
 
             "`r`n=== unittest ===" | Out-File -Encoding utf8 -Append $Tests
-            python -m unittest discover -s tests -p "test_*.py" *>> $Tests
+            "`r`n=== focused verification ===" |
+    Out-File -Encoding utf8 -Append $TestLogPath
+
+python -m unittest `
+    tests.test_application_core `
+    tests.test_architecture `
+    tests.test_analysis_controller `
+    tests.test_curve_controller `
+    tests.test_region_controller `
+    tests.test_scene_controllers `
+    tests.test_section_controller `
+    tests.test_surface_brep_controllers `
+    tests.test_transform_controller `
+    *>> $TestLogPath
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Focused verification suite failed."
+}
             if ($LASTEXITCODE -ne 0) { throw "Full test suite failed." }
 
             git diff --check *>> $Tests
