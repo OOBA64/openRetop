@@ -218,6 +218,9 @@ class ProjectData:
     four_boundary_patch_features: list[ProjectFourBoundaryPatchFeature] = field(
         default_factory=list
     )
+    # Unknown top-level fields are retained by the V3 repository boundary so
+    # newer project producers can round-trip through older clients safely.
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 def default_project_data() -> ProjectData:

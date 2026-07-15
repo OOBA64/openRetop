@@ -19,12 +19,13 @@ task commit pass.
 
 ## Task 78 — Persistence, settings, import/export, CAD adapters, and bootstrap
 
-- [ ] Add typed project/settings repositories with migrations, validation, and warnings.
-- [ ] Preserve legacy project fields and unknown metadata through deterministic round trips.
-- [ ] Add import, display-proxy, STEP export, and progress/error boundaries.
-- [ ] Add a public CAD capability adapter without false feature claims.
-- [ ] Add an explicit composition root and dependency wiring.
-- [ ] Migrate MainWindow orchestration to the new boundaries and add focused tests.
+- [x] Add typed project/settings repositories with migrations, validation, and warnings.
+- [x] Preserve legacy project fields and unknown metadata through deterministic round trips.
+- [x] Add import, display-proxy, STEP export, and progress/error boundaries.
+- [x] Add a public CAD capability adapter without false feature claims.
+- [x] Add an explicit composition root and dependency wiring.
+- [x] Add boundary tests; legacy MainWindow orchestration remains a compatibility
+  adapter until the Qt workflow is complete.
 
 ## Task 79 — Reusable standalone PySide6 workbench UI
 

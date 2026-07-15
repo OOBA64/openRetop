@@ -24,6 +24,29 @@ from project.project_data import (
 )
 
 
+_KNOWN_PROJECT_KEYS = frozenset(
+    {
+        "version",
+        "name",
+        "mesh_path",
+        "mesh_name",
+        "mesh_visible",
+        "transform",
+        "display",
+        "section",
+        "section_planes",
+        "active_section_plane_id",
+        "section_results",
+        "curves",
+        "surfaces",
+        "brep_surfaces",
+        "loft_features",
+        "four_boundary_patch_features",
+        "metadata",
+    }
+)
+
+
 def save_project(project: ProjectData, path: Path) -> None:
     project_path = Path(path)
     project_path.write_text(
@@ -216,6 +239,9 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             }
             for index, feature in enumerate(project.four_boundary_patch_features)
         ]
+    for key, value in project.metadata.items():
+        if key not in result and key != "metadata":
+            result[str(key)] = value
     return result
 
 
@@ -224,6 +250,17 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         raise ValueError("Project data must be a dictionary.")
 
     defaults = default_project_data()
+    raw_metadata = data.get("metadata", {})
+    if raw_metadata is not None and not isinstance(raw_metadata, Mapping):
+        raise ValueError("metadata must be a dictionary.")
+    metadata = {
+        **{
+            str(key): value
+            for key, value in data.items()
+            if key not in _KNOWN_PROJECT_KEYS
+        },
+        **(dict(raw_metadata) if raw_metadata is not None else {}),
+    }
     version = _project_version(data.get("version", defaults.version))
     name = _string_value(data.get("name", defaults.name), "name")
     mesh_path = _optional_string_value(
@@ -337,6 +374,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         brep_surfaces=brep_surfaces,
         loft_features=loft_features,
         four_boundary_patch_features=four_boundary_patch_features,
+        metadata=metadata,
     )
 
 
