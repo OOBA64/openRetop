@@ -29,12 +29,12 @@ task commit pass.
 
 ## Task 79 — Reusable standalone PySide6 workbench UI
 
-- [ ] Prove PySide6/QMainWindow, Qt offscreen, and VTK embedding support.
-- [ ] Create independent `packages/workbench_ui` package metadata and public API.
-- [ ] Implement shell, actions, schemas, panels/layout, tools, selection, inspector,
+- [x] Prove PySide6/QMainWindow, Qt offscreen, and VTK embedding support.
+- [x] Create independent `packages/workbench_ui` package metadata and public API.
+- [x] Implement shell, actions, schemas, panels/layout, tools, selection, inspector,
   scene tree, command palette, themes, and settings.
-- [ ] Add standalone demo and extension documentation.
-- [ ] Add zero-openRetop-import and Qt headless framework tests.
+- [x] Add standalone demo and extension documentation.
+- [x] Add zero-openRetop-import and Qt headless framework tests.
 
 ## Task 80 — openRetop V3 UI
 

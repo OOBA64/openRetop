@@ -2,86 +2,70 @@
 
 ## Current task
 
-Task 78 — Persistence, Settings, Import/Export, CAD Adapters, and Bootstrap
+Task 79 — Reusable Standalone Workbench UI Framework
 
-Implementation status: complete for the repository/application boundary slice.
-Task 77 is committed. Task 78 focused checks pass; the existing legacy
-MainWindow compatibility suite still has the baseline failures recorded below.
+Implementation status: complete. Task 77 and Task 78 are committed. The
+standalone PySide6 framework, offscreen Qt tests, VTK host proof, and demo all
+pass. Task 80 presentation work is present in the working tree but is not part
+of this Task 79 commit.
 
-## Task 77 summary
+## Completed task history
 
-Task 77 introduced immutable toolkit-neutral scene snapshots and render-item
-contracts, a UI-independent scene builder, stable object/revision identities,
-incremental VTK actor synchronization, structured picking, isolated style and
-actor factories, camera/framing math, and post-load framing. The real viewport
-submits snapshots; `EmbeddedVTKViewport.set_scene(...)` remains only for the
-temporary compatibility path through Task 81.
+### Task 77
 
-Focused result: `tests.test_task77_viewport` — 11 passed. Architecture,
-compile, and diff checks passed. Commit: `4de640b`.
+Added immutable scene snapshots/render items, a UI-independent scene builder,
+stable revisions and IDs, incremental actor synchronization, structured
+picking, isolated VTK adapters, camera/framing math, and post-load framing.
+Focused result: `tests.test_task77_viewport` — 11 passed. Commit `4de640b`.
 
-## Task 78 completed work
+### Task 78
 
-- Added `ProjectRepository`, deterministic `JsonProjectRepository`, and an
-  in-memory fake with structured load/save results, schema-version handling,
-  relative mesh-path resolution, missing-mesh warnings, and unknown top-level
-  metadata preservation.
-- Extended `ProjectData` with a non-destructive metadata map while preserving
-  the existing `.openretop` fields and serializers.
-- Added `SettingsRepository`, deterministic `JsonSettingsRepository`, and an
-  in-memory fake with normalized defaults and structured corruption results.
-- Added `MeshImportService`, `DisplayProxyService`, `StepExportService`, and
-  `ProjectFileService`; progress is emitted as typed events and file-dialog
-  policy remains outside the services.
-- Added `PublicCadAdapter` and accurate capability flags. It exposes wire,
-  planar-face, loft, tessellation, and STEP operations only; trim/intersection
-  are explicitly unavailable.
-- Added `bootstrap.create_application` as an explicit composition root wiring
-  state, events, actions, commands, undo, query service, repositories,
-  import/export services, CAD, controllers, and scene building without a
-  singleton or toolkit import.
+Added typed JSON/in-memory project and settings repositories, schema migration
+and unknown metadata preservation, mesh/proxy/STEP/project services with typed
+progress, public CAD capabilities, and `bootstrap.create_application`.
+Focused result: `tests.test_task78_boundaries` — 7 passed. Commit `53ee0cd`.
 
-## Task 78 verification
+## Task 79 completed work
 
-- `tests.test_task78_boundaries` — 7 passed.
-- `python -m compileall -q src` — passed.
-- Task 77 focused and architecture suites remain passing.
+- Added `packages/workbench_ui` with package metadata, public API, extension
+  documentation, and a standalone demo. The Python package imports no
+  openRetop modules.
+- Added reusable action registry/state propagation, declarative menu and
+  toolbar schemas, panel registry, dock-layout persistence/recovery,
+  selection context, tool lifecycle manager, property inspector model,
+  scene-tree model, command palette, theme manager, and framework settings.
+- Added `ApplicationShell` with dockable panels, menu/toolbar construction,
+  status messaging, layout save/restore, and central action dispatch.
+- Added generic scene-tree, property-inspector, tool-instruction, command
+  palette, and optional public-VTK Qt host widgets.
+- Added `requirements.txt` PySide6 dependency and Qt offscreen/headless tests.
+
+## Task 79 verification
+
+- `tests.test_task79_workbench_ui` — 5 passed with `QT_QPA_PLATFORM=offscreen`.
+- PySide6/VTK proof: `VTKViewportWidget.available == True` in the V3
+  environment.
+- `python -m compileall -q src packages/workbench_ui/workbench_ui` — passed.
+- Architecture metrics with `--fail-on-new` — passed; no cycles or new
+  protected-layer UI imports.
 - `git diff --check` — passed.
 
-The complete pre-existing suite currently reports 617 passed, 31 failed, and 1
-error under the V3 interpreter. The non-passing cases are in the legacy Tk
-MainWindow compatibility tests and concern old status wording, direct private
-restore helpers, and Task 74–76 compatibility expectations; they do not fail
-the new persistence, scene, camera, or controller contracts.
+## Files added for Task 79
 
-## Files added or modified for Task 78
+- `packages/workbench_ui/pyproject.toml`
+- `packages/workbench_ui/README.md`
+- `packages/workbench_ui/workbench_ui/{__init__,contracts,shell,widgets,viewport,demo}.py`
+- `tests/test_task79_workbench_ui.py`
+- `requirements.txt` (PySide6 dependency)
 
-- `src/infrastructure/__init__.py`
-- `src/infrastructure/persistence.py`
-- `src/infrastructure/settings_repository.py`
-- `src/infrastructure/io_services.py`
-- `src/infrastructure/cad_adapter.py`
-- `src/bootstrap/__init__.py`
-- `src/bootstrap/composition_root.py`
-- `src/application/bootstrap.py`
-- `src/project/project_data.py`
-- `src/project/project_io.py`
-- `tests/test_task78_boundaries.py`
+## Known risks and next task
 
-## Compatibility and known risks
+The legacy Tk shell remains in `src/app/main_window.py` while Task 80 wires
+V3 workflows and Task 81 removes the superseded shell. The pre-existing full
+suite baseline remains 617 passed, 31 failed, and 1 error in legacy Tk
+compatibility cases; the new framework suites are green.
 
-- Existing project/settings convenience functions remain available for legacy
-  callers; the new repositories are the V3 boundary.
-- CAD availability depends on the optional CadQuery/OCP installation. The
-  adapter reports unavailable capabilities rather than claiming unsupported
-  trim/intersection behavior.
-- No representative real-world project fixture is checked in yet.
-- The current Tk shell remains a compatibility implementation while the Qt V3
-  workbench is brought to parity in Tasks 79–81.
-
-## Exact next-task starting point
-
-Task 79 starts at `packages/workbench_ui/`: prove PySide6/VTK embedding,
-implement the reusable host-independent workbench framework and standalone
-demo, and add Qt offscreen contract tests. Do not remove the openRetop shell
-until Task 80 parity is wired and Task 81 explicitly removes it.
+Task 80 starts at `src/presentation/qt/`: use the workbench shell, Task 77
+scene snapshots, Task 78 services, and application controllers to build the
+openRetop V3 window and parity matrix without duplicating actor or workflow
+state.

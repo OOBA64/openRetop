@@ -3,3 +3,4 @@ trimesh>=4.0
 pyvista>=0.43
 vtk>=9.3
 cadquery
+PySide6>=6.7,<7
