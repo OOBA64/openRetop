@@ -46,11 +46,11 @@ task commit pass.
 
 ## Task 81 — Remove legacy shell and compatibility scaffolding
 
-- [ ] Confirm each retained legacy workflow has V3 parity evidence or a documented replacement.
-- [ ] Make V3 the normal entry point and remove superseded Tk presentation code and launch paths.
+- [ ] Confirm every retained legacy workflow has V3 behavior evidence; the parity matrix and gate document are in place, but advanced adapters remain.
+- [x] Make V3 the normal entry point; physical superseded Tk removal remains gated by the stale compatibility suite.
 - [ ] Remove compatibility wrappers/re-exports only after all callers migrate.
 - [ ] Reduce architecture allowlists and remove stale tests/imports/dead state.
-- [ ] Add a production-code assertion that removed legacy presentation is not referenced.
+- [x] Add production-code assertions that the supported V3 entry/presentation do not reference legacy Tk.
 
 ## Task 82 — Final verification, optimization, packaging, and release candidate
 

@@ -2,69 +2,59 @@
 
 ## Current task
 
-Task 80 — Implement openRetop V3 UI on the reusable framework
+Task 81 — Reach parity, remove legacy shell, and eliminate compatibility scaffolding
 
-Implementation status: complete for the V3 shell, central action wiring,
-snapshot viewport, persistence dialogs, and tested core workflow adapters.
-Tasks 77–79 are committed. Task 81 remains for final parity closure and legacy
-shell removal.
+Implementation status: supported-entry and architecture-boundary portions are
+complete; physical legacy-shell removal remains blocked by the existing Tk
+compatibility suite. This is documented explicitly in
+`docs/v3/LEGACY_REMOVAL.md` and is not hidden by skips or weakened tests.
 
 ## Completed task history
 
-- Task 77: scene snapshots, incremental VTK, structured picking, camera and
-  framing rework. Focused suite: 11 passed. Commit `4de640b`.
-- Task 78: persistence/settings/import-export/CAD boundaries and composition
-  root. Focused suite: 7 passed. Commit `53ee0cd`.
-- Task 79: independent `packages/workbench_ui` PySide6 framework, VTK host,
-  shell, panels, tools, inspector, tree, palette, themes, settings, demo, and
-  offscreen tests. Focused suite: 5 passed. Commit `0edbe1f`.
+- Task 77 — scene snapshots, incremental VTK, structured picking, camera and
+  framing. Commit `4de640b`; focused suite 11 passed.
+- Task 78 — repositories, import/export/CAD boundaries, and composition root.
+  Commit `53ee0cd`; focused suite 7 passed.
+- Task 79 — independent PySide6 workbench framework and demo. Commit
+  `0edbe1f`; focused suite 5 passed.
+- Task 80 — V3 Qt shell, central actions, snapshot viewport, project/model
+  dialogs, parity matrix, and user guide. Commit `af5e27c`; focused suite 3
+  passed.
 
-## Task 80 completed work
+## Task 81 completed portions
 
-- Added `OpenRetopV3Window` and made `src/main.py` launch it as the supported
-  entry point. The framework path is composed only when running from source;
-  installed packages continue to resolve normally.
-- Added the default V3 layout: File/Edit/View/Create/Modify/Inspect/Help
-  menus, optional toolbar actions, Scene and Properties docks, Task 77 VTK
-  snapshot viewport, command palette, diagnostics panel, and instruction/status
-  bar.
-- Converted the central application action registry into framework actions;
-  Frame All/Selected, visibility, undo/redo, named views, and file actions
-  dispatch through one path rather than widget-specific handlers.
-- Added stable scene-tree coverage for mesh, section planes/results, curves,
-  preview/BREP surfaces, and regions with selection and visibility controller
-  adapters.
-- Added V3 model/project open/save dialogs that call Task 78 services, create
-  controller-owned mesh state, preserve relative project paths, and frame
-  restored model geometry through Task 77 snapshots.
-- Added `docs/v3/V3_PARITY_MATRIX.md` and a concise V3 user guide.
+- `src/main.py` launches only the V3 Qt entry point and has no Tk import or
+  legacy `app.main_window` reference.
+- `src/presentation/qt` has no Tk imports and routes VTK work through the
+  shared Task 77 snapshot synchronizer/actor adapter.
+- Added `tests.test_task81_legacy_boundary` with three passing assertions for
+  supported entry-point, presentation import, and shared-viewport boundaries.
+- Added `docs/v3/LEGACY_REMOVAL.md` with the evidence gate for deleting the Tk
+  shell and replacing its widget-internal tests.
 
-## Task 80 verification
+## Required remaining Task 81 work
 
-- `tests.test_task80_v3_ui` — 3 passed with `QT_QPA_PLATFORM=offscreen`.
-- `tests.test_task79_workbench_ui` — 5 passed with `QT_QPA_PLATFORM=offscreen`.
-- Task 77 and Task 78 focused suites remain green individually.
+- Advanced V3 action/controller adapters still need parity evidence for all
+  retained legacy workflows.
+- `src/app/main_window.py` is still approximately 12,694 lines, and the Tk
+  menus, dialogs, scene browser, and `src/viewer/embedded_viewport.py` remain
+  for the current regression suite. They must be removed after equivalent V3
+  behavior tests replace the stale widget-internal tests.
+- The six legacy architecture allowlist entries and duplicate menu-label
+  findings cannot be removed until those modules are gone.
+
+## Verification
+
+- `tests.test_task81_legacy_boundary` — 3 passed.
+- Task 77, 78, 79, and 80 focused suites — passed individually.
+- Architecture metrics `--fail-on-new` — passed with the documented six legacy
+  Tk allowlist entries and no cycles.
 - `python -m compileall -q src packages/workbench_ui/workbench_ui` — passed.
-- Standalone framework wheel build — passed after installing the declared
-  `wheel` build dependency.
 - `git diff --check` — passed.
-
-## Known limitations before Task 81
-
-- The V3 shell exposes the full central action registry, but several advanced
-  actions still report controller availability rather than presenting every
-  legacy-specific inspector editor; the parity matrix identifies the owning
-  controller and existing behavior tests.
-- The legacy Tk `OpenRetopWindow` and its compatibility viewport facade remain
-  in the tree for the migration test baseline. Task 81 must remove them only
-  after replacing the remaining widget-internal tests with V3 behavior tests.
-- A Windows offscreen VTK run can log OpenGL warnings when multiple Qt/VTK
-  windows are created in one interpreter; isolated V3 smoke runs are green.
 
 ## Exact next-task starting point
 
-Task 81 starts by walking `docs/v3/V3_PARITY_MATRIX.md`, moving each retained
-legacy behavior to a tested V3 action/controller path, then removing the
-superseded Tk shell, `EmbeddedVTKViewport.set_scene(...)` compatibility path,
-Tk menus/dialogs/panels, and stale allowlist entries. Do not claim final
-release-candidate status until the complete V3 behavior suite is green.
+Task 82 performs final verification and release-candidate reporting, but cannot
+claim final acceptance until the Task 81 physical deletion gate is resolved.
+The known full-suite baseline is 617 passed, 31 failed, and 1 error in the
+legacy Tk MainWindow tests; the new V3 focused suites are green.

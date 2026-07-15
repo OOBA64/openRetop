@@ -28,6 +28,24 @@ jobs:
       - name: Verify required geometry dependencies
         run: python -c "import tkinter; import vtkmodules"
 
+      - name: Compile V3 source
+        run: python -m compileall -q src packages/workbench_ui/workbench_ui
+
+      - name: Verify architecture boundaries
+        run: python scripts/report_architecture_metrics.py --fail-on-new
+
+      - name: Run V3 focused suites
+        env:
+          PYTHONPATH: src:packages/workbench_ui
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m unittest
+          tests.test_task77_viewport
+          tests.test_task78_boundaries
+          tests.test_task79_workbench_ui
+          tests.test_task80_v3_ui
+          tests.test_task81_legacy_boundary
+
       - name: Run accelerated mesh-query tests
         env:
           PYTHONPATH: src
