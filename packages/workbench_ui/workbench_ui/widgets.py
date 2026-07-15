@@ -34,11 +34,13 @@ class SceneTreeWidget(QWidget):
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(["Scene"])
         self.tree.itemSelectionChanged.connect(self._selection_changed)
+        self.tree.itemChanged.connect(self._item_changed)
         layout = QVBoxLayout(self)
         layout.addWidget(self.tree)
         self.refresh()
 
     def refresh(self) -> None:
+        self.tree.blockSignals(True)
         self.tree.clear()
         items: dict[str, QTreeWidgetItem] = {}
         for node in self.model.nodes.values():
@@ -51,10 +53,19 @@ class SceneTreeWidget(QWidget):
             else:
                 self.tree.addTopLevelItem(item)
         self.tree.expandAll()
+        self.tree.blockSignals(False)
 
     def _selection_changed(self) -> None:
         ids = [item.data(0, Qt.UserRole) for item in self.tree.selectedItems()]
         self.selection_changed.emit(self.model.select(ids))
+
+    def _item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
+        node_id = str(item.data(0, Qt.UserRole))
+        if node_id not in self.model.nodes:
+            return
+        visible = item.checkState(0) == Qt.Checked
+        self.model.set_visible(node_id, visible)
+        self.visibility_changed.emit(node_id, visible)
 
 
 class PropertyInspectorWidget(QWidget):

@@ -18,11 +18,15 @@ Install the prototype dependency:
 python -m pip install -r requirements.txt
 ```
 
-Open the integrated app window:
+Open the V3 Qt workbench window:
 
 ```powershell
 python src/main.py
 ```
+
+The reusable standalone workbench framework lives under
+`packages/workbench_ui/`. Install the full supported dependency set with
+`python -m pip install -r requirements.txt`.
 
 You can also load a mesh directly from the import script:
 

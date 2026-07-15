@@ -38,11 +38,11 @@ task commit pass.
 
 ## Task 80 — openRetop V3 UI
 
-- [ ] Add the supported V3 bootstrap/entry point while retaining Tk for parity.
-- [ ] Wire scene tree, viewport snapshots, inspector, status, palette, dialogs, and progress.
-- [ ] Route workflows through the centralized action registry and application controllers.
-- [ ] Add the legacy-to-V3 parity matrix and workflow adapter coverage.
-- [ ] Add Qt/VTK smoke and project/settings/open/save tests.
+- [x] Add the supported V3 bootstrap/entry point while retaining Tk for parity.
+- [x] Wire scene tree, viewport snapshots, inspector, status, palette, dialogs, and progress.
+- [x] Route workflows through the centralized action registry and application controllers.
+- [x] Add the legacy-to-V3 parity matrix and workflow adapter coverage.
+- [x] Add Qt/VTK smoke and project/settings/open/save tests.
 
 ## Task 81 — Remove legacy shell and compatibility scaffolding
 
