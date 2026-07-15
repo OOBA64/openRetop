@@ -2,121 +2,99 @@
 
 ## Current task
 
-Task 76 - Extract Remaining Workflow Controllers
+Task 77 - Viewport, Scene Snapshot, Picking, Camera, and Framing Rework
 
-Implementation status: complete. All Task 76 implementation and focused
-verification checks pass. Complete-suite certification remains blocked by the
-same workstation interpreter split recorded for Task 75; details are in
-Verification below. Task 77 was not started.
+Implementation status: complete, with the complete-suite acceptance check
+blocked by existing MainWindow compatibility failures described under
+Verification. Task 78 was not started.
 
 ## Completed work
 
-- Added UI-agnostic `SceneController`, `SelectionController`,
-  `VisibilityController`, `TransformController`, `SectionController`,
-  non-manual `CurveController`, `RegionController`, `SurfaceController`,
-  `BrepController`, and `AnalysisController`.
-- Moved authoritative transform and region workflow/session state into the
-  application layer. Existing `app` state modules now re-export the application
-  types so legacy imports and MainWindow compatibility properties continue to
-  work without independent shadow state.
-- Added shared controller support for callback undo payloads, state snapshots,
-  selection snapshots, scene IDs, model-sync requests, and feature dependency
-  planning/pruning. Controllers return Task 75 `CommandResult` values and
-  publish typed scene, selection, status, and dirty events without owning the
-  global undo stack.
-- Preserved dependency invalidation for section planes/results, source curves,
-  preview surfaces, editable lofts, four-boundary features, BREP records, mesh
-  replacement/deletion, source edits, and direct scene deletion. Undo/redo
-  snapshots include affected dependent records, selection, and BREP runtime
-  objects where applicable.
-- Kept the accelerated shared `MeshQueryService` as the only projection query
-  cache. Transform, region, curve, and surface controllers receive explicit
-  mesh/query inputs or the existing shared service; no brute-force projection
-  path or second cache was introduced.
-- Refactored MainWindow workflow methods into compatibility adapters that read
-  Tk values or resolve screen-space input, call a controller, apply structured
-  status/dirty/undo/selection/viewport/UI requests, and refresh widgets. Public
-  names used by menus and tests remain available.
-- Moved surface patch validation and general BREP/editable-loft build policy out
-  of MainWindow. Removed the superseded surface validation, BREP build, delete,
-  and undo helper chains. MainWindow changed from the Task 75 baseline of
-  14,703 physical lines and 547 methods to 12,578 physical lines and 519
-  methods.
-- Registered all current non-file-dialog actions in the central registry: 141
-  unique action definitions now cover scene, selection, visibility, transform,
-  section, curve, manual-curve, region, surface/BREP, and analysis workflows.
-  MainWindow binds these definitions through one dispatcher and uses their
-  centralized conditions for menu/button state, including manual session phase,
-  selected control-point state, paused Add Point flow, and region-boundary
-  availability.
-- Kept Task 74 manual-curve controller/session ownership and Task 73 accelerated
-  projection behavior intact. No modeling feature, geometry algorithm,
-  project-format field, serializer version, CAD dependency, or actor-construction
-  path was added or rewritten.
-- Added headless controller coverage for success/failure, validation atomicity,
-  undo/redo payloads, dirty flags, typed events, selection changes, missing and
-  duplicate dependencies, transformed analysis bounds, source edits, direct
-  deletion, and dependent-feature invalidation. Architecture tests assert that
-  the controllers do not import Tk, MainWindow, dialogs, or VTK actor APIs.
-
-## Documented exception
-
-The specialized region-to-planar-BREP adapter still obtains the current
-transformed mesh, manages its progress UI, and composes the existing region
-plane-fit/reprojection functions in MainWindow. `BrepController` owns adoption
-of the resulting record/runtime object, rebuild state, dependency invalidation,
-events, dirty state, and undo payload. This narrow exception avoids moving
-viewport/presentation access into the application controller and avoids
-rewriting the established region geometry path. General planar-face, loft,
-editable-loft, export-to-an-explicit-path, rebuild, source-edit, display, and
-delete workflows are controller-owned.
+- Added immutable, toolkit-neutral scene-description contracts for
+  `SceneSnapshot`, mesh/curve/surface/region/section render items,
+  `ToolPreviewState`, `SelectionRenderState`, `DisplayStyleSnapshot`, and
+  declarative `CameraRequest` values. Geometry uses stable object IDs and
+  deterministic revisions; style, visibility, and transforms are tracked
+  independently.
+- Added a UI-independent `SceneBuilder` that reads controller-owned `AppState`
+  and prepared surface/manual geometry. It emits visible and hidden persistent
+  items, scene-node/group selection keys, display options, world-space bounds,
+  and camera requests without importing Tk or VTK.
+- Changed the real MainWindow viewport path to build and submit one
+  `SceneSnapshot`. The old `set_scene(...)` argument facade remains available
+  for older adapters/tests until Task 81.
+- Split viewport infrastructure into focused host, scene synchronization,
+  actor cache/factory, mesh, curve, surface, region, section, tool-preview,
+  picking, camera, style-conversion, and low-level VTK conversion modules.
+  Actor construction and mutation remain in `viewer` presentation modules.
+- Added stable-ID incremental synchronization. New actors are created on
+  appearance; geometry changes only on geometry-revision changes; transform,
+  style, and visibility changes are separate; disappeared actors are removed;
+  unchanged actors and polydata are reused. `ActorUpdateDiagnostics` exposes
+  created, geometry/style/transform/visibility updated, removed, and reused
+  counts. Compatibility actor groups are invalidated only for the affected
+  geometry family.
+- Added structured pick results and services for mesh triangles, scene objects,
+  manual control points, curve segments, and loft overbuild handles. Existing
+  integer/string compatibility hit-test methods remain. Tool callbacks still
+  consume only their established left-button interactions; VTK camera orbit,
+  pan, and wheel navigation paths were not changed.
+- Added a tested camera controller with finite framing math, safe degenerate and
+  flat bounds, finite orthogonal camera vectors, clipping-range repair,
+  frame-all/frame-selected/frame-bounds/reset requests, and named front/back/
+  left/right/top/bottom/isometric orthographic views.
+- Frame All now uses the union of visible world-space scene geometry instead of
+  mesh-only metrics. It includes transformed mesh, curves, regions, section
+  geometry, manual/tool previews, preview surfaces, and BREP visual previews;
+  the world origin is not included merely because an origin marker exists.
+- Frame Selected continues to resolve object and group selection, now includes
+  generated preview/BREP vertices and overbuild handles, and uses selected mesh
+  bounds when other visible categories exist instead of framing the entire
+  scene.
+- Model/project loading now performs its final camera request after restored
+  transforms, records, and actors have synchronized. Model-less projects frame
+  restored curve geometry when present. Ordinary refresh emits no camera
+  request and preserves position/focal point.
+- Corrected the manual first-control-point presentation to use the existing
+  dedicated first-point color constant; no curve geometry or modeling behavior
+  changed.
+- Preserved the `.openretop` schema and all existing project restoration code,
+  the shared accelerated `MeshQueryService`, public VTK/CadQuery/OCP stack, and
+  existing MainWindow/viewport compatibility entry points.
 
 ## Files created
 
-Application state and controller support:
+Viewport scene and synchronization:
 
-- `src/application/state.py`
-- `src/application/controller_support.py`
-- `src/application/scene_ids.py`
-- `src/application/feature_dependencies.py`
-- `src/application/transform_math.py`
-- `src/application/region_session.py`
+- `src/viewer/scene_types.py`
+- `src/viewer/scene_builder.py`
+- `src/viewer/scene_synchronizer.py`
+- `src/viewer/actor_cache.py`
+- `src/viewer/actor_factories.py`
 
-Controllers:
+Focused VTK infrastructure:
 
-- `src/application/scene_controller.py`
-- `src/application/selection_controller.py`
-- `src/application/visibility_controller.py`
-- `src/application/transform_controller.py`
-- `src/application/section_controller.py`
-- `src/application/curve_controller.py`
-- `src/application/region_controller.py`
-- `src/application/surface_controller.py`
-- `src/application/brep_controller.py`
-- `src/application/analysis_controller.py`
+- `src/viewer/host_adapter.py`
+- `src/viewer/camera_controller.py`
+- `src/viewer/picking_service.py`
+- `src/viewer/style_conversion.py`
+- `src/viewer/vtk_actor_utils.py`
+- `src/viewer/mesh_actors.py`
+- `src/viewer/curve_actors.py`
+- `src/viewer/surface_actors.py`
+- `src/viewer/region_actors.py`
+- `src/viewer/section_actors.py`
+- `src/viewer/tool_preview_actors.py`
 
 Tests:
 
-- `tests/test_scene_controllers.py`
-- `tests/test_transform_controller.py`
-- `tests/test_section_controller.py`
-- `tests/test_curve_controller.py`
-- `tests/test_region_controller.py`
-- `tests/test_surface_brep_controllers.py`
-- `tests/test_analysis_controller.py`
+- `tests/test_task77_viewport.py`
 
 ## Files modified
 
-- `src/app/app_state.py`
 - `src/app/main_window.py`
-- `src/app/object_state.py`
-- `src/app/scene_browser.py`
-- `src/app/transform_state.py`
-- `src/app/transforms.py`
-- `src/application/__init__.py`
-- `src/application/actions.py`
-- `tests/test_application_core.py`
-- `tests/test_architecture.py`
+- `src/viewer/__init__.py`
+- `src/viewer/embedded_viewport.py`
 - `docs/v3/STATUS.md`
 
 No files were moved or removed.
@@ -125,98 +103,93 @@ No files were moved or removed.
 
 Passing checks:
 
-- Blender Python 3.11 with `PYTHONPATH=src;.venv/Lib/site-packages`:
-  `python -m compileall -q src` - passed.
-- Focused Task 75/76 application, architecture, and controller suites - 78
-  tests passed.
-- `python scripts/report_architecture_metrics.py --largest 5 --fail-on-new` -
-  passed with the six existing presentation allowlist entries, zero new
-  dependency violations, zero package cycles, and zero module cycles.
-- Central registry audit - all 141 IDs are unique; all handlers resolve and
-  non-payload handler signatures bind.
+- `python -m compileall -q src` - passed.
+- `tests.test_task77_viewport` - 11 tests passed. Coverage includes scene
+  building/revisions, transformed and category bounds, degenerate camera math,
+  clipping/named views, structured picking, headless public-VTK actor sync,
+  no-unnecessary-rebuild behavior, independent transform/style/visibility
+  updates, camera-after-actor ordering, and ordinary-refresh camera
+  preservation.
+- Full existing `tests.test_embedded_viewport_scene` plus focused project-load,
+  transformed-surface, curve/source/region framing, model selection, and mesh
+  deletion integration cases - 73 tests passed with the Task 77 suite included.
+- `tests.test_architecture` plus Task 77 tests - 23 tests passed; six existing
+  presentation allowlist imports, zero new dependency violations, zero package
+  cycles, and zero module cycles.
 - `git diff --check` - passed.
 
-Complete-suite result and environment blocker:
+Required complete-suite result:
 
-- The exact required `python -m compileall -q src` and full unittest commands
-  were attempted. The workspace `python` launcher points to a removed Python
-  3.11 installation and exits before execution.
-- Blender's bundled Python 3.11 plus the checked-in site-packages supplies
-  NumPy, VTK, CadQuery/OCP, and the other modeling dependencies. Full discovery
-  ran 419 tests: 414 completed successfully and five errored only because that
-  interpreter has no `tkinter`.
-- The affected imports are `test_curve_surface_prep`,
-  `test_embedded_viewport_scene`, `test_main_window_ui`, the MainWindow
-  compatibility case in `test_manual_curve_controller`, and
-  `test_scene_browser_labels`.
-- The available system Python has Tk but lacks the scientific/CAD dependency
-  stack. No available interpreter has both sets of requirements. No test was
-  skipped, weakened, deleted, or rewritten to hide this blocker, and the full
-  run reported no behavioral assertion failures.
+- Command: `PYTHONPATH=src python -m unittest discover -s tests -v`.
+- Result: 649 tests ran; 617 passed, 31 failed, and 1 errored.
+- All Task 77 tests and all `test_embedded_viewport_scene` tests passed. The 32
+  non-passing cases are in the pre-existing `test_main_window_ui` compatibility
+  suite. They cover Task 74-76 workflow/status/selection expectations such as
+  manual-curve default snap state, controller status wording, scene-browser
+  refresh after a direct private restore helper, visibility undo labels, and
+  surface/section command labels. The lone error is
+  `test_manual_curve_project_restore_upgrades_legacy_manual_curve`, where the
+  test calls `_restore_project_curve_collection` directly and then expects a
+  scene-browser node that the helper does not refresh.
+- These failures reproduce individually and are outside Task 77 rendering,
+  picking, camera, framing, project-format, or actor synchronization. They were
+  not skipped, weakened, deleted, or rewritten because doing so would violate
+  the numbered-task scope and test rules.
 
 ## Compatibility and risks
 
-- `.openretop` version, serializer/deserializer, field names, permissive future
-  metadata, and reconstruction defaults are unchanged. Existing project files
-  continue through the same load/save code paths.
-- Existing public MainWindow method names and legacy `app` state import paths
-  are retained as forwarding compatibility boundaries until Task 81.
-- Controller undo payloads restore coherent deep state snapshots. Code holding
-  private references to replaced collection instances across undo/redo would be
-  stale; supported callers access collections through `AppState`, and the
-  MainWindow/controllers do so.
-- BREP CAD runtime objects remain process-local infrastructure state. They are
-  restored by in-memory undo payloads where available but are still rebuilt
-  after project load, matching prior persistence semantics.
-- The region-plane exception above remains coupled to transformed mesh access
-  in MainWindow and should be revisited only when Task 77 supplies declarative
-  scene/viewport inputs; moving it prematurely risks changing established
-  geometry behavior.
-- Complete Tk integration certification is an environment risk, not a known
-  product assertion failure, but remains unverified until the external runner
-  uses the supported application environment.
+- Project format/version, serializers, metadata fields, and permissive legacy
+  manual-curve upgrade paths are unchanged. Existing `.openretop` files still
+  enter through the same project loader and restoration helpers.
+- MainWindow uses snapshots with the real viewport, while non-snapshot
+  third-party/fake adapters use the retained `set_scene` facade. This temporary
+  dual path is intentional through Task 81.
+- The compatibility facade still delegates final presentation to the
+  established grouped overlay builders to preserve exact visuals. The new
+  per-object actor factories and synchronizer are public-VTK-only and fully
+  tested, while compatibility group invalidation is family-level for curves,
+  surfaces, and manual previews. Task 81 can remove the legacy argument facade
+  after all external callers migrate.
+- Deterministic revisions hash prepared NumPy geometry. This prioritizes correct
+  invalidation and no stale actors; very large future non-mesh preview arrays
+  may warrant controller-owned monotonic revisions, but current preview sizes
+  are bounded and mesh geometry is reused.
+- Named views now enable parallel projection. This is an intentional
+  presentation change required by Task 77; modeling coordinates and stored
+  geometry are unaffected.
 
 ## Known remaining issues
 
-- The Task 75 framing regressions remain intentionally unchanged: Frame All is
-  mesh-centric, several Frame Selected categories are approximate, and project
-  load may frame before restored transforms/derived geometry are complete.
-- VTK scene synchronization, actor caching, picking, camera fitting, and
-  declarative scene snapshots remain concentrated in viewport/MainWindow code.
-  These are Task 77 responsibilities.
-- Project/settings/import/export orchestration remains primarily in MainWindow
-  by design for Task 78. BREP export is split correctly: MainWindow chooses a
-  path, while the controller validates and performs export through its backend.
-- MainWindow is materially smaller and controller-oriented but is still a large
-  compatibility adapter pending Tasks 77-81.
-- There are still no checked-in representative real-world `.openretop` fixture
-  files for end-to-end backward-compatibility loading.
+- Complete-suite certification remains blocked by the 32 existing MainWindow
+  compatibility failures above. No Task 77-specific failure is known.
+- `EmbeddedVTKViewport.set_scene(...)` remains a large compatibility method and
+  the established overlay actor builders remain in that module. Removal of the
+  facade is explicitly deferred until Task 81.
+- Project/settings/import/export orchestration remains primarily in MainWindow;
+  that is Task 78 scope and was not changed here.
+- There are still no representative real-world `.openretop` fixtures checked
+  into the repository for end-to-end compatibility certification.
 
 ## Acceptance assessment
 
-All ten required controllers exist and are UI-agnostic. They use explicit
-state, Task 75 results/events, controller-owned workflow snapshots, and the
-shared query service. MainWindow is materially smaller and delegates the listed
-workflows; current non-file-dialog actions are centrally registered; dependency
-invalidation, selection, dirty state, and undo payload behavior have headless
-coverage. Task 74 manual curves, Task 73 projection, project schema, CAD stack,
-and actor ownership were preserved.
+The Task 77 implementation criteria are satisfied: rendering consumes
+`SceneSnapshot`; VTK operations live in viewport presentation modules;
+structured picking exists; camera commands and post-restore framing operate on
+world-space visible geometry; ordinary refresh preserves the camera; and actor
+updates are revision-driven and diagnostic.
 
-Every implementation acceptance criterion is satisfied, including the
-documented region-plane presentation exception. The requirement to certify the
-complete unittest suite as passing cannot be satisfied on this workstation due
-to the incompatible runtime split above. Therefore not every acceptance
-criterion can be reported as fully verified until the external runner completes
-the suite in an environment containing both Tk and the scientific/CAD stack.
+The mandatory complete-suite criterion is not satisfied because the repository
+currently has 31 failing and 1 erroring pre-existing MainWindow compatibility
+tests. Therefore not every acceptance criterion can be reported as satisfied.
+This is recorded as a blocker rather than bypassed with out-of-scope workflow
+changes or test modifications.
 
 ## Exact next-task starting point
 
-Start Task 77 - Viewport, Scene Snapshot, Picking, Camera, and Framing Rework.
-Begin from the controller-owned `AppState` and structured viewport requests
-created by Tasks 75-76: define stable toolkit-neutral scene snapshot/render-item
-types and a UI-independent scene builder, then split VTK synchronization,
-actors, picking, style conversion, and camera fitting behind the existing
-`EmbeddedVTKViewport` compatibility facade. Add the Task 77 scene/camera tests
-before correcting Frame All, Frame Selected, transformed/restored project
-framing, and unnecessary actor rebuilds. Do not begin Task 78 project/settings
-work as part of that task.
+Before starting Task 78, reconcile the existing MainWindow compatibility-suite
+baseline (31 failures and one direct-private-helper scene-browser error) with
+the Task 74-76 controller behavior, or obtain an external-runner baseline that
+establishes those failures as expected. Once the required full suite is green,
+start Task 78 at project/settings/import/export orchestration. Do not remove the
+Task 77 `EmbeddedVTKViewport.set_scene(...)` compatibility facade before Task
+81.

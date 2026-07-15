@@ -249,6 +249,8 @@ from surfaces.surface_preview import (
     build_surface_preview_mesh,
 )
 from viewer.embedded_viewport import EmbeddedVTKViewport
+from viewer.scene_builder import SceneBuildOptions, SceneBuilder
+from viewer.scene_types import CameraRequest, ToolPreviewState, geometry_revision
 
 
 MESH_FILE_TYPES = (
@@ -851,6 +853,8 @@ class OpenRetopWindow:
         self._bind_keyboard_shortcuts()
 
         self.viewport = EmbeddedVTKViewport(self.viewport_frame)
+        self._scene_builder = SceneBuilder()
+        self._last_scene_snapshot = None
         self.viewport.set_selection_callback(self._on_viewport_selection)
         self.viewport.set_pointer_callback(self._on_viewport_pointer_event)
         self._sync_viewcube_shell_visibility()
@@ -1243,9 +1247,17 @@ class OpenRetopWindow:
             return CommandResult.ok(status="Selected geometry is unavailable")
 
         minimum_bound, maximum_bound = bounds
+        has_other_visible_geometry = bool(
+            any(curve.visible for curve in self.app_state.curve_collection.curves)
+            or any(surface.visible for surface in self._surface_records_for_scene())
+            or (
+                self.app_state.region_collection.active_region is not None
+                and self.app_state.region_collection.active_region.visible
+            )
+        )
         request = (
             ViewportRequest.frame_all()
-            if NODE_MESH in expanded_node_ids
+            if NODE_MESH in expanded_node_ids and not has_other_visible_geometry
             else ViewportRequest.frame_bounds(
                 tuple(float(value) for value in minimum_bound),
                 tuple(float(value) for value in maximum_bound),
@@ -1348,6 +1360,11 @@ class OpenRetopWindow:
         self._update_window_title()
         if project.mesh_path is None:
             self._restore_project_controls(project)
+            if any(
+                curve.visible and len(curve.fitted_points) > 0
+                for curve in self.app_state.curve_collection.curves
+            ):
+                self._refresh_viewport(reset_camera=True)
             self._clear_undo_stack()
             self._set_project_dirty(False)
             self.status_text.set(self._project_loaded_status(project, project_path))
@@ -1361,7 +1378,7 @@ class OpenRetopWindow:
 
         self._restore_project_transform(project)
         self._restore_project_controls(project)
-        self._refresh_viewport(reset_camera=False)
+        self._refresh_viewport(reset_camera=True)
         self._clear_undo_stack()
         self._set_project_dirty(False)
         self.status_text.set(self._project_loaded_status(project, project_path))
@@ -10168,6 +10185,22 @@ class OpenRetopWindow:
                 if points is not None:
                     point_sets.append(points)
 
+        surface_node_ids = {
+            surface_node_id(surface.id)
+            for surface in self._surface_records_for_scene()
+            if surface_node_id(surface.id) in node_ids
+        }
+        if surface_node_ids:
+            for preview in self._build_visible_surface_previews():
+                if surface_node_id(preview.source_surface_id) not in surface_node_ids:
+                    continue
+                points = self._finite_points(preview.vertices)
+                if points is not None:
+                    point_sets.append(points)
+                handle_points = self._finite_points(preview.overbuild_handle_points)
+                if handle_points is not None and preview.show_overbuild_handles:
+                    point_sets.append(handle_points)
+
         for curve in self.app_state.curve_collection.curves:
             if curve_node_id(curve.id) not in node_ids:
                 continue
@@ -10321,10 +10354,20 @@ class OpenRetopWindow:
         visible_curves = [] if hide_expensive_overlays else get_visible_curves(
             self.app_state.curve_collection
         )
+        snapshot_curves = (
+            []
+            if hide_expensive_overlays
+            else list(self.app_state.curve_collection.curves)
+        )
         if self._manual_curve_edit_active and self._manual_curve_edit_curve_id is not None:
             visible_curves = [
                 curve
                 for curve in visible_curves
+                if curve.id != self._manual_curve_edit_curve_id
+            ]
+            snapshot_curves = [
+                curve
+                for curve in snapshot_curves
                 if curve.id != self._manual_curve_edit_curve_id
             ]
         surface_previews = [] if hide_expensive_overlays else self._build_visible_surface_previews()
@@ -10395,60 +10438,133 @@ class OpenRetopWindow:
                     manual_method = control_data.curve_method
                     manual_sample_count = control_data.sample_count
                     manual_fitted_points = selected_curve.fitted_points
-        self.viewport.set_scene(
-            display_mesh,
-            transform_matrix=transform_matrix,
-            show_grid=self.show_grid.get(),
-            show_axes=self.show_axes.get(),
-            show_axis_gizmo=self.show_axis_gizmo.get(),
-            show_normals=False,
-            show_section_plane=self._should_show_section_plane(),
-            section_axis=self.section_axis.get(),
-            section_offset=self.section_offset.get(),
-            section_planes=self.app_state.section_collection.planes,
-            active_section_plane_id=self.app_state.section_collection.active_plane_id,
-            selected_item=self.app_state.selected_item,
-            object_origin=origin,
-            scene_bounds_min=(
-                self.app_state.mesh_object.source_bounds_min if self.app_state.mesh_object is not None else None
+        tool_preview = ToolPreviewState(
+            revision=geometry_revision(
+                manual_points,
+                manual_point_types,
+                manual_fitted_points,
+                manual_closed,
+                manual_preview_point,
+                manual_preview_valid,
             ),
-            scene_bounds_max=(
-                self.app_state.mesh_object.source_bounds_max if self.app_state.mesh_object is not None else None
+            active=manual_points is not None,
+            control_points=manual_points,
+            point_types=tuple(manual_point_types or ()),
+            fitted_points=manual_fitted_points,
+            closed=manual_closed,
+            plane_normal=(
+                (0.0, 0.0, 1.0)
+                if manual_plane_normal is None
+                else tuple(np.asarray(manual_plane_normal, dtype=float).reshape(3))
             ),
-            active_transform_mode=self.app_state.active_transform_mode,
-            active_transform_axis=self.app_state.active_transform_axis,
-            active_transform_angle_delta=self._active_transform_angle_delta,
-            section_result=None if hide_expensive_overlays else self.app_state.section_result,
-            curve_results=visible_curves,
-            active_curve_id=self.app_state.curve_collection.active_curve_id,
-            surface_source_curve_ids=surface_source_curve_ids,
-            surface_previews=surface_previews,
-            active_surface_id=self._active_surface_id_for_scene(),
-            region_selection=region_selection,
-            region_selection_color=self.settings.display.region_selection_color,
-            region_selection_edge_color=self.settings.display.region_selection_edge_color,
-            region_selection_opacity=self.settings.display.region_selection_opacity,
-            manual_curve_points=manual_points,
-            manual_curve_point_types=manual_point_types,
-            manual_curve_fitted_points=manual_fitted_points,
-            manual_curve_closed=manual_closed,
-            manual_curve_plane_normal=manual_plane_normal,
-            manual_curve_snap_to_mesh=manual_snap,
-            manual_curve_selected_control_point_index=manual_selected_index,
-            manual_curve_method=manual_method,
-            manual_curve_sample_count=manual_sample_count,
-            manual_curve_preview_point=(
-                manual_preview_point if manual_preview_valid else None
+            snap_to_mesh=manual_snap,
+            selected_control_point_index=manual_selected_index,
+            curve_method=manual_method,
+            sample_count=manual_sample_count,
+            preview_point=(
+                None
+                if manual_preview_point is None
+                else tuple(np.asarray(manual_preview_point, dtype=float).reshape(3))
             ),
-            manual_curve_preview_valid=manual_preview_valid,
-            manual_curve_preview_snaps_closed=manual_preview_snaps_closed,
-            manual_curve_preview_snaps_to_mesh=manual_preview_snaps_to_mesh,
-            display_colors={
-                field_name: getattr(self.settings.display, field_name)
-                for field_name in DISPLAY_COLOR_FIELDS
-            },
-            reset_camera=reset_camera,
+            preview_valid=manual_preview_valid,
+            preview_snaps_closed=manual_preview_snaps_closed,
+            preview_snaps_to_mesh=manual_preview_snaps_to_mesh,
         )
+        scene_snapshot = self._scene_builder.build(
+            self.app_state,
+            options=SceneBuildOptions(
+                show_grid=bool(self.show_grid.get()),
+                show_axes=bool(self.show_axes.get()),
+                show_axis_gizmo=bool(self.show_axis_gizmo.get()),
+                show_normals=False,
+                show_section_plane=self._should_show_section_plane(),
+                hide_expensive_overlays=hide_expensive_overlays,
+                display_colors={
+                    field_name: getattr(self.settings.display, field_name)
+                    for field_name in DISPLAY_COLOR_FIELDS
+                },
+                region_color=self.settings.display.region_selection_color,
+                region_edge_color=self.settings.display.region_selection_edge_color,
+                region_opacity=self.settings.display.region_selection_opacity,
+            ),
+            surface_previews=surface_previews,
+            tool_preview=tool_preview,
+            camera_request=CameraRequest.frame_all() if reset_camera else CameraRequest(),
+            visible_curves=snapshot_curves,
+            active_surface_id=self._active_surface_id_for_scene(),
+            surface_source_curve_ids=surface_source_curve_ids,
+            object_origin=origin,
+            active_transform_angle_delta=self._active_transform_angle_delta,
+        )
+        self._last_scene_snapshot = scene_snapshot
+        if hasattr(self.viewport, "render_scene"):
+            self.viewport.render_scene(scene_snapshot)
+        else:
+            # Task 81 compatibility path for older viewport adapters and tests.
+            self.viewport.set_scene(
+                display_mesh,
+                transform_matrix=transform_matrix,
+                show_grid=self.show_grid.get(),
+                show_axes=self.show_axes.get(),
+                show_axis_gizmo=self.show_axis_gizmo.get(),
+                show_normals=False,
+                show_section_plane=self._should_show_section_plane(),
+                section_axis=self.section_axis.get(),
+                section_offset=self.section_offset.get(),
+                section_planes=self.app_state.section_collection.planes,
+                active_section_plane_id=self.app_state.section_collection.active_plane_id,
+                selected_item=self.app_state.selected_item,
+                object_origin=origin,
+                scene_bounds_min=(
+                    self.app_state.mesh_object.source_bounds_min
+                    if self.app_state.mesh_object is not None
+                    else None
+                ),
+                scene_bounds_max=(
+                    self.app_state.mesh_object.source_bounds_max
+                    if self.app_state.mesh_object is not None
+                    else None
+                ),
+                active_transform_mode=self.app_state.active_transform_mode,
+                active_transform_axis=self.app_state.active_transform_axis,
+                active_transform_angle_delta=self._active_transform_angle_delta,
+                section_result=(
+                    None if hide_expensive_overlays else self.app_state.section_result
+                ),
+                curve_results=visible_curves,
+                active_curve_id=self.app_state.curve_collection.active_curve_id,
+                surface_source_curve_ids=surface_source_curve_ids,
+                surface_previews=surface_previews,
+                active_surface_id=self._active_surface_id_for_scene(),
+                region_selection=region_selection,
+                region_selection_color=self.settings.display.region_selection_color,
+                region_selection_edge_color=(
+                    self.settings.display.region_selection_edge_color
+                ),
+                region_selection_opacity=(
+                    self.settings.display.region_selection_opacity
+                ),
+                manual_curve_points=manual_points,
+                manual_curve_point_types=manual_point_types,
+                manual_curve_fitted_points=manual_fitted_points,
+                manual_curve_closed=manual_closed,
+                manual_curve_plane_normal=manual_plane_normal,
+                manual_curve_snap_to_mesh=manual_snap,
+                manual_curve_selected_control_point_index=manual_selected_index,
+                manual_curve_method=manual_method,
+                manual_curve_sample_count=manual_sample_count,
+                manual_curve_preview_point=(
+                    manual_preview_point if manual_preview_valid else None
+                ),
+                manual_curve_preview_valid=manual_preview_valid,
+                manual_curve_preview_snaps_closed=manual_preview_snaps_closed,
+                manual_curve_preview_snaps_to_mesh=manual_preview_snaps_to_mesh,
+                display_colors={
+                    field_name: getattr(self.settings.display, field_name)
+                    for field_name in DISPLAY_COLOR_FIELDS
+                },
+                reset_camera=reset_camera,
+            )
         self._refresh_scene_browser()
 
     def _active_surface_source_curve_ids(self) -> tuple[str, ...]:

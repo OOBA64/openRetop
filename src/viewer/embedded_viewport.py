@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 from tkinter import Canvas, Event, TclError
+from types import SimpleNamespace
 from typing import Callable, Mapping, Sequence
 
 import numpy as np
@@ -22,7 +23,7 @@ from curves.manual_curve import (
     sample_hybrid_manual_curve,
 )
 from geometry.curves import CurveFitResult
-from geometry.sections import SectionResult
+from geometry.sections import SectionPolyline, SectionResult
 from mesh.triangle_mesh import TriangleMeshData
 from regions.region_state import RegionSelection
 from sections.section_state import SectionPlaneState
@@ -41,6 +42,18 @@ from viewer.overlays import (
     reference_extent,
     rotation_ring_radius_for_axis,
 )
+from viewer.camera_controller import CameraController
+from viewer.host_adapter import TkVTKHostAdapter
+from viewer.picking_service import (
+    CurveSegmentPickResult,
+    ManualControlPointPickResult,
+    MeshPickResult,
+    OverbuildHandlePickResult,
+    PickingService,
+    SceneObjectPickResult,
+)
+from viewer.scene_synchronizer import ActorUpdateDiagnostics, SceneSynchronizer
+from viewer.scene_types import CameraRequestKind, SceneSnapshot
 
 try:
     from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
@@ -202,14 +215,6 @@ class ViewportSectionPlane:
     normal: np.ndarray
 
 
-@dataclass(frozen=True)
-class MeshPickResult:
-    hit: bool
-    position: np.ndarray | None = None
-    normal: np.ndarray | None = None
-    triangle_index: int | None = None
-
-
 class EmbeddedVTKViewport:
     """VTK viewport hosted inside a Tk frame."""
 
@@ -268,23 +273,28 @@ class EmbeddedVTKViewport:
         self.render_count = 0
         self.skipped_render_count = 0
         self.last_render_time: float | None = None
+        self._last_scene_snapshot: SceneSnapshot | None = None
+        self._picking_service = PickingService(self.renderer)
+        self._camera_controller = CameraController(self.renderer, self.request_render)
+        self._scene_synchronizer = SceneSynchronizer(_RevisionOnlyActorAdapter())
+        self.actor_update_diagnostics = ActorUpdateDiagnostics()
+        self._host_adapter: TkVTKHostAdapter | None = None
 
     def start(self) -> None:
         if self._is_started:
             return
 
-        self.widget = Canvas(
+        self._host_adapter = TkVTKHostAdapter(
             self.parent,
             background=_rgb_to_hex(self._display_colors.background_color),
-            borderwidth=0,
-            highlightthickness=0,
+            canvas_factory=Canvas,
         )
-        self.widget.pack(fill="both", expand=True)
-        self.widget.update_idletasks()
+        self._host_adapter.pack()
+        self.widget = self._host_adapter.widget
 
         self.render_window = vtkRenderWindow()
         self.render_window.AddRenderer(self.renderer)
-        self._attach_render_window_to_widget()
+        self._host_adapter.attach(self.render_window)
 
         self.interactor = vtkRenderWindowInteractor()
         self.interactor.SetRenderWindow(self.render_window)
@@ -313,9 +323,12 @@ class EmbeddedVTKViewport:
         if self.render_window is not None:
             self.render_window.Finalize()
             self.render_window = None
-        if self.widget is not None:
+        if self._host_adapter is not None:
+            self._host_adapter.close()
+            self._host_adapter = None
+        elif self.widget is not None:
             self.widget.destroy()
-            self.widget = None
+        self.widget = None
 
     def set_selection_callback(
         self,
@@ -417,6 +430,29 @@ class EmbeddedVTKViewport:
         index = int(np.argmin(distances))
         return index if float(distances[index]) <= float(tolerance_pixels) else None
 
+    def pick_manual_control_point_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+        points: Sequence[Sequence[float]] | np.ndarray,
+        *,
+        tolerance_pixels: float = 14.0,
+    ) -> ManualControlPointPickResult:
+        index = self.manual_curve_control_point_index_at_screen(
+            x_position,
+            y_position,
+            points,
+            tolerance_pixels=tolerance_pixels,
+        )
+        point_array = _manual_curve_points_array(points)
+        if index is None:
+            return ManualControlPointPickResult(hit=False)
+        return ManualControlPointPickResult(
+            hit=True,
+            control_point_index=index,
+            position=point_array[index].copy(),
+        )
+
     def loft_overbuild_handle_index_at_screen(
         self,
         x_position: int,
@@ -437,6 +473,72 @@ class EmbeddedVTKViewport:
         distances = np.linalg.norm(projected - display_point, axis=1)
         index = int(np.argmin(distances))
         return index if float(distances[index]) <= float(tolerance_pixels) else None
+
+    def pick_overbuild_handle_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+        *,
+        tolerance_pixels: float = 16.0,
+    ) -> OverbuildHandlePickResult:
+        index = self.loft_overbuild_handle_index_at_screen(
+            x_position,
+            y_position,
+            tolerance_pixels=tolerance_pixels,
+        )
+        if index is None:
+            return OverbuildHandlePickResult(hit=False)
+        surface_id = (
+            self._last_scene_snapshot.selection.active_surface_id
+            if self._last_scene_snapshot is not None
+            else None
+        )
+        return OverbuildHandlePickResult(
+            hit=True,
+            surface_id=surface_id,
+            handle_index=index,
+            position=self._loft_overbuild_handle_points[index].copy(),
+        )
+
+    def pick_curve_segment_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+        *,
+        tolerance_pixels: float = 12.0,
+    ) -> CurveSegmentPickResult:
+        if self.widget is None or self._last_scene_snapshot is None:
+            return CurveSegmentPickResult(hit=False)
+        height = max(int(self.widget.winfo_height()), 1)
+        curves = {
+            item.id: item.points
+            for item in self._last_scene_snapshot.curves
+            if item.visible and len(item.points) >= 2
+        }
+        projected = {
+            curve_id: _project_points(self.renderer, points)
+            for curve_id, points in curves.items()
+        }
+        return PickingService.pick_curve_segment(
+            (float(x_position), float(height - y_position)),
+            projected,
+            curves,
+            tolerance_pixels=tolerance_pixels,
+        )
+
+    def pick_scene_object_at_screen(
+        self,
+        x_position: int,
+        y_position: int,
+    ) -> SceneObjectPickResult:
+        target = self._pick_target(x_position, y_position)
+        if target is None:
+            return SceneObjectPickResult(hit=False)
+        return SceneObjectPickResult(
+            hit=True,
+            object_id=target,
+            object_type=target,
+        )
 
     def _display_to_world(
         self,
@@ -492,6 +594,170 @@ class EmbeddedVTKViewport:
             normal=normal,
             triangle_index=triangle_index,
         )
+
+    def render_scene(self, snapshot: SceneSnapshot) -> ActorUpdateDiagnostics:
+        """Synchronize and render one declarative scene snapshot.
+
+        ``set_scene`` remains below as the Task 81 compatibility facade.  New
+        application code enters through this method, and camera requests are
+        intentionally applied only after all actors have been synchronized.
+        """
+
+        if not isinstance(snapshot, SceneSnapshot):
+            raise TypeError("snapshot must be a SceneSnapshot")
+        previous_snapshot = self._last_scene_snapshot
+        self.actor_update_diagnostics = self._scene_synchronizer.synchronize(snapshot)
+        self._invalidate_legacy_snapshot_geometry(previous_snapshot, snapshot)
+        self._last_scene_snapshot = snapshot
+        self._render_snapshot_with_compatibility_actors(snapshot)
+        self._update_snapshot_view_metrics(snapshot)
+        if snapshot.camera_request.kind is not CameraRequestKind.NONE:
+            self._camera_controller.apply(snapshot.camera_request, snapshot)
+        return self.actor_update_diagnostics
+
+    def _invalidate_legacy_snapshot_geometry(
+        self,
+        previous: SceneSnapshot | None,
+        current: SceneSnapshot,
+    ) -> None:
+        if previous is None:
+            return
+        if _item_revisions(previous.curves) != _item_revisions(current.curves):
+            self._group_keys.pop("curve_results", None)
+            self._group_keys.pop("selected_manual_curve_result", None)
+        if _item_revisions(previous.surfaces) != _item_revisions(current.surfaces):
+            self._group_keys.pop("surface_previews", None)
+        if previous.tool_preview.revision != current.tool_preview.revision:
+            self._group_keys.pop("manual_curve_preview", None)
+            self._group_keys.pop("manual_curve_control_points", None)
+
+    def _render_snapshot_with_compatibility_actors(self, snapshot: SceneSnapshot) -> None:
+        mesh_item = next((item for item in snapshot.meshes if item.visible), None)
+        display = snapshot.display
+        section_planes = [
+            SectionPlaneState(
+                id=item.id,
+                name=item.id,
+                axis=item.axis,
+                offset=item.offset,
+                visible=item.visible,
+                selected=item.selected,
+                origin=np.asarray(item.origin, dtype=float),
+                normal=np.asarray(item.normal, dtype=float),
+            )
+            for item in snapshot.section_planes
+        ]
+        section_result = _section_result_from_snapshot(snapshot)
+        curves = [
+            SimpleNamespace(
+                id=item.id,
+                fitted_points=item.points,
+                visible=item.visible,
+                selected=item.selected or item.active,
+                is_closed=item.closed,
+                metadata=dict(item.metadata),
+                is_tiny_fragment=item.category == "tiny",
+            )
+            for item in snapshot.curves
+            if item.visible
+        ]
+        surfaces = [
+            SurfacePreviewMesh(
+                vertices=item.vertices,
+                faces=item.faces,
+                source_surface_id=item.id,
+                selected=item.selected or item.active,
+                opacity=item.style.opacity,
+                wireframe_overlay=item.wireframe_overlay,
+                display_role=item.display_role,
+                overbuild_handle_points=item.overbuild_handle_points,
+                show_overbuild_handles=item.show_overbuild_handles,
+            )
+            for item in snapshot.surfaces
+            if item.visible
+        ]
+        region_item = next((item for item in snapshot.regions if item.visible), None)
+        region = (
+            None
+            if region_item is None
+            else RegionSelection(
+                id=region_item.id,
+                name=region_item.id,
+                triangle_indices=region_item.triangle_indices,
+                visible=True,
+                selected=region_item.selected,
+            )
+        )
+        tool = snapshot.tool_preview
+        local_bounds = None if mesh_item is None else mesh_item.local_bounds
+        self.set_scene(
+            None if mesh_item is None else mesh_item.mesh,
+            transform_matrix=None if mesh_item is None else mesh_item.transform,
+            show_grid=bool(display.get("show_grid", True)),
+            show_axes=bool(display.get("show_axes", True)),
+            show_axis_gizmo=bool(display.get("show_axis_gizmo", True)),
+            show_normals=bool(display.get("show_normals", False)),
+            show_section_plane=bool(display.get("show_section_plane", True)),
+            section_axis=(
+                section_planes[0].axis if section_planes else "Z"
+            ),
+            section_offset=(
+                section_planes[0].offset if section_planes else 0.0
+            ),
+            section_planes=section_planes,
+            active_section_plane_id=next(
+                (item.id for item in snapshot.section_planes if item.selected), None
+            ),
+            selected_item=snapshot.selection.selected_item,
+            object_origin=snapshot.object_origin,
+            scene_bounds_min=None if local_bounds is None else local_bounds[0],
+            scene_bounds_max=None if local_bounds is None else local_bounds[1],
+            active_transform_mode=snapshot.active_transform_mode,
+            active_transform_axis=snapshot.active_transform_axis,
+            active_transform_angle_delta=snapshot.active_transform_angle_delta,
+            section_result=section_result,
+            curve_results=curves,
+            active_curve_id=snapshot.selection.active_curve_id,
+            surface_source_curve_ids=snapshot.selection.surface_source_curve_ids,
+            surface_previews=surfaces,
+            active_surface_id=snapshot.selection.active_surface_id,
+            region_selection=region,
+            region_selection_color=(
+                region_item.style.color if region_item is not None else REGION_SELECTION_COLOR
+            ),
+            region_selection_edge_color=(
+                region_item.style.edge_color
+                if region_item is not None and region_item.style.edge_color is not None
+                else REGION_SELECTION_EDGE_COLOR
+            ),
+            region_selection_opacity=(
+                region_item.style.opacity if region_item is not None else REGION_SELECTION_OPACITY
+            ),
+            manual_curve_points=tool.control_points if tool.active else None,
+            manual_curve_point_types=tool.point_types,
+            manual_curve_fitted_points=tool.fitted_points,
+            manual_curve_closed=tool.closed,
+            manual_curve_plane_normal=tool.plane_normal,
+            manual_curve_snap_to_mesh=tool.snap_to_mesh,
+            manual_curve_selected_control_point_index=tool.selected_control_point_index,
+            manual_curve_method=tool.curve_method,
+            manual_curve_sample_count=tool.sample_count,
+            manual_curve_preview_point=tool.preview_point,
+            manual_curve_preview_valid=tool.preview_valid,
+            manual_curve_preview_snaps_closed=tool.preview_snaps_closed,
+            manual_curve_preview_snaps_to_mesh=tool.preview_snaps_to_mesh,
+            display_colors=display.get("display_colors"),
+            reset_camera=False,
+        )
+
+    def _update_snapshot_view_metrics(self, snapshot: SceneSnapshot) -> None:
+        bounds = snapshot.visible_bounds()
+        if bounds is None:
+            return
+        minimum = np.asarray(bounds[0], dtype=float)
+        maximum = np.asarray(bounds[1], dtype=float)
+        self._view_center = (minimum + maximum) * 0.5
+        self._view_extent = max(float(np.max(maximum - minimum)), 1e-6)
 
     def set_scene(
         self,
@@ -1864,76 +2130,43 @@ class EmbeddedVTKViewport:
         self._rotation_overlay_max_bound = None
 
     def frame_model(self) -> None:
+        if self._last_scene_snapshot is not None:
+            if self._camera_controller.frame_all(self._last_scene_snapshot):
+                return
         self.reset_view()
 
     def set_named_view(self, name: str) -> None:
-        view_key = str(name).strip().lower()
-        direction, view_up = _named_view_vectors(view_key)
-        extent = max(float(self._view_extent), 1.0)
-        focal_point = np.asarray(
-            self.renderer.GetActiveCamera().GetFocalPoint(),
-            dtype=float,
+        self._camera_controller.set_named_view(
+            name,
+            orthographic=True,
+            distance=max(float(self._view_extent), 1.0) * 2.8,
         )
-        distance = extent * 2.8
-        position = focal_point + direction * distance
-
-        camera = self.renderer.GetActiveCamera()
-        camera.SetFocalPoint(
-            float(focal_point[0]),
-            float(focal_point[1]),
-            float(focal_point[2]),
-        )
-        camera.SetPosition(
-            float(position[0]),
-            float(position[1]),
-            float(position[2]),
-        )
-        camera.SetViewUp(
-            float(view_up[0]),
-            float(view_up[1]),
-            float(view_up[2]),
-        )
-        self.renderer.ResetCameraClippingRange()
-        self.request_render(camera_dirty=True)
 
     def frame_bounds(
         self,
         minimum_bound: Sequence[float],
         maximum_bound: Sequence[float],
     ) -> None:
-        minimum = np.asarray(minimum_bound, dtype=float)
-        maximum = np.asarray(maximum_bound, dtype=float)
-        if minimum.shape != (3,) or maximum.shape != (3,):
+        try:
+            minimum = tuple(float(value) for value in np.asarray(minimum_bound, dtype=float).reshape(3))
+            maximum = tuple(float(value) for value in np.asarray(maximum_bound, dtype=float).reshape(3))
+        except (TypeError, ValueError):
             return
-        if not (np.all(np.isfinite(minimum)) and np.all(np.isfinite(maximum))):
+        if not all(np.isfinite(value) for value in (*minimum, *maximum)):
             return
-
-        center = (minimum + maximum) * 0.5
-        extent = max(float(np.max(maximum - minimum)), 1.0)
-        camera = self.renderer.GetActiveCamera()
-        camera.SetFocalPoint(float(center[0]), float(center[1]), float(center[2]))
-        camera.SetPosition(
-            float(center[0] + extent * 1.6),
-            float(center[1] - extent * 1.8),
-            float(center[2] + extent * 1.2),
-        )
-        camera.SetViewUp(0.0, 0.0, 1.0)
-        self.renderer.ResetCameraClippingRange()
-        self._render()
+        self._camera_controller.frame_bounds((minimum, maximum))
 
     def reset_view(self) -> None:
-        camera = self.renderer.GetActiveCamera()
-        extent = max(float(self._view_extent), 1.0)
-        center = self._view_center
-        camera.SetFocalPoint(float(center[0]), float(center[1]), float(center[2]))
-        camera.SetPosition(
-            float(center[0] + extent * 1.6),
-            float(center[1] - extent * 1.8),
-            float(center[2] + extent * 1.2),
-        )
-        camera.SetViewUp(0.0, 0.0, 1.0)
-        self.renderer.ResetCameraClippingRange()
-        self._render()
+        if self._last_scene_snapshot is not None:
+            bounds = self._last_scene_snapshot.visible_bounds()
+            if bounds is not None:
+                self._camera_controller.frame_bounds(bounds)
+                return
+        extent = max(float(self._view_extent), 1e-6)
+        half = extent * 0.5
+        minimum = tuple(float(value) for value in self._view_center - half)
+        maximum = tuple(float(value) for value in self._view_center + half)
+        self._camera_controller.frame_bounds((minimum, maximum))
 
     def reset_camera(self) -> None:
         self.reset_view()
@@ -2384,6 +2617,55 @@ def _screen_point_near_geometry(
     return False
 
 
+class _RevisionOnlyActorAdapter:
+    """Track snapshot revision decisions while legacy actors remain compatible."""
+
+    def create_actor(self, _category: str, _item: object) -> object:
+        return object()
+
+    def update_geometry(self, _actor: object, _category: str, _item: object) -> None:
+        return None
+
+    def update_style(self, _actor: object, _category: str, _item: object) -> None:
+        return None
+
+    def update_transform(self, _actor: object, _category: str, _item: object) -> None:
+        return None
+
+    def set_visibility(self, _actor: object, _visible: bool) -> None:
+        return None
+
+    def remove_actor(self, _actor: object) -> None:
+        return None
+
+
+def _section_result_from_snapshot(snapshot: SceneSnapshot) -> SectionResult | None:
+    visible = [item for item in snapshot.section_results if item.visible]
+    if not visible:
+        return None
+    polylines = tuple(
+        SectionPolyline(points=np.asarray(points, dtype=float))
+        for item in visible
+        for points in item.polylines
+        if len(points) >= 2
+    )
+    if not polylines:
+        return None
+    return SectionResult(
+        axis="Z",
+        offset=0.0,
+        polylines=polylines,
+        segment_count=sum(max(len(line.points) - 1, 0) for line in polylines),
+    )
+
+
+def _item_revisions(items: Sequence[object]) -> tuple[tuple[str, object], ...]:
+    return tuple(
+        (str(getattr(item, "id", "")), getattr(item, "revision", None))
+        for item in items
+    )
+
+
 def _is_app_shortcut_key_event(event: object) -> bool:
     keysym = str(getattr(event, "keysym", "") or "").lower()
     return keysym in APP_SHORTCUT_KEYSYMS
@@ -2760,7 +3042,7 @@ def _manual_curve_control_point_actors(
     for indices, color, radius in (
         (normal_indices, normal_color, normal_radius),
         (corner_indices, colors.corner_point_color, normal_radius * 1.12),
-        (first_indices, colors.smooth_point_color, first_radius),
+        (first_indices, MANUAL_CURVE_FIRST_POINT_COLOR, first_radius),
         (selected_indices, colors.selected_point_color, selected_radius),
         (closure_indices, colors.preview_point_color, preview_radius),
     ):
