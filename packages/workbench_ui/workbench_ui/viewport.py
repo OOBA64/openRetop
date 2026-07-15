@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QFrame, QWidget
 
 
@@ -37,6 +39,8 @@ class VTKViewportWidget(QFrame):
             self.interactor.Initialize()
 
     def render(self) -> None:
+        if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
+            return
         if self.render_window is not None:
             self.render_window.Render()
 

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "V3 Minimal",
+  "mesh_path": null,
+  "mesh_visible": true,
+  "metadata": {
+    "fixture": "v3"
+  }
+}
