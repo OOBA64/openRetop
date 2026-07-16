@@ -64,8 +64,6 @@ def build_demo() -> ApplicationShell:
         )
     )
     viewport = VTKViewportWidget()
-    if viewport.available:
-        viewport.add_test_geometry()
     palette = CommandPaletteWidget(registry)
     tool_bar = ToolInstructionBar(shell.tool_modes)
     shell.add_panel(PanelDescriptor("scene", "Scene", area="left"), tree)
@@ -82,6 +80,9 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = build_demo()
     window.show()
+    viewport = window.centralWidget()
+    if isinstance(viewport, VTKViewportWidget):
+        viewport.start()
     return app.exec()
 
 

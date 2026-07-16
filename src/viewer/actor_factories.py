@@ -25,26 +25,51 @@ class VTKActorAdapter:
         self.picking = picking
 
     def create_actor(self, category: str, item: object) -> object:
-        actor = _factory(category)(item)
-        self.renderer.AddActor(actor)
-        if self.picking is not None:
-            self.picking.register_actor(
-                actor,
-                object_id=str(getattr(item, "id")),
-                object_type=category,
-            )
-        return actor
+        item_id = str(getattr(item, "id", "<unknown>"))
+        try:
+            actor = _factory(category)(item)
+            self.renderer.AddActor(actor)
+            if self.picking is not None:
+                self.picking.register_actor(
+                    actor,
+                    object_id=item_id,
+                    object_type=category,
+                )
+            return actor
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to create {category} actor for scene item {item_id}: {exc}"
+            ) from exc
 
     def update_geometry(self, actor: object, category: str, item: object) -> None:
-        _updater(category)(actor, item)
+        item_id = str(getattr(item, "id", "<unknown>"))
+        try:
+            _updater(category)(actor, item)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to update {category} geometry for scene item {item_id}: {exc}"
+            ) from exc
 
     def update_style(self, actor: object, category: str, item: object) -> None:
-        apply_actor_style(actor, getattr(item, "style"))
+        item_id = str(getattr(item, "id", "<unknown>"))
+        try:
+            apply_actor_style(actor, getattr(item, "style"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to update {category} style for scene item {item_id}: {exc}"
+            ) from exc
 
     def update_transform(self, actor: object, category: str, item: object) -> None:
         transform = getattr(item, "transform", None)
-        if transform is not None:
+        if transform is None:
+            return
+        item_id = str(getattr(item, "id", "<unknown>"))
+        try:
             actor.SetUserMatrix(vtk_matrix(transform))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to update {category} transform for scene item {item_id}: {exc}"
+            ) from exc
 
     def set_visibility(self, actor: object, visible: bool) -> None:
         set_actor_visibility(actor, visible)

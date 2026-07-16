@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import fields
+import logging
 from pathlib import Path
 import sys
 from typing import Mapping
@@ -86,6 +87,7 @@ from surfaces.surface_preview import (
 from surfaces.surface_state import SurfacePatch
 from viewer.scene_builder import SceneBuildOptions
 from viewer.picking_service import MeshPickResult, PickingService, SceneObjectPickResult
+from viewer.scene_synchronizer import ActorUpdateDiagnostics
 from viewer.scene_types import CameraRequest, ToolPreviewState, geometry_revision
 
 from workbench_ui import (
@@ -108,6 +110,9 @@ from workbench_ui import (
 )
 from presentation.qt.preferences_dialog import PreferencesDialog
 from presentation.qt.viewport import QtSceneViewport
+
+
+_LOG = logging.getLogger(__name__)
 
 
 _FILE_ACTIONS = (
@@ -160,6 +165,10 @@ class OpenRetopV3Window(ApplicationShell):
         self.scene_tree.context_action_requested.connect(self._on_tree_context_action)
         self.viewport = QtSceneViewport(self)
         self.viewport.pointer_event.connect(self._on_viewport_pointer)
+        self.viewport.initialization_failed.connect(self._on_viewport_failure)
+        self.viewport.render_failed.connect(self._on_viewport_failure)
+        self.viewport.scene_synchronized.connect(self._on_scene_synchronized)
+        self.viewport.ready.connect(self._on_viewport_ready)
         if self.viewport.interactor is not None:
             self.viewport.interactor.installEventFilter(self)
         self.inspector = PropertyInspectorWidget(PropertyInspectorModel(), self)
@@ -180,6 +189,8 @@ class OpenRetopV3Window(ApplicationShell):
         self.set_workspace(self.viewport)
         self.statusBar().addPermanentWidget(self.instructions)
         self._update_window_title()
+        # This refresh builds UI models and submits the initial snapshot.  The
+        # viewport retains it until VTKViewportWidget emits ready after show().
         self.refresh()
 
     def _make_framework_actions(self) -> ActionRegistry:
@@ -713,16 +724,36 @@ class OpenRetopV3Window(ApplicationShell):
             active_transform_angle_delta=self.composition.transform_controller.angle_delta,
         )
         diagnostics = self.viewport.render_snapshot(snapshot)
-        if diagnostics is not None:
-            warning_text = "\n".join(self._last_project_warnings)
-            self._diagnostics.setText(
-                "Scene sync: "
-                f"created={diagnostics.created}, geometry={diagnostics.geometry_updated}, "
-                f"style={diagnostics.style_updated}, reused={diagnostics.reused}, removed={diagnostics.removed}"
-                + (f"\n{warning_text}" if warning_text else "")
-            )
+        if diagnostics is None and not self.viewport.is_ready:
+            self._diagnostics.setText("Viewport initialization pending; latest scene snapshot retained.")
         self._camera_request = CameraRequest()
         self._sync_action_state()
+
+    def _on_scene_synchronized(self, diagnostics: ActorUpdateDiagnostics) -> None:
+        warning_text = "\n".join(self._last_project_warnings)
+        state = self.viewport.diagnostic_state()
+        self._diagnostics.setText(
+            "Scene sync: "
+            f"created={diagnostics.created}, geometry={diagnostics.geometry_updated}, "
+            f"style={diagnostics.style_updated}, reused={diagnostics.reused}, "
+            f"removed={diagnostics.removed}; actors={state.actor_count}; "
+            f"viewport={state.renderer_size}"
+            + (f"\n{warning_text}" if warning_text else "")
+        )
+
+    def _on_viewport_ready(self) -> None:
+        state = self.viewport.diagnostic_state()
+        if state.last_synchronization is None:
+            self._diagnostics.setText(
+                f"VTK ready: {state.render_window_class}; viewport={state.renderer_size}"
+            )
+
+    def _on_viewport_failure(self, message: str) -> None:
+        text = str(message)
+        _LOG.error("Viewport failure: %s", text)
+        self._diagnostics.setText(text)
+        self.set_status_message("Viewport failed; open Diagnostics for details.")
+        self.show_panel("diagnostics", True)
 
     def _sync_action_state(self) -> None:
         selection = self.composition.selection_controller.snapshot()
@@ -1395,7 +1426,8 @@ def run_v3_app() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = OpenRetopV3Window()
     window.show()
-    window.viewport.start()
+    if not window.viewport.start() and window.viewport.last_error:
+        window._on_viewport_failure(window.viewport.last_error)
     return app.exec()
 
 

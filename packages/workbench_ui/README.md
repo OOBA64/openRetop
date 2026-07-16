@@ -16,6 +16,11 @@ inspectors (text, numeric, slider, check, choice, color, vector, and read-only
 editors), modal tool lifecycle state, command-palette search, built-in themes,
 and an optional QVTK workspace host.
 
+The VTK host has an explicit native lifecycle. Add it to a shown Qt window,
+connect to its one-shot `ready` signal if scene work must wait for native VTK,
+then call idempotent `start()`. Rendering before readiness is a safe no-op, and
+native initialization/rendering are suppressed under `QT_QPA_PLATFORM=offscreen`.
+
 Run the framework demo from the repository root after installing PySide6:
 
 ```powershell
