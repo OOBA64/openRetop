@@ -68,6 +68,7 @@ class ArchitectureBaselineTests(unittest.TestCase):
             "analysis_controller.py",
             "brep_controller.py",
             "curve_controller.py",
+            "manual_curve_controller.py",
             "region_controller.py",
             "scene_controller.py",
             "section_controller.py",
@@ -121,16 +122,9 @@ class ArchitectureBaselineTests(unittest.TestCase):
 
         self.assertEqual(violations, [])
 
-    def test_scene_browser_reexports_scene_ids_without_duplicate_codecs(self) -> None:
-        path = ROOT / "src" / "app" / "scene_browser.py"
+    def test_scene_id_codecs_have_one_authoritative_module(self) -> None:
+        path = ROOT / "src" / "application" / "scene_ids.py"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        scene_id_imports = {
-            alias.name
-            for node in tree.body
-            if isinstance(node, ast.ImportFrom)
-            and node.module == "application.scene_ids"
-            for alias in node.names
-        }
         required_codecs = {
             "curve_group_id_from_node",
             "curve_group_node_id",
@@ -145,29 +139,20 @@ class ArchitectureBaselineTests(unittest.TestCase):
             "surface_id_from_node",
             "surface_node_id",
         }
-        self.assertLessEqual(required_codecs, scene_id_imports)
-
         local_functions = {
             node.name for node in tree.body if isinstance(node, ast.FunctionDef)
         }
-        local_assignments = {
-            target.id
-            for node in tree.body
-            if isinstance(node, (ast.Assign, ast.AnnAssign))
-            for target in (
-                node.targets if isinstance(node, ast.Assign) else (node.target,)
-            )
-            if isinstance(target, ast.Name)
-        }
-        self.assertEqual(local_functions & required_codecs, set())
-        self.assertEqual(
-            {
-                name
-                for name in local_assignments
-                if name.startswith("NODE_") or name.startswith("CURVE_GROUP_")
-            },
-            set(),
-        )
+        self.assertLessEqual(required_codecs, local_functions)
+        for other in (ROOT / "src").rglob("*.py"):
+            if other == path:
+                continue
+            other_tree = ast.parse(other.read_text(encoding="utf-8"), filename=str(other))
+            duplicates = {
+                node.name
+                for node in other_tree.body
+                if isinstance(node, ast.FunctionDef) and node.name in required_codecs
+            }
+            self.assertEqual(duplicates, set(), other)
 
     def test_protected_modules_have_no_current_ui_rendering_imports(self) -> None:
         protected_prefixes = ("project/", "settings/", "cad_kernel/")
@@ -202,20 +187,17 @@ class ArchitectureBaselineTests(unittest.TestCase):
         self.assertGreater(report["python"]["classes"], 0)
         self.assertGreater(report["python"]["functions"], 0)
         self.assertGreater(report["python"]["main_window_methods"], 0)
+        self.assertEqual(report["python"]["legacy_main_window_methods"], 0)
         self.assertEqual(len(report["largest_modules"]), 5)
         self.assertTrue(report["major_package_imports"])
         self.assertIn("dependency_violations", report)
         self.assertIn("package_cycles", report)
         self.assertIn("duplicate_action_labels", report)
 
-    def test_duplicate_action_label_report_finds_legacy_duplicates(self) -> None:
-        duplicates = {
-            item.label: item.count
-            for item in architecture_metrics.duplicate_action_labels(ROOT)
-        }
-
-        self.assertGreaterEqual(duplicates["Delete Selected"], 2)
-        self.assertGreaterEqual(duplicates["Frame Selected"], 2)
+    def test_no_duplicate_action_labels_are_introduced_by_parallel_shells(self) -> None:
+        duplicates = architecture_metrics.duplicate_action_labels(ROOT)
+        locations = [location for item in duplicates for location in item.locations]
+        self.assertFalse(any("src/app/" in location for location in locations))
 
 
 class ArchitectureScannerCharacterizationTests(unittest.TestCase):

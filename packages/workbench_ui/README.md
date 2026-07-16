@@ -9,6 +9,13 @@ The package has no dependency on the host application's domain or application
 layers. A host supplies action callbacks, scene nodes, property definitions,
 and tool lifecycle hooks through the public contracts.
 
+The public API includes state-aware actions with shortcut-conflict detection,
+nested menus and toolbars, dock layout save/recovery, hierarchical scene trees
+with rename/visibility/context/reorder operations, live or apply/cancel property
+inspectors (text, numeric, slider, check, choice, color, vector, and read-only
+editors), modal tool lifecycle state, command-palette search, built-in themes,
+and an optional QVTK workspace host.
+
 Run the framework demo from the repository root after installing PySide6:
 
 ```powershell

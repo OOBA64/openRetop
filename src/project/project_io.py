@@ -15,6 +15,7 @@ from project.project_data import (
     ProjectDisplaySettings,
     ProjectFourBoundaryPatchFeature,
     ProjectLoftFeature,
+    ProjectRegion,
     ProjectSectionPlane,
     ProjectSectionResult,
     ProjectSectionSettings,
@@ -38,10 +39,13 @@ _KNOWN_PROJECT_KEYS = frozenset(
         "active_section_plane_id",
         "section_results",
         "curves",
+        "region",
         "surfaces",
         "brep_surfaces",
         "loft_features",
         "four_boundary_patch_features",
+        "selected_scene_ids",
+        "primary_selection_id",
         "metadata",
     }
 )
@@ -199,6 +203,24 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
             for index, surface in enumerate(project.brep_surfaces)
         ],
     }
+    if project.region is not None:
+        result["region"] = {
+            "id": project.region.id,
+            "name": project.region.name,
+            "triangle_indices": list(project.region.triangle_indices),
+            "threshold_degrees": float(project.region.threshold_degrees),
+            "max_triangle_count": int(project.region.max_triangle_count),
+            "source_mesh_identifier": project.region.source_mesh_identifier,
+            "source_mesh_name": project.region.source_mesh_name,
+            "seed_triangle_index": project.region.seed_triangle_index,
+            "visible": bool(project.region.visible),
+            "selected": bool(project.region.selected),
+            "metadata": _metadata_dict_value(project.region.metadata, "region.metadata"),
+        }
+    if project.selected_scene_ids:
+        result["selected_scene_ids"] = list(project.selected_scene_ids)
+    if project.primary_selection_id is not None:
+        result["primary_selection_id"] = project.primary_selection_id
     if project.loft_features:
         result["loft_features"] = [
             {
@@ -344,6 +366,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         data.get("section_results", defaults.section_results)
     )
     curves = _curves_value(data.get("curves", defaults.curves))
+    region = _region_value(data.get("region", defaults.region))
     surfaces = _surfaces_value(data.get("surfaces", defaults.surfaces))
     brep_surfaces = _brep_surfaces_value(
         data.get("brep_surfaces", defaults.brep_surfaces)
@@ -356,6 +379,14 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
             "four_boundary_patch_features",
             defaults.four_boundary_patch_features,
         )
+    )
+    selected_scene_ids = _string_list_value(
+        data.get("selected_scene_ids", defaults.selected_scene_ids),
+        "selected_scene_ids",
+    )
+    primary_selection_id = _optional_string_value(
+        data.get("primary_selection_id", defaults.primary_selection_id),
+        "primary_selection_id",
     )
     return ProjectData(
         version=version,
@@ -370,10 +401,13 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         active_section_plane_id=active_section_plane_id,
         section_results=section_results,
         curves=curves,
+        region=region,
         surfaces=surfaces,
         brep_surfaces=brep_surfaces,
         loft_features=loft_features,
         four_boundary_patch_features=four_boundary_patch_features,
+        selected_scene_ids=selected_scene_ids,
+        primary_selection_id=primary_selection_id,
         metadata=metadata,
     )
 
@@ -383,6 +417,44 @@ def _project_version(value: object) -> int:
     if version != PROJECT_VERSION:
         raise ValueError(f"Unsupported project version: {version}")
     return version
+
+
+def _region_value(value: object) -> ProjectRegion | None:
+    if value is None:
+        return None
+    data = _mapping_value(value, "region")
+    triangle_values = data.get("triangle_indices", [])
+    if not isinstance(triangle_values, list):
+        raise ValueError("region.triangle_indices must be a list.")
+    triangle_indices = [
+        _int_value(item, f"region.triangle_indices[{index}]")
+        for index, item in enumerate(triangle_values)
+    ]
+    seed_value = data.get("seed_triangle_index")
+    seed_triangle_index = (
+        None if seed_value is None else _int_value(seed_value, "region.seed_triangle_index")
+    )
+    return ProjectRegion(
+        id=_string_value(data.get("id", "region-restored"), "region.id"),
+        name=_string_value(data.get("name", "Region 1"), "region.name"),
+        triangle_indices=triangle_indices,
+        threshold_degrees=_float_value(
+            data.get("threshold_degrees", 20.0), "region.threshold_degrees"
+        ),
+        max_triangle_count=_int_value(
+            data.get("max_triangle_count", 50_000), "region.max_triangle_count"
+        ),
+        source_mesh_identifier=_string_value(
+            data.get("source_mesh_identifier", ""), "region.source_mesh_identifier"
+        ),
+        source_mesh_name=_string_value(
+            data.get("source_mesh_name", ""), "region.source_mesh_name"
+        ),
+        seed_triangle_index=seed_triangle_index,
+        visible=_bool_value(data.get("visible", True), "region.visible"),
+        selected=_bool_value(data.get("selected", False), "region.selected"),
+        metadata=_metadata_dict_value(data.get("metadata", {}), "region.metadata"),
+    )
 
 
 def _display_colors_value(value: object) -> dict[str, str]:

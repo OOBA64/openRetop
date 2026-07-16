@@ -8,15 +8,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.app_state import AppState
-from app.object_state import MeshObjectState
-from app.selection_types import (
+from application.selection_controller import (
     SELECT_CURVE,
     SELECT_MODEL,
     SELECT_SECTION_PLANE,
     SELECT_SURFACE,
 )
-from app.transform_state import ActiveTransformState
+from application.state import ActiveTransformState, AppState, MeshObjectState
 from curves.curve_state import CurveCollection
 from geometry.curves import CurveFitResult
 from geometry.sections import SectionResult

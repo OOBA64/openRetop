@@ -12,7 +12,7 @@ from project.project_data import (
     ProjectLoftFeature,
     default_project_data,
 )
-from app.app_state import AppState
+from application.state import AppState
 from project.project_io import load_project, save_project
 from project.project_state import project_from_app_state
 from surfaces.four_boundary_feature import (

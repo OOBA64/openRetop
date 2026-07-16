@@ -658,51 +658,20 @@ class ApplicationEventAndSelectionTests(unittest.TestCase):
             )
 
 
-class RepresentativeCompatibilityTests(unittest.TestCase):
-    def test_legacy_wrappers_dispatch_only_the_registered_representative_actions(
-        self,
-    ) -> None:
-        source_path = Path(__file__).resolve().parents[1] / "src" / "app" / "main_window.py"
-        source = source_path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        window = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.ClassDef) and node.name == "OpenRetopWindow"
+class V3ActionContractTests(unittest.TestCase):
+    def test_every_core_action_has_a_stable_command_identifier(self) -> None:
+        command_ids = [definition.command_id for definition in CORE_ACTIONS]
+
+        self.assertEqual(len(command_ids), len(set(command_ids)))
+        self.assertTrue(all(command_ids))
+
+    def test_registered_action_labels_are_unique_per_action_id(self) -> None:
+        registry = create_core_action_registry()
+
+        self.assertEqual(
+            {item.id: item.label for item in registry.definitions},
+            {item.id: item.label for item in CORE_ACTIONS},
         )
-        expected = {
-            "frame_all": "ACTION_FRAME_ALL",
-            "frame_selected": "ACTION_FRAME_SELECTED",
-            "show_all_scene_objects": "ACTION_SHOW_ALL",
-            "toggle_selected_scene_objects": "ACTION_TOGGLE_VISIBILITY",
-            "undo": "ACTION_UNDO",
-            "redo": "ACTION_REDO",
-        }
-
-        for method_name, action_constant in expected.items():
-            method = next(
-                node
-                for node in window.body
-                if isinstance(node, ast.FunctionDef) and node.name == method_name
-            )
-            method_source = ast.get_source_segment(source, method)
-            self.assertIn("_dispatch_action", method_source)
-            self.assertIn(action_constant, method_source)
-
-    def test_registered_menu_slice_uses_registry_labels(self) -> None:
-        menu_source = (
-            Path(__file__).resolve().parents[1] / "src" / "app" / "menus.py"
-        ).read_text(encoding="utf-8")
-
-        for action_constant in (
-            "ACTION_FRAME_ALL",
-            "ACTION_FRAME_SELECTED",
-            "ACTION_SHOW_ALL",
-            "ACTION_TOGGLE_VISIBILITY",
-            "ACTION_UNDO",
-            "ACTION_REDO",
-        ):
-            self.assertIn(f"_action_label(app, {action_constant})", menu_source)
 
 
 if __name__ == "__main__":

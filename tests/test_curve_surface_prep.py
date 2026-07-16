@@ -16,7 +16,7 @@ from curves.validation import (
     validate_curve_for_fill,
     validate_curves_for_loft,
 )
-from app.scene_browser import _curve_display_label
+from application.scene_labels import curve_display_label
 from mesh.triangle_mesh import TriangleMeshData
 from mesh_query_reference import ReferenceMeshQueryService
 
@@ -332,7 +332,7 @@ class CurveValidationTests(unittest.TestCase):
 class CurveSceneBrowserLabelTests(unittest.TestCase):
     def test_projected_rebuilt_and_boundary_labels_use_two_priority_tags(self) -> None:
         self.assertEqual(
-            _curve_display_label(
+            curve_display_label(
                 _curve(
                     name="Projected Curve 1",
                     metadata={"creation_type": "projected_curve"},
@@ -342,7 +342,7 @@ class CurveSceneBrowserLabelTests(unittest.TestCase):
             "Projected Curve 1 (projected)",
         )
         self.assertEqual(
-            _curve_display_label(
+            curve_display_label(
                 _curve(
                     name="Projected Curve 2",
                     metadata={
@@ -356,7 +356,7 @@ class CurveSceneBrowserLabelTests(unittest.TestCase):
             "Projected Curve 2 (projected, mesh)",
         )
         self.assertEqual(
-            _curve_display_label(
+            curve_display_label(
                 _curve(
                     name="Rebuilt Curve 2",
                     metadata={
@@ -371,7 +371,7 @@ class CurveSceneBrowserLabelTests(unittest.TestCase):
             "Rebuilt Curve 2 (rebuilt, smooth)",
         )
         self.assertEqual(
-            _curve_display_label(
+            curve_display_label(
                 _curve(
                     name="Region Boundary 1",
                     is_closed=True,

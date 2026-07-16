@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.transforms import (
+from application.transform_math import (
     axis_constrained_camera_move_delta,
     build_object_transform_matrix,
     calculate_geometry_centering_delta,

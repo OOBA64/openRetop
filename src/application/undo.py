@@ -1,4 +1,4 @@
-"""Small undo/redo primitives for scene edits."""
+"""UI-independent undo/redo primitives for application commands."""
 
 from __future__ import annotations
 
@@ -8,21 +8,15 @@ from typing import Protocol
 
 
 class UndoCommand(Protocol):
-    """Command interface used by the UI undo stack."""
-
     name: str
 
-    def undo(self) -> None:
-        """Restore the state before the command."""
+    def undo(self) -> None: ...
 
-    def redo(self) -> None:
-        """Reapply the state after the command."""
+    def redo(self) -> None: ...
 
 
 @dataclass
 class CallbackUndoCommand:
-    """Undo command backed by two callables."""
-
     name: str
     undo_action: Callable[[], None]
     redo_action: Callable[[], None]
@@ -35,8 +29,6 @@ class CallbackUndoCommand:
 
 
 class UndoStack:
-    """Minimal LIFO undo/redo stack."""
-
     def __init__(self) -> None:
         self._undo_commands: list[UndoCommand] = []
         self._redo_commands: list[UndoCommand] = []
@@ -64,7 +56,6 @@ class UndoStack:
     def undo(self) -> UndoCommand | None:
         if not self._undo_commands:
             return None
-
         command = self._undo_commands.pop()
         command.undo()
         self._redo_commands.append(command)
@@ -73,7 +64,6 @@ class UndoStack:
     def redo(self) -> UndoCommand | None:
         if not self._redo_commands:
             return None
-
         command = self._redo_commands.pop()
         command.redo()
         self._undo_commands.append(command)
@@ -82,3 +72,6 @@ class UndoStack:
     def clear(self) -> None:
         self._undo_commands.clear()
         self._redo_commands.clear()
+
+
+__all__ = ("CallbackUndoCommand", "UndoCommand", "UndoStack")

@@ -6,10 +6,15 @@ import tempfile
 import unittest
 
 from bootstrap import create_application
+from application.scene_ids import region_node_id
+from application.state import AppState
 from infrastructure.io_services import ProgressEvent, ProjectFileService
 from infrastructure.persistence import JsonProjectRepository
 from infrastructure.settings_repository import JsonSettingsRepository
-from project.project_data import default_project_data
+from project.project_data import ProjectRegion, default_project_data
+from project.project_session import restore_project_state
+from project.project_state import project_from_app_state
+from regions.region_state import RegionCollection, RegionSelection
 from settings.settings_data import default_app_settings
 
 
@@ -54,6 +59,64 @@ class Task78ProjectBoundaryTests(unittest.TestCase):
             result = JsonProjectRepository().read(path)
             self.assertTrue(result.success)
             self.assertTrue(any(item.code == "missing_mesh" for item in result.warnings))
+
+    def test_region_and_scene_selection_round_trip_and_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selection.openretop"
+            project = default_project_data()
+            project.region = ProjectRegion(
+                id="region-a",
+                name="Region A",
+                triangle_indices=[2, 4, 8],
+                threshold_degrees=32.0,
+                max_triangle_count=500,
+                seed_triangle_index=2,
+                visible=False,
+                selected=True,
+                metadata={"source": "test"},
+            )
+            project.selected_scene_ids = [region_node_id("region-a")]
+            project.primary_selection_id = region_node_id("region-a")
+
+            repository = JsonProjectRepository()
+            self.assertTrue(repository.write(project, path).success)
+            opened = repository.read(path)
+            self.assertTrue(opened.success)
+            self.assertEqual(opened.project.region.triangle_indices, [2, 4, 8])
+            self.assertEqual(opened.project.selected_scene_ids, [region_node_id("region-a")])
+
+            state = AppState()
+            restored = restore_project_state(state, opened.project)
+            self.assertEqual(state.region_collection.active_region.name, "Region A")
+            self.assertFalse(state.region_collection.active_region.visible)
+            self.assertEqual(restored.primary_selection_id, region_node_id("region-a"))
+
+    def test_project_snapshot_includes_region_and_deduplicated_selection(self) -> None:
+        region = RegionSelection(
+            id="region-a",
+            name="Region A",
+            triangle_indices=(0, 1),
+            threshold_degrees=20.0,
+            max_triangle_count=100,
+            selected=True,
+        )
+        project = project_from_app_state(
+            mesh_object=None,
+            proxy_quality="Medium",
+            show_grid=True,
+            show_axes=True,
+            show_normals=False,
+            section_axis="Z",
+            section_offset=0.0,
+            show_section_plane=False,
+            region_collection=RegionCollection(active_region=region),
+            selected_scene_ids=(region_node_id("region-a"), region_node_id("region-a")),
+            primary_selection_id=region_node_id("region-a"),
+        )
+
+        self.assertEqual(project.region.id, "region-a")
+        self.assertEqual(project.region.triangle_indices, [0, 1])
+        self.assertEqual(project.selected_scene_ids, [region_node_id("region-a")])
 
 
 class Task78SettingsBoundaryTests(unittest.TestCase):

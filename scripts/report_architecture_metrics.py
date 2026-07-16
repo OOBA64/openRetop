@@ -128,7 +128,28 @@ def collect_module_metrics(
 
 
 def main_window_method_count(root: Path = REPOSITORY_ROOT) -> int:
+    path = root / "src" / "presentation" / "qt" / "main_window.py"
+    _text, tree = _read_tree(path)
+    window = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "OpenRetopV3Window"
+        ),
+        None,
+    )
+    if window is None:
+        return 0
+    return sum(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for node in window.body
+    )
+
+
+def legacy_main_window_method_count(root: Path = REPOSITORY_ROOT) -> int:
     path = root / "src" / "app" / "main_window.py"
+    if not path.exists():
+        return 0
     _text, tree = _read_tree(path)
     window = next(
         (
@@ -138,9 +159,7 @@ def main_window_method_count(root: Path = REPOSITORY_ROOT) -> int:
         ),
         None,
     )
-    if window is None:
-        return 0
-    return sum(
+    return 0 if window is None else sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         for node in window.body
     )
@@ -491,6 +510,7 @@ def build_report(
             "functions": sum(item.functions for item in metrics),
             "methods": sum(item.methods for item in metrics),
             "main_window_methods": main_window_method_count(root),
+            "legacy_main_window_methods": legacy_main_window_method_count(root),
         },
         "largest_modules": [
             asdict(item)
@@ -528,7 +548,8 @@ def format_report(report: Mapping[str, object]) -> str:
             f"{python['functions']} functions/methods "
             f"({python['methods']} direct class methods)"
         ),
-        f"OpenRetopWindow methods: {python['main_window_methods']}",
+        f"OpenRetopV3Window methods: {python['main_window_methods']}",
+        f"Legacy OpenRetopWindow methods: {python['legacy_main_window_methods']}",
         "",
         "Largest modules",
     ]

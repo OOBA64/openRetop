@@ -14,7 +14,7 @@ from cad_kernel.backend import (
 )
 from cad_kernel.curve_wire import build_cad_wire_from_curve
 from cad_kernel.export_step import export_step
-from cad_kernel.types import CadBuildResult, CadCurveInput, StepExportResult
+from cad_kernel.types import CadBuildResult, CadCurveInput, CadKernelInfo, StepExportResult
 from cad_kernel.types import curve_points_from_stored_curve
 
 
@@ -34,8 +34,8 @@ class CadCapabilities:
 class PublicCadAdapter:
     """Only exposes CAD operations implemented by the repository backend."""
 
-    def __init__(self) -> None:
-        info = cad_kernel_info()
+    def __init__(self, info: CadKernelInfo | None = None) -> None:
+        info = info or cad_kernel_info()
         self.info = info
         self.capabilities = CadCapabilities(
             available=bool(info.available),
@@ -48,9 +48,13 @@ class PublicCadAdapter:
         )
 
     def build_wire(self, curve: object) -> CadBuildResult:
+        if not self.capabilities.wire:
+            return CadBuildResult(False, None, self.info.status)
         return build_cad_wire_from_curve(curve)
 
     def build_planar_face(self, curve: object) -> CadBuildResult:
+        if not self.capabilities.planar_face:
+            return CadBuildResult(False, None, self.info.status)
         if isinstance(curve, CadCurveInput):
             return build_planar_face_from_curve(curve)
         wire = self.build_wire(curve)
@@ -66,6 +70,8 @@ class PublicCadAdapter:
         curves: list[object] | tuple[object, ...],
         options: object | None = None,
     ) -> CadBuildResult:
+        if not self.capabilities.loft:
+            return CadBuildResult(False, None, self.info.status)
         if len(curves) != 2:
             return CadBuildResult(False, None, "CAD loft requires exactly two source curves.")
         wires = [self.build_wire(curve) for curve in curves]
@@ -94,6 +100,8 @@ class PublicCadAdapter:
     def tessellate(self, cad_object: object) -> object:
         """Return the backend's public shape/mesh representation when present."""
 
+        if not self.capabilities.tessellation:
+            raise RuntimeError(self.info.status)
         for name in ("tessellate", "mesh", "toMesh"):
             method = getattr(cad_object, name, None)
             if callable(method):
@@ -101,4 +109,6 @@ class PublicCadAdapter:
         raise RuntimeError("CAD backend does not expose tessellation.")
 
     def export_step(self, cad_object: object, path: str | Path) -> StepExportResult:
+        if not self.capabilities.step_export:
+            return StepExportResult(False, None, self.info.status)
         return export_step(cad_object, path)

@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "name": "V3 Complete Fixture",
+  "mesh_path": null,
+  "transform": {
+    "location": [1.0, 2.0, 3.0],
+    "rotation": [0.0, 0.0, 15.0],
+    "scale": 1.0,
+    "origin": [0.0, 0.0, 0.0]
+  },
+  "display": {
+    "proxy_quality": "Medium",
+    "show_grid": true,
+    "show_axes": true,
+    "show_normals": false,
+    "colors": {"manual_curve_color": "#55AAFF"}
+  },
+  "section": {"axis": "Z", "offset": 0.25, "show_plane": true},
+  "section_planes": [
+    {
+      "id": "plane-a",
+      "name": "Fixture Plane",
+      "axis": "Z",
+      "offset": 0.25,
+      "visible": true,
+      "origin": [0.0, 0.0, 0.25],
+      "normal": [0.0, 0.0, 1.0]
+    }
+  ],
+  "active_section_plane_id": "plane-a",
+  "section_results": [
+    {
+      "id": "result-a",
+      "name": "Fixture Result",
+      "plane_id": "plane-a",
+      "axis": "Z",
+      "offset": 0.25,
+      "visible": true,
+      "plane_origin": [0.0, 0.0, 0.25],
+      "plane_normal": [0.0, 0.0, 1.0],
+      "is_arbitrary_plane": false,
+      "polylines": [[[0.0, 0.0, 0.25], [1.0, 0.0, 0.25], [0.0, 1.0, 0.25]]],
+      "segment_count": 3
+    }
+  ],
+  "curves": [
+    {
+      "id": "curve-a",
+      "name": "Fixture Manual Curve",
+      "section_result_id": "result-a",
+      "plane_id": "plane-a",
+      "original_points": [[0.0, 0.0, 0.25], [1.0, 0.0, 0.25], [0.0, 1.0, 0.25]],
+      "fitted_points": [[0.0, 0.0, 0.25], [1.0, 0.0, 0.25], [0.0, 1.0, 0.25]],
+      "mean_error": 0.0,
+      "max_error": 0.0,
+      "is_closed": true,
+      "visible": true,
+      "metadata": {
+        "creation_type": "manual",
+        "control_points": [[0.0, 0.0, 0.25], [1.0, 0.0, 0.25], [0.0, 1.0, 0.25]],
+        "curve_method": "polyline"
+      }
+    }
+  ],
+  "region": {
+    "id": "region-a",
+    "name": "Fixture Region",
+    "triangle_indices": [0, 1, 2],
+    "threshold_degrees": 25.0,
+    "max_triangle_count": 5000,
+    "seed_triangle_index": 0,
+    "visible": true,
+    "selected": true,
+    "metadata": {"fixture": true}
+  },
+  "surfaces": [
+    {
+      "id": "surface-a",
+      "name": "Fixture Fill",
+      "source_curve_ids": ["curve-a"],
+      "surface_type": "preview_fill",
+      "visible": true,
+      "metadata": {"preview_mode": "closed_curve_fill"}
+    }
+  ],
+  "selected_scene_ids": ["region:region-a"],
+  "primary_selection_id": "region:region-a",
+  "fixture_extension": {"preserve": true}
+}

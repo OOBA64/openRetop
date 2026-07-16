@@ -110,6 +110,29 @@ class PickingService:
             position=position,
         )
 
+    def pick_mesh(self, x_position: int, y_position: int) -> MeshPickResult:
+        """Return mesh-specific cell data without leaking a VTK picker object."""
+
+        if vtkCellPicker is None:
+            return MeshPickResult(hit=False)
+        picker = vtkCellPicker()
+        picker.SetTolerance(0.0025)
+        if not picker.Pick(float(x_position), float(y_position), 0.0, self.renderer):
+            return MeshPickResult(hit=False)
+        identity = self._actor_objects.get(id(picker.GetActor()))
+        cell_id = int(picker.GetCellId())
+        if identity is None or identity[1] != "mesh" or cell_id < 0:
+            return MeshPickResult(hit=False)
+        position = _finite_position(picker.GetPickPosition())
+        normal = _finite_position(picker.GetPickNormal())
+        return MeshPickResult(
+            hit=position is not None,
+            position=position,
+            normal=normal,
+            triangle_index=cell_id,
+            mesh_id=identity[0],
+        )
+
     @staticmethod
     def pick_control_point(
         display_point: Sequence[float],

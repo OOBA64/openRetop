@@ -56,6 +56,7 @@ class ApplicationShell(QMainWindow):
         self.action_registry.subscribe(self._sync_qt_action)
         self._build_menus(tuple(menu_schemas))
         self._build_toolbars(tuple(toolbar_schemas))
+        self.apply_theme(self.theme_manager.theme.name)
 
     def _qt_action(self, definition: ActionDefinition) -> QAction:
         action = self._qt_actions.get(definition.id)
@@ -107,9 +108,12 @@ class ApplicationShell(QMainWindow):
         dock = QDockWidget(descriptor.title, self)
         dock.setObjectName(descriptor.id)
         dock.setWidget(widget)
-        dock.setFeatures(
-            QDockWidget.DockWidgetClosable if descriptor.closable else QDockWidget.DockWidgetMovable
-        )
+        features = QDockWidget.DockWidgetMovable
+        if descriptor.closable:
+            features |= QDockWidget.DockWidgetClosable
+        if descriptor.floatable:
+            features |= QDockWidget.DockWidgetFloatable
+        dock.setFeatures(features)
         area = {
             "left": Qt.LeftDockWidgetArea,
             "right": Qt.RightDockWidgetArea,
@@ -121,6 +125,20 @@ class ApplicationShell(QMainWindow):
         self._docks[descriptor.id] = dock
         return dock
 
+    def show_panel(self, panel_id: str, visible: bool = True) -> QDockWidget:
+        self.panel_registry.require(panel_id)
+        dock = self._docks[panel_id]
+        dock.setVisible(bool(visible))
+        return dock
+
+    def focus_panel(self, panel_id: str) -> QDockWidget:
+        dock = self.show_panel(panel_id, True)
+        dock.raise_()
+        widget = dock.widget()
+        if widget is not None:
+            widget.setFocus(Qt.OtherFocusReason)
+        return dock
+
     def set_workspace(self, widget: QWidget) -> None:
         self.setCentralWidget(widget)
 
@@ -129,12 +147,38 @@ class ApplicationShell(QMainWindow):
         self.statusBar().showMessage(str(message))
 
     def save_framework_settings(self) -> FrameworkSettings:
-        state = bytes(self.saveState())
+        state = bytes(self.saveState(self.layout_manager.schema_version))
         self.layout_manager.save(state)
         return FrameworkSettings(layout_state=state, theme=self.theme_manager.theme.name)
 
     def restore_framework_settings(self, settings: FrameworkSettings) -> bool:
-        self.layout_manager.restore(settings.layout_state)
-        if not settings.layout_state:
+        if not self.layout_manager.restore(settings.layout_state):
             return False
-        return bool(self.restoreState(settings.layout_state))
+        try:
+            restored = bool(
+                self.restoreState(
+                    settings.layout_state,
+                    self.layout_manager.schema_version,
+                )
+            )
+        except (RuntimeError, TypeError, ValueError):
+            restored = False
+        if not restored:
+            self.layout_manager.reset()
+        try:
+            self.apply_theme(settings.theme)
+        except ValueError:
+            self.apply_theme("dark")
+        return restored
+
+    def reset_layout(self) -> None:
+        self.layout_manager.reset()
+        for descriptor in self.panel_registry.descriptors:
+            dock = self._docks[descriptor.id]
+            dock.setFloating(False)
+            dock.setVisible(descriptor.visible)
+
+    def apply_theme(self, name: str) -> None:
+        theme = self.theme_manager.built_in(name)
+        self.theme_manager.set_theme(theme)
+        self.setStyleSheet(self.theme_manager.stylesheet())

@@ -39,13 +39,6 @@ CURVE_NETWORK_POINT_COUNT_WARNING = (
     "Curve network source curves have very different point counts."
 )
 
-# TODO: add curve repair / auto-close gaps before preview generation.
-# TODO: add fragment joining for section curves split by scan noise.
-# TODO: expose point-count matching controls for loft previews.
-# TODO: replace placeholder stitching with constrained loft/surface fitting.
-# TODO: add eventual NURBS/BREP generation outside this preview-only module.
-
-
 @dataclass(frozen=True)
 class SurfacePreviewMesh:
     vertices: np.ndarray

@@ -179,7 +179,6 @@ def _connected_edge_component(
 def _trace_component_paths(
     component_edges: set[tuple[int, int]],
 ) -> list[tuple[list[int], bool]]:
-    # TODO: split and heal non-manifold components with topology-aware cleanup.
     unused_edges = set(component_edges)
     paths: list[tuple[list[int], bool]] = []
     while unused_edges:

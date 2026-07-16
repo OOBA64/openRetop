@@ -36,7 +36,7 @@ checks, compileall, diff check, status update, and task commit pass.
 
 ## Task 80 - openRetop V3 UI
 
-- [x] Add the supported V3 bootstrap/entry point while retaining Tk for parity.
+- [x] Add the supported V3 bootstrap/entry point.
 - [x] Wire scene tree, viewport snapshots, inspector, status, palette, dialogs, and progress.
 - [x] Route workflows through the centralized action registry and application controllers.
 - [x] Add the legacy-to-V3 parity matrix and workflow adapter coverage.
@@ -44,23 +44,20 @@ checks, compileall, diff check, status update, and task commit pass.
 
 ## Task 81 - Remove legacy shell and compatibility scaffolding
 
-- [ ] Confirm every retained legacy workflow has V3 behavior evidence; the parity matrix and
-  gate document are in place, but advanced adapters remain.
-- [x] Make V3 the normal entry point; physical superseded Tk removal remains gated by the
-  stale compatibility suite.
-- [ ] Remove compatibility wrappers/re-exports only after all callers migrate.
-- [ ] Reduce architecture allowlists and remove stale tests/imports/dead state.
+- [x] Confirm every retained workflow has V3 action/controller behavior evidence.
+- [x] Make V3 the only supported entry point and physically remove superseded Tk presentation.
+- [x] Remove compatibility wrappers/re-exports after migrating callers.
+- [x] Reduce architecture allowlists to zero and remove stale tests/imports/dead state.
 - [x] Add production-code assertions that the supported V3 entry/presentation do not reference
   legacy Tk.
 
 ## Task 82 - Final verification, optimization, packaging, and release candidate
 
 - [x] Run complete discovery, architecture, compile, startup, packaging, compatibility, and
-  headless GUI verification; record the existing Tk-suite failures as a release condition.
+  headless GUI verification with a green complete suite.
 - [x] Add minimal legacy/current fixtures and recovery/error coverage; real-world scan fixtures
   remain a manual review item.
-- [x] Measure scene synchronization and record the available V3 performance benchmark; broader
-  projection/UI-refresh timing remains manual.
-- [x] Finalize setup, CI, release-candidate, parity, and known-limitation docs; superseded Tk
-  dead code remains gated by Task 81.
+- [x] Measure scene synchronization plus startup/snapshot/persistence/tree/inspector paths;
+  retain non-fragile benchmarks without CI pass/fail thresholds.
+- [x] Finalize setup, CI, release-candidate, parity, and known-limitation docs.
 - [x] Record final metrics, limitations, risks, and manual review items in `docs/v3/STATUS.md`.

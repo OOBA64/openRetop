@@ -1,84 +1,53 @@
-This program is meant to take scans and aid in converting them to BREP surfaces. 
+# openRetop V3
 
-GOAL: Build a guided scan-to-cad tool that converts mesh scan data into clean NURBS/B-REP surfaces.
+openRetop is a guided scan-to-CAD desktop application for turning STL/OBJ/PLY
+triangle meshes into sections, editable curves, preview surfaces, and optional
+CAD-kernel BREP/STEP output.
 
-Initial MVP: 
-1. Import STL/OBJ/PLY.
-2. Display Mesh
-3. Extract Cross Sections
-4. Fit Splines to Sections
-5. Fit simple NURBS surfaces. 
-6. Export usable CAD geometry.
+## Install and run
 
-## Mesh Import Prototype
-
-Install the prototype dependency:
+Use Python 3.11 on Windows or Linux:
 
 ```powershell
+python -m venv .venv-v3
+.\.venv-v3\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-```
-
-Open the V3 Qt workbench window:
-
-```powershell
 python src/main.py
 ```
 
-The reusable standalone workbench framework lives under
-`packages/workbench_ui/`. Install the full supported dependency set with
-`python -m pip install -r requirements.txt`.
+The PySide6 V3 workbench is the only supported desktop shell. The Scene dock
+controls selection and visibility, the Properties dock edits the active object,
+and the command palette exposes the same action registry as menus and
+shortcuts. See the [V3 user guide](docs/v3/V3_USER_GUIDE.md) and
+[developer setup](docs/v3/SETUP.md).
 
-You can also load a mesh directly from the import script:
+The reusable standalone workbench framework lives in
+`packages/workbench_ui/`:
 
 ```powershell
-python src/mesh/import_mesh.py path\to\model.obj
+$env:PYTHONPATH = "packages/workbench_ui"
+python -m workbench_ui.demo
 ```
 
-Print mesh statistics without opening the viewer:
+## Command-line mesh diagnostics
 
 ```powershell
 python src/mesh/import_mesh.py path\to\model.stl --no-viewer
-```
-
-Extract a section and print curve-fit diagnostics without opening the viewer:
-
-```powershell
 python src/mesh/import_mesh.py path\to\model.stl --no-viewer --section-axis Z --section-offset 0
 ```
 
-Show the vertex-normal overlay:
+## Verification and benchmarks
 
 ```powershell
-python src/mesh/import_mesh.py path\to\model.ply --show-normals
-```
-
-The desktop app opens one main window with a menu bar, left control panel,
-embedded viewport, and bottom status bar. Load a mesh from File > Open Model or
-the sidebar Open Model button, then use the section controls to choose X/Y/Z,
-set an offset, and compute the section. Normals are hidden by default and can be
-enabled from View > Show Normals or the sidebar checkbox.
-
-```powershell
-python src/main.py
-```
-
-Do not commit secrets, API keys, credentials, or large scan files. Dont be stupid.
-
-## Tests and mesh-query benchmark
-
-Run the complete local suite from the repository root:
-
-```powershell
+$env:PYTHONPATH = "src;packages/workbench_ui"
+$env:QT_QPA_PLATFORM = "offscreen"
+python -m compileall -q src packages/workbench_ui/workbench_ui
+python scripts/report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"
+python benchmarks/benchmark_mesh_queries.py --quick
+python benchmarks/benchmark_scene_sync.py --iterations 25
+python benchmarks/benchmark_v3_workflows.py --iterations 25 --curves 250
 ```
 
-The GitHub Actions workflow runs the same suite under a Linux virtual display so
-Tk/VTK tests execute alongside the headless geometry, state, and project tests.
-
-Run the accelerated mesh-query benchmark with:
-
-```powershell
-python benchmarks/benchmark_mesh_queries.py
-```
-
-Use `--quick` for the 10,000-triangle smoke case.
+CI runs the full suite under Linux/Xvfb and focused V3 coverage on Windows.
+Do not commit secrets, credentials, or large scan data files.

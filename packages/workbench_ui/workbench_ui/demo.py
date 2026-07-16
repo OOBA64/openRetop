@@ -11,6 +11,7 @@ from workbench_ui import (
     ActionRegistry,
     ApplicationShell,
     CommandPaletteWidget,
+    FieldDefinition,
     MenuItem,
     MenuSchema,
     PanelDescriptor,
@@ -28,7 +29,15 @@ from workbench_ui import (
 
 def build_demo() -> ApplicationShell:
     registry = ActionRegistry()
-    registry.register(ActionDefinition("demo.reset", "Reset Demo", category="Demo", shortcut="Ctrl+R"))
+    registry.register(
+        ActionDefinition(
+            "demo.reset",
+            "Reset Demo",
+            category="Demo",
+            shortcut="Ctrl+R",
+            dispatch=lambda _payload: shell.set_status_message("Demo reset"),
+        )
+    )
     registry.register(ActionDefinition("demo.about", "About Workbench", category="Help"))
     menu = MenuSchema("Demo", (MenuItem(action_id="demo.reset"), MenuItem(action_id="demo.about")))
     toolbar = ToolbarSchema("Demo", (ToolbarItem("demo.reset"),))
@@ -43,7 +52,17 @@ def build_demo() -> ApplicationShell:
             ]
         )
     )
-    inspector = PropertyInspectorWidget(PropertyInspectorModel())
+    inspector = PropertyInspectorWidget(
+        PropertyInspectorModel(
+            [
+                FieldDefinition("name", "Name", "Scan Mesh"),
+                FieldDefinition("visible", "Visible", True, "checkbox"),
+                FieldDefinition("quality", "Quality", "Medium", "combo", options=("Low", "Medium", "High")),
+                FieldDefinition("location", "Location", (0.0, 0.0, 0.0), "vector", group="Transform"),
+                FieldDefinition("color", "Color", "#00d1ff", "color", group="Display"),
+            ]
+        )
+    )
     viewport = VTKViewportWidget()
     if viewport.available:
         viewport.add_test_geometry()

@@ -9,9 +9,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.app_state import AppState as LegacyAppState
-from app.object_state import MeshObjectState as LegacyMeshObjectState
-from app.transform_state import ActiveTransformState as LegacyTransformState
 from application.events import (
     EventPublisher,
     SceneChangedEvent,
@@ -86,11 +83,6 @@ def _state_with_curve() -> AppState:
 
 
 class ApplicationStateMoveTests(unittest.TestCase):
-    def test_legacy_modules_reexport_authoritative_state_classes(self) -> None:
-        self.assertIs(LegacyAppState, AppState)
-        self.assertIs(LegacyMeshObjectState, MeshObjectState)
-        self.assertIs(LegacyTransformState, ActiveTransformState)
-
     def test_controllers_rebind_explicit_state(self) -> None:
         first = AppState()
         second = AppState(mesh_object=_mesh_object())

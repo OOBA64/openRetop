@@ -15,7 +15,6 @@ from curves.curve_state import CurveCollection, StoredCurve
 from mesh.triangle_mesh import TriangleMeshData
 from viewer.actor_factories import VTKActorAdapter
 from viewer.camera_controller import CameraController, frame_pose, named_view_vectors
-from viewer.embedded_viewport import EmbeddedVTKViewport
 from viewer.picking_service import PickKind, PickingService
 from viewer.scene_builder import SceneBuildOptions, SceneBuilder
 from viewer.scene_synchronizer import SceneSynchronizer
@@ -299,39 +298,6 @@ class Task77CameraAndPickingTests(unittest.TestCase):
         )
         self.assertTrue(controller.apply(CameraRequest.frame_selected(()), snapshot))
         self.assertTrue(np.allclose(renderer.GetActiveCamera().GetFocalPoint(), [42.0, 53.0, 60.0]))
-
-
-class Task77CompatibilityFacadeTests(unittest.TestCase):
-    def test_snapshot_frames_after_actor_sync_and_ordinary_refresh_preserves_camera(self) -> None:
-        viewport = EmbeddedVTKViewport(parent=object())
-        viewport._is_started = True
-        viewport._render = lambda: None  # type: ignore[method-assign]
-        transform = np.identity(4)
-        transform[:3, 3] = [10.0, 20.0, 30.0]
-        snapshot = SceneSnapshot(
-            revision=1,
-            meshes=(_mesh_item(transform=transform),),
-            camera_request=CameraRequest.frame_all(),
-        )
-
-        viewport.render_scene(snapshot)
-
-        self.assertIsNotNone(viewport._mesh_actor)
-        self.assertTrue(
-            np.allclose(
-                viewport.renderer.GetActiveCamera().GetFocalPoint(),
-                [11.0, 21.5, 30.0],
-            )
-        )
-        camera = viewport.renderer.GetActiveCamera()
-        camera.SetFocalPoint(7.0, 8.0, 9.0)
-        camera.SetPosition(17.0, 18.0, 19.0)
-        before = (camera.GetPosition(), camera.GetFocalPoint())
-
-        viewport.render_scene(replace(snapshot, revision=2, camera_request=CameraRequest()))
-
-        self.assertEqual(camera.GetPosition(), before[0])
-        self.assertEqual(camera.GetFocalPoint(), before[1])
 
 
 if __name__ == "__main__":

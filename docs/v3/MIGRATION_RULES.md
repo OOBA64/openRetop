@@ -113,9 +113,8 @@ task, not this baseline task.
 - Maintain a single authoritative implementation. A compatibility wrapper
   forwards; it does not reimplement the old branch beside the new branch.
 
-Task 75’s representative handlers remain in `OpenRetopWindow` as compatibility
-adapters. Their direct UI/state calls are transitional and must not be copied
-into new application handlers.
+The migration is complete: handlers live in controllers/`WorkflowService`, and
+the removed legacy window must not be reintroduced as a compatibility adapter.
 
 ## Result rules
 

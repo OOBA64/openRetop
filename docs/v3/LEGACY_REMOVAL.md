@@ -1,20 +1,17 @@
-# Task 81 legacy-shell removal gate
+# Task 81 legacy-shell removal record
 
-The supported entry point is V3 (`src/main.py` imports only
-`presentation.qt.main_window`). V3 presentation has no Tk imports and its
-viewport consumes the shared `SceneSnapshot`/`SceneSynchronizer` path.
+The removal gate is satisfied.
 
-The physical deletion gate is intentionally explicit:
+- Every retained action ID is registered with `WorkflowService` and
+  `CommandDispatcher`; `test_v3_workflow_service.py` checks the full registry.
+- Behavior-focused Qt/controller/project/viewport tests replace the removed Tk
+  widget-internal and compatibility-facade tests.
+- `src/app`, Tk menus/preferences/scene browser/host code, and
+  `src/viewer/embedded_viewport.py` are absent.
+- Production has no `app.*` or `tkinter` imports.
+- The architecture UI-import allowlist is empty, and practical package/module
+  cycle checks pass.
+- `src/main.py` launches only `presentation.qt.main_window.run_v3_app`.
 
-1. Every retained row in `V3_PARITY_MATRIX.md` must have a V3 behavior test.
-2. The legacy `test_main_window_ui.py` and embedded-viewport tests must be
-   replaced by equivalent V3 workflow tests, not silently skipped.
-3. Only after those tests pass may `src/app/main_window.py`, Tk panels/menus/
-   dialogs, and `src/viewer/embedded_viewport.py` be removed and the six
-   existing presentation allowlist entries deleted.
-
-Current evidence satisfies the supported-entry and boundary portions. The
-physical deletion gate is not yet satisfied: the current complete suite still
-has 31 legacy compatibility failures and one direct-private-helper error, so
-removing the shell now would destroy test coverage rather than complete the
-migration.
+The old shell is not a fallback or supported compatibility mode. Project-file
+compatibility is preserved at the repository and restore boundaries instead.

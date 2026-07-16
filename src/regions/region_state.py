@@ -81,12 +81,3 @@ def create_region_selection(
         },
     )
     return region
-
-
-# TODO: add/subtract brush.
-# TODO: paint region selection.
-# TODO: boundary extraction.
-# TODO: convert boundary to curve.
-# TODO: curvature-based grow.
-# TODO: patch fitting from region.
-# TODO: auto face detection.

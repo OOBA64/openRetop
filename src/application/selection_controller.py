@@ -424,8 +424,6 @@ class SelectionController(ControllerBase):
         return self._selection_result(before, reason="surfaces_selected", status=status)
 
     def select_region(self, region_id: str | None = None) -> CommandResult:
-        if self.state.mesh_object is None:
-            return CommandResult.failure("No mesh is loaded.", status="No selection")
         region = self.state.region_collection.active_region
         if region is None:
             return CommandResult.failure("No region is available.", status="No selection")

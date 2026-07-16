@@ -9,8 +9,8 @@ format. The executable authority remains:
 - `src/project/project_data.py` for the in-memory records and defaults;
 - `src/project/project_io.py` for JSON encoding, decoding, and validation;
 - `src/project/project_state.py` for application-state export; and
-- the restore path in `src/app/main_window.py` for application behavior after
-  decoding.
+- `src/project/project_session.py` for UI-independent application-state restore
+  after decoding.
 
 Existing `.openretop` files with `version: 1` must continue to load throughout
 V3. Moving code between layers must not silently reinterpret any field recorded
@@ -56,13 +56,16 @@ whose collection parser treats `null` as empty.
 | `active_section_plane_id` | string or `null` | `null` | Preferred active section plane. |
 | `section_results` | array | `[]` | Stored section polylines. |
 | `curves` | array | `[]` | Stored fitted/manual/derived curves. |
+| `region` | object or omitted | omitted | Active region record, including triangle IDs, seed, grow controls, visibility, and metadata. |
 | `surfaces` | array | `[]` | Parametric/preview surface records. |
 | `brep_surfaces` | array | `[]` | Rebuildable BREP record descriptors, not CAD bodies. |
 | `loft_features` | array | `[]` | Editable loft feature records. Omitted by the serializer when empty. |
 | `four_boundary_patch_features` | array | `[]` | Four-boundary feature records. Omitted by the serializer when empty. |
+| `selected_scene_ids` | array of strings | `[]` | Stable scene-node selection IDs; omitted by the serializer when empty. |
+| `primary_selection_id` | string or omitted | omitted | Primary ID when it belongs to `selected_scene_ids`. |
 
-Unknown top-level keys are ignored when loading and are not retained when the
-project is saved again. This is not a lossless forward-compatible reader.
+Unknown top-level keys are retained in `ProjectData.metadata` and emitted again,
+so a V3 read/write cycle preserves newer producer extensions.
 
 ### `transform`
 
@@ -83,7 +86,7 @@ the transform matrix during restore.
 | `proxy_quality` | string | `"Medium"` | Display-mesh proxy-quality label. The UI normalizes it on use. |
 | `show_grid` | boolean | `true` | Grid visibility. |
 | `show_axes` | boolean | `true` | Axes visibility. |
-| `show_normals` | boolean | `false` | Format-level normals flag. The current UI save and restore paths force this to `false`. |
+| `show_normals` | boolean | `false` | Persisted normals display flag. |
 | `colors` | object of string to string | `{}` | Display-color overrides. Only `#RRGGBB` values survive decoding; accepted values are uppercased. Invalid entries and a non-object value are ignored as an empty/partial map. |
 
 `project_from_dict()` retains every syntactically valid color key. The UI
@@ -206,6 +209,15 @@ Old polyline/manual metadata is upgraded by the existing manual-curve parser and
 values remain loadable. This compatibility behavior must not be replaced by a
 new interpretation during architectural extraction.
 
+### `region`
+
+The optional region object stores `id`, `name`, `triangle_indices`,
+`threshold_degrees`, `max_triangle_count`, source-mesh identifiers,
+`seed_triangle_index`, `visible`, `selected`, and JSON-safe `metadata`. Missing
+regions retain the historical empty-selection default. A restored region can
+remain inspectable when its external mesh is missing, but recompute/boundary
+operations still require mesh geometry.
+
 ### `surfaces[]`
 
 | Key | Shape | Default when missing |
@@ -308,8 +320,8 @@ The format layer treats `options` as an open JSON-safe object.
   actors, query indexes, preview meshes, and CAD objects are rebuilt or left in
   an explicit rebuild-required state.
 - An invalid `active_section_plane_id` falls back to the first restored plane.
-  Active curve/surface/feature IDs are not persisted; some adapters select the
-  first restored feature as their runtime active item.
+  Stable scene selection restores active curve/surface/region records when
+  available. Feature collections otherwise select their first restored record.
 
 ## Deliberately absent state
 
@@ -318,17 +330,14 @@ Version 1 does not persist:
 - mesh vertex/triangle data or display proxies;
 - VTK actors, viewport camera position/orientation/projection, clipping range,
   or framing state;
-- the active region collection/triangle selection (a converted region boundary
-  can survive as curve metadata, but the region selection itself does not);
-- ordinary curve/surface/section selection, current workbench, expanded scene
-  tree nodes, active transform/tool state, manual-curve transient session state,
-  or undo/redo history;
+- current workbench, expanded scene-tree nodes, active transform/tool state,
+  manual-curve transient session state, or undo/redo history;
 - application preferences/keybindings (these belong to settings storage);
 - accelerated mesh-query indexes/caches; or
 - live CAD-kernel objects and generated BREP tessellation.
 
-These omissions are not permission to add fields during an unrelated V3 task.
-They identify state that must be deliberately reconstructed or left transient.
+Region and stable scene selection are optional version-1 extensions; older
+files simply restore no region/selection.
 
 ## Compatibility behaviors that must remain
 
@@ -349,17 +358,16 @@ They identify state that must be deliberately reconstructed or left transient.
 
 - **Strict version gate:** there is no migration dispatcher yet; any explicit
   version other than `1` is rejected.
-- **Unknown-field loss:** unknown top-level and record-level schema keys are
-  discarded. Only keys inside supported metadata/options bags are generally
-  round-tripped.
+- **Unknown record-field loss:** unknown top-level keys are preserved, but
+  unknown fields inside known records are discarded unless stored in a
+  supported metadata/options bag.
 - **External mesh fragility:** moving a project without its referenced mesh, or
   saving an inconvenient absolute path, can break reopening. Mesh content is
   not checksummed, so a changed file at the same path can change the project.
 - **Non-atomic save:** interruption during direct write can leave a truncated
   project.
-- **Project name canonicalization:** the current application exporter writes
-  `"Untitled Project"`; a custom raw `name` is not guaranteed to survive an
-  application-level reopen/save.
+- **Project name canonicalization:** the desktop save adapter derives the name
+  from the selected project filename.
 - **Derived-field canonicalization:** curve diagnostics and the two explicit
   source-ID fields can be recomputed/rebased by the application adapter.
 - **Dangling references:** project IO accepts many missing cross-references;

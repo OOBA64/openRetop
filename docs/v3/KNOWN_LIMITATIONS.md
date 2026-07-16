@@ -1,19 +1,17 @@
 # V3 known limitations
 
-- The supported entry point is the PySide6 V3 shell. The superseded Tk
-  `src/app/main_window.py`, Tk menus/dialogs, and compatibility viewport are
-  still present for the existing legacy regression suite. Their physical
-  removal is the remaining Task 81 migration hold point.
-- The V3 shell exposes all central action definitions and fully wires framing,
-  visibility, undo/redo, named views, model import, project persistence, and
-  settings/CAD boundaries. Advanced legacy-specific inspectors and some
-  feature dialogs still need parity adapters before the Tk implementation can
-  be removed safely.
-- The repository has no checked-in representative real-world legacy project
-  fixtures; compatibility verification currently uses generated project data
-  and legacy parser tests.
-- CAD/BREP availability depends on the optional CadQuery/OCP installation.
-  Trim and intersection are intentionally reported unavailable.
-- Multiple Qt/VTK windows in one Windows offscreen interpreter can emit OpenGL
-  initialization warnings. Isolated V3 smoke tests pass in the supported V3
-  environment.
+- CAD/BREP construction and STEP export depend on a working CadQuery/OCP
+  installation. Trim and intersection are explicitly unavailable in the
+  current public adapter.
+- Automated Qt tests use the offscreen platform. Driver-specific OpenGL output,
+  DPI behavior, and sustained interactive navigation require a Windows desktop
+  visual pass.
+- Checked-in legacy/current project fixtures are deliberately small; large
+  customer scans and projects remain a release-review input rather than source
+  fixtures.
+- Runtime CAD objects are not serialized. BREP records load safely with
+  `rebuild_required` status and must be rebuilt before STEP export.
+- Region selection is connected-normal growth from one seed with a triangle
+  cap; paint/add/subtract selection is not part of the retained V3 feature set.
+- Existing preview-surface algorithms remain preview meshes, not replacements
+  for CAD-kernel BREP generation.

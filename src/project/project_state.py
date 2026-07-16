@@ -14,6 +14,7 @@ from project.project_data import (
     ProjectDisplaySettings,
     ProjectFourBoundaryPatchFeature,
     ProjectLoftFeature,
+    ProjectRegion,
     ProjectSectionPlane,
     ProjectSectionResult,
     ProjectSectionSettings,
@@ -22,6 +23,7 @@ from project.project_data import (
     default_project_data,
 )
 from sections.section_state import SectionCollection, plane_normal, plane_origin
+from regions.region_state import RegionCollection
 from surfaces.brep_state import BrepSurfaceCollection
 from surfaces.four_boundary_feature import FourBoundaryPatchFeatureCollection
 from surfaces.loft_feature import LoftFeatureCollection
@@ -41,10 +43,13 @@ def project_from_app_state(
     display_colors: dict[str, str] | None = None,
     section_collection: SectionCollection | None = None,
     curve_collection: CurveCollection | None = None,
+    region_collection: RegionCollection | None = None,
     surface_collection: SurfaceCollection | None = None,
     brep_surface_collection: BrepSurfaceCollection | None = None,
     loft_feature_collection: LoftFeatureCollection | None = None,
     four_boundary_feature_collection: FourBoundaryPatchFeatureCollection | None = None,
+    selected_scene_ids: Iterable[str] = (),
+    primary_selection_id: str | None = None,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
@@ -63,6 +68,7 @@ def project_from_app_state(
         section_planes,
     )
     curves = _curves_from_collection(curve_collection)
+    region = _region_from_collection(region_collection)
     surfaces = _surfaces_from_collection(surface_collection)
     brep_surfaces = _brep_surfaces_from_collection(brep_surface_collection)
     loft_features = _loft_features_from_collection(loft_feature_collection)
@@ -114,10 +120,36 @@ def project_from_app_state(
         active_section_plane_id=active_section_plane_id,
         section_results=section_results,
         curves=curves,
+        region=region,
         surfaces=surfaces,
         brep_surfaces=brep_surfaces,
         loft_features=loft_features,
         four_boundary_patch_features=four_boundary_patch_features,
+        selected_scene_ids=list(dict.fromkeys(str(value) for value in selected_scene_ids)),
+        primary_selection_id=(
+            None if primary_selection_id is None else str(primary_selection_id)
+        ),
+    )
+
+
+def _region_from_collection(collection: RegionCollection | None) -> ProjectRegion | None:
+    if collection is None or collection.active_region is None:
+        return None
+    region = collection.active_region
+    return ProjectRegion(
+        id=str(region.id),
+        name=str(region.name),
+        triangle_indices=[int(value) for value in region.triangle_indices],
+        threshold_degrees=float(region.threshold_degrees),
+        max_triangle_count=int(region.max_triangle_count),
+        source_mesh_identifier=str(region.source_mesh_identifier),
+        source_mesh_name=str(region.source_mesh_name),
+        seed_triangle_index=(
+            None if region.seed_triangle_index is None else int(region.seed_triangle_index)
+        ),
+        visible=bool(region.visible),
+        selected=bool(region.selected),
+        metadata=_metadata_from_value(region.metadata, "region.metadata"),
     )
 
 

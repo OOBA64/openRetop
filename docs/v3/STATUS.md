@@ -1,82 +1,65 @@
 # openRetop V3 migration status
 
-## Current task
+## Result
 
-Task 82 - Final verification, optimization, packaging, and release candidate
+Tasks 77-82 are complete. The PySide6 V3 workbench is the only supported
+desktop shell, the legacy Tk presentation and compatibility viewport have been
+physically removed, and the complete automated suite is green.
 
-Verification and packaging are complete for the V3 path. Release acceptance
-remains conditional because Task 81's physical legacy-shell deletion gate is
-not satisfied by the existing Tk compatibility suite. This is documented
-explicitly in `docs/v3/LEGACY_REMOVAL.md` and is not hidden by skips or
-weakened tests.
+## Completed acceptance work
 
-## Completed task history
+- Task 77: immutable scene snapshots, stable actor cache/synchronization,
+  structured scene/mesh/tool picks, camera control, named views, and transformed
+  category-aware framing. Qt pointer events now drive manual curves, regions,
+  transforms, and scene selection through those contracts.
+- Task 78: project/settings repositories, import/proxy/export/CAD services,
+  explicit composition root, deterministic compatibility, and complete restore
+  of transforms, display/colors, planes/results, curves/manual metadata,
+  regions, preview/BREP records, editable features, and scene selection.
+- Task 79: independent `workbench_ui` package with action conflicts, menu/
+  toolbar schemas, docks/layout recovery, tool lifecycle, hierarchical scene
+  tree operations, live/apply inspectors and typed editors, palette, themes,
+  settings, VTK host, demo, and package tests.
+- Task 80: complete V3 menus/actions, tree, contextual inspector, tool input,
+  project lifecycle, preferences, progress/errors, recent projects, dirty/title
+  state, BREP rebuild/STEP export, diagnostics, and central workflow routing.
+- Task 81: removed `src/app`, Tk host/menu/dialog/browser code,
+  `viewer/embedded_viewport.py`, legacy widget-internal tests, compatibility
+  imports/re-exports, and all architecture allowlist entries. Replacement V3
+  behavior tests cover every registered action and retained workflow family.
+- Task 82: final recovery, workflow, fixture, CI, benchmark, packaging, setup,
+  user, architecture, parity, and release-candidate evidence.
 
-- Task 77 - scene snapshots, incremental VTK, structured picking, camera and
-  framing. Commit `4de640b`; focused suite 11 passed.
-- Task 78 - repositories, import/export/CAD boundaries, and composition root.
-  Commit `53ee0cd`; focused suite 7 passed.
-- Task 79 - independent PySide6 workbench framework and demo. Commit
-  `0edbe1f`; focused suite 5 passed.
-- Task 80 - V3 Qt shell, central actions, snapshot viewport, project/model
-  dialogs, parity matrix, and user guide. Commit `af5e27c`; focused suite 3
-  passed.
-- Task 81 - V3-only supported entry point and legacy boundary evidence. Commit
-  `813693a`; physical Tk-shell deletion remains gated.
-- Task 82 - release fixtures, verification record, performance benchmark,
-  setup/CI/release documentation, and standalone package verification. The
-  final commit is recorded after this review.
+## Verification record (2026-07-15)
 
-## Task 81 remaining gate
-
-- `src/main.py` launches only the V3 Qt entry point and has no Tk import or
-  legacy `app.main_window` reference.
-- `src/presentation/qt` has no Tk imports and routes VTK work through the
-  shared Task 77 snapshot synchronizer/actor adapter.
-- Advanced V3 adapters still need complete behavior evidence for every retained
-  legacy workflow.
-- `src/app/main_window.py` is still approximately 12,694 lines, and the Tk
-  menus, dialogs, scene browser, and `src/viewer/embedded_viewport.py` remain
-  for the current regression suite. They must be removed after equivalent V3
-  behavior tests replace the stale widget-internal tests.
-- The six legacy architecture allowlist entries and duplicate menu-label
-  findings cannot be removed until those modules are gone.
-
-## Task 82 verification
-
-- Complete discovery: 670 tests; 638 passed, 31 failed, and 1 error. The 32
-  new V3-focused tests pass; all failures/errors are in the existing Tk
-  `MainWindow` compatibility suite.
-- Focused V3 suites (`tests.test_task77_viewport` through
-  `tests.test_task82_release`): 32 passed.
+- Complete discovery: 484 tests passed.
+- Focused Tasks 77-82 plus V3 workflow suites: passed.
 - `python -m compileall -q src packages/workbench_ui/workbench_ui`: passed.
-- `git diff --check`: passed.
-- `scripts/report_architecture_metrics.py --fail-on-new`: passed; 113
-  production Python files / 48,081 lines, 519 `OpenRetopWindow` methods, six
-  documented legacy UI allowlist imports, and no practical cycles.
-- `benchmarks/benchmark_scene_sync.py --iterations 25`: passed; 11,336.8
-  snapshot synchronizations per second in the local V3 environment, with
-  actor reuse confirmed after the first iteration.
-- `pip wheel --no-deps --no-build-isolation packages/workbench_ui`: passed;
-  built `openretop_workbench_ui-0.1.0-py3-none-any.whl`.
-- Qt offscreen startup/window smoke and fixture/recovery tests: passed.
+- `scripts/report_architecture_metrics.py --fail-on-new`: passed.
+- Architecture: 105 production files / 32,260 lines; 52
+  `OpenRetopV3Window` methods; 0 legacy-window methods; 0 guarded UI-import
+  violations; 0 practical package/module cycles; 0 detectable duplicate
+  action/menu labels.
+- Scene sync benchmark (25 iterations): 21,459.2 syncs/second, with actor reuse
+  after the first synchronization.
+- V3 workflow benchmark (250 curves): composition 0.493 ms, scene snapshot
+  11.343 ms, project round-trip 40.551 ms, tree/inspector model refresh
+  0.024 ms per iteration on the local environment.
+- Standalone `workbench_ui` wheel (0.1.0), offscreen Qt startup/window and demo
+  smoke, project fixture migration, corrupt/missing recovery, and diff checks:
+  passed.
 
-## Final metrics and limitations
+## Remaining human review items
 
-- `src/app/main_window.py` remains 12,694 lines; `src/viewer/embedded_viewport.py`
-  and Tk menus/dialogs/scene browser also remain as compatibility code.
-- No files were moved or physically removed in Task 81. The six legacy
-  architecture allowlist entries and duplicate legacy action labels therefore
-  remain.
-- Advanced V3 adapters still need complete behavior evidence for manual curves,
-  regions, surfaces, BREP/STEP, and all undo/redo paths.
-- Only minimal legacy/current `.openretop` fixtures are included; representative
-  real-world scan fixtures and Windows desktop OpenGL review remain manual.
-- Optional CAD capability reporting is honest about unavailable trim and
-  intersection operations. Offscreen Qt tests skip VTK render calls because
-  Windows OpenGL is not reliable in the headless platform plugin.
+- Perform the final Windows desktop OpenGL visual pass; Qt offscreen verifies
+  behavior but not driver-specific rendering quality.
+- Exercise a representative large real-world scan and customer project. The
+  repository fixtures intentionally remain small enough for source control.
+- CadQuery/OCP availability remains environment-dependent; unsupported trim and
+  intersection capabilities continue to report disabled rather than pretending
+  success.
 
-The branch is a reviewable release candidate, not a merge into the base branch.
-Final acceptance requires replacing the stale widget-internal Tk tests with V3
-behavior tests, deleting the superseded shell and compatibility viewport, and
-then rerunning the complete suite green.
+There is no next numbered architecture-refactor task. The exact next starting
+point is human V3 release-candidate review using `RELEASE_CANDIDATE.md`; any
+findings should be filed as targeted defects rather than reopening the legacy
+migration.

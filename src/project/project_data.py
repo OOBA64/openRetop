@@ -150,6 +150,21 @@ class ProjectCurve:
 
 
 @dataclass
+class ProjectRegion:
+    id: str
+    name: str
+    triangle_indices: list[int]
+    threshold_degrees: float
+    max_triangle_count: int
+    source_mesh_identifier: str = ""
+    source_mesh_name: str = ""
+    seed_triangle_index: int | None = None
+    visible: bool = True
+    selected: bool = False
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
 class ProjectSurface:
     id: str
     name: str
@@ -212,12 +227,15 @@ class ProjectData:
     mesh_visible: bool = True
     section_results: list[ProjectSectionResult] = field(default_factory=list)
     curves: list[ProjectCurve] = field(default_factory=list)
+    region: ProjectRegion | None = None
     surfaces: list[ProjectSurface] = field(default_factory=list)
     brep_surfaces: list[ProjectBrepSurface] = field(default_factory=list)
     loft_features: list[ProjectLoftFeature] = field(default_factory=list)
     four_boundary_patch_features: list[ProjectFourBoundaryPatchFeature] = field(
         default_factory=list
     )
+    selected_scene_ids: list[str] = field(default_factory=list)
+    primary_selection_id: str | None = None
     # Unknown top-level fields are retained by the V3 repository boundary so
     # newer project producers can round-trip through older clients safely.
     metadata: dict[str, object] = field(default_factory=dict)
@@ -247,6 +265,8 @@ def default_project_data() -> ProjectData:
             offset=0.0,
             show_plane=False,
         ),
+        selected_scene_ids=[],
+        primary_selection_id=None,
     )
 
 

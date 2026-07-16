@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.manual_curve_controller import ManualCurveController
+from application.manual_curve_controller import ManualCurveController
 from curves.curve_state import StoredCurve
 from curves.manual_curve import (
     CURVE_POINT_CORNER,
@@ -349,7 +349,7 @@ class ManualCurveControllerTests(unittest.TestCase):
 
     def test_architecture_has_no_window_shadow_arrays_or_ui_imports(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        controller_source = (root / "src/app/manual_curve_controller.py").read_text(
+        controller_source = (root / "src/application/manual_curve_controller.py").read_text(
             encoding="utf-8"
         )
         lowered = controller_source.lower()
@@ -359,12 +359,12 @@ class ManualCurveControllerTests(unittest.TestCase):
         self.assertNotIn("openretopwindow", lowered)
 
         tree = ast.parse(
-            (root / "src/app/main_window.py").read_text(encoding="utf-8")
+            (root / "src/presentation/qt/main_window.py").read_text(encoding="utf-8")
         )
         window_class = next(
             node
             for node in tree.body
-            if isinstance(node, ast.ClassDef) and node.name == "OpenRetopWindow"
+            if isinstance(node, ast.ClassDef) and node.name == "OpenRetopV3Window"
         )
         initializer = next(
             node
@@ -393,24 +393,16 @@ class ManualCurveControllerTests(unittest.TestCase):
         }
         self.assertTrue(forbidden.isdisjoint(assigned))
 
-    def test_window_compatibility_properties_forward_to_session(self) -> None:
-        try:
-            from app.main_window import OpenRetopWindow
-        except SystemExit as exc:
-            self.skipTest(f"Window dependencies unavailable: {exc}")
-
-        window = OpenRetopWindow.__new__(OpenRetopWindow)
-        window.manual_curve_controller = ManualCurveController()
-        points: list[np.ndarray] = []
-
-        window._manual_curve_points = points
-
-        self.assertNotIn("_manual_curve_points", window.__dict__)
-        self.assertIs(window._manual_curve_points, points)
-        self.assertIs(
-            window._manual_curve_points,
-            window.manual_curve_controller.session.control_points,
+    def test_controller_session_is_the_only_manual_control_state_owner(self) -> None:
+        controller = ManualCurveController()
+        controller.begin_new_curve(
+            plane_origin=[0.0, 0.0, 0.0],
+            plane_normal=[0.0, 0.0, 1.0],
         )
+        controller.append_point([0.0, 0.0, 0.0])
+
+        self.assertEqual(len(controller.session.control_points), 1)
+        self.assertNotIn("control_points", controller.__dict__)
 
     @staticmethod
     def _controller_with_points() -> ManualCurveController:

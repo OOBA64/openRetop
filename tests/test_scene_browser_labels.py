@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from app.scene_browser import _surface_display_label
+from application.scene_labels import surface_display_label
 from surfaces.brep_state import BrepSurfaceRecord
 
 
@@ -22,7 +22,7 @@ class SceneBrowserBrepLabelTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _surface_display_label(surface, "Surface 1"),
+            surface_display_label(surface, "Surface 1"),
             "Region Plane 1 (region, planar)",
         )
 
@@ -43,11 +43,11 @@ class SceneBrowserBrepLabelTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _surface_display_label(curve_face, "Surface 1"),
+            surface_display_label(curve_face, "Surface 1"),
             "BREP Face 1 (curve, planar)",
         )
         self.assertEqual(
-            _surface_display_label(loft, "Surface 2"),
+            surface_display_label(loft, "Surface 2"),
             "BREP Loft 1 (loft)",
         )
 

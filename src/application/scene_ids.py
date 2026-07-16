@@ -29,6 +29,9 @@ NODE_BREP_SURFACES = "brep_surfaces"
 NODE_SURFACE = "surface"
 NODE_REGIONS = "regions"
 NODE_REGION = "region"
+NODE_FEATURES = "features"
+NODE_LOFT_FEATURE = "loft_feature"
+NODE_FOUR_BOUNDARY_FEATURE = "four_boundary_feature"
 
 
 def _child_node_id(prefix: str, object_id: object) -> str:
@@ -107,6 +110,22 @@ def region_node_id(region_id: object) -> str:
 
 def region_id_from_node(node_id: str | None) -> str | None:
     return _object_id_from_node(node_id, NODE_REGION)
+
+
+def loft_feature_node_id(feature_id: object) -> str:
+    return _child_node_id(NODE_LOFT_FEATURE, feature_id)
+
+
+def loft_feature_id_from_node(node_id: str | None) -> str | None:
+    return _object_id_from_node(node_id, NODE_LOFT_FEATURE)
+
+
+def four_boundary_feature_node_id(feature_id: object) -> str:
+    return _child_node_id(NODE_FOUR_BOUNDARY_FEATURE, feature_id)
+
+
+def four_boundary_feature_id_from_node(node_id: str | None) -> str | None:
+    return _object_id_from_node(node_id, NODE_FOUR_BOUNDARY_FEATURE)
 
 
 __all__ = tuple(

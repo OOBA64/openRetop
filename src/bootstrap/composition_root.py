@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.manual_curve_controller import ManualCurveController
-from app.undo import UndoStack
+from application.manual_curve_controller import ManualCurveController
+from application.undo import UndoStack
 from application.actions import ActionRegistry, create_core_action_registry
 from application.analysis_controller import AnalysisController
 from application.brep_controller import BrepController
@@ -23,6 +23,7 @@ from application.state import AppState
 from application.surface_controller import SurfaceController
 from application.transform_controller import TransformController
 from application.visibility_controller import VisibilityController
+from application.workflow_service import WorkflowService
 from infrastructure.cad_adapter import PublicCadAdapter
 from infrastructure.io_services import (
     DisplayProxyService,
@@ -30,8 +31,8 @@ from infrastructure.io_services import (
     ProjectFileService,
     StepExportService,
 )
-from infrastructure.persistence import JsonProjectRepository
-from infrastructure.settings_repository import JsonSettingsRepository
+from infrastructure.persistence import JsonProjectRepository, ProjectRepository
+from infrastructure.settings_repository import JsonSettingsRepository, SettingsRepository
 from mesh.query_service import MeshQueryService
 from settings.settings_data import AppSettings
 from viewer.scene_builder import SceneBuilder
@@ -49,8 +50,8 @@ class ApplicationComposition:
     commands: CommandDispatcher
     mesh_query_service: MeshQueryService
     cad: PublicCadAdapter
-    project_repository: JsonProjectRepository
-    settings_repository: JsonSettingsRepository
+    project_repository: ProjectRepository
+    settings_repository: SettingsRepository
     project_files: ProjectFileService
     mesh_import: MeshImportService
     display_proxy: DisplayProxyService
@@ -68,13 +69,15 @@ class ApplicationComposition:
     surface_controller: SurfaceController
     brep_controller: BrepController
     analysis_controller: AnalysisController
+    workflow: WorkflowService
 
 
 def create_application(
     *,
     settings_path: str | Path | None = None,
-    project_repository: JsonProjectRepository | None = None,
-    settings_repository: JsonSettingsRepository | None = None,
+    project_repository: ProjectRepository | None = None,
+    settings_repository: SettingsRepository | None = None,
+    cad_adapter: PublicCadAdapter | None = None,
 ) -> ApplicationComposition:
     """Build one isolated application graph for a process or a test."""
 
@@ -82,9 +85,9 @@ def create_application(
     events = EventPublisher()
     undo = UndoStack()
     mesh_query = MeshQueryService()
-    cad = PublicCadAdapter()
+    cad = cad_adapter or PublicCadAdapter()
     settings_store = settings_repository or JsonSettingsRepository()
-    settings = settings_store.load(settings_path)
+    settings = settings_store.read(settings_path).settings
     project_store = project_repository or JsonProjectRepository()
     selection_controller = SelectionController(state, events)
     dependencies = ApplicationDependencies(
@@ -117,6 +120,31 @@ def create_application(
     )
     manual_curve_controller = ManualCurveController(mesh_query_service=mesh_query)
 
+    workflow = WorkflowService(
+        state=state,
+        settings=settings,
+        undo=undo,
+        scene=scene_controller,
+        selection=selection_controller,
+        visibility=visibility_controller,
+        transform=transform_controller,
+        section=section_controller,
+        curve=curve_controller,
+        manual_curve=manual_curve_controller,
+        region=region_controller,
+        surface=surface_controller,
+        brep=brep_controller,
+        analysis=analysis_controller,
+    )
+    for action in actions.definitions:
+        commands.register(
+            action.command_id,
+            lambda command, _dependencies, action_id=action.id: workflow.dispatch(
+                action_id,
+                command.payload,
+            ),
+        )
+
     return ApplicationComposition(
         state=state,
         events=events,
@@ -145,4 +173,5 @@ def create_application(
         surface_controller=surface_controller,
         brep_controller=brep_controller,
         analysis_controller=analysis_controller,
+        workflow=workflow,
     )
