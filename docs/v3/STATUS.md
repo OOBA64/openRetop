@@ -7,10 +7,12 @@ desktop shell, the legacy Tk presentation and compatibility viewport have been
 physically removed, and the complete automated suite is green. Task 82A repairs
 the Windows native VTK startup regression: the concrete OpenGL backend is now
 registered explicitly and the first scene synchronizes through one post-show
-readiness lifecycle. Task 82B repairs the remaining interaction/presentation
-regressions with one native TrackballCamera route, selection-independent tree
-visibility, separate transform and screen-space orientation overlays, and
-working triangular named-view controls.
+readiness lifecycle. Task 82B repairs scene visibility, transform and
+screen-space orientation overlays, and triangular named-view controls. Task
+82C corrects its left-input regression and restores the primary orbit contract:
+ordinary left drag reaches QVTK's single TrackballCamera owner, while click
+selection and active tool capture remain explicitly arbitrated at a
+four-logical-pixel threshold.
 
 ## Completed acceptance work
 
@@ -45,18 +47,24 @@ working triangular named-view controls.
   transform axes/ring, a transparent fixed-size orientation renderer, propagated
   view-control settings, seven triangular named-view controls, fitted
   orthographic named views, and structured scene/overlay prop inventory.
+- Task 82C: native unmodified-left orbit through QVTK, deferred one-pick click
+  selection after native release, accumulated gesture diagnostics, explicit
+  transform/manual-curve/region left ownership, and uninterrupted middle/wheel
+  navigation during tools.
 
-## Verification record (2026-07-17)
+## Verification record (2026-07-17, Task 82C)
 
-- Complete discovery on a real visible Windows Qt platform: 528 tests passed,
-  no skips, in 11.346 seconds.
-- Complete offscreen discovery: 526 tests passed and the two narrowly scoped
-  visible renderer tests skipped, in 7.799 seconds.
-- Focused Tasks 77-82B visible Windows: 80 tests passed with no skips, including
-  26 Task 82B interaction/tree/overlay/control tests.
+- Complete discovery on a real visible Windows Qt platform: 543 tests passed,
+  no skips, in 16.129 seconds.
+- Task 82C visible Windows: 15 tests passed with no skips in 2.518 seconds.
+- Task 82C offscreen: 14 tests passed and its one narrowly scoped visible
+  Win32 test skipped in 2.093 seconds.
+- Required focused Tasks 79, 80, 82A, 82B, and 82C: 75 tests passed; the 59
+  Qt/VTK tests in Tasks 82A-82C also passed without skips on the visible native
+  path.
 - `python -m compileall -q src packages/workbench_ui/workbench_ui`: passed.
 - `scripts/report_architecture_metrics.py --fail-on-new`: passed.
-- Architecture: 107 production files / 33,411 lines; 55
+- Architecture: 107 production files / 33,523 lines; 56
   `OpenRetopV3Window` methods; 0 legacy-window methods; 0 guarded UI-import
   violations; 0 practical package/module cycles; 0 detectable duplicate
   action/menu labels.
@@ -70,6 +78,12 @@ working triangular named-view controls.
   camera coexistence, overlay lifecycle, independent control toggles, and window
   state changes passed; one camera-to-gizmo observer remained and normal close
   was clean.
+- Task 82C exact-project acceptance used injected Qt gestures against the shown
+  QVTK native child. Horizontal and vertical left drags, including a drag begun
+  over the mesh, changed camera direction without a pick, selection, refresh,
+  actor-cache rebuild, synchronization, CameraRequest, or release snap. A true
+  click selected `model` with one pick; middle pan and wheel zoom worked; ten
+  consecutive orbits retained finite camera state and no rendering error.
 - Structured prop isolation proved the reported light rectangle belonged to
   restored `mesh:mesh` source geometry, not an axes/section/overlay prop. The
   final idle viewport has no unidentified visible opaque world-origin prop.
@@ -91,7 +105,7 @@ working triangular named-view controls.
   rendering on release target hardware. The verified environment was Windows
   build 26200, Python 3.11.9, PySide6 6.11.1, and VTK 9.6.2; the real visible
   acceptance injected input through Qt into the native QVTK child.
-- Linux/Xvfb was not available for Task 82B. Complete Windows offscreen behavior
+- Linux/Xvfb was not available for Tasks 82B-82C. Windows offscreen behavior
   remains covered without unsafe native start, and no Linux rendering claim is
   made.
 - `FrontNoseTest.openretop` does not contain preview/BREP surfaces, section
@@ -107,4 +121,6 @@ findings should be filed as targeted defects rather than reopening the legacy
 migration. Task 82A detail and exact commands are in
 `tasks/task-82a-viewport-startup-repair.md`; Task 82B interaction, visibility,
 overlay, control, and acceptance evidence is in
-`tasks/task-82b-viewport-interaction-controls-repair.md`.
+`tasks/task-82b-viewport-interaction-controls-repair.md`; Task 82C's repaired
+native-orbit route and exact camera evidence are in
+`tasks/task-82c-restore-mouse-orbit.md`.

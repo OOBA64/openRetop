@@ -705,6 +705,7 @@ class OpenRetopV3Window(ApplicationShell):
         return tuple(nodes)
 
     def refresh(self) -> None:
+        self.viewport.set_left_capture_owner(self._viewport_left_capture_owner())
         self._scene_model.replace(self._scene_nodes())
         self.scene_tree.refresh()
         self.inspector.set_model(PropertyInspectorModel(self._inspector_fields()))
@@ -742,6 +743,17 @@ class OpenRetopV3Window(ApplicationShell):
             self._diagnostics.setText("Viewport initialization pending; latest scene snapshot retained.")
         self._camera_request = CameraRequest()
         self._sync_action_state()
+
+    def _viewport_left_capture_owner(self) -> str | None:
+        """Return the one active workflow allowed to consume ordinary left input."""
+
+        if self.composition.transform_controller.active:
+            return "transform"
+        if self.composition.manual_curve_controller.session.active:
+            return "manual_curve"
+        if self.composition.region_controller.session.active:
+            return "region"
+        return None
 
     def _on_scene_synchronized(self, diagnostics: ActorUpdateDiagnostics) -> None:
         warning_text = "\n".join(self._last_project_warnings)

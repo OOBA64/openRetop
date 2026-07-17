@@ -8,7 +8,7 @@ import math
 from typing import Mapping
 
 import numpy as np
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
 
 from workbench_ui import VTKViewportWidget
@@ -51,6 +51,11 @@ class ViewportDiagnosticState:
     observer_count: int
     pointer_event_count: int
     pick_count: int
+    left_capture_owner: str | None
+    gesture_active: bool
+    native_navigation_started: bool
+    selection_eligible: bool
+    gesture_distance: float
     gizmo_synchronization_count: int
     scene_actor_inventory: tuple[Mapping[str, object], ...]
     overlay_actor_inventory: tuple[Mapping[str, object], ...]
@@ -87,6 +92,7 @@ class QtSceneViewport(VTKViewportWidget):
         self._axis_gizmo_synchronization_count = 0
         self._grid_signature: tuple[float, float, float] | None = None
         self._pointer_gesture = PointerGestureState()
+        self._left_capture_owner: str | None = None
         self._last_pointer_release_was_click = True
         self._pointer_event_count = 0
         self._pick_count = 0
@@ -112,6 +118,16 @@ class QtSceneViewport(VTKViewportWidget):
     @property
     def last_pointer_release_was_click(self) -> bool:
         return self._last_pointer_release_was_click
+
+    @property
+    def left_capture_owner(self) -> str | None:
+        return self._left_capture_owner
+
+    def set_left_capture_owner(self, owner: str | None) -> None:
+        """Set application tool ownership for future unmodified-left gestures."""
+
+        value = str(owner or "").strip()
+        self._left_capture_owner = value or None
 
     def render_snapshot(self, snapshot: SceneSnapshot) -> ActorUpdateDiagnostics | None:
         """Retain and eventually synchronize the newest submitted snapshot."""
@@ -156,6 +172,13 @@ class QtSceneViewport(VTKViewportWidget):
             observer_count=len(self._observer_ids),
             pointer_event_count=self._pointer_event_count,
             pick_count=self._pick_count,
+            left_capture_owner=self._left_capture_owner,
+            gesture_active=self._pointer_gesture.active,
+            native_navigation_started=(
+                self._pointer_gesture.native_navigation_started
+            ),
+            selection_eligible=self._pointer_gesture.selection_eligible,
+            gesture_distance=self._pointer_gesture.accumulated_distance,
             gizmo_synchronization_count=self._axis_gizmo_synchronization_count,
             scene_actor_inventory=self._scene_actor_inventory(),
             overlay_actor_inventory=self._overlay_actor_inventory(),
@@ -271,25 +294,28 @@ class QtSceneViewport(VTKViewportWidget):
         self._position_view_controls()
 
     def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802 - Qt API
-        """Route only unmodified primary gestures to openRetop tools.
+        """Arbitrate unmodified-left between native orbit and active tools.
 
-        Middle/right/wheel and Shift/Alt+left events remain untouched so the
-        QVTK widget forwards them exactly once to TrackballCamera.
+        QVTK remains the sole camera owner.  When no application tool captures
+        left input, its existing press/move/release methods receive the event
+        exactly once; selection is deferred until after a click release.
         """
 
         if watched is not self.interactor:
             return super().eventFilter(watched, event)
         if event.type() == QEvent.Leave and self._pointer_gesture.active:
             position = self._pointer_gesture.current_position or (0.0, 0.0)
+            tool_owner = self._pointer_gesture.active_tool_owner
             self._pointer_gesture.cancel()
             self._last_pointer_release_was_click = False
-            height = 0 if self.interactor is None else int(self.interactor.height())
-            self._emit_pointer(
-                "leave",
-                int(round(position[0])),
-                max(height - int(round(position[1])) - 1, 0),
-            )
-            return super().eventFilter(watched, event)
+            if tool_owner is not None:
+                height = 0 if self.interactor is None else int(self.interactor.height())
+                self._emit_pointer(
+                    "leave",
+                    int(round(position[0])),
+                    max(height - int(round(position[1])) - 1, 0),
+                )
+            return False
         if not isinstance(event, QMouseEvent):
             return super().eventFilter(watched, event)
         event_type = event.type()
@@ -299,18 +325,29 @@ class QtSceneViewport(VTKViewportWidget):
                 self._pointer_gesture.cancel()
                 return False
             point = event.position()
-            self._pointer_gesture.press(point.x(), point.y())
+            tool_owner = self._left_capture_owner
+            self._pointer_gesture.press(
+                point.x(),
+                point.y(),
+                button="left",
+                active_tool_owner=tool_owner,
+                native_navigation_started=tool_owner is None,
+            )
             self._last_pointer_release_was_click = False
-            self._emit_pointer("left_press", x_position, y_position)
-            event.accept()
-            return True
+            if tool_owner is not None:
+                self._emit_pointer("left_press", x_position, y_position)
+                event.accept()
+                return True
+            return False
         if event_type == QEvent.MouseMove:
             if self._pointer_gesture.active:
                 point = event.position()
                 self._pointer_gesture.motion(point.x(), point.y())
-                self._emit_pointer("motion", x_position, y_position)
-                event.accept()
-                return True
+                if self._pointer_gesture.active_tool_owner is not None:
+                    self._emit_pointer("motion", x_position, y_position)
+                    event.accept()
+                    return True
+                return False
             buttons = event.buttons()
             if buttons & (Qt.MiddleButton | Qt.RightButton) or (
                 buttons & Qt.LeftButton
@@ -320,10 +357,10 @@ class QtSceneViewport(VTKViewportWidget):
                 # hover/update would refresh the scene inside VTK's gesture,
                 # which interrupted navigation whenever a tool was active.
                 return False
-            # Idle motion is available to active tool previews but does not
-            # perform a pick here.  Main-window policy decides whether it needs
-            # one; ordinary cursor motion remains effectively free.
-            self._emit_pointer("motion", x_position, y_position)
+            # Idle motion is sent only to a tool that explicitly owns left
+            # input. Ordinary cursor motion stays out of application policy.
+            if self._left_capture_owner is not None:
+                self._emit_pointer("motion", x_position, y_position)
             return False
         if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
             if not self._pointer_gesture.active:
@@ -331,9 +368,21 @@ class QtSceneViewport(VTKViewportWidget):
             point = event.position()
             release = self._pointer_gesture.release(point.x(), point.y())
             self._last_pointer_release_was_click = release.is_click
-            self._emit_pointer("left_release", x_position, y_position)
-            event.accept()
-            return True
+            if release.active_tool_owner is not None:
+                self._emit_pointer("left_release", x_position, y_position)
+                event.accept()
+                return True
+            if release.is_click:
+                # The event filter runs before QVTK's release handler. Defer
+                # selection one event-loop turn so TrackballCamera always ends
+                # its native interaction before scene policy may refresh.
+                QTimer.singleShot(
+                    0,
+                    lambda x=x_position, y=y_position: self._emit_selection_click(
+                        x, y
+                    ),
+                )
+            return False
         return super().eventFilter(watched, event)
 
     def _on_viewport_ready(self) -> None:
@@ -610,6 +659,12 @@ class QtSceneViewport(VTKViewportWidget):
     def _emit_pointer(self, event_name: str, x_position: int, y_position: int) -> None:
         self._pointer_event_count += 1
         self.pointer_event.emit(event_name, int(x_position), int(y_position), None)
+
+    def _emit_selection_click(self, x_position: int, y_position: int) -> None:
+        if self._closing:
+            return
+        self._last_pointer_release_was_click = True
+        self._emit_pointer("left_release", x_position, y_position)
 
     def _vtk_pointer_position(self, event: QMouseEvent) -> tuple[int, int]:
         point = event.position()

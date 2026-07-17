@@ -193,7 +193,7 @@ class Task82BPointerRoutingTests(unittest.TestCase):
         self.assertFalse(release.is_click)
         self.assertEqual(release.distance, 5.0)
 
-    def test_unmodified_left_drag_is_not_camera_navigation_or_a_pick(self) -> None:
+    def test_unmodified_left_drag_bypasses_application_router_and_does_not_pick(self) -> None:
         viewport = QtSceneViewport()
         events: list[str] = []
         viewport.pointer_event.connect(
@@ -225,12 +225,10 @@ class Task82BPointerRoutingTests(unittest.TestCase):
                 Qt.NoButton,
                 Qt.NoModifier,
             )
-            self.assertTrue(viewport.eventFilter(viewport.interactor, press))
-            self.assertTrue(viewport.eventFilter(viewport.interactor, motion))
-            self.assertTrue(viewport.eventFilter(viewport.interactor, release))
-            self.assertEqual(events[0], "left_press")
-            self.assertEqual(events[-1], "left_release")
-            self.assertIn("motion", events)
+            self.assertFalse(viewport.eventFilter(viewport.interactor, press))
+            self.assertFalse(viewport.eventFilter(viewport.interactor, motion))
+            self.assertFalse(viewport.eventFilter(viewport.interactor, release))
+            self.assertEqual(events, [])
             self.assertFalse(viewport.last_pointer_release_was_click)
             self.assertEqual(viewport.diagnostic_state().pick_count, 0)
             self.assertEqual(camera_before, _camera_state(viewport.renderer.GetActiveCamera()))
@@ -287,7 +285,7 @@ class Task82BPointerRoutingTests(unittest.TestCase):
                 )
                 self.assertFalse(viewport.eventFilter(viewport.interactor, event))
             state = viewport.diagnostic_state()
-            self.assertGreaterEqual(state.pointer_event_count, 1)
+            self.assertEqual(state.pointer_event_count, 0)
             self.assertEqual(state.pick_count, 0)
         finally:
             viewport.close()
@@ -911,6 +909,7 @@ class Task82BOverlayTests(unittest.TestCase):
             self.assertNotEqual(before, _camera_state(camera))
 
             before = _camera_state(camera)
+            direction_before = tuple(camera.GetDirectionOfProjection())
             QTest.mousePress(viewport.interactor, Qt.LeftButton, Qt.NoModifier, target)
             QTest.mouseMove(viewport.interactor, target + QPoint(45, 20), 30)
             QTest.mouseRelease(
@@ -919,7 +918,13 @@ class Task82BOverlayTests(unittest.TestCase):
                 Qt.NoModifier,
                 target + QPoint(45, 20),
             )
-            self.assertEqual(before, _camera_state(camera))
+            self.assertNotEqual(before, _camera_state(camera))
+            self.assertFalse(
+                np.allclose(
+                    direction_before,
+                    camera.GetDirectionOfProjection(),
+                )
+            )
             self.assertFalse(viewport.last_pointer_release_was_click)
 
             before = _camera_state(camera)
