@@ -220,7 +220,9 @@ class Task82AVTKViewportStartupTests(unittest.TestCase):
             _emit_ready_without_native_render(viewport)
             first_ids = tuple(viewport._observer_ids)
             viewport.ready.emit()
-            self.assertEqual(viewport.observer_count, 5)
+            # Task 82B moved pointer routing to Qt so native camera gestures
+            # reach TrackballCamera once.  Only camera-to-gizmo sync remains.
+            self.assertEqual(viewport.observer_count, 1)
             self.assertEqual(tuple(viewport._observer_ids), first_ids)
         finally:
             viewport.close()

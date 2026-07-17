@@ -150,6 +150,7 @@ def run(argv: list[str] | None = None) -> int:
         print(f"render_window_class={state['render_window_class']}")
         print(f"renderer_class={state['renderer_class']}")
         print(f"interactor_class={state['interactor_class']}")
+        print(f"interactor_style_class={state['interactor_style_class']}")
         print(f"interactor_initialized={state['interactor_initialized']}")
         print(f"offscreen_start_suppressed={state['offscreen_start_suppressed']}")
         print(f"renderer_count={state['renderer_count']}")

@@ -45,6 +45,7 @@ class SceneBuildOptions:
     show_grid: bool = True
     show_axes: bool = True
     show_axis_gizmo: bool = True
+    show_viewcube: bool = True
     show_section_plane: bool = True
     show_normals: bool = False
     hide_expensive_overlays: bool = False
@@ -142,6 +143,7 @@ class SceneBuilder:
                 "show_grid": bool(build_options.show_grid),
                 "show_axes": bool(build_options.show_axes),
                 "show_axis_gizmo": bool(build_options.show_axis_gizmo),
+                "show_viewcube": bool(build_options.show_viewcube),
                 "show_normals": bool(build_options.show_normals),
                 "show_section_plane": bool(build_options.show_section_plane),
                 "display_colors": dict(build_options.display_colors),

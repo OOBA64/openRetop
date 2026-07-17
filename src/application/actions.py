@@ -416,6 +416,7 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("scene.delete_selected", "Delete Selected", "Scene", "delete_selected_scene_objects", enabled_when=_SELECTION, shortcut="Delete"),
     _workflow_action("scene.hide_selected", "Hide Selected", "Scene", "hide_selected_scene_objects", enabled_when=_SELECTION),
     _workflow_action("scene.show_selected", "Show Selected", "Scene", "show_selected_scene_objects", enabled_when=_SELECTION),
+    _workflow_action("scene.set_visibility", "Set Visibility", "Scene", "set_scene_visibility"),
     _workflow_action("scene.isolate_selected", "Isolate Selected", "Scene", "hide_unselected_scene_objects", enabled_when=_SELECTION, shortcut="Shift+H"),
     _workflow_action("scene.select_source_curves", "Select Source Curves", "Scene", "select_source_curves_for_active_surface", enabled_when=(ActionCondition.HAS_SOURCE_CURVES,)),
     _workflow_action("scene.isolate_source_curves", "Isolate Source Curves", "Scene", "isolate_source_curves_for_active_surface", enabled_when=(ActionCondition.HAS_SOURCE_CURVES,)),

@@ -102,7 +102,14 @@ class CameraController:
             return self.frame_bounds(request.bounds)
         if request.kind is CameraRequestKind.NAMED_VIEW:
             assert request.view_name is not None
-            self.set_named_view(request.view_name)
+            # A named view changes orientation, but it must also preserve a
+            # useful framing when switching from perspective to orthographic.
+            # Re-frame the current visible scene because VTK's default
+            # parallel scale is unrelated to the project's world dimensions.
+            self.set_named_view(
+                request.view_name,
+                bounds=snapshot.visible_bounds(),
+            )
             return True
         return False
 
@@ -145,9 +152,28 @@ class CameraController:
         *,
         orthographic: bool = True,
         distance: float | None = None,
+        bounds: Bounds3 | None = None,
     ) -> None:
         camera = self.renderer.GetActiveCamera()
         direction, view_up = named_view_vectors(name)
+        if bounds is not None:
+            if orthographic:
+                try:
+                    camera.ParallelProjectionOn()
+                except AttributeError:
+                    pass
+            pose = frame_pose(
+                bounds,
+                direction=direction,
+                view_up=view_up,
+                view_angle_degrees=float(camera.GetViewAngle()),
+                aspect_ratio=self._aspect_ratio(),
+            )
+            self._apply_pose(camera, pose)
+            self.last_bounds = bounds
+            self._reset_clipping(pose.clipping_range)
+            self._render()
+            return
         focal = np.asarray(camera.GetFocalPoint(), dtype=float)
         if not np.all(np.isfinite(focal)):
             focal = np.zeros(3, dtype=float)

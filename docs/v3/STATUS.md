@@ -7,7 +7,10 @@ desktop shell, the legacy Tk presentation and compatibility viewport have been
 physically removed, and the complete automated suite is green. Task 82A repairs
 the Windows native VTK startup regression: the concrete OpenGL backend is now
 registered explicitly and the first scene synchronizes through one post-show
-readiness lifecycle.
+readiness lifecycle. Task 82B repairs the remaining interaction/presentation
+regressions with one native TrackballCamera route, selection-independent tree
+visibility, separate transform and screen-space orientation overlays, and
+working triangular named-view controls.
 
 ## Completed acceptance work
 
@@ -36,27 +39,40 @@ readiness lifecycle.
   latest-snapshot deferral, post-ready scene services/observers, configured
   background, grid/axes overlays, camera-after-size ordering, structured
   diagnostics, safe offscreen suppression, and a standalone viewport diagnostic.
+- Task 82B: explicit `vtkInteractorStyleTrackballCamera`, a four-logical-pixel
+  click/drag router, uninterrupted native navigation during tools, dedicated
+  `scene.set_visibility`, non-checkable organizational rows, hidden-until-active
+  transform axes/ring, a transparent fixed-size orientation renderer, propagated
+  view-control settings, seven triangular named-view controls, fitted
+  orthographic named views, and structured scene/overlay prop inventory.
 
-## Verification record (2026-07-16)
+## Verification record (2026-07-17)
 
-- Complete discovery on a real visible Windows Qt platform: 502 tests passed,
-  no skips, in 7.481 seconds.
-- Focused Tasks 77-82A offscreen: 54 tests passed with only the narrowly scoped
-  visible Windows render smoke skipped.
-- Focused Task 82A visible Windows run: 18 tests passed with no skips.
+- Complete discovery on a real visible Windows Qt platform: 528 tests passed,
+  no skips, in 11.346 seconds.
+- Complete offscreen discovery: 526 tests passed and the two narrowly scoped
+  visible renderer tests skipped, in 7.799 seconds.
+- Focused Tasks 77-82B visible Windows: 80 tests passed with no skips, including
+  26 Task 82B interaction/tree/overlay/control tests.
 - `python -m compileall -q src packages/workbench_ui/workbench_ui`: passed.
 - `scripts/report_architecture_metrics.py --fail-on-new`: passed.
-- Architecture: 105 production files / 32,673 lines; 55
+- Architecture: 107 production files / 33,411 lines; 55
   `OpenRetopV3Window` methods; 0 legacy-window methods; 0 guarded UI-import
   violations; 0 practical package/module cycles; 0 detectable duplicate
   action/menu labels.
 - Visible Win32 diagnostic: PySide6 6.11.1, VTK 9.6.2,
-  `vtkWin32OpenGLRenderWindow`, initialized interactor, one completed render,
-  no captured error, and clean teardown.
+  `vtkWin32OpenGLRenderWindow`, `vtkInteractorStyleTrackballCamera`, initialized
+  interactor, one completed render, no captured error, and clean teardown.
 - Exact project acceptance: `FrontNoseTest.openretop` restored and visibly
   rendered its transformed 122,209-point / 220,000-cell mesh, two curves, and
-  section plane; synchronization and observer counts were one and five;
-  Frame All used finite saved world bounds; normal close exited cleanly.
+  section plane. Middle/right/modified-left/wheel gestures, Frame All, Frame
+  Selected for mesh and curve, every named view, checkbox toggles, tool-mode
+  camera coexistence, overlay lifecycle, independent control toggles, and window
+  state changes passed; one camera-to-gizmo observer remained and normal close
+  was clean.
+- Structured prop isolation proved the reported light rectangle belonged to
+  restored `mesh:mesh` source geometry, not an axes/section/overlay prop. The
+  final idle viewport has no unidentified visible opaque world-origin prop.
 - Empty and STL visual passes showed configured `#101316` background, grid,
   axes, actors, and camera framing without manual backend imports or startup
   test geometry.
@@ -71,13 +87,16 @@ readiness lifecycle.
 
 ## Remaining human review items
 
-- Complete hands-on Frame Selected (mesh and curve), orbit/pan/zoom, live
-  resize, and minimize/restore checks. Startup, empty scene, STL, exact project,
-  framing, and normal-close Windows visual checks already passed.
-- Repeat driver-specific rendering on release target hardware. The verified
-  environment was Windows build 26200, PySide6 6.11.1, and VTK 9.6.2.
-- Linux/Xvfb was not run for Task 82A because it cannot validate the affected
-  Win32 OpenGL path; CI/offscreen behavior remains covered without native start.
+- Repeat physical-pointer feel, high-DPI icon legibility, and driver-specific
+  rendering on release target hardware. The verified environment was Windows
+  build 26200, Python 3.11.9, PySide6 6.11.1, and VTK 9.6.2; the real visible
+  acceptance injected input through Qt into the native QVTK child.
+- Linux/Xvfb was not available for Task 82B. Complete Windows offscreen behavior
+  remains covered without unsafe native start, and no Linux rendering claim is
+  made.
+- `FrontNoseTest.openretop` does not contain preview/BREP surfaces, section
+  results, or an active region; those visibility families pass focused
+  controller/tree tests rather than being reported as manual project checks.
 - CadQuery/OCP availability remains environment-dependent; unsupported trim and
   intersection capabilities continue to report disabled rather than pretending
   success.
@@ -86,4 +105,6 @@ There is no next numbered architecture-refactor task. The exact next starting
 point is human V3 release-candidate review using `RELEASE_CANDIDATE.md`; any
 findings should be filed as targeted defects rather than reopening the legacy
 migration. Task 82A detail and exact commands are in
-`tasks/task-82a-viewport-startup-repair.md`.
+`tasks/task-82a-viewport-startup-repair.md`; Task 82B interaction, visibility,
+overlay, control, and acceptance evidence is in
+`tasks/task-82b-viewport-interaction-controls-repair.md`.

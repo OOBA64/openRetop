@@ -31,9 +31,11 @@ try:
         _FREETYPE_AVAILABLE = True
 
     from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+    from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
     from vtkmodules.vtkRenderingCore import vtkRenderer
 except ImportError as exc:
     QVTKRenderWindowInteractor = None  # type: ignore[assignment]
+    vtkInteractorStyleTrackballCamera = None  # type: ignore[assignment]
     vtkRenderer = None  # type: ignore[assignment]
     _VTK_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
@@ -55,9 +57,11 @@ class VTKViewportWidget(QFrame):
         self.renderer = None
         self.render_window = None
         self.interactor = None
+        self.interactor_style = None
         self._is_ready = False
         self._start_attempted = False
         self._closing = False
+        self._finalized = False
         self._initialization_count = 0
         self._offscreen_start_suppressed = False
         self._last_error: str | None = None
@@ -81,12 +85,20 @@ class VTKViewportWidget(QFrame):
                 )
             renderer = vtkRenderer()
             render_window.AddRenderer(renderer)
+            # QVTK defaults to vtkInteractorStyleSwitch, whose active mode is
+            # process/input-history dependent.  The reusable host guarantees a
+            # concrete CAD-style camera contract; application-specific tools
+            # decide which Qt gestures are allowed to reach it.
+            assert vtkInteractorStyleTrackballCamera is not None
+            interactor_style = vtkInteractorStyleTrackballCamera()
+            interactor.SetInteractorStyle(interactor_style)
         except (AttributeError, ImportError, RuntimeError, TypeError, ValueError) as exc:
             _LOG.exception("VTK viewport construction failed")
             self._install_fallback(layout, f"{type(exc).__name__}: {exc}")
             return
 
         self.interactor = interactor
+        self.interactor_style = interactor_style
         self.render_window = render_window
         self.renderer = renderer
         layout.addWidget(interactor)
@@ -195,6 +207,7 @@ class VTKViewportWidget(QFrame):
             "render_window_class": _vtk_class_name(self.render_window),
             "renderer_class": _vtk_class_name(self.renderer),
             "interactor_class": _vtk_class_name(self.interactor),
+            "interactor_style_class": _vtk_class_name(self.interactor_style),
             "interactor_initialized": initialized,
             "renderer_size": _vtk_size(self.renderer),
             "render_window_size": _vtk_size(self.render_window),
@@ -209,6 +222,19 @@ class VTKViewportWidget(QFrame):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         self._closing = True
         self._is_ready = False
+        if self.interactor is not None and not self._finalized:
+            try:
+                # QVTK's public close path calls Finalize.  The host owns the
+                # child and invokes it explicitly while the native surface is
+                # still valid, avoiding late Win32 WGL cleanup at GC time.
+                self.interactor.Finalize()
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                self._last_error = (
+                    "VTK viewport finalization failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                _LOG.exception("VTK viewport finalization failed")
+            self._finalized = True
         super().closeEvent(event)
 
     def _install_fallback(self, layout: QVBoxLayout, error: str) -> None:

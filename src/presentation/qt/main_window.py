@@ -75,7 +75,7 @@ from infrastructure.io_services import ProgressEvent
 from mesh.display_proxy import normalize_proxy_quality
 from project.project_session import restore_project_state
 from project.project_state import project_from_app_state
-from sections.section_state import get_active_plane
+from sections.section_state import get_active_plane, plane_origin
 from settings.settings_data import DISPLAY_COLOR_FIELDS
 from surfaces.brep_state import BREP_TYPE_LOFT_SURFACE
 from surfaces.surface_preview import (
@@ -160,11 +160,17 @@ class OpenRetopV3Window(ApplicationShell):
 
         self.scene_tree = SceneTreeWidget(self._scene_model, self)
         self.scene_tree.selection_changed.connect(self._on_tree_selection)
-        self.scene_tree.visibility_changed.connect(self._on_tree_visibility)
+        self.scene_tree.visibility_changed.connect(
+            self._on_tree_visibility,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.scene_tree.renamed.connect(self._on_tree_rename)
         self.scene_tree.context_action_requested.connect(self._on_tree_context_action)
         self.viewport = QtSceneViewport(self)
         self.viewport.pointer_event.connect(self._on_viewport_pointer)
+        self.viewport.view_controls.action_requested.connect(
+            self._dispatch_framework_action
+        )
         self.viewport.initialization_failed.connect(self._on_viewport_failure)
         self.viewport.render_failed.connect(self._on_viewport_failure)
         self.viewport.scene_synchronized.connect(self._on_scene_synchronized)
@@ -411,14 +417,13 @@ class OpenRetopV3Window(ApplicationShell):
                 self.composition.selection_controller.select_surface(feature.preview_surface_id)
 
     def _on_tree_visibility(self, node_id: str, visible: bool) -> None:
-        selected = self.composition.selection_controller.select_nodes((node_id,))
-        if not selected.success:
-            self._consume_result("tree.visibility", selected)
-            return
+        # Checkbox state is an explicit command target, not an implicit
+        # selection change.  WorkflowService records at most one undo payload.
         result = self._command_result(
-            "scene.show_selected" if visible else "scene.hide_selected"
+            "scene.set_visibility",
+            {"node_ids": (node_id,), "visible": bool(visible)},
         )
-        self._consume_result("tree.visibility", replace_dirty(result))
+        self._consume_result("tree.visibility", result)
 
     def _on_tree_rename(self, node_id: str, name: str) -> None:
         self.composition.selection_controller.select_nodes((node_id,))
@@ -458,6 +463,8 @@ class OpenRetopV3Window(ApplicationShell):
 
         manual = self.composition.manual_curve_controller
         if manual.session.active:
+            if not isinstance(pick, MeshPickResult):
+                pick = self.viewport.pick_mesh(x_position, y_position)
             self._route_manual_pointer(event_name, x_position, y_position, pick)
             return
 
@@ -465,6 +472,8 @@ class OpenRetopV3Window(ApplicationShell):
         if region.session.active:
             gesture = region.handle_pointer_event(event_name, x_position, y_position)
             if event_name == "left_release" and bool(gesture.metadata.get("is_click")):
+                if not isinstance(pick, MeshPickResult):
+                    pick = self.viewport.pick_mesh(x_position, y_position)
                 mesh_pick = pick if isinstance(pick, MeshPickResult) else MeshPickResult(False)
                 result = region.select_seed(
                     mesh_pick.triangle_index if mesh_pick.hit else None,
@@ -477,7 +486,11 @@ class OpenRetopV3Window(ApplicationShell):
                 self.refresh()
             return
 
-        if event_name == "left_release" and isinstance(pick, SceneObjectPickResult) and pick.hit:
+        if event_name != "left_release" or not self.viewport.last_pointer_release_was_click:
+            return
+        if not isinstance(pick, SceneObjectPickResult):
+            pick = self.viewport.pick_scene_object(x_position, y_position)
+        if isinstance(pick, SceneObjectPickResult) and pick.hit:
             node_id = _node_id_for_pick(pick)
             if node_id is not None:
                 result = self.composition.selection_controller.select_nodes((node_id,))
@@ -630,19 +643,19 @@ class OpenRetopV3Window(ApplicationShell):
             "scene.delete_selected",
         )
         nodes: list[SceneNode] = [
-            SceneNode("scene", "Scene", kind="root", renameable=False, metadata={"context_actions": ("scene.show_all", "view.frame_all")})
+            SceneNode("scene", "Scene", kind="root", checkable=False, selectable=False, renameable=False, metadata={"context_actions": ("scene.show_all", "view.frame_all")})
         ]
         if state.mesh_object is not None:
             nodes.append(SceneNode(NODE_MESH, state.mesh_object.name, "mesh", "scene", state.mesh_object.visible, metadata={"context_actions": common}))
         nodes.extend(
             (
-                SceneNode(NODE_SECTION_PLANES, "Section Planes", "group", "scene", renameable=False, metadata={"context_actions": ("section.add_plane", "scene.show_all")}),
-                SceneNode(NODE_SECTION_RESULTS, "Section Results", "group", "scene", renameable=False),
-                SceneNode(NODE_CURVES, "Curves", "group", "scene", renameable=False),
-                SceneNode(NODE_SURFACES, "Preview Surfaces", "group", "scene", renameable=False),
-                SceneNode(NODE_BREP_SURFACES, "BREP Surfaces", "group", "scene", renameable=False),
-                SceneNode(NODE_REGIONS, "Regions", "group", "scene", renameable=False),
-                SceneNode(NODE_FEATURES, "Editable Features", "group", "scene", renameable=False),
+                SceneNode(NODE_SECTION_PLANES, "Section Planes", "group", "scene", checkable=False, selectable=False, renameable=False, metadata={"context_actions": ("section.add_plane", "scene.show_all")}),
+                SceneNode(NODE_SECTION_RESULTS, "Section Results", "group", "scene", checkable=False, selectable=False, renameable=False),
+                SceneNode(NODE_CURVES, "Curves", "group", "scene", checkable=False, selectable=False, renameable=False),
+                SceneNode(NODE_SURFACES, "Preview Surfaces", "group", "scene", checkable=False, selectable=False, renameable=False),
+                SceneNode(NODE_BREP_SURFACES, "BREP Surfaces", "group", "scene", checkable=False, selectable=False, renameable=False),
+                SceneNode(NODE_REGIONS, "Regions", "group", "scene", checkable=False, selectable=False, renameable=False),
+                SceneNode(NODE_FEATURES, "Editable Features", "group", "scene", checkable=False, selectable=False, renameable=False),
             )
         )
         nodes.extend(
@@ -661,9 +674,9 @@ class OpenRetopV3Window(ApplicationShell):
             (NODE_CURVE_GROUP_PROJECTED, "Projected"),
             (NODE_CURVE_GROUP_REBUILT, "Rebuilt"),
         )
-        nodes.extend(SceneNode(node_id, label, "curve_group", NODE_CURVES, renameable=False) for node_id, label in curve_groups)
+        nodes.extend(SceneNode(node_id, label, "curve_group", NODE_CURVES, checkable=False, selectable=False, renameable=False) for node_id, label in curve_groups)
         nodes.extend(
-            SceneNode(curve_group_node_id(result.id), result.name, "curve_group", NODE_CURVES, renameable=False)
+            SceneNode(curve_group_node_id(result.id), result.name, "curve_group", NODE_CURVES, checkable=False, selectable=False, renameable=False)
             for result in state.section_collection.results
         )
         result_ids = {item.id for item in state.section_collection.results}
@@ -682,11 +695,11 @@ class OpenRetopV3Window(ApplicationShell):
         if region is not None:
             nodes.append(SceneNode(region_node_id(region.id), region_display_label(region), "region", NODE_REGIONS, region.visible, metadata={"context_actions": common + ("region.extract_boundary",)}))
         nodes.extend(
-            SceneNode(loft_feature_node_id(feature.id), feature.name, NODE_LOFT_FEATURE, NODE_FEATURES, metadata={"context_actions": ("surface.rebuild_loft", "surface.duplicate_loft", "surface.delete_loft")})
+            SceneNode(loft_feature_node_id(feature.id), feature.name, NODE_LOFT_FEATURE, NODE_FEATURES, checkable=False, metadata={"context_actions": ("surface.rebuild_loft", "surface.duplicate_loft", "surface.delete_loft")})
             for feature in state.loft_feature_collection.features
         )
         nodes.extend(
-            SceneNode(four_boundary_feature_node_id(feature.id), feature.name, NODE_FOUR_BOUNDARY_FEATURE, NODE_FEATURES, metadata={"context_actions": ("surface.rebuild_four_boundary",)})
+            SceneNode(four_boundary_feature_node_id(feature.id), feature.name, NODE_FOUR_BOUNDARY_FEATURE, NODE_FEATURES, checkable=False, metadata={"context_actions": ("surface.rebuild_four_boundary",)})
             for feature in state.four_boundary_feature_collection.features
         )
         return tuple(nodes)
@@ -708,6 +721,7 @@ class OpenRetopV3Window(ApplicationShell):
                 show_grid=settings.show_grid,
                 show_axes=settings.show_axes,
                 show_axis_gizmo=settings.show_axis_gizmo,
+                show_viewcube=settings.show_viewcube,
                 show_normals=settings.show_normals,
                 show_section_plane=True,
                 display_colors={name: getattr(settings, name) for name in DISPLAY_COLOR_FIELDS},
@@ -720,7 +734,7 @@ class OpenRetopV3Window(ApplicationShell):
             camera_request=self._camera_request,
             active_surface_id=active_surface_id,
             surface_source_curve_ids=source_ids,
-            object_origin=None if self.composition.state.mesh_object is None else self.composition.state.mesh_object.origin,
+            object_origin=_active_transform_origin(self.composition.state),
             active_transform_angle_delta=self.composition.transform_controller.angle_delta,
         )
         diagnostics = self.viewport.render_snapshot(snapshot)
@@ -1399,6 +1413,41 @@ def _curve_parent(curve: object, result_ids: set[str]) -> str:
         return NODE_CURVE_GROUP_REBUILT
     result_id = str(getattr(curve, "section_result_id", ""))
     return curve_group_node_id(result_id) if result_id in result_ids else NODE_CURVE_GROUP_UNASSIGNED
+
+
+def _active_transform_origin(state: AppState) -> tuple[float, float, float] | None:
+    """Return the active target origin in world coordinates for overlays."""
+
+    session = state.transform_state
+    if session is None:
+        return None
+    if session.selected_item == "section_plane":
+        plane = next(
+            (
+                item
+                for item in state.section_collection.planes
+                if item.id == session.section_plane_id
+            ),
+            None,
+        )
+        values = None if plane is None else np.asarray(plane_origin(plane), dtype=float)
+    else:
+        mesh = state.mesh_object
+        if mesh is None:
+            return None
+        origin = np.asarray(mesh.origin, dtype=float).reshape(3)
+        matrix = getattr(mesh, "transform_matrix", None)
+        if matrix is None:
+            values = np.asarray(mesh.location, dtype=float).reshape(3)
+        else:
+            homogeneous = np.asarray(matrix, dtype=float).reshape((4, 4)) @ np.asarray(
+                [origin[0], origin[1], origin[2], 1.0],
+                dtype=float,
+            )
+            values = homogeneous[:3]
+    if values is None or not np.all(np.isfinite(values)):
+        return None
+    return tuple(float(value) for value in np.asarray(values, dtype=float).reshape(3))
 
 
 def _is_feature_node(node_id: str) -> bool:

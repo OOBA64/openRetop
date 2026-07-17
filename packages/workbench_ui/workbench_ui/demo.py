@@ -46,7 +46,14 @@ def build_demo() -> ApplicationShell:
     tree = SceneTreeWidget(
         SceneTreeModel(
             [
-                SceneNode("root", "Model", kind="group", renameable=False),
+                SceneNode(
+                    "root",
+                    "Model",
+                    kind="group",
+                    renameable=False,
+                    checkable=False,
+                    selectable=False,
+                ),
                 SceneNode("mesh", "Scan Mesh", parent_id="root", kind="mesh"),
                 SceneNode("curve", "Section Curve", parent_id="root", kind="curve"),
             ]

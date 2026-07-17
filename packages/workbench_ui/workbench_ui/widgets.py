@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSlider,
+    QStyle,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -52,6 +54,8 @@ class SceneTreeWidget(QWidget):
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.customContextMenuRequested.connect(self._context_menu)
+        self.tree.viewport().installEventFilter(self)
+        self._checkbox_interaction = False
         layout = QVBoxLayout(self)
         layout.addWidget(self.tree)
         self.refresh()
@@ -65,8 +69,12 @@ class SceneTreeWidget(QWidget):
             item = QTreeWidgetItem([node.label])
             item.setData(0, Qt.UserRole, node.id)
             item.setData(0, Qt.UserRole + 1, node.label)
-            item.setCheckState(0, Qt.Checked if node.visible else Qt.Unchecked)
-            flags = item.flags() | Qt.ItemIsUserCheckable
+            flags = item.flags()
+            if node.checkable:
+                item.setCheckState(0, Qt.Checked if node.visible else Qt.Unchecked)
+                flags |= Qt.ItemIsUserCheckable
+            else:
+                flags &= ~Qt.ItemIsUserCheckable
             if node.renameable:
                 flags |= Qt.ItemIsEditable
             if not node.selectable:
@@ -91,6 +99,11 @@ class SceneTreeWidget(QWidget):
         self.tree.blockSignals(False)
 
     def _selection_changed(self) -> None:
+        # Clicking a visibility indicator must not implicitly replace the
+        # application selection.  The subsequent model refresh restores the
+        # prior visual selection from ``selected_ids``.
+        if self._checkbox_interaction:
+            return
         ids = [str(item.data(0, Qt.UserRole)) for item in self.tree.selectedItems()]
         self.selection_changed.emit(self.model.select(ids))
 
@@ -110,9 +123,36 @@ class SceneTreeWidget(QWidget):
                 item.setData(0, Qt.UserRole + 1, next_label)
                 self.renamed.emit(node_id, next_label)
         visible = item.checkState(0) == Qt.Checked
-        if visible != node.visible:
+        if node.checkable and visible != node.visible:
             self.model.set_visible(node_id, visible)
             self.visibility_changed.emit(node_id, visible)
+
+    def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802 - Qt API
+        if watched is self.tree.viewport() and isinstance(event, QMouseEvent):
+            if event.type() == QEvent.MouseButtonPress:
+                self._checkbox_interaction = self._is_checkbox_press(event)
+            elif event.type() == QEvent.MouseButtonRelease:
+                self._checkbox_interaction = False
+        return super().eventFilter(watched, event)
+
+    def _is_checkbox_press(self, event: QMouseEvent) -> bool:
+        if event.button() != Qt.LeftButton:
+            return False
+        item = self.tree.itemAt(event.position().toPoint())
+        if item is None:
+            return False
+        node = self.model.nodes.get(str(item.data(0, Qt.UserRole)))
+        if node is None or not node.checkable:
+            return False
+        row = self.tree.visualItemRect(item)
+        indicator_width = self.tree.style().pixelMetric(
+            QStyle.PixelMetric.PM_IndicatorWidth,
+            None,
+            self.tree,
+        )
+        # visualItemRect starts at the item's indented content area on Qt's
+        # native tree implementation.  Include a small style-independent pad.
+        return row.left() <= int(event.position().x()) <= row.left() + indicator_width + 8
 
     def _context_menu(self, position: object) -> None:
         item = self.tree.itemAt(position)

@@ -159,6 +159,22 @@ class WorkflowService:
             return self.visibility.hide(selection_ids)
         if action == "scene.show_selected":
             return self.visibility.show(selection_ids)
+        if action == "scene.set_visibility":
+            raw_ids = payload.get("node_ids", ())
+            try:
+                node_ids = (raw_ids,) if isinstance(raw_ids, str) else tuple(raw_ids)
+            except TypeError:
+                node_ids = ()
+            visible = payload.get("visible")
+            if not node_ids or not isinstance(visible, bool):
+                return CommandResult.failure(
+                    "Set visibility requires node_ids and a boolean visible value."
+                )
+            return self.visibility.set_visibility(
+                node_ids,
+                visible,
+                operation="Show Visibility" if visible else "Hide Visibility",
+            )
         if action == "scene.isolate_selected":
             return self.visibility.isolate(selection_ids)
         if action == "scene.show_all":

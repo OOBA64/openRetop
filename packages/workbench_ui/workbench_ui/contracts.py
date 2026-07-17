@@ -369,6 +369,7 @@ class SceneNode:
     selectable: bool = True
     renameable: bool = True
     reorderable: bool = False
+    checkable: bool = True
     metadata: dict[str, object] = field(default_factory=dict)
 
 
