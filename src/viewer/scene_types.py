@@ -429,6 +429,7 @@ class SceneSnapshot:
     active_transform_mode: str | None = None
     active_transform_axis: str | None = None
     active_transform_angle_delta: float | None = None
+    active_transform_constraint: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "display", MappingProxyType(dict(self.display)))

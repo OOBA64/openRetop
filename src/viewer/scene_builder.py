@@ -152,6 +152,11 @@ class SceneBuilder:
             object_origin=None if object_origin is None else tuple(np.asarray(object_origin, dtype=float)),
             active_transform_mode=getattr(state, "active_transform_mode", None),
             active_transform_axis=getattr(state, "active_transform_axis", None),
+            active_transform_constraint=getattr(
+                getattr(state, "transform_state", None),
+                "axis_constraint",
+                None,
+            ),
             active_transform_angle_delta=active_transform_angle_delta,
         )
 

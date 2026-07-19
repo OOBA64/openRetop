@@ -116,6 +116,7 @@ def _snapshot(
         object_origin=origin,
         active_transform_mode=mode,
         active_transform_axis=axis,
+        active_transform_constraint=axis,
         active_transform_angle_delta=angle_delta,
     )
 
@@ -611,8 +612,8 @@ class Task82BOverlayTests(unittest.TestCase):
             self.assertEqual(viewport.render_window.GetRenderers().GetNumberOfItems(), 2)
             self.assertEqual(inventory["orientation_gizmo"]["layer"], 1)
             self.assertTrue(inventory["orientation_gizmo"]["visible"])
-            self.assertFalse(inventory["transform_axes"]["visible"])
-            self.assertFalse(inventory["rotation_ring"]["visible"])
+            self.assertNotIn("transform_axes", inventory)
+            self.assertNotIn("rotation_ring", inventory)
             self.assertEqual(viewport._axis_gizmo_renderer.GetBackgroundAlpha(), 0.0)
             self.assertFalse(bool(viewport._axis_gizmo_renderer.GetInteractive()))
             x0, y0, x1, y1 = viewport._axis_gizmo_renderer.GetViewport()
@@ -646,7 +647,7 @@ class Task82BOverlayTests(unittest.TestCase):
             )
             self.assertAlmostEqual(
                 viewport._transform_axes_actor.GetYAxisShaftProperty().GetOpacity(),
-                0.28,
+                0.22,
             )
 
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
@@ -666,14 +667,15 @@ class Task82BOverlayTests(unittest.TestCase):
             )
             self.assertEqual(
                 viewport._rotation_ring_actor.GetMapper().GetInput().GetNumberOfCells(),
-                97,
+                4,
             )
-            self.assertTrue(
-                np.allclose(
-                    viewport._rotation_ring_actor.GetProperty().GetColor(),
-                    (0.2, 0.85, 0.25),
-                )
+            colors = (
+                viewport._rotation_ring_actor.GetMapper()
+                .GetInput()
+                .GetCellData()
+                .GetScalars()
             )
+            self.assertEqual(colors.GetTuple4(1), (51.0, 217.0, 64.0, 255.0))
 
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 viewport.render_snapshot(
@@ -761,7 +763,7 @@ class Task82BOverlayTests(unittest.TestCase):
         finally:
             viewport.close()
 
-    def test_actor_inventory_identifies_scene_mesh_and_every_overlay_role(self) -> None:
+    def test_actor_inventory_identifies_scene_mesh_and_idle_overlay_roles(self) -> None:
         viewport = QtSceneViewport()
         try:
             viewport.render_snapshot(_snapshot())
@@ -773,7 +775,7 @@ class Task82BOverlayTests(unittest.TestCase):
             )
             self.assertEqual(
                 {item["role"] for item in state.overlay_actor_inventory},
-                {"grid", "transform_axes", "rotation_ring", "orientation_gizmo"},
+                {"grid", "orientation_gizmo"},
             )
             self.assertTrue(
                 all(not item["pickable"] for item in state.overlay_actor_inventory)
@@ -784,8 +786,8 @@ class Task82BOverlayTests(unittest.TestCase):
             self.assertEqual(mesh["cell_count"], 1)
             self.assertEqual(
                 viewport.renderer.GetViewProps().GetNumberOfItems(),
-                4,
-                "main renderer must contain only mesh, grid, and hidden transform props",
+                2,
+                "idle main renderer must contain only the mesh and grid",
             )
             self.assertEqual(
                 viewport._axis_gizmo_renderer.GetViewProps().GetNumberOfItems(),

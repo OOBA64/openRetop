@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-import math
 from typing import Mapping
 
 import numpy as np
@@ -18,6 +17,10 @@ from presentation.qt.orientation_gizmo import (
     OrientationGizmoDiagnosticState,
 )
 from presentation.qt.pointer_gestures import PointerGestureState
+from presentation.qt.transform_overlays import (
+    TransformOverlayController,
+    TransformOverlayDiagnosticState,
+)
 from presentation.qt.view_controls import ViewportNavigationCluster
 from settings.settings_data import DEFAULT_BACKGROUND_COLOR
 from viewer.actor_factories import VTKActorAdapter
@@ -57,8 +60,10 @@ class ViewportDiagnosticState:
     gesture_distance: float
     gizmo_synchronization_count: int
     orientation_gizmo: OrientationGizmoDiagnosticState
+    transform_overlay: TransformOverlayDiagnosticState
     scene_actor_inventory: tuple[Mapping[str, object], ...]
     overlay_actor_inventory: tuple[Mapping[str, object], ...]
+    renderer_prop_inventory: tuple[Mapping[str, object], ...]
     last_synchronization: ActorUpdateDiagnostics | None
     last_rendering_error: str | None
 
@@ -81,9 +86,8 @@ class QtSceneViewport(VTKViewportWidget):
         self._synchronization_count = 0
         self._last_scene_error: str | None = None
         self._grid_actor: object | None = None
-        self._transform_axes_actor: object | None = None
-        self._rotation_ring_actor: object | None = None
         self._grid_signature: tuple[float, float, float] | None = None
+        self.transform_overlays = TransformOverlayController(self.renderer)
         self._pointer_gesture = PointerGestureState()
         self._left_capture_owner: str | None = None
         self._last_pointer_release_was_click = True
@@ -143,6 +147,18 @@ class QtSceneViewport(VTKViewportWidget):
     @property
     def _axis_gizmo_synchronization_count(self) -> int:
         return self.orientation_gizmo.camera_update_count
+
+    @property
+    def _transform_axes_actor(self) -> object | None:
+        """Compatibility view; the focused controller owns this actor."""
+
+        return self.transform_overlays.move_actor
+
+    @property
+    def _rotation_ring_actor(self) -> object | None:
+        """Compatibility view; the focused controller owns this actor."""
+
+        return self.transform_overlays.ring_actor
 
     @property
     def last_pointer_release_was_click(self) -> bool:
@@ -211,8 +227,10 @@ class QtSceneViewport(VTKViewportWidget):
             gesture_distance=self._pointer_gesture.accumulated_distance,
             gizmo_synchronization_count=gizmo.camera_update_count,
             orientation_gizmo=gizmo,
+            transform_overlay=self.transform_overlays.diagnostics(),
             scene_actor_inventory=self._scene_actor_inventory(),
             overlay_actor_inventory=self._overlay_actor_inventory(),
+            renderer_prop_inventory=self.renderer_prop_inventory(),
             last_synchronization=self.last_diagnostics,
             last_rendering_error=self._last_scene_error or self.last_error,
         )
@@ -301,6 +319,7 @@ class QtSceneViewport(VTKViewportWidget):
         if self._qt_filter_installed and self.interactor is not None:
             self.interactor.removeEventFilter(self)
             self._qt_filter_installed = False
+        self.transform_overlays.close()
         self.navigation_cluster.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
@@ -493,8 +512,6 @@ class QtSceneViewport(VTKViewportWidget):
             return
         self._ensure_display_overlays()
         assert self._grid_actor is not None
-        assert self._transform_axes_actor is not None
-        assert self._rotation_ring_actor is not None
         self._grid_actor.SetVisibility(bool(snapshot.display.get("show_grid", True)))
         bounds = snapshot.visible_bounds()
         extent = _overlay_extent(bounds)
@@ -503,33 +520,10 @@ class QtSceneViewport(VTKViewportWidget):
             _set_grid_geometry(self._grid_actor, extent)
             self._grid_signature = signature
 
-        mode = str(snapshot.active_transform_mode or "").strip().lower()
-        origin = _finite_origin(snapshot.object_origin)
-        transform_visible = bool(
-            snapshot.display.get("show_axes", True)
-            and mode in {"move", "rotate"}
-            and origin is not None
-        )
-        self._transform_axes_actor.SetVisibility(transform_visible)
-        self._rotation_ring_actor.SetVisibility(
-            transform_visible and mode == "rotate"
-        )
-        if transform_visible and origin is not None:
-            self._transform_axes_actor.SetPosition(*origin)
-            axes_size = max(extent * 0.34, 0.35)
-            _style_transform_axes(
-                self._transform_axes_actor,
-                snapshot.active_transform_axis,
-                axes_size,
-            )
-            if mode == "rotate":
-                _set_rotation_ring_geometry(
-                    self._rotation_ring_actor,
-                    origin,
-                    snapshot.active_transform_axis,
-                    max(extent * 0.22, 0.25),
-                    snapshot.active_transform_angle_delta,
-                )
+        if not self.transform_overlays.update(snapshot):
+            diagnostics = self.transform_overlays.diagnostics()
+            if diagnostics.last_error:
+                raise RuntimeError(diagnostics.last_error)
 
         self.navigation_cluster.set_visibility(
             gizmo=bool(snapshot.display.get("show_axis_gizmo", True)),
@@ -538,14 +532,9 @@ class QtSceneViewport(VTKViewportWidget):
         self.navigation_cluster.sync_camera()
 
     def _ensure_display_overlays(self) -> None:
-        if (
-            self._grid_actor is not None
-            and self._transform_axes_actor is not None
-            and self._rotation_ring_actor is not None
-        ):
+        if self._grid_actor is not None:
             return
-        from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
-        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper, vtkRenderer
+        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
         grid_actor = vtkActor()
         grid_actor.SetMapper(vtkPolyDataMapper())
@@ -553,24 +542,10 @@ class QtSceneViewport(VTKViewportWidget):
         grid_actor.GetProperty().SetOpacity(0.42)
         grid_actor.GetProperty().SetLineWidth(1.0)
         grid_actor.PickableOff()
-
-        transform_axes = vtkAxesActor()
-        transform_axes.AxisLabelsOff()
-        transform_axes.PickableOff()
-        transform_axes.SetVisibility(False)
-
-        rotation_ring = vtkActor()
-        rotation_ring.SetMapper(vtkPolyDataMapper())
-        rotation_ring.GetProperty().SetLineWidth(2.5)
-        rotation_ring.PickableOff()
-        rotation_ring.SetVisibility(False)
+        grid_actor.DragableOff()
 
         self.renderer.AddActor(grid_actor)
-        self.renderer.AddActor(transform_axes)
-        self.renderer.AddActor(rotation_ring)
         self._grid_actor = grid_actor
-        self._transform_axes_actor = transform_axes
-        self._rotation_ring_actor = rotation_ring
 
     def _set_axis_gizmo_visible(self, visible: bool) -> None:
         self.navigation_cluster.set_visibility(
@@ -646,6 +621,38 @@ class QtSceneViewport(VTKViewportWidget):
             if actor is not None
         )
 
+    def renderer_prop_inventory(self) -> tuple[Mapping[str, object], ...]:
+        """Return a complete, on-demand inventory without startup logging."""
+
+        roles: dict[int, str] = {}
+        if self.synchronizer is not None:
+            for category, item_id in sorted(self.synchronizer.cache.keys()):
+                entry = self.synchronizer.cache.get(category, item_id)
+                if entry is not None:
+                    roles[id(entry.actor)] = f"{category}:{item_id}"
+        for role, actor in (
+            ("grid", self._grid_actor),
+            ("transform_axes", self._transform_axes_actor),
+            ("rotation_ring", self._rotation_ring_actor),
+            ("orientation_gizmo", self._axis_gizmo_actor),
+        ):
+            if actor is not None:
+                roles[id(actor)] = role
+
+        result: list[Mapping[str, object]] = []
+        renderers = _collection_items(self.render_window, "GetRenderers", "GetNextItem")
+        for renderer in renderers:
+            layer_value = _safe_vtk_call(renderer, "GetLayer", default=0)
+            try:
+                layer = int(layer_value)
+            except (TypeError, ValueError):
+                layer = 0
+            props = _collection_items(renderer, "GetViewProps", "GetNextProp")
+            for index, actor in enumerate(props):
+                role = roles.get(id(actor), f"unidentified:{layer}:{index}")
+                result.append(_actor_record(role, actor, layer, renderer))
+        return tuple(result)
+
     def _display_to_world(
         self, x_position: int, y_position: int, depth: float
     ) -> np.ndarray | None:
@@ -705,100 +712,6 @@ def _set_grid_geometry(actor: object, extent: float) -> None:
     actor.GetMapper().SetInputData(data)
 
 
-def _set_rotation_ring_geometry(
-    actor: object,
-    origin: tuple[float, float, float],
-    axis: object,
-    radius: float,
-    angle_delta: object,
-) -> None:
-    from vtkmodules.vtkCommonCore import vtkPoints
-    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
-
-    axis_key = str(axis or "Z").strip().upper()
-    points = vtkPoints()
-    lines = vtkCellArray()
-    segments = 96
-    for index in range(segments):
-        angle = (2.0 * math.pi * index) / segments
-        cosine = math.cos(angle) * radius
-        sine = math.sin(angle) * radius
-        if axis_key == "X":
-            point = (origin[0], origin[1] + cosine, origin[2] + sine)
-        elif axis_key == "Y":
-            point = (origin[0] + cosine, origin[1], origin[2] + sine)
-        else:
-            point = (origin[0] + cosine, origin[1] + sine, origin[2])
-        points.InsertNextPoint(*point)
-    for index in range(segments):
-        lines.InsertNextCell(2)
-        lines.InsertCellPoint(index)
-        lines.InsertCellPoint((index + 1) % segments)
-    try:
-        angle = math.radians(float(angle_delta or 0.0))
-    except (TypeError, ValueError):
-        angle = 0.0
-    if not math.isfinite(angle):
-        angle = 0.0
-    cosine = math.cos(angle) * radius
-    sine = math.sin(angle) * radius
-    if axis_key == "X":
-        indicator = (origin[0], origin[1] + cosine, origin[2] + sine)
-    elif axis_key == "Y":
-        indicator = (origin[0] + cosine, origin[1], origin[2] + sine)
-    else:
-        indicator = (origin[0] + cosine, origin[1] + sine, origin[2])
-    origin_id = points.InsertNextPoint(*origin)
-    indicator_id = points.InsertNextPoint(*indicator)
-    lines.InsertNextCell(2)
-    lines.InsertCellPoint(origin_id)
-    lines.InsertCellPoint(indicator_id)
-    data = vtkPolyData()
-    data.SetPoints(points)
-    data.SetLines(lines)
-    actor.GetMapper().SetInputData(data)
-    color = {
-        "X": (0.95, 0.18, 0.18),
-        "Y": (0.2, 0.85, 0.25),
-        "Z": (0.22, 0.48, 1.0),
-    }.get(axis_key, (0.95, 0.74, 0.12))
-    actor.GetProperty().SetColor(*color)
-
-
-def _style_transform_axes(actor: object, axis: object, size: float) -> None:
-    """Emphasize one constrained world axis without creating another prop."""
-
-    axis_key = str(axis or "").strip().upper()
-    colors = {
-        "X": (0.95, 0.18, 0.18),
-        "Y": (0.2, 0.85, 0.25),
-        "Z": (0.22, 0.48, 1.0),
-    }
-    lengths = []
-    for key in ("X", "Y", "Z"):
-        emphasized = axis_key not in colors or key == axis_key
-        opacity = 1.0 if emphasized else 0.28
-        length = float(size) * (1.16 if key == axis_key else 1.0)
-        lengths.append(length)
-        for suffix in ("Shaft", "Tip"):
-            prop = getattr(actor, f"Get{key}Axis{suffix}Property")()
-            prop.SetColor(*colors[key])
-            prop.SetOpacity(opacity)
-    actor.SetTotalLength(*lengths)
-
-
-def _finite_origin(value: object) -> tuple[float, float, float] | None:
-    if value is None:
-        return None
-    try:
-        values = np.asarray(value, dtype=float).reshape(3)
-    except (TypeError, ValueError):
-        return None
-    if not np.all(np.isfinite(values)):
-        return None
-    return (float(values[0]), float(values[1]), float(values[2]))
-
-
 def _actor_record(
     role: str,
     actor: object,
@@ -810,9 +723,20 @@ def _actor_record(
         None if mapper is None else _safe_vtk_call(mapper, "GetInput")
     )
     prop = _safe_vtk_call(actor, "GetProperty")
+    visible = bool(_safe_vtk_call(actor, "GetVisibility", default=False))
+    use_bounds = bool(_safe_vtk_call(actor, "GetUseBounds", default=False))
+    main_renderer_member = bool(
+        renderer is not None
+        and int(_safe_vtk_call(renderer, "GetLayer", default=0) or 0) == 0
+        and _renderer_has_prop(renderer, actor)
+    )
     return {
         "role": str(role),
+        "semantic_category": _semantic_category(role),
         "layer": int(layer),
+        "renderer_class": (
+            None if renderer is None else _safe_vtk_call(renderer, "GetClassName")
+        ),
         "renderer_viewport": (
             None
             if renderer is None
@@ -832,9 +756,17 @@ def _actor_record(
             if mapper_input is None
             else _safe_vtk_call(mapper_input, "GetNumberOfCells")
         ),
-        "visible": bool(_safe_vtk_call(actor, "GetVisibility", default=False)),
+        "visible": visible,
         "pickable": bool(_safe_vtk_call(actor, "GetPickable", default=False)),
+        "draggable": bool(_safe_vtk_call(actor, "GetDragable", default=False)),
+        "use_bounds": use_bounds,
         "bounds": _finite_tuple(_safe_vtk_call(actor, "GetBounds"), 6),
+        "position": _finite_tuple(_safe_vtk_call(actor, "GetPosition"), 3),
+        "user_matrix": _matrix_tuple(_safe_vtk_call(actor, "GetUserMatrix")),
+        "main_renderer_member": main_renderer_member,
+        "contributes_to_main_visible_bounds": bool(
+            main_renderer_member and visible and use_bounds
+        ),
         "color": (
             None
             if prop is None
@@ -843,7 +775,67 @@ def _actor_record(
         "opacity": (
             None if prop is None else _safe_vtk_call(prop, "GetOpacity")
         ),
+        "representation": (
+            None if prop is None else _safe_vtk_call(prop, "GetRepresentation")
+        ),
+        "line_width": (
+            None if prop is None else _safe_vtk_call(prop, "GetLineWidth")
+        ),
     }
+
+
+def _semantic_category(role: str) -> str:
+    prefix = str(role).split(":", 1)[0]
+    return {
+        "mesh": "imported_scene_geometry",
+        "curve": "scene_geometry",
+        "surface": "scene_geometry",
+        "region": "selection_overlay",
+        "section_plane": "section_plane",
+        "section_result": "scene_geometry",
+        "tool_preview": "selection_overlay",
+        "grid": "grid",
+        "transform_axes": "transform_axes",
+        "rotation_ring": "rotation_ring",
+        "orientation_gizmo": "orientation_gizmo",
+    }.get(prefix, "unidentified")
+
+
+def _renderer_has_prop(renderer: object, actor: object) -> bool:
+    try:
+        return bool(renderer.HasViewProp(actor))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _collection_items(
+    owner: object | None,
+    getter_name: str,
+    next_name: str,
+) -> tuple[object, ...]:
+    if owner is None:
+        return ()
+    try:
+        collection = getattr(owner, getter_name)()
+        collection.InitTraversal()
+        count = int(collection.GetNumberOfItems())
+        return tuple(getattr(collection, next_name)() for _ in range(count))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ()
+
+
+def _matrix_tuple(value: object) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    try:
+        values = tuple(
+            float(value.GetElement(row, column))
+            for row in range(4)
+            for column in range(4)
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    return values if all(np.isfinite(values)) else None
 
 
 def _safe_vtk_call(

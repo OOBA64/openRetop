@@ -109,6 +109,7 @@ from workbench_ui import (
     ToolbarSchema,
 )
 from presentation.qt.preferences_dialog import PreferencesDialog
+from presentation.qt.transform_overlays import transformed_object_origin
 from presentation.qt.viewport import QtSceneViewport
 
 
@@ -1456,16 +1457,11 @@ def _active_transform_origin(state: AppState) -> tuple[float, float, float] | No
         mesh = state.mesh_object
         if mesh is None:
             return None
-        origin = np.asarray(mesh.origin, dtype=float).reshape(3)
-        matrix = getattr(mesh, "transform_matrix", None)
-        if matrix is None:
-            values = np.asarray(mesh.location, dtype=float).reshape(3)
-        else:
-            homogeneous = np.asarray(matrix, dtype=float).reshape((4, 4)) @ np.asarray(
-                [origin[0], origin[1], origin[2], 1.0],
-                dtype=float,
-            )
-            values = homogeneous[:3]
+        return transformed_object_origin(
+            getattr(mesh, "origin", None),
+            getattr(mesh, "transform_matrix", None),
+            location=getattr(mesh, "location", None),
+        )
     if values is None or not np.all(np.isfinite(values)):
         return None
     return tuple(float(value) for value in np.asarray(values, dtype=float).reshape(3))

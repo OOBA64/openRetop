@@ -20,6 +20,10 @@ Task 82E replaces Task 82B's seven lettered triangles with one coherent
 navigation cluster: a stronger X/Y/Z gizmo, four masked named-view triangles,
 two 15-degree camera-roll controls, and a central isometric target with
 independent gizmo/control visibility.
+Task 82F gives active world-space transform presentation one focused owner,
+keeps idle scenes free of transform props, renders mutually exclusive Move
+axes and three-ring Rotate feedback at the authoritative origin, and proves the
+reported light slab is imported mesh geometry rather than an overlay.
 
 ## Completed acceptance work
 
@@ -68,6 +72,41 @@ independent gizmo/control visibility.
   activation, two application-routed 15-degree roll controls, compact
   DPI-aware layout, independent gizmo/control settings, and no Task 82C input
   changes.
+- Task 82F: lazy reusable Move/Rotate props, explicit constraint state,
+  homogeneous world-origin validation, three 128-segment RGB rotation rings,
+  clamped object-relative scale, no idle transform props, no picking/framing
+  contribution, complete prop diagnostics, and exact imported-slab isolation.
+
+## Verification record (2026-07-19, Task 82F)
+
+- Started exactly from Task 82E commit and tag
+  `328aaba3ecc732f197ea084b2a731eb35bdf32a3`.
+- Real visible Windows acceptance used Python 3.11.9, PySide6 6.11.1, VTK
+  9.6.2, `vtkWin32OpenGLRenderWindow`, `vtkOpenGLRenderer`, and DPR 1.25.
+- `FrontNoseTest.openretop` restored its 122,209-point / 220,000-triangle
+  display mesh, two visible manual curves, grid, and section-plane record.
+- Idle project load, selection, origin-only changes, and repeated refreshes
+  created no transform prop. Move showed one RGB axes actor; Rotate hid Move
+  and showed three smooth RGB rings plus live angle feedback. Confirm/cancel,
+  setting disable, resize, maximize, minimize/restore, and repeated operations
+  did not leak or duplicate props.
+- Transform props were non-pickable, non-draggable, `UseBounds=false`, and
+  excluded from Frame All/Selected. Task 82C routing and Task 82E navigation
+  source remained unchanged and their real Win32 tests passed.
+- Isolation proved the light slab is component 2 of imported `TurboBumper.stl`
+  (`scene:mesh:mesh`): 15,112 proxy points, 26,947 triangles, world bounds
+  `(-859.4128, -621.9180, 377.6106)` to
+  `(-593.9062, 604.3349, 511.2211)`. No mesh data was changed.
+- Focused results: Task 82A 18/18, Task 82B 26/26, Task 82C 15/15, Task 82D
+  13/13, Task 82E 11/11, Task 82F 12/12, Task 79 9/9, Task 80 7/7, Task 81
+  5/5, and Task 82 5/5.
+- Complete visible Windows discovery: 579 tests passed with no skips in 21.746
+  seconds. Compileall and architecture checks passed with zero dependency
+  violations, practical cycles, legacy-window methods, or duplicate labels.
+- Seven final real-application screenshots were inspected under
+  `artifacts/task-82f/`; implementation, prop inventory, component bounds,
+  commands, and limitations are in
+  `tasks/task-82f-transform-overlays-artifact-cleanup.md`.
 
 ## Verification record (2026-07-18, Task 82E)
 
@@ -181,7 +220,7 @@ independent gizmo/control visibility.
   rendering on release target hardware. The verified environment was Windows
   build 26200, Python 3.11.9, PySide6 6.11.1, and VTK 9.6.2; the real visible
   acceptance injected input through Qt into the native QVTK child.
-- Linux/Xvfb was not available for Tasks 82B-82E. Windows offscreen behavior
+- Linux/Xvfb was not available for Tasks 82B-82F. Windows offscreen behavior
   remains covered without unsafe native start, and no Linux rendering claim is
   made.
 - `FrontNoseTest.openretop` does not contain preview/BREP surfaces, section
@@ -203,4 +242,6 @@ native-orbit route and exact camera evidence are in
 camera synchronization, visible pixel proof, and screenshot are in
 `tasks/task-82d-orientation-gizmo.md`; Task 82E's unified control layout, roll
 implementation, setting states, and five reviewed screenshots are in
-`tasks/task-82e-navigation-widget.md`.
+`tasks/task-82e-navigation-widget.md`; Task 82F's overlay lifecycle, exact
+origin math, imported-slab isolation, diagnostics, and seven reviewed
+screenshots are in `tasks/task-82f-transform-overlays-artifact-cleanup.md`.
