@@ -368,6 +368,7 @@ class CameraRequestKind(str, Enum):
     FRAME_BOUNDS = "frame_bounds"
     RESET = "reset"
     NAMED_VIEW = "named_view"
+    ROLL = "roll"
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,12 +377,16 @@ class CameraRequest:
     bounds: Bounds3 | None = None
     selected_ids: frozenset[str] = frozenset()
     view_name: str | None = None
+    roll_degrees: float | None = None
 
     def __post_init__(self) -> None:
         if self.kind is CameraRequestKind.FRAME_BOUNDS and self.bounds is None:
             raise ValueError("Frame-bounds camera requests require bounds.")
         if self.kind is CameraRequestKind.NAMED_VIEW and not self.view_name:
             raise ValueError("Named-view camera requests require a view name.")
+        if self.kind is CameraRequestKind.ROLL:
+            if self.roll_degrees is None or not math.isfinite(float(self.roll_degrees)):
+                raise ValueError("Roll camera requests require a finite angle.")
 
     @classmethod
     def frame_all(cls) -> "CameraRequest":
@@ -401,6 +406,10 @@ class CameraRequest:
     @classmethod
     def named_view(cls, name: str) -> "CameraRequest":
         return cls(CameraRequestKind.NAMED_VIEW, view_name=str(name))
+
+    @classmethod
+    def roll(cls, degrees: float) -> "CameraRequest":
+        return cls(CameraRequestKind.ROLL, roll_degrees=float(degrees))
 
 
 @dataclass(frozen=True, slots=True)

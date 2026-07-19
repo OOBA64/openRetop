@@ -16,6 +16,10 @@ four-logical-pixel threshold. Task 82D restores the user-visible orientation
 gizmo as one fixed-size transparent renderer layer with a readable X/Y/Z actor,
 independent camera synchronization, DPI-aware top-left layout, and deterministic
 shutdown.
+Task 82E replaces Task 82B's seven lettered triangles with one coherent
+navigation cluster: a stronger X/Y/Z gizmo, four masked named-view triangles,
+two 15-degree camera-roll controls, and a central isometric target with
+independent gizmo/control visibility.
 
 ## Completed acceptance work
 
@@ -59,6 +63,39 @@ shutdown.
   fixed 96-logical-pixel / 12-pixel-margin layout, independent parallel camera,
   one interaction observer, structured diagnostics, setting/overlay isolation,
   and clean accepted-window shutdown.
+- Task 82E: one navigation-cluster lifecycle owner, 104-pixel high-contrast
+  X/Y/Z gizmo, four unlettered masked directional triangles, central isometric
+  activation, two application-routed 15-degree roll controls, compact
+  DPI-aware layout, independent gizmo/control settings, and no Task 82C input
+  changes.
+
+## Verification record (2026-07-18, Task 82E)
+
+- Started exactly from Task 82D commit
+  `48238454de9008fe934f2b3235f77ef11b7cc260`; `v3-task-82c` remained
+  `32f3eb68f2f948e44263b0af7e995eb02ea25b1a`.
+- Direct reproduction found persisted `show_axis_gizmo=false` and
+  `show_viewcube=true`. The valid layer-1 renderer was disabled by that setting;
+  forcing it on measured a modest 61 x 65 physical colored footprint beside
+  the old seven controls.
+- Real visible Windows acceptance used Python 3.11.9, PySide6 6.11.1, VTK
+  9.6.2, `vtkWin32OpenGLRenderWindow`, `vtkOpenGLRenderer`, and DPR 1.25.
+- `FrontNoseTest.openretop` visibly restored its mesh, grid, curves, and section
+  plane. The final gizmo measured 76 x 72 physical colored pixels with 410 red,
+  282 green, 330 blue, and zero white backing pixels.
+- Center isometric, all four named-view mappings, both roll actions, selection,
+  native left orbit, middle pan, wheel zoom, independent settings, resize,
+  maximize, minimize/restore, repeated refresh, and clean close passed with one
+  actor, renderer, cluster, and observer.
+- Focused visible results: Task 82A 18/18, Task 82B 26/26, Task 82C 15/15,
+  Task 82D 13/13, Task 82E 11/11, Task 79 9/9, Task 80 7/7, Task 81 5/5,
+  and Task 82 5/5.
+- Complete visible Windows discovery: 567 tests passed, no skips, in 21.504
+  seconds. Compileall and architecture checks passed; architecture reported no
+  dependency violations, practical cycles, or duplicate detectable labels.
+- Five inspected real-application screenshots are under
+  `artifacts/task-82e/`; detailed implementation, exact timings, commands, and
+  limitations are in `tasks/task-82e-navigation-widget.md`.
 
 ## Verification record (2026-07-18, Task 82D)
 
@@ -144,7 +181,7 @@ shutdown.
   rendering on release target hardware. The verified environment was Windows
   build 26200, Python 3.11.9, PySide6 6.11.1, and VTK 9.6.2; the real visible
   acceptance injected input through Qt into the native QVTK child.
-- Linux/Xvfb was not available for Tasks 82B-82D. Windows offscreen behavior
+- Linux/Xvfb was not available for Tasks 82B-82E. Windows offscreen behavior
   remains covered without unsafe native start, and no Linux rendering claim is
   made.
 - `FrontNoseTest.openretop` does not contain preview/BREP surfaces, section
@@ -164,4 +201,6 @@ overlay, control, and acceptance evidence is in
 native-orbit route and exact camera evidence are in
 `tasks/task-82c-restore-mouse-orbit.md`; Task 82D's fixed orientation renderer,
 camera synchronization, visible pixel proof, and screenshot are in
-`tasks/task-82d-orientation-gizmo.md`.
+`tasks/task-82d-orientation-gizmo.md`; Task 82E's unified control layout, roll
+implementation, setting states, and five reviewed screenshots are in
+`tasks/task-82e-navigation-widget.md`.

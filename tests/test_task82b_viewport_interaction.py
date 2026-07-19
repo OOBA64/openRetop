@@ -37,6 +37,7 @@ from geometry.sections import SectionResult  # noqa: E402
 from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
 from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
 from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from presentation.qt.orientation_gizmo import GIZMO_LOGICAL_SIZE  # noqa: E402
 from presentation.qt.pointer_gestures import PointerGestureState  # noqa: E402
 from presentation.qt.view_controls import TriangularViewButton  # noqa: E402
 from presentation.qt.viewport import QtSceneViewport  # noqa: E402
@@ -1006,7 +1007,7 @@ class Task82BOverlayTests(unittest.TestCase):
             QTest.qWait(100)
             x0, y0, x1, y1 = viewport._axis_gizmo_renderer.GetViewport()
             width, height = viewport.render_window.GetSize()
-            expected = 96.0 * max(float(viewport.devicePixelRatioF()), 1.0)
+            expected = GIZMO_LOGICAL_SIZE * max(float(viewport.devicePixelRatioF()), 1.0)
             self.assertAlmostEqual((x1 - x0) * width, expected, delta=3.0)
             self.assertAlmostEqual((y1 - y0) * height, expected, delta=3.0)
             for button in viewport.view_controls.buttons.values():

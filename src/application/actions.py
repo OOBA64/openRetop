@@ -436,6 +436,8 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
         )
         for name in ("Top", "Bottom", "Front", "Back", "Left", "Right", "Isometric")
     ),
+    _workflow_action("view.roll_left", "Roll View Left", "View", "roll_view", handler_args=(-15.0,)),
+    _workflow_action("view.roll_right", "Roll View Right", "View", "roll_view", handler_args=(15.0,)),
     _workflow_action("view.toggle_grid", "Show Grid", "View", "_on_view_option_changed"),
     _workflow_action("view.toggle_axes", "Show Axes", "View", "_on_view_option_changed"),
     _workflow_action("view.toggle_axis_gizmo", "Show Axis Gizmo", "View", "_on_view_option_changed"),

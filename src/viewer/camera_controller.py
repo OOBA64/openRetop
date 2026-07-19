@@ -111,6 +111,9 @@ class CameraController:
                 bounds=snapshot.visible_bounds(),
             )
             return True
+        if request.kind is CameraRequestKind.ROLL:
+            assert request.roll_degrees is not None
+            return self.roll(request.roll_degrees)
         return False
 
     def frame_bounds(self, bounds: Bounds3) -> bool:
@@ -201,6 +204,37 @@ class CameraController:
             (max(camera_distance * 1e-4, 1e-7), max(camera_distance * 4.0, 1.0))
         )
         self._render()
+
+    def roll(self, degrees: float) -> bool:
+        """Rotate view-up around direction-of-projection without reframing."""
+
+        angle = float(degrees)
+        if not math.isfinite(angle) or abs(angle) <= 1e-12:
+            return False
+        camera = self.renderer.GetActiveCamera()
+        direction = np.asarray(camera.GetDirectionOfProjection(), dtype=float).reshape(3)
+        view_up = np.asarray(camera.GetViewUp(), dtype=float).reshape(3)
+        if not (
+            np.all(np.isfinite(direction))
+            and np.all(np.isfinite(view_up))
+            and float(np.linalg.norm(direction)) > 1e-12
+            and float(np.linalg.norm(view_up)) > 1e-12
+        ):
+            return False
+        axis = direction / float(np.linalg.norm(direction))
+        up = _orthogonal_up(axis, view_up)
+        radians = math.radians(angle)
+        rotated = (
+            up * math.cos(radians)
+            + np.cross(axis, up) * math.sin(radians)
+            + axis * float(np.dot(axis, up)) * (1.0 - math.cos(radians))
+        )
+        camera.SetViewUp(*_tuple3(_orthogonal_up(axis, rotated)))
+        orthogonalize = getattr(camera, "OrthogonalizeViewUp", None)
+        if callable(orthogonalize):
+            orthogonalize()
+        self._render()
+        return True
 
     @staticmethod
     def _apply_pose(camera: object, pose: CameraPose) -> None:

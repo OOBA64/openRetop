@@ -15,12 +15,10 @@ from workbench_ui import VTKViewportWidget
 
 from application.transform_controller import CameraVectors
 from presentation.qt.orientation_gizmo import (
-    GIZMO_CONTROL_GAP,
-    OrientationGizmoController,
     OrientationGizmoDiagnosticState,
 )
 from presentation.qt.pointer_gestures import PointerGestureState
-from presentation.qt.view_controls import ViewControlCluster
+from presentation.qt.view_controls import ViewportNavigationCluster
 from settings.settings_data import DEFAULT_BACKGROUND_COLOR
 from viewer.actor_factories import VTKActorAdapter
 from viewer.camera_controller import CameraController
@@ -92,13 +90,17 @@ class QtSceneViewport(VTKViewportWidget):
         self._pointer_event_count = 0
         self._pick_count = 0
         self._qt_filter_installed = False
-        self.orientation_gizmo = OrientationGizmoController(
+        self.navigation_cluster = ViewportNavigationCluster(
             self.render_window,
             self.renderer,
             self.interactor,
+            self,
             device_pixel_ratio=self.devicePixelRatioF,
         )
-        self.view_controls = ViewControlCluster(self)
+        # Compatibility aliases keep the established presentation/test surface
+        # while the cluster remains the single lifecycle and layout owner.
+        self.orientation_gizmo = self.navigation_cluster.orientation_gizmo
+        self.view_controls = self.navigation_cluster
         if self.interactor is not None:
             self.interactor.installEventFilter(self)
             self._qt_filter_installed = True
@@ -299,15 +301,13 @@ class QtSceneViewport(VTKViewportWidget):
         if self._qt_filter_installed and self.interactor is not None:
             self.interactor.removeEventFilter(self)
             self._qt_filter_installed = False
-        self.view_controls.set_visible(False)
-        self.orientation_gizmo.close()
+        self.navigation_cluster.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
-        self._position_axis_gizmo_renderer()
-        self._position_view_controls()
+        self.navigation_cluster.update_layout()
 
     def event(self, event: QEvent) -> bool:
         handled = super().event(event)
@@ -315,9 +315,9 @@ class QtSceneViewport(VTKViewportWidget):
         if ratio_change is not None and event.type() == ratio_change:
             # A monitor transition can change physical render-window pixels
             # without changing the desired 96-pixel logical presentation size.
-            gizmo = getattr(self, "orientation_gizmo", None)
-            if gizmo is not None:
-                gizmo.update_layout()
+            cluster = getattr(self, "navigation_cluster", None)
+            if cluster is not None:
+                cluster.update_layout()
         return handled
 
     def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802 - Qt API
@@ -430,7 +430,7 @@ class QtSceneViewport(VTKViewportWidget):
             )
         if self.camera_controller is None:
             self.camera_controller = CameraController(self.renderer)
-        self.orientation_gizmo.start()
+        self.navigation_cluster.start()
 
     def _flush_pending_snapshot(self) -> ActorUpdateDiagnostics | None:
         snapshot = self._pending_snapshot
@@ -466,7 +466,7 @@ class QtSceneViewport(VTKViewportWidget):
                     )
                 self.camera_controller.apply(request, snapshot)
                 self._pending_camera_request = None
-            self.orientation_gizmo.sync_camera()
+            self.navigation_cluster.sync_camera()
             rendered = self.render()
             if not rendered and self.last_error:
                 raise RuntimeError(self.last_error)
@@ -531,15 +531,11 @@ class QtSceneViewport(VTKViewportWidget):
                     snapshot.active_transform_angle_delta,
                 )
 
-        self._set_axis_gizmo_visible(
-            bool(snapshot.display.get("show_axis_gizmo", True))
+        self.navigation_cluster.set_visibility(
+            gizmo=bool(snapshot.display.get("show_axis_gizmo", True)),
+            controls=bool(snapshot.display.get("show_viewcube", True)),
         )
-        self.view_controls.set_visible(
-            bool(snapshot.display.get("show_viewcube", True))
-        )
-        self._position_axis_gizmo_renderer()
-        self._position_view_controls()
-        self.orientation_gizmo.sync_camera()
+        self.navigation_cluster.sync_camera()
 
     def _ensure_display_overlays(self) -> None:
         if (
@@ -577,26 +573,22 @@ class QtSceneViewport(VTKViewportWidget):
         self._rotation_ring_actor = rotation_ring
 
     def _set_axis_gizmo_visible(self, visible: bool) -> None:
-        self.orientation_gizmo.set_enabled(visible)
+        self.navigation_cluster.set_visibility(
+            gizmo=visible,
+            controls=self.navigation_cluster.visible,
+        )
 
     def _position_axis_gizmo_renderer(self) -> None:
-        self.orientation_gizmo.update_layout()
+        self.navigation_cluster.update_layout()
 
     def _position_view_controls(self) -> None:
-        offset = (
-            self.orientation_gizmo.logical_margin
-            + self.orientation_gizmo.logical_size
-            + GIZMO_CONTROL_GAP
-            if self._axis_gizmo_visible
-            else self.orientation_gizmo.logical_margin
-        )
-        self.view_controls.reposition(offset, self.orientation_gizmo.logical_margin)
+        self.navigation_cluster.update_layout()
 
     def _sync_axis_gizmo_camera(self) -> None:
-        self.orientation_gizmo.sync_camera()
+        self.navigation_cluster.sync_camera()
 
     def _on_camera_modified(self, _caller: object, _event: object) -> None:
-        self.orientation_gizmo.sync_camera()
+        self.navigation_cluster.sync_camera()
 
     def _record_scene_failure(self, context: str, exc: Exception) -> None:
         message = f"{context}: {type(exc).__name__}: {exc}"

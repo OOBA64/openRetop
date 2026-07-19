@@ -63,6 +63,8 @@ PRESENTATION_ACTION_IDS = frozenset(
         "view.named.left",
         "view.named.right",
         "view.named.isometric",
+        "view.roll_left",
+        "view.roll_right",
     }
 )
 

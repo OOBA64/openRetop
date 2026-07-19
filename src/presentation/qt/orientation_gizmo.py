@@ -7,9 +7,8 @@ import math
 from typing import Callable, Iterable
 
 
-GIZMO_LOGICAL_SIZE = 96
+GIZMO_LOGICAL_SIZE = 104
 GIZMO_LOGICAL_MARGIN = 12
-GIZMO_CONTROL_GAP = 8
 _CAMERA_DISTANCE = 4.0
 _CAMERA_PARALLEL_SCALE = 0.82
 
@@ -147,6 +146,9 @@ class OrientationGizmoController:
         width: object | None = None,
         height: object | None = None,
         device_pixel_ratio: object | None = None,
+        *,
+        logical_left: object | None = None,
+        logical_top: object | None = None,
     ) -> bool:
         if self.renderer is None or self.render_window is None:
             return False
@@ -158,7 +160,13 @@ class OrientationGizmoController:
                 if device_pixel_ratio is None
                 else device_pixel_ratio
             )
-            viewport = normalized_gizmo_viewport(width, height, ratio)
+            viewport = normalized_gizmo_viewport(
+                width,
+                height,
+                ratio,
+                logical_left=logical_left,
+                logical_top=logical_top,
+            )
             if viewport is None or viewport == self._layout_signature:
                 return False
             self.renderer.SetViewport(*viewport)
@@ -295,17 +303,25 @@ class OrientationGizmoController:
         from vtkmodules.vtkRenderingCore import vtkRenderer
 
         actor = vtkAxesActor()
-        actor.SetTotalLength(0.86, 0.86, 0.86)
-        actor.SetNormalizedShaftLength(0.72, 0.72, 0.72)
-        actor.SetNormalizedTipLength(0.28, 0.28, 0.28)
+        actor.SetTotalLength(0.94, 0.94, 0.94)
+        actor.SetNormalizedShaftLength(0.70, 0.70, 0.70)
+        actor.SetNormalizedTipLength(0.30, 0.30, 0.30)
         actor.SetShaftTypeToCylinder()
         actor.SetTipTypeToCone()
-        actor.SetCylinderRadius(0.038)
-        actor.SetConeRadius(0.13)
-        actor.SetSphereRadius(0.060)
+        actor.SetCylinderRadius(0.055)
+        actor.SetConeRadius(0.17)
+        actor.SetSphereRadius(0.070)
+        actor.SetCylinderResolution(20)
+        actor.SetConeResolution(24)
         actor.AxisLabelsOn()
         actor.PickableOff()
         actor.DragableOff()
+        _style_axis_geometry(actor.GetXAxisShaftProperty(), (1.00, 0.12, 0.08))
+        _style_axis_geometry(actor.GetXAxisTipProperty(), (1.00, 0.12, 0.08))
+        _style_axis_geometry(actor.GetYAxisShaftProperty(), (0.16, 0.95, 0.28))
+        _style_axis_geometry(actor.GetYAxisTipProperty(), (0.16, 0.95, 0.28))
+        _style_axis_geometry(actor.GetZAxisShaftProperty(), (0.16, 0.45, 1.00))
+        _style_axis_geometry(actor.GetZAxisTipProperty(), (0.16, 0.45, 1.00))
         _style_axis_caption(actor.GetXAxisCaptionActor2D(), (0.95, 0.25, 0.22))
         _style_axis_caption(actor.GetYAxisCaptionActor2D(), (0.25, 0.92, 0.34))
         _style_axis_caption(actor.GetZAxisCaptionActor2D(), (0.28, 0.55, 1.00))
@@ -354,6 +370,8 @@ def normalized_gizmo_viewport(
     *,
     logical_size: float = GIZMO_LOGICAL_SIZE,
     logical_margin: float = GIZMO_LOGICAL_MARGIN,
+    logical_left: object | None = None,
+    logical_top: object | None = None,
 ) -> tuple[float, float, float, float] | None:
     """Return a finite top-left normalized viewport with fixed logical size."""
 
@@ -363,11 +381,13 @@ def normalized_gizmo_viewport(
         ratio = float(device_pixel_ratio)
         size = float(logical_size)
         margin = float(logical_margin)
+        left = margin if logical_left is None else float(logical_left)
+        top = margin if logical_top is None else float(logical_top)
     except (TypeError, ValueError):
         return None
     if not all(
         math.isfinite(value)
-        for value in (pixel_width, pixel_height, ratio, size, margin)
+        for value in (pixel_width, pixel_height, ratio, size, margin, left, top)
     ):
         return None
     if pixel_width <= 0.0 or pixel_height <= 0.0 or size <= 0.0:
@@ -375,13 +395,14 @@ def normalized_gizmo_viewport(
     if ratio <= 0.0:
         ratio = 1.0
     size_pixels = min(size * ratio, pixel_width, pixel_height)
-    margin_pixels = max(margin, 0.0) * ratio
-    margin_x = min(margin_pixels, max(pixel_width - size_pixels, 0.0))
-    margin_y = min(margin_pixels, max(pixel_height - size_pixels, 0.0))
-    x0 = margin_x / pixel_width
-    x1 = (margin_x + size_pixels) / pixel_width
-    y1 = (pixel_height - margin_y) / pixel_height
-    y0 = (pixel_height - margin_y - size_pixels) / pixel_height
+    left_pixels = max(left, 0.0) * ratio
+    top_pixels = max(top, 0.0) * ratio
+    origin_x = min(left_pixels, max(pixel_width - size_pixels, 0.0))
+    origin_y = min(top_pixels, max(pixel_height - size_pixels, 0.0))
+    x0 = origin_x / pixel_width
+    x1 = (origin_x + size_pixels) / pixel_width
+    y1 = (pixel_height - origin_y) / pixel_height
+    y0 = (pixel_height - origin_y - size_pixels) / pixel_height
     result = (x0, max(y0, 0.0), min(x1, 1.0), min(max(y1, 0.0), 1.0))
     return result if all(math.isfinite(value) for value in result) else None
 
@@ -423,12 +444,18 @@ def _style_axis_caption(caption: object, color: tuple[float, float, float]) -> N
     caption.SetPadding(0)
     text = caption.GetCaptionTextProperty()
     text.SetColor(*color)
-    text.SetFontSize(14)
+    text.SetFontSize(16)
     text.BoldOn()
     text.ShadowOff()
     text.SetOpacity(1.0)
     text.SetBackgroundOpacity(0.0)
     caption.GetTextActor().SetTextScaleModeToNone()
+
+
+def _style_axis_geometry(prop: object, color: tuple[float, float, float]) -> None:
+    prop.SetColor(*color)
+    prop.SetAmbient(0.65)
+    prop.SetDiffuse(0.55)
 
 
 def _available_overlay_layer(render_window: object, main_renderer: object) -> int:
@@ -516,7 +543,6 @@ def _dot(first: Iterable[float], second: Iterable[float]) -> float:
 
 
 __all__ = (
-    "GIZMO_CONTROL_GAP",
     "GIZMO_LOGICAL_MARGIN",
     "GIZMO_LOGICAL_SIZE",
     "OrientationGizmoController",

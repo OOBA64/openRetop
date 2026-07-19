@@ -343,6 +343,10 @@ class OpenRetopV3Window(ApplicationShell):
             self._camera_request = CameraRequest.frame_selected(ids)
         elif action_id.startswith("view.named."):
             self._camera_request = CameraRequest.named_view(action_id.rsplit(".", 1)[-1])
+        elif action_id == "view.roll_left":
+            self._camera_request = CameraRequest.roll(-15.0)
+        elif action_id == "view.roll_right":
+            self._camera_request = CameraRequest.roll(15.0)
         else:
             return False
         self.refresh()
