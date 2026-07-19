@@ -1208,6 +1208,11 @@ class OpenRetopV3Window(ApplicationShell):
         self.composition.settings.ui.window_height = self.height()
         self.composition.settings.future["workbench_layout"] = settings.to_json()
         self.composition.settings_repository.write(self.composition.settings)
+        # Closing a parent QMainWindow hides its child viewport but does not send
+        # the child a close event.  Run the viewport's single shutdown path while
+        # the native Win32 surface is still valid so VTK observers, overlay
+        # resources, and the QVTK interactor are released deterministically.
+        self.viewport.close()
         event.accept()
 
     def _progress(self, event: ProgressEvent) -> None:

@@ -14,6 +14,11 @@ from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
 from workbench_ui import VTKViewportWidget
 
 from application.transform_controller import CameraVectors
+from presentation.qt.orientation_gizmo import (
+    GIZMO_CONTROL_GAP,
+    OrientationGizmoController,
+    OrientationGizmoDiagnosticState,
+)
 from presentation.qt.pointer_gestures import PointerGestureState
 from presentation.qt.view_controls import ViewControlCluster
 from settings.settings_data import DEFAULT_BACKGROUND_COLOR
@@ -25,10 +30,6 @@ from viewer.scene_types import Bounds3, CameraRequest, CameraRequestKind, SceneS
 
 
 _LOG = logging.getLogger(__name__)
-_GIZMO_LOGICAL_SIZE = 96
-_GIZMO_LOGICAL_MARGIN = 12
-
-
 @dataclass(frozen=True, slots=True)
 class ViewportDiagnosticState:
     ready: bool
@@ -57,6 +58,7 @@ class ViewportDiagnosticState:
     selection_eligible: bool
     gesture_distance: float
     gizmo_synchronization_count: int
+    orientation_gizmo: OrientationGizmoDiagnosticState
     scene_actor_inventory: tuple[Mapping[str, object], ...]
     overlay_actor_inventory: tuple[Mapping[str, object], ...]
     last_synchronization: ActorUpdateDiagnostics | None
@@ -78,18 +80,11 @@ class QtSceneViewport(VTKViewportWidget):
         self.picking: PickingService | None = None
         self._pending_snapshot: SceneSnapshot | None = None
         self._pending_camera_request: CameraRequest | None = None
-        self._observer_ids: list[tuple[object, int]] = []
-        self._observers_registered = False
         self._synchronization_count = 0
         self._last_scene_error: str | None = None
         self._grid_actor: object | None = None
         self._transform_axes_actor: object | None = None
         self._rotation_ring_actor: object | None = None
-        self._axis_gizmo_renderer: object | None = None
-        self._axis_gizmo_actor: object | None = None
-        self._axis_gizmo_visible = False
-        self._axis_gizmo_camera_signature: tuple[float, ...] | None = None
-        self._axis_gizmo_synchronization_count = 0
         self._grid_signature: tuple[float, float, float] | None = None
         self._pointer_gesture = PointerGestureState()
         self._left_capture_owner: str | None = None
@@ -97,6 +92,12 @@ class QtSceneViewport(VTKViewportWidget):
         self._pointer_event_count = 0
         self._pick_count = 0
         self._qt_filter_installed = False
+        self.orientation_gizmo = OrientationGizmoController(
+            self.render_window,
+            self.renderer,
+            self.interactor,
+            device_pixel_ratio=self.devicePixelRatioF,
+        )
         self.view_controls = ViewControlCluster(self)
         if self.interactor is not None:
             self.interactor.installEventFilter(self)
@@ -113,7 +114,33 @@ class QtSceneViewport(VTKViewportWidget):
 
     @property
     def observer_count(self) -> int:
-        return len(self._observer_ids)
+        return self.orientation_gizmo.observer_count
+
+    @property
+    def _observer_ids(self) -> tuple[tuple[object, int], ...]:
+        """Compatibility view of the gizmo controller's sole VTK observer."""
+
+        return self.orientation_gizmo.observer_records
+
+    @property
+    def _axis_gizmo_renderer(self) -> object | None:
+        return self.orientation_gizmo.renderer
+
+    @property
+    def _axis_gizmo_actor(self) -> object | None:
+        return self.orientation_gizmo.actor
+
+    @property
+    def _axis_gizmo_visible(self) -> bool:
+        return self.orientation_gizmo.enabled
+
+    @property
+    def _axis_gizmo_camera_signature(self) -> tuple[float, ...] | None:
+        return self.orientation_gizmo.camera_signature
+
+    @property
+    def _axis_gizmo_synchronization_count(self) -> int:
+        return self.orientation_gizmo.camera_update_count
 
     @property
     def last_pointer_release_was_click(self) -> bool:
@@ -149,6 +176,7 @@ class QtSceneViewport(VTKViewportWidget):
         snapshot = self.last_snapshot or self._pending_snapshot
         camera = None if self.renderer is None else self.renderer.GetActiveCamera()
         toolkit = super().diagnostic_state()
+        gizmo = self.orientation_gizmo.diagnostic_state()
         return ViewportDiagnosticState(
             ready=self.is_ready,
             render_window_class=_string_or_none(toolkit.get("render_window_class")),
@@ -169,7 +197,7 @@ class QtSceneViewport(VTKViewportWidget):
             camera_view_angle=_camera_scalar(camera, "GetViewAngle"),
             background=_camera_tuple(self.renderer, "GetBackground", 3),
             synchronization_count=self._synchronization_count,
-            observer_count=len(self._observer_ids),
+            observer_count=gizmo.observer_count,
             pointer_event_count=self._pointer_event_count,
             pick_count=self._pick_count,
             left_capture_owner=self._left_capture_owner,
@@ -179,7 +207,8 @@ class QtSceneViewport(VTKViewportWidget):
             ),
             selection_eligible=self._pointer_gesture.selection_eligible,
             gesture_distance=self._pointer_gesture.accumulated_distance,
-            gizmo_synchronization_count=self._axis_gizmo_synchronization_count,
+            gizmo_synchronization_count=gizmo.camera_update_count,
+            orientation_gizmo=gizmo,
             scene_actor_inventory=self._scene_actor_inventory(),
             overlay_actor_inventory=self._overlay_actor_inventory(),
             last_synchronization=self.last_diagnostics,
@@ -267,24 +296,11 @@ class QtSceneViewport(VTKViewportWidget):
         return point if np.all(np.isfinite(point)) else None
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
-        for owner, observer_id in self._observer_ids:
-            try:
-                owner.RemoveObserver(observer_id)
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                _LOG.warning("Could not remove VTK observer %s", observer_id)
-        self._observer_ids.clear()
-        self._observers_registered = False
         if self._qt_filter_installed and self.interactor is not None:
             self.interactor.removeEventFilter(self)
             self._qt_filter_installed = False
         self.view_controls.set_visible(False)
-        if self.render_window is not None and self._axis_gizmo_renderer is not None:
-            try:
-                self.render_window.RemoveRenderer(self._axis_gizmo_renderer)
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                _LOG.warning("Could not remove the axis-gizmo renderer")
-        self._axis_gizmo_renderer = None
-        self._axis_gizmo_actor = None
+        self.orientation_gizmo.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
 
@@ -292,6 +308,17 @@ class QtSceneViewport(VTKViewportWidget):
         super().resizeEvent(event)
         self._position_axis_gizmo_renderer()
         self._position_view_controls()
+
+    def event(self, event: QEvent) -> bool:
+        handled = super().event(event)
+        ratio_change = getattr(QEvent, "DevicePixelRatioChange", None)
+        if ratio_change is not None and event.type() == ratio_change:
+            # A monitor transition can change physical render-window pixels
+            # without changing the desired 96-pixel logical presentation size.
+            gizmo = getattr(self, "orientation_gizmo", None)
+            if gizmo is not None:
+                gizmo.update_layout()
+        return handled
 
     def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802 - Qt API
         """Arbitrate unmodified-left between native orbit and active tools.
@@ -403,16 +430,7 @@ class QtSceneViewport(VTKViewportWidget):
             )
         if self.camera_controller is None:
             self.camera_controller = CameraController(self.renderer)
-        if self._observers_registered:
-            return
-
-        # Camera ModifiedEvent runs inside the native trackball interaction,
-        # before its render, so the independent orientation renderer tracks
-        # every orbit/pan/zoom without a duplicate input or render path.
-        camera = self.renderer.GetActiveCamera()
-        observer_id = camera.AddObserver("ModifiedEvent", self._on_camera_modified)
-        self._observer_ids.append((camera, int(observer_id)))
-        self._observers_registered = True
+        self.orientation_gizmo.start()
 
     def _flush_pending_snapshot(self) -> ActorUpdateDiagnostics | None:
         snapshot = self._pending_snapshot
@@ -448,6 +466,7 @@ class QtSceneViewport(VTKViewportWidget):
                     )
                 self.camera_controller.apply(request, snapshot)
                 self._pending_camera_request = None
+            self.orientation_gizmo.sync_camera()
             rendered = self.render()
             if not rendered and self.last_error:
                 raise RuntimeError(self.last_error)
@@ -520,14 +539,13 @@ class QtSceneViewport(VTKViewportWidget):
         )
         self._position_axis_gizmo_renderer()
         self._position_view_controls()
-        self._sync_axis_gizmo_camera()
+        self.orientation_gizmo.sync_camera()
 
     def _ensure_display_overlays(self) -> None:
         if (
             self._grid_actor is not None
             and self._transform_axes_actor is not None
             and self._rotation_ring_actor is not None
-            and self._axis_gizmo_renderer is not None
         ):
             return
         from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
@@ -558,97 +576,27 @@ class QtSceneViewport(VTKViewportWidget):
         self._transform_axes_actor = transform_axes
         self._rotation_ring_actor = rotation_ring
 
-        if self.render_window is None:
-            return
-        gizmo_actor = vtkAxesActor()
-        gizmo_actor.AxisLabelsOff()
-        gizmo_actor.SetTotalLength(0.72, 0.72, 0.72)
-        gizmo_actor.SetShaftTypeToCylinder()
-        gizmo_actor.SetCylinderRadius(0.035)
-        gizmo_actor.SetConeRadius(0.13)
-        gizmo_actor.SetSphereRadius(0.065)
-        gizmo_actor.PickableOff()
-
-        gizmo_renderer = vtkRenderer()
-        gizmo_renderer.SetLayer(1)
-        gizmo_renderer.InteractiveOff()
-        try:
-            gizmo_renderer.SetBackgroundAlpha(0.0)
-        except AttributeError:
-            pass
-        gizmo_renderer.AddActor(gizmo_actor)
-        self.renderer.SetLayer(0)
-        current_layers = int(self.render_window.GetNumberOfLayers())
-        if current_layers < 2:
-            self.render_window.SetNumberOfLayers(2)
-        self.render_window.AddRenderer(gizmo_renderer)
-        self._axis_gizmo_renderer = gizmo_renderer
-        self._axis_gizmo_actor = gizmo_actor
-
     def _set_axis_gizmo_visible(self, visible: bool) -> None:
-        self._axis_gizmo_visible = bool(visible)
-        if self._axis_gizmo_actor is not None:
-            self._axis_gizmo_actor.SetVisibility(self._axis_gizmo_visible)
-        if self._axis_gizmo_renderer is not None:
-            self._axis_gizmo_renderer.SetDraw(self._axis_gizmo_visible)
+        self.orientation_gizmo.set_enabled(visible)
 
     def _position_axis_gizmo_renderer(self) -> None:
-        if self._axis_gizmo_renderer is None or self.render_window is None:
-            return
-        try:
-            width, height = self.render_window.GetSize()
-            ratio = max(float(self.devicePixelRatioF()), 1.0)
-            size = _GIZMO_LOGICAL_SIZE * ratio
-            margin = _GIZMO_LOGICAL_MARGIN * ratio
-            width = max(float(width), size + margin * 2.0)
-            height = max(float(height), size + margin * 2.0)
-            self._axis_gizmo_renderer.SetViewport(
-                margin / width,
-                max((height - margin - size) / height, 0.0),
-                min((margin + size) / width, 1.0),
-                max((height - margin) / height, 0.0),
-            )
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            return
+        self.orientation_gizmo.update_layout()
 
     def _position_view_controls(self) -> None:
         offset = (
-            _GIZMO_LOGICAL_MARGIN + _GIZMO_LOGICAL_SIZE + 8
+            self.orientation_gizmo.logical_margin
+            + self.orientation_gizmo.logical_size
+            + GIZMO_CONTROL_GAP
             if self._axis_gizmo_visible
-            else _GIZMO_LOGICAL_MARGIN
+            else self.orientation_gizmo.logical_margin
         )
-        self.view_controls.reposition(offset, _GIZMO_LOGICAL_MARGIN)
+        self.view_controls.reposition(offset, self.orientation_gizmo.logical_margin)
 
     def _sync_axis_gizmo_camera(self) -> None:
-        if (
-            not self._axis_gizmo_visible
-            or self._axis_gizmo_renderer is None
-            or self.renderer is None
-        ):
-            return
-        source = self.renderer.GetActiveCamera()
-        forward = _unit(source.GetDirectionOfProjection())
-        view_up = _unit(source.GetViewUp())
-        if forward is None or view_up is None:
-            return
-        signature = tuple(
-            round(float(value), 12)
-            for value in np.concatenate((forward, view_up))
-        )
-        if signature == self._axis_gizmo_camera_signature:
-            return
-        camera = self._axis_gizmo_renderer.GetActiveCamera()
-        camera.SetFocalPoint(0.0, 0.0, 0.0)
-        camera.SetPosition(*tuple(float(-value * 4.0) for value in forward))
-        camera.SetViewUp(*tuple(float(value) for value in view_up))
-        camera.ParallelProjectionOn()
-        camera.SetParallelScale(1.15)
-        self._axis_gizmo_renderer.ResetCameraClippingRange()
-        self._axis_gizmo_camera_signature = signature
-        self._axis_gizmo_synchronization_count += 1
+        self.orientation_gizmo.sync_camera()
 
     def _on_camera_modified(self, _caller: object, _event: object) -> None:
-        self._sync_axis_gizmo_camera()
+        self.orientation_gizmo.sync_camera()
 
     def _record_scene_failure(self, context: str, exc: Exception) -> None:
         message = f"{context}: {type(exc).__name__}: {exc}"
@@ -696,7 +644,7 @@ class QtSceneViewport(VTKViewportWidget):
             (
                 "orientation_gizmo",
                 self._axis_gizmo_actor,
-                1,
+                self.orientation_gizmo.diagnostic_state().renderer_layer or 1,
                 self._axis_gizmo_renderer,
             ),
         )

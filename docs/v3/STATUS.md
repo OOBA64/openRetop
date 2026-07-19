@@ -12,7 +12,10 @@ screen-space orientation overlays, and triangular named-view controls. Task
 82C corrects its left-input regression and restores the primary orbit contract:
 ordinary left drag reaches QVTK's single TrackballCamera owner, while click
 selection and active tool capture remain explicitly arbitrated at a
-four-logical-pixel threshold.
+four-logical-pixel threshold. Task 82D restores the user-visible orientation
+gizmo as one fixed-size transparent renderer layer with a readable X/Y/Z actor,
+independent camera synchronization, DPI-aware top-left layout, and deterministic
+shutdown.
 
 ## Completed acceptance work
 
@@ -51,6 +54,42 @@ four-logical-pixel threshold.
   selection after native release, accumulated gesture diagnostics, explicit
   transform/manual-curve/region left ownership, and uninterrupted middle/wheel
   navigation during tools.
+- Task 82D: one openRetop-owned orientation-gizmo controller, dedicated
+  noninteractive transparent renderer, labeled non-pickable `vtkAxesActor`,
+  fixed 96-logical-pixel / 12-pixel-margin layout, independent parallel camera,
+  one interaction observer, structured diagnostics, setting/overlay isolation,
+  and clean accepted-window shutdown.
+
+## Verification record (2026-07-18, Task 82D)
+
+- Starting commit and `v3-task-82c` both resolved to
+  `32f3eb68f2f948e44263b0af7e995eb02ea25b1a` before editing.
+- Complete discovery on the real visible Windows Qt platform: 556 tests passed,
+  no skips, in 15.745 seconds, with no post-run WGL warning.
+- Required focused results: Task 82A 18/18 in 1.609 seconds; Task 82B 26/26 in
+  3.074 seconds; Task 82C 15/15 in 2.450 seconds; Task 82D 13/13 in 3.043
+  seconds; Task 79 9/9 in 0.360 seconds; Task 80 7/7 in 1.459 seconds; Task 81
+  5/5 in 0.327 seconds; Task 82 5/5 in 0.004 seconds.
+- `python -m compileall -q src packages/workbench_ui/workbench_ui`: passed.
+- `scripts/report_architecture_metrics.py --fail-on-new`: passed with 108
+  production files / 34,002 lines, 57 test files / 15,826 lines, 56
+  `OpenRetopV3Window` methods, zero legacy-window methods, zero dependency
+  violations, zero practical cycles, and zero duplicate labels.
+- Visible environment: Windows 10.0.26200.0, Python 3.11.9, PySide6 6.11.1,
+  VTK 9.6.2, `vtkWin32OpenGLRenderWindow`, `vtkOpenGLRenderer`, and DPR 1.25.
+- `FrontNoseTest.openretop` visibly restored its model, grid, curves, and section
+  plane with one readable labeled top-left gizmo. Its overlay contained red,
+  green, and blue pixels with zero white backing pixels; normal startup added no
+  synthetic actor.
+- Orbit over the gizmo area, pan, zoom, named views, Frame All/Selected,
+  selection, checkbox visibility, Move/Rotate and cancel, repeated refresh,
+  toggle off/on, horizontal/vertical resize, maximize/restore, and
+  minimize/restore all passed with one actor, renderer, and observer.
+- A separate empty-project visible Win32 back-buffer check showed configured
+  `#101316` background, grid, and labeled gizmo with no rendering error.
+- The inspected screenshot is
+  `artifacts/task-82d-orientation-gizmo.png`; detailed implementation and exact
+  evidence are in `tasks/task-82d-orientation-gizmo.md`.
 
 ## Verification record (2026-07-17, Task 82C)
 
@@ -101,11 +140,11 @@ four-logical-pixel threshold.
 
 ## Remaining human review items
 
-- Repeat physical-pointer feel, high-DPI icon legibility, and driver-specific
+- Repeat physical-pointer feel, mixed-monitor DPI transitions, and driver-specific
   rendering on release target hardware. The verified environment was Windows
   build 26200, Python 3.11.9, PySide6 6.11.1, and VTK 9.6.2; the real visible
   acceptance injected input through Qt into the native QVTK child.
-- Linux/Xvfb was not available for Tasks 82B-82C. Windows offscreen behavior
+- Linux/Xvfb was not available for Tasks 82B-82D. Windows offscreen behavior
   remains covered without unsafe native start, and no Linux rendering claim is
   made.
 - `FrontNoseTest.openretop` does not contain preview/BREP surfaces, section
@@ -123,4 +162,6 @@ migration. Task 82A detail and exact commands are in
 overlay, control, and acceptance evidence is in
 `tasks/task-82b-viewport-interaction-controls-repair.md`; Task 82C's repaired
 native-orbit route and exact camera evidence are in
-`tasks/task-82c-restore-mouse-orbit.md`.
+`tasks/task-82c-restore-mouse-orbit.md`; Task 82D's fixed orientation renderer,
+camera synchronization, visible pixel proof, and screenshot are in
+`tasks/task-82d-orientation-gizmo.md`.

@@ -615,10 +615,11 @@ class Task82BOverlayTests(unittest.TestCase):
             self.assertEqual(viewport._axis_gizmo_renderer.GetBackgroundAlpha(), 0.0)
             self.assertFalse(bool(viewport._axis_gizmo_renderer.GetInteractive()))
             x0, y0, x1, y1 = viewport._axis_gizmo_renderer.GetViewport()
-            # Qt's offscreen QVTK child reports a synthetic 120x30 surface, so
-            # exact pixel stability is asserted by the visible Win32 test.
-            self.assertLessEqual(x0, 0.1)
-            self.assertGreaterEqual(y0, 0.1)
+            # Qt's offscreen QVTK child reports a synthetic 120x30 surface. The
+            # in-bounds layout may consume that full synthetic height; exact
+            # logical-pixel stability is asserted by the visible Win32 test.
+            self.assertGreaterEqual(x0, 0.0)
+            self.assertGreaterEqual(y0, 0.0)
             self.assertGreater(x1, x0)
             self.assertGreater(y1, y0)
         finally:
