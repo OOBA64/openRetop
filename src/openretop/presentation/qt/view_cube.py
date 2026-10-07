@@ -1,10 +1,12 @@
-"""Clickable orientation cube for the viewport.
+"""Clickable orientation gizmo for the viewport: a glass view cube with XYZ axis balls.
 
-The cube mirrors the main camera: each visible face is labelled (FRONT, BACK, LEFT,
-RIGHT, TOP, BOTTOM) and every face, edge and corner is a click target that snaps the
-camera to that direction.  Faces are split 3x3 like a conventional CAD view cube: the
-centre is the face view, the border strips are edge views, and the corners are
-three-face (isometric style) views.
+The gizmo mirrors the main camera.  Each visible cube face is labelled (FRONT, BACK,
+LEFT, RIGHT, TOP, BOTTOM) and every face, edge and corner is a click target that snaps
+the camera to that direction.  Faces are split 3x3 like a conventional CAD view cube:
+the centre is the face view, the border strips are edge views, and the corners are
+three-face (isometric style) views.  Around the cube, coloured balls mark the axes
+(solid for +X/+Y/+Z with a letter, muted for the negative ends); clicking one looks
+along that axis, as in Blender's navigation gizmo.
 
 Geometry and hit-testing are pure functions of the camera orientation so they can be
 unit-tested without Qt; :class:`ViewCubeWidget` only paints them.
@@ -17,17 +19,21 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from functools import partial
+from typing import Callable, Iterable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QImage,
+    QLinearGradient,
     QMouseEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPolygonF,
+    QRadialGradient,
     QTransform,
 )
 from PySide6.QtWidgets import QWidget
@@ -35,12 +41,16 @@ from PySide6.QtWidgets import QWidget
 Vec2 = tuple[float, float]
 Vec3 = tuple[float, float, float]
 
-CUBE_WIDGET_SIZE = 160
+CUBE_WIDGET_SIZE = 176
 CUBE_MARGIN = 10
-CUBE_SCALE = 40.0  # pixels per cube half-edge
+CUBE_SCALE = 32.0  # pixels per cube half-edge
 _BAND = 0.5  # |local coordinate| beyond this on a face is an edge/corner strip
 _MIN_FACING = 0.02  # faces nearly edge-on are not drawn or clickable
 _ROLL_DEGREES_TEXT = "15 degrees"
+AXIS_DISTANCE = 2.05  # axis balls sit this many half-edges from the centre
+_AXIS_HIDE_OFFSET = 1.0  # a ball nearly end-on to the viewer would cover the cube face
+_BALL_RADIUS = (9.0, 6.5)  # positive, negative
+_ACCENT = QColor(0, 170, 215)
 
 _NAMES: dict[Vec3, str] = {
     (0.0, -1.0, 0.0): "front",
@@ -102,8 +112,8 @@ def normalized_camera_orientation(
     return forward, corrected
 
 
-def project_faces(forward: Vec3, up: Vec3) -> tuple[ProjectedFace, ...]:
-    """Visible faces, most camera-facing first."""
+def project_faces(forward: Vec3, up: Vec3, *, include_hidden: bool = False) -> tuple[ProjectedFace, ...]:
+    """Visible faces, most camera-facing first (plus the far faces when asked)."""
 
     right = _cross(forward, up)
 
@@ -113,7 +123,7 @@ def project_faces(forward: Vec3, up: Vec3) -> tuple[ProjectedFace, ...]:
     faces = []
     for name, normal, u_axis, v_axis in _FACES:
         facing = -_dot(normal, forward)
-        if facing <= _MIN_FACING:
+        if facing <= _MIN_FACING and not include_hidden:
             continue
         faces.append(ProjectedFace(name, normal, screen(normal), screen(u_axis), screen(v_axis), facing))
     return tuple(sorted(faces, key=lambda face: -face.facing))
@@ -173,14 +183,60 @@ def _local_coordinates(face: ProjectedFace, x: float, y: float) -> Vec2 | None:
     return ((dx * face.v[1] - dy * face.v[0]) / det, (face.u[0] * dy - face.u[1] * dx) / det)
 
 
+# name of the view looking along the axis end, letter, positive?, colour
+_AXES: tuple[tuple[str, str, bool, Vec3, tuple[int, int, int]], ...] = (
+    ("right", "X", True, (1.0, 0.0, 0.0), (236, 72, 88)),
+    ("left", "X", False, (-1.0, 0.0, 0.0), (236, 72, 88)),
+    ("back", "Y", True, (0.0, 1.0, 0.0), (126, 200, 40)),
+    ("front", "Y", False, (0.0, -1.0, 0.0), (126, 200, 40)),
+    ("top", "Z", True, (0.0, 0.0, 1.0), (56, 142, 245)),
+    ("bottom", "Z", False, (0.0, 0.0, -1.0), (56, 142, 245)),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AxisBall:
+    """One end of an axis in view space (x right, y up, cube half-edge = 1)."""
+
+    name: str  # the named view it selects: "right", "front", ...
+    label: str
+    positive: bool
+    colour: tuple[int, int, int]
+    centre: Vec2
+    depth: float  # larger = farther from the viewer
+
+
+def project_axes(forward: Vec3, up: Vec3) -> tuple[AxisBall, ...]:
+    """Axis balls that are not hidden end-on behind/in front of the cube centre."""
+
+    right = _cross(forward, up)
+    balls = []
+    for name, label, positive, direction, colour in _AXES:
+        position = tuple(AXIS_DISTANCE * c for c in direction)
+        centre = (_dot(position, right), _dot(position, up))
+        if math.hypot(*centre) < _AXIS_HIDE_OFFSET:
+            continue
+        balls.append(AxisBall(name, label, positive, colour, centre, _dot(position, forward)))
+    return tuple(balls)
+
+
+def axis_title(ball: AxisBall) -> str:
+    return f"{view_title(ball.name)} ({'+' if ball.positive else '-'}{ball.label})"
+
+
 @dataclass(frozen=True, slots=True)
 class CubeHit:
     action_id: str
     title: str
+    key: str | None = None  # distinguishes a ball from the face that selects the same view
+
+    @property
+    def hover_key(self) -> str:
+        return self.action_id if self.key is None else self.key
 
 
 class ViewCubeWidget(QWidget):
-    """Paints the cube, its home/roll buttons and an axis triad, and hit-tests them.
+    """Paints the cube, XYZ axis balls and home/roll buttons, and hit-tests them.
 
     A Qt child widget cannot draw over QVTK's native OpenGL surface, so in the app this
     widget is never shown: the cluster renders it to an image (:meth:`render_image`),
@@ -200,9 +256,10 @@ class ViewCubeWidget(QWidget):
         self._forward: Vec3 = (0.0, 1.0, 0.0)
         self._up: Vec3 = (0.0, 0.0, 1.0)
         self._faces = project_faces(self._forward, self._up)
+        self._axes = project_axes(self._forward, self._up)
         self._show_cube = True
-        self._show_triad = True
-        self._hover: str | None = None  # a view name, HOME_ACTION, or a roll action
+        self._show_axes = True
+        self._hover: str | None = None  # a hit's hover_key
         self._pressed: str | None = None
 
     # -- state --------------------------------------------------------------------
@@ -219,15 +276,15 @@ class ViewCubeWidget(QWidget):
     def orientation(self) -> tuple[Vec3, Vec3]:
         return (self._forward, self._up)
 
-    def set_parts(self, *, cube: bool, triad: bool) -> None:
-        if (cube, triad) == (self._show_cube, self._show_triad):
+    def set_parts(self, *, cube: bool, axes: bool) -> None:
+        if (cube, axes) == (self._show_cube, self._show_axes):
             return
-        self._show_cube, self._show_triad = bool(cube), bool(triad)
+        self._show_cube, self._show_axes = bool(cube), bool(axes)
         self._hover = None
         self.update()
 
     def set_hover(self, key: str | None) -> bool:
-        """Highlight a region (a hit's action id); returns True if it changed."""
+        """Highlight a region (a hit's hover_key); returns True if it changed."""
 
         if key == self._hover:
             return False
@@ -251,6 +308,7 @@ class ViewCubeWidget(QWidget):
     def set_orientation(self, forward: Vec3, up: Vec3) -> None:
         self._forward, self._up = forward, up
         self._faces = project_faces(forward, up)
+        self._axes = project_axes(forward, up)
         self.update()
 
     # -- geometry -----------------------------------------------------------------
@@ -272,20 +330,38 @@ class ViewCubeWidget(QWidget):
 
     _BUTTONS = (HOME_ACTION, ROLL_LEFT_ACTION, ROLL_RIGHT_ACTION)
 
+    @property
+    def axes(self) -> tuple[AxisBall, ...]:
+        return self._axes
+
+    def _ball_pixel(self, ball: AxisBall) -> QPointF:
+        return QPointF(self._centre.x() + CUBE_SCALE * ball.centre[0], self._centre.y() - CUBE_SCALE * ball.centre[1])
+
     def hit_at(self, point: QPointF) -> CubeHit | None:
         """What a click at ``point`` (widget pixels) would do, or None."""
 
+        if self._show_cube:
+            titles = {
+                HOME_ACTION: "Isometric view (Ctrl+7)",
+                ROLL_LEFT_ACTION: f"Roll view left {_ROLL_DEGREES_TEXT}",
+                ROLL_RIGHT_ACTION: f"Roll view right {_ROLL_DEGREES_TEXT}",
+            }
+            for action_id in self._BUTTONS:
+                if self._button_rect(action_id).contains(point):
+                    return CubeHit(action_id, titles[action_id])
+        view_point = self._to_view(point)
+        if self._show_axes:
+            for ball in sorted(self._axes, key=lambda item: item.depth):  # nearest first
+                centre = self._ball_pixel(ball)
+                radius = _BALL_RADIUS[0 if ball.positive else 1] + 2.0
+                if math.hypot(point.x() - centre.x(), point.y() - centre.y()) > radius:
+                    continue
+                if self._show_cube and ball.depth > 0.0 and locate(self._faces, *view_point) is not None:
+                    continue  # behind the cube
+                return CubeHit(f"view.named.{ball.name}", axis_title(ball), f"view.named.{ball.name}#axis")
         if not self._show_cube:
             return None
-        for action_id in self._BUTTONS:
-            if self._button_rect(action_id).contains(point):
-                titles = {
-                    HOME_ACTION: "Isometric view (Ctrl+7)",
-                    ROLL_LEFT_ACTION: f"Roll view left {_ROLL_DEGREES_TEXT}",
-                    ROLL_RIGHT_ACTION: f"Roll view right {_ROLL_DEGREES_TEXT}",
-                }
-                return CubeHit(action_id, titles[action_id])
-        name = locate(self._faces, *self._to_view(point))
+        name = locate(self._faces, *view_point)
         if name is None:
             return None
         return CubeHit(f"view.named.{name}", view_title(name))
@@ -294,7 +370,7 @@ class ViewCubeWidget(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         hit = self.hit_at(event.position())
-        key = None if hit is None else hit.action_id
+        key = None if hit is None else hit.hover_key
         if self.set_hover(key):
             self.setToolTip("" if hit is None else hit.title)
             self.setCursor(Qt.CursorShape.ArrowCursor if hit is None else Qt.CursorShape.PointingHandCursor)
@@ -331,60 +407,100 @@ class ViewCubeWidget(QWidget):
     def _paint(self, painter: QPainter) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        hover = self._hover
+        if hover is not None:
+            # A faint disc behind the gizmo while the pointer is over it.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, 24))
+            painter.drawEllipse(self._centre, 80.0, 80.0)
+        hover_axis = hover[len("view.named.") : -len("#axis")] if hover is not None and hover.endswith("#axis") else None
+        hover_name = (
+            hover[len("view.named.") :]
+            if hover is not None and hover.startswith("view.named.") and not hover.endswith("#axis") and hover != HOME_ACTION
+            else None
+        )
+        # Painter's algorithm: far to near, so balls pass behind and in front of the cube.
+        items: list[tuple[float, Callable[[], None]]] = []
         if self._show_cube:
-            hover_name = (
-                self._hover[len("view.named.") :]
-                if self._hover is not None and self._hover.startswith("view.named.") and self._hover != HOME_ACTION
-                else None
-            )
-            for face in reversed(self._faces):
-                self._paint_face(painter, face, hover_name)
+            for face in project_faces(self._forward, self._up, include_hidden=True):
+                if face.facing <= _MIN_FACING:
+                    self._paint_hidden_face(painter, face)
+                else:
+                    items.append((-face.facing, partial(self._paint_face, painter, face, hover_name)))
+        if self._show_axes:
+            for ball in self._axes:
+                # The axis line runs from the centre, so the cube covers its inner part.
+                items.append((max(ball.depth, 0.0), partial(self._paint_axis_line, painter, ball)))
+                items.append((ball.depth, partial(self._paint_ball, painter, ball, ball.name == hover_axis)))
+        for _depth, draw in sorted(items, key=lambda item: -item[0]):
+            draw()
+        if self._show_cube:
             for action_id in self._BUTTONS:
                 self._paint_button(painter, action_id)
-        if self._show_triad:
-            self._paint_triad(painter)
+
+    def _face_path(self) -> QPainterPath:
+        s = CUBE_SCALE
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(-s, -s, 2 * s, 2 * s), 0.2 * s, 0.2 * s)
+        return path
+
+    def _face_transform(self, face: ProjectedFace) -> QTransform:
+        """Local pixel coordinates (x right, y DOWN, front-on size) -> widget pixels."""
+
+        cx = self._centre.x() + CUBE_SCALE * face.centre[0]
+        cy = self._centre.y() - CUBE_SCALE * face.centre[1]
+        return QTransform(face.u[0], -face.u[1], -face.v[0], face.v[1], cx, cy)
+
+    def _paint_hidden_face(self, painter: QPainter, face: ProjectedFace) -> None:
+        painter.save()
+        painter.setTransform(self._face_transform(face), False)
+        pen = QPen(QColor(190, 210, 228, 58), 1.0)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self._face_path())
+        painter.restore()
 
     def _paint_face(self, painter: QPainter, face: ProjectedFace, hover_name: str | None) -> None:
         painter.save()
         s = CUBE_SCALE
-        cx, cy = self._centre.x() + s * face.centre[0], self._centre.y() - s * face.centre[1]
-        # local pixel coordinates (x right, y DOWN, front-on size) -> screen
-        painter.setTransform(QTransform(face.u[0], -face.u[1], -face.v[0], face.v[1], cx, cy), False)
-        shade = 0.62 + 0.38 * face.facing
-        bevel = QColor.fromRgbF(0.22 * shade, 0.27 * shade, 0.33 * shade)
-        centre_fill = QColor.fromRgbF(0.40 * shade, 0.47 * shade, 0.55 * shade)
-        accent = QColor(0, 160, 205)
-        outline = QPen(QColor(168, 200, 222, 235), 1.1)
-        outline.setCosmetic(True)
-        grid = QPen(QColor(10, 15, 20, 120), 1.0)
-        grid.setCosmetic(True)
-
+        painter.setTransform(self._face_transform(face), False)
+        shade = 0.70 + 0.30 * face.facing
+        gradient = QLinearGradient(0.0, -s, 0.0, s)
+        gradient.setColorAt(0.0, QColor.fromRgbF(0.46 * shade, 0.52 * shade, 0.61 * shade, 0.96))
+        gradient.setColorAt(1.0, QColor.fromRgbF(0.28 * shade, 0.33 * shade, 0.41 * shade, 0.96))
+        path = self._face_path()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bevel)
-        painter.drawRect(QRectF(-s, -s, 2 * s, 2 * s))
-        painter.setBrush(centre_fill)
-        painter.drawRect(QRectF(-s * _BAND, -s * _BAND, 2 * s * _BAND, 2 * s * _BAND))
-        for i in (-1, 0, 1):
-            for j in (-1, 0, 1):
-                if hover_name is not None and cell_view_name(face, i, j) == hover_name:
-                    painter.setBrush(accent)
-                    painter.drawRect(self._cell_rect(i, j))
+        painter.setBrush(gradient)
+        painter.drawPath(path)
+        if hover_name is not None:
+            painter.save()
+            painter.setClipPath(path)
+            painter.setBrush(_ACCENT)
+            for i in (-1, 0, 1):
+                for j in (-1, 0, 1):
+                    if cell_view_name(face, i, j) == hover_name:
+                        painter.drawRect(self._cell_rect(i, j))
+            painter.restore()
+        rim = QPen(QColor(222, 235, 246, 165), 1.0)
+        rim.setCosmetic(True)
+        painter.setPen(rim)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(grid)
-        painter.drawRect(QRectF(-s * _BAND, -s * _BAND, 2 * s * _BAND, 2 * s * _BAND))
-        painter.setPen(outline)
-        painter.drawRect(QRectF(-s, -s, 2 * s, 2 * s))
+        painter.drawPath(path)
 
+        # Drawn as a vector path: skewed text stays smooth and free of colour fringes.
         font = QFont(self.font())
         font.setBold(True)
-        font.setPixelSize(max(int(s * 0.28), 6))
-        painter.setFont(font)
-        painter.setPen(QColor(244, 249, 252) if hover_name != face.name else QColor(255, 255, 255))
-        painter.drawText(
-            QRectF(-s * _BAND, -s * _BAND, 2 * s * _BAND, 2 * s * _BAND),
-            int(Qt.AlignmentFlag.AlignCenter),
-            face.name.upper(),
-        )
+        font.setPixelSize(max(int(s * 0.29), 6))
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.NoSubpixelAntialias)
+        label = face.name.upper()
+        text = QPainterPath()
+        text.addText(0.0, 0.0, font, label)
+        bounds = text.boundingRect()
+        text.translate(-bounds.center().x(), -bounds.center().y())
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(248, 251, 253, 240))
+        painter.drawPath(text)
         painter.restore()
 
     @staticmethod
@@ -400,12 +516,47 @@ class ViewCubeWidget(QWidget):
         y0, y1 = span(-j)
         return QRectF(x0, y0, x1 - x0, y1 - y0)
 
+    def _paint_axis_line(self, painter: QPainter, ball: AxisBall) -> None:
+        painter.save()
+        painter.setPen(QPen(QColor(*ball.colour, 225), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(self._centre, self._ball_pixel(ball))
+        painter.restore()
+
+    def _paint_ball(self, painter: QPainter, ball: AxisBall, hovered: bool) -> None:
+        painter.save()
+        radius = _BALL_RADIUS[0 if ball.positive else 1]
+        centre = self._ball_pixel(ball)
+        colour = QColor(*ball.colour)
+        fill = colour if ball.positive else colour.darker(260)
+        if hovered:
+            fill = colour.lighter(125)
+        gradient = QRadialGradient(QPointF(centre.x() - radius * 0.35, centre.y() - radius * 0.4), radius * 1.5)
+        gradient.setColorAt(0.0, fill.lighter(140))
+        gradient.setColorAt(0.55, fill)
+        gradient.setColorAt(1.0, fill.darker(135))
+        painter.setBrush(gradient)
+        painter.setPen(QPen(colour if not ball.positive else colour.darker(150), 1.4))
+        painter.drawEllipse(centre, radius, radius)
+        if ball.positive:
+            font = QFont(self.font())
+            font.setBold(True)
+            font.setPixelSize(11)
+            font.setStyleStrategy(QFont.StyleStrategy.NoSubpixelAntialias)
+            painter.setFont(font)
+            painter.setPen(QColor(18, 22, 28))
+            painter.drawText(QRectF(centre.x() - radius, centre.y() - radius, 2 * radius, 2 * radius), int(Qt.AlignmentFlag.AlignCenter), ball.label)
+        if hovered:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(255, 255, 255, 235), 1.8))
+            painter.drawEllipse(centre, radius + 2.2, radius + 2.2)
+        painter.restore()
+
     def _paint_button(self, painter: QPainter, action_id: str) -> None:
         rect = self._button_rect(action_id)
         hovered = self._hover == action_id
         painter.save()
-        painter.setPen(QPen(QColor(168, 200, 222, 220), 1.0))
-        painter.setBrush(QColor(0, 160, 205, 230) if hovered else QColor(30, 40, 50, 205))
+        painter.setPen(QPen(QColor(168, 200, 222, 200), 1.0))
+        painter.setBrush(_ACCENT if hovered else QColor(30, 40, 50, 195))
         painter.drawEllipse(rect.adjusted(1, 1, -1, -1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         pen = QPen(QColor(240, 247, 251), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
@@ -428,35 +579,6 @@ class ViewCubeWidget(QWidget):
             painter.drawPolygon(
                 QPolygonF([QPointF(tip_x + 2.5 * direction, c.y() - 3), QPointF(tip_x - 2.5 * direction, c.y() - 4), QPointF(tip_x, c.y() + 1)])
             )
-        painter.restore()
-
-    def _paint_triad(self, painter: QPainter) -> None:
-        """Small X/Y/Z axes in the corner, drawn from the camera orientation."""
-
-        forward, up = self._forward, self._up
-        right = _cross(forward, up)
-        origin = QPointF(16.0, CUBE_WIDGET_SIZE - 16.0)
-        length = 24.0
-        painter.save()
-        font = QFont(self.font())
-        font.setBold(True)
-        font.setPixelSize(10)
-        painter.setFont(font)
-        axes = (
-            ("X", (1.0, 0.0, 0.0), QColor(255, 84, 72)),
-            ("Y", (0.0, 1.0, 0.0), QColor(88, 226, 104)),
-            ("Z", (0.0, 0.0, 1.0), QColor(92, 150, 255)),
-        )
-        # Draw the axes pointing away from the viewer first so nearer ones overlap them.
-        for label, vector, colour in sorted(axes, key=lambda item: -_dot(item[1], forward)):
-            end = QPointF(origin.x() + length * _dot(vector, right), origin.y() - length * _dot(vector, up))
-            pen = QPen(colour, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawLine(origin, end)
-            direction = QPointF(end.x() - origin.x(), end.y() - origin.y())
-            norm = math.hypot(direction.x(), direction.y())
-            offset = QPointF(0.0, 0.0) if norm < 1e-6 else QPointF(direction.x() / norm * 7.0, direction.y() / norm * 7.0)
-            painter.drawText(QRectF(end.x() + offset.x() - 6, end.y() + offset.y() - 6, 12, 12), int(Qt.AlignmentFlag.AlignCenter), label)
         painter.restore()
 
 
@@ -484,15 +606,19 @@ def _unit(values: Iterable[object]) -> Vec3 | None:
 __all__ = (
     "CUBE_SCALE",
     "CUBE_WIDGET_SIZE",
+    "AXIS_DISTANCE",
+    "AxisBall",
     "CubeHit",
     "HOME_ACTION",
     "ProjectedFace",
     "ROLL_LEFT_ACTION",
     "ROLL_RIGHT_ACTION",
     "ViewCubeWidget",
+    "axis_title",
     "cell_view_name",
     "locate",
     "normalized_camera_orientation",
+    "project_axes",
     "project_faces",
     "view_name",
     "view_title",

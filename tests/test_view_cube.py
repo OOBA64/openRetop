@@ -18,15 +18,18 @@ from openretop.infrastructure.settings_repository import InMemorySettingsReposit
 from openretop.mesh.triangle_mesh import TriangleMeshData
 from openretop.presentation.qt.main_window import OpenRetopV3Window
 from openretop.presentation.qt.view_cube import (
+    AXIS_DISTANCE,
     CUBE_SCALE,
     CUBE_WIDGET_SIZE,
     HOME_ACTION,
     ROLL_LEFT_ACTION,
     ROLL_RIGHT_ACTION,
     ViewCubeWidget,
+    axis_title,
     cell_view_name,
     locate,
     normalized_camera_orientation,
+    project_axes,
     project_faces,
     view_name,
     view_title,
@@ -46,7 +49,7 @@ def _orientation(name: str) -> tuple[tuple[float, float, float], tuple[float, fl
     return forward, tuple(float(value) for value in up)  # type: ignore[return-value]
 
 
-def _snapshot(*, show_cube: bool = True, show_triad: bool = True, camera_request: CameraRequest | None = None) -> SceneSnapshot:
+def _snapshot(*, show_cube: bool = True, show_axes_gizmo: bool = True, camera_request: CameraRequest | None = None) -> SceneSnapshot:
     mesh = TriangleMeshData(
         vertices=np.asarray([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]], dtype=float),
         triangles=np.asarray([[0, 1, 2]], dtype=int),
@@ -65,7 +68,7 @@ def _snapshot(*, show_cube: bool = True, show_triad: bool = True, camera_request
         display={
             "show_grid": True,
             "show_axes": True,
-            "show_axis_gizmo": show_triad,
+            "show_axis_gizmo": show_axes_gizmo,
             "show_viewcube": show_cube,
             "display_colors": {"background_color": "#101316"},
         },
@@ -166,6 +169,94 @@ class CubeGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(abs(float(np.dot(forward, up))), 0.0)
 
 
+class AxisBallTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _widget(self, view: str) -> ViewCubeWidget:
+        widget = ViewCubeWidget()
+        widget.set_orientation(*_orientation(view))
+        return widget
+
+    def _pixel(self, ball) -> QPointF:
+        return QPointF(CUBE_WIDGET_SIZE / 2 + ball.centre[0] * CUBE_SCALE, CUBE_WIDGET_SIZE / 2 - ball.centre[1] * CUBE_SCALE)
+
+    def test_head_on_views_hide_the_end_on_axis_and_show_the_other_four_ends(self) -> None:
+        for view in FACE_NAMES:
+            with self.subTest(view=view):
+                balls = project_axes(*_orientation(view))
+                self.assertEqual(len(balls), 4)
+                self.assertNotIn(view, {ball.name for ball in balls})
+
+    def test_isometric_view_shows_all_six_ends(self) -> None:
+        balls = project_axes(*_orientation("isometric"))
+        self.assertEqual({ball.name for ball in balls}, set(FACE_NAMES))
+        near = [ball for ball in balls if ball.depth < 0]
+        self.assertEqual({ball.name for ball in near}, {"front", "right", "top"})
+
+    def test_ball_positions_follow_the_axes_and_stay_inside_the_widget(self) -> None:
+        for view in ("front", "isometric", "top+front+right", "bottom+back+left"):
+            for ball in project_axes(*_orientation(view)):
+                with self.subTest(view=view, ball=ball.name):
+                    self.assertLessEqual(abs(ball.centre[0]), AXIS_DISTANCE + 1e-9)
+                    self.assertLessEqual(abs(ball.centre[1]), AXIS_DISTANCE + 1e-9)
+                    pixel_radius = (AXIS_DISTANCE * CUBE_SCALE) + 9.0
+                    self.assertLess(pixel_radius, CUBE_WIDGET_SIZE / 2)
+
+    def test_x_points_right_and_z_points_up_in_the_front_view(self) -> None:
+        balls = {ball.name: ball for ball in project_axes(*_orientation("front"))}
+        self.assertGreater(balls["right"].centre[0], 1.0)
+        self.assertLess(balls["left"].centre[0], -1.0)
+        self.assertGreater(balls["top"].centre[1], 1.0)
+        self.assertLess(balls["bottom"].centre[1], -1.0)
+
+    def test_clicking_a_ball_selects_the_view_along_that_axis(self) -> None:
+        widget = ViewCubeWidget()
+        widget.set_orientation(*normalized_camera_orientation((-0.6, 0.7, -0.3), (0.0, 0.0, 1.0)))  # generic: no ends overlap
+        for ball in widget.axes:
+            if ball.depth > 0 and locate(widget.faces, *ball.centre) is not None:
+                continue  # hidden behind the cube
+            with self.subTest(ball=ball.name):
+                hit = widget.hit_at(self._pixel(ball))
+                self.assertIsNotNone(hit)
+                self.assertEqual(hit.action_id, f"view.named.{ball.name}")
+                self.assertEqual(hit.hover_key, f"view.named.{ball.name}#axis")
+                self.assertEqual(hit.title, axis_title(ball))
+
+    def test_a_ball_hidden_behind_the_cube_cannot_be_clicked_through_it(self) -> None:
+        widget = self._widget("isometric")
+        behind = [ball for ball in widget.axes if ball.depth > 0]
+        self.assertTrue(behind)
+        for ball in behind:
+            with self.subTest(ball=ball.name):
+                from openretop.presentation.qt.view_cube import locate
+
+                covered = locate(widget.faces, *ball.centre) is not None
+                hit = widget.hit_at(self._pixel(ball))
+                if covered:
+                    self.assertNotEqual(hit and hit.hover_key, f"view.named.{ball.name}#axis")
+
+    def test_axes_work_without_the_cube_and_cube_without_the_axes(self) -> None:
+        widget = self._widget("isometric")
+        ball = next(item for item in widget.axes if item.depth < 0)
+        widget.set_parts(cube=False, axes=True)
+        self.assertEqual(widget.hit_at(self._pixel(ball)).action_id, f"view.named.{ball.name}")
+        self.assertIsNone(widget.hit_at(QPointF(CUBE_WIDGET_SIZE / 2, CUBE_WIDGET_SIZE / 2)))
+        widget.set_parts(cube=True, axes=False)
+        hit = widget.hit_at(self._pixel(ball))
+        self.assertTrue(hit is None or not hit.hover_key.endswith("#axis"))
+
+    def test_ball_hover_is_distinct_from_the_matching_face(self) -> None:
+        widget = self._widget("isometric")
+        ball = next(item for item in widget.axes if item.depth < 0)
+        self.assertTrue(widget.set_hover(widget.hit_at(self._pixel(ball)).hover_key))
+        image_ball = widget.render_image()
+        widget.set_hover(f"view.named.{ball.name}")
+        image_face = widget.render_image()
+        self.assertNotEqual(image_ball.constBits().tobytes(), image_face.constBits().tobytes())
+
+
 class CubeWidgetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -192,7 +283,7 @@ class CubeWidgetTests(unittest.TestCase):
     def test_clicks_outside_the_cube_hit_nothing(self) -> None:
         widget = ViewCubeWidget()
         widget.set_orientation(*_orientation("front"))
-        self.assertIsNone(widget.hit_at(self._point(widget, 1.8, 0.0)))
+        self.assertIsNone(widget.hit_at(self._point(widget, 1.3, 1.3)))
         self.assertIsNone(widget.hit_at(QPointF(CUBE_WIDGET_SIZE / 2, 2.0)))
 
     def test_home_and_roll_buttons_map_to_actions(self) -> None:
@@ -224,7 +315,7 @@ class CubeWidgetTests(unittest.TestCase):
         try:
             QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, self._point(widget, 0.9, 0.0).toPoint())
             self.assertEqual(actions, ["view.named.front+right"])
-            QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, self._point(widget, 1.9, 0.0).toPoint())
+            QTest.mouseClick(widget, Qt.LeftButton, Qt.NoModifier, self._point(widget, 1.3, 1.3).toPoint())
             self.assertEqual(len(actions), 1)
         finally:
             widget.close()
@@ -239,7 +330,7 @@ class CubeWidgetTests(unittest.TestCase):
             QTest.mouseMove(widget, self._point(widget, 0.0, 0.9).toPoint())
             self.assertEqual(widget.hover, "view.named.top+front")
             self.assertEqual(widget.toolTip(), "Top-Front edge")
-            QTest.mouseMove(widget, self._point(widget, 1.9, 0.0).toPoint())
+            QTest.mouseMove(widget, self._point(widget, 1.3, 1.3).toPoint())
             self.assertIsNone(widget.hover)
         finally:
             widget.close()
@@ -252,9 +343,9 @@ class CubeWidgetTests(unittest.TestCase):
                 image = widget.render_image(ratio)
                 self.assertEqual(image.width(), round(CUBE_WIDGET_SIZE * ratio))
                 centre = round(CUBE_WIDGET_SIZE * ratio / 2)
-                self.assertEqual(image.pixelColor(centre, centre).alpha(), 255)
+                self.assertGreater(image.pixelColor(centre, centre).alpha(), 200)
                 self.assertEqual(image.pixelColor(centre, 2).alpha(), 0)  # above the cube, between the buttons
-        widget.set_parts(cube=False, triad=False)
+        widget.set_parts(cube=False, axes=False)
         self.assertEqual(widget.render_image().pixelColor(CUBE_WIDGET_SIZE // 2, CUBE_WIDGET_SIZE // 2).alpha(), 0)
         self.assertIsNone(widget.hit_at(self._point(widget, 0.0, 0.0)))
 
@@ -276,16 +367,16 @@ class ViewportCubeIntegrationTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_cube_and_triad_visibility_are_independent(self) -> None:
+    def test_cube_and_axes_visibility_are_independent(self) -> None:
         viewport = QtSceneViewport()
         try:
             viewport.resize(600, 400)
             for cube, triad in ((True, True), (True, False), (False, True), (False, False)):
-                with self.subTest(cube=cube, triad=triad):
-                    viewport.render_snapshot(_snapshot(show_cube=cube, show_triad=triad))
+                with self.subTest(cube=cube, axes=triad):
+                    viewport.render_snapshot(_snapshot(show_cube=cube, show_axes_gizmo=triad))
                     _ready_without_native_render(viewport)
                     state = viewport.navigation_cluster.diagnostic_state()
-                    self.assertEqual((state.cube_visible, state.triad_visible), (cube, triad))
+                    self.assertEqual((state.cube_visible, state.axes_visible), (cube, triad))
                     self.assertEqual(bool(viewport.navigation_cluster.overlay_renderer.GetDraw()), cube or triad)
         finally:
             viewport.close()

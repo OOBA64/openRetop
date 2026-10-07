@@ -695,7 +695,7 @@ class OverlayTests(unittest.TestCase):
             )
             _ready_without_native_render(viewport)
             state = viewport.navigation_cluster.diagnostic_state()
-            self.assertFalse(state.triad_visible)
+            self.assertFalse(state.axes_visible)
             self.assertTrue(viewport.view_controls.visible)
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 viewport.render_snapshot(
@@ -705,7 +705,7 @@ class OverlayTests(unittest.TestCase):
                         show_viewcube=False,
                     )
                 )
-            self.assertTrue(viewport.navigation_cluster.diagnostic_state().triad_visible)
+            self.assertTrue(viewport.navigation_cluster.diagnostic_state().axes_visible)
             self.assertFalse(viewport.view_controls.visible)
         finally:
             viewport.close()
@@ -821,18 +821,18 @@ class OverlayTests(unittest.TestCase):
             _ready_without_native_render(window.viewport)
             cluster = window.viewport.navigation_cluster
             self.assertTrue(cluster.visible)
-            self.assertTrue(cluster.diagnostic_state().triad_visible)
+            self.assertTrue(cluster.diagnostic_state().axes_visible)
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 self.assertTrue(
                     window._dispatch_framework_action("view.toggle_view_controls")
                 )
             self.assertFalse(cluster.visible)
-            self.assertTrue(cluster.diagnostic_state().triad_visible)
+            self.assertTrue(cluster.diagnostic_state().axes_visible)
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 self.assertTrue(
                     window._dispatch_framework_action("view.toggle_axis_gizmo")
                 )
-            self.assertFalse(cluster.diagnostic_state().triad_visible)
+            self.assertFalse(cluster.diagnostic_state().axes_visible)
         finally:
             window.set_project_dirty(False)
             window.close()

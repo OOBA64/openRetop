@@ -27,7 +27,7 @@ from openretop.presentation.qt.view_cube import (
 @dataclass(frozen=True, slots=True)
 class NavigationClusterDiagnosticState:
     cube_visible: bool
-    triad_visible: bool
+    axes_visible: bool
     overlay_attached: bool
     overlay_viewport: tuple[float, float, float, float] | None
     camera_signature: tuple[float, ...] | None
@@ -144,7 +144,7 @@ class _CubeImageOverlay:
 
 
 class ViewportNavigationCluster(QObject):
-    """Top-right view cube and axis triad that follow the main camera.
+    """Top-right view cube and axis balls that follow the main camera.
 
     The QVTK render window stays the only native window and its interactor the only
     input owner; this class observes interaction events solely to copy the camera
@@ -175,7 +175,7 @@ class ViewportNavigationCluster(QObject):
         self.widget.action_requested.connect(self.action_requested)
         self._overlay: _CubeImageOverlay | None = None
         self._cube_visible = False
-        self._triad_visible = False
+        self._axes_visible = False
         self._closed = False
         self._started = False
         self._observer_id: int | None = None
@@ -259,24 +259,24 @@ class ViewportNavigationCluster(QObject):
         self._apply_visibility()
 
     def set_visibility(self, *, gizmo: bool, controls: bool) -> None:
-        """``controls`` shows the clickable cube; ``gizmo`` shows the X/Y/Z axis triad."""
+        """``controls`` shows the clickable cube; ``gizmo`` shows the X/Y/Z axis balls."""
 
-        changed = (bool(controls), bool(gizmo)) != (self._cube_visible, self._triad_visible)
+        changed = (bool(controls), bool(gizmo)) != (self._cube_visible, self._axes_visible)
         self._cube_visible = bool(controls)
-        self._triad_visible = bool(gizmo)
+        self._axes_visible = bool(gizmo)
         if changed:
-            self.widget.set_parts(cube=self._cube_visible, triad=self._triad_visible)
+            self.widget.set_parts(cube=self._cube_visible, axes=self._axes_visible)
             self._image_dirty = True
         self._apply_visibility()
         self.update_layout()
         self._refresh_image()
 
     def set_visible(self, visible: bool) -> None:
-        self.set_visibility(gizmo=self._triad_visible, controls=visible)
+        self.set_visibility(gizmo=self._axes_visible, controls=visible)
 
     def _apply_visibility(self) -> None:
         if self._overlay is not None:
-            self._overlay.set_draw(self._cube_visible or self._triad_visible)
+            self._overlay.set_draw(self._cube_visible or self._axes_visible)
 
     def update_layout(self) -> bool:
         if self._closed or self._overlay is None or self.render_window is None:
@@ -322,7 +322,7 @@ class ViewportNavigationCluster(QObject):
         if self._pointer is not None:
             # The region under a stationary cursor changes when the cube turns.
             hit = self.widget.hit_at(self._pointer)
-            self.widget.set_hover(None if hit is None else hit.action_id)
+            self.widget.set_hover(None if hit is None else hit.hover_key)
         self._image_dirty = True
         self._refresh_image()
         self._last_error = None
@@ -331,7 +331,7 @@ class ViewportNavigationCluster(QObject):
     def _refresh_image(self) -> None:
         """Repaint the cube into the overlay image if anything changed."""
 
-        if self._overlay is None or not self._image_dirty or not (self._cube_visible or self._triad_visible):
+        if self._overlay is None or not self._image_dirty or not (self._cube_visible or self._axes_visible):
             return
         try:
             import numpy as np
@@ -368,7 +368,7 @@ class ViewportNavigationCluster(QObject):
     def diagnostic_state(self) -> NavigationClusterDiagnosticState:
         return NavigationClusterDiagnosticState(
             cube_visible=self._cube_visible,
-            triad_visible=self._triad_visible,
+            axes_visible=self._axes_visible,
             overlay_attached=self._overlay is not None and self._overlay.attached(),
             overlay_viewport=self._current_viewport(),
             camera_signature=self._camera_signature,
@@ -395,7 +395,7 @@ class ViewportNavigationCluster(QObject):
             if event.buttons() != Qt.MouseButton.NoButton:
                 return False  # a drag elsewhere keeps going; never hijack it
             self._pointer = local
-            self._set_hover(None if hit is None else hit.action_id, None if hit is None else hit.title)
+            self._set_hover(None if hit is None else hit.hover_key, None if hit is None else hit.title)
             return False  # let the viewport see idle motion as before
         if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._pressed = None if hit is None else hit.action_id
