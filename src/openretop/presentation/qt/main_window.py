@@ -809,6 +809,20 @@ class OpenRetopV3Window(ApplicationShell):
         )
         return tuple(nodes)
 
+    def _sync_tree_selection_from_controller(self) -> None:
+        """Make the tree (and so the inspector) follow selections made outside it, e.g. viewport picks.
+
+        An editable-feature row selected in the tree is not part of the controller's
+        selection, so it is left alone.
+        """
+
+        current = self._scene_model.selected_ids
+        if any(_is_feature_node(value) for value in current):
+            return
+        wanted = tuple(self.composition.selection_controller.snapshot().ids)
+        if wanted != current:
+            self._scene_model.select(wanted)
+
     def _model_info_text(self) -> str:
         state = self.composition.state
         mesh = state.mesh_object
@@ -821,6 +835,7 @@ class OpenRetopV3Window(ApplicationShell):
         self.set_info_message(self._model_info_text())
         self.viewport.set_left_capture_owner(self._viewport_left_capture_owner())
         self._scene_model.replace(self._scene_nodes())
+        self._sync_tree_selection_from_controller()
         self.scene_tree.refresh()
         self.inspector.set_model(PropertyInspectorModel(self._inspector_fields()))
         previews = self._surface_previews()

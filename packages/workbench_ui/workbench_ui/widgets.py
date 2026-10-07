@@ -207,6 +207,10 @@ class PropertyInspectorWidget(QWidget):
             item = self.layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # Detach immediately: deleteLater alone leaves the old group boxes painted
+                # (overlapping the new ones) until the event loop runs.
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
         self._editors.clear()
         self._groups.clear()
