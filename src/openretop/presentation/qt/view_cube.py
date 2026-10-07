@@ -1,4 +1,4 @@
-"""Clickable orientation gizmo for the viewport: a glass view cube with XYZ axis balls.
+"""Clickable orientation gizmo for the viewport: a view cube with XYZ axis balls.
 
 The gizmo mirrors the main camera.  Each visible cube face is labelled (FRONT, BACK,
 LEFT, RIGHT, TOP, BOTTOM) and every face, edge and corner is a click target that snaps
@@ -6,7 +6,8 @@ the camera to that direction.  Faces are split 3x3 like a conventional CAD view 
 the centre is the face view, the border strips are edge views, and the corners are
 three-face (isometric style) views.  Around the cube, coloured balls mark the axes
 (solid for +X/+Y/+Z with a letter, muted for the negative ends); clicking one looks
-along that axis, as in Blender's navigation gizmo.
+along that axis, as in Blender's navigation gizmo.  There are deliberately no extra
+buttons: the isometric view and view roll are in the View menu and the command palette.
 
 Geometry and hit-testing are pure functions of the camera orientation so they can be
 unit-tested without Qt; :class:`ViewCubeWidget` only paints them.
@@ -32,7 +33,6 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
-    QPolygonF,
     QRadialGradient,
     QTransform,
 )
@@ -41,12 +41,11 @@ from PySide6.QtWidgets import QWidget
 Vec2 = tuple[float, float]
 Vec3 = tuple[float, float, float]
 
-CUBE_WIDGET_SIZE = 176
-CUBE_MARGIN = 10
+CUBE_WIDGET_SIZE = 160
+CUBE_MARGIN = 8
 CUBE_SCALE = 32.0  # pixels per cube half-edge
 _BAND = 0.5  # |local coordinate| beyond this on a face is an edge/corner strip
 _MIN_FACING = 0.02  # faces nearly edge-on are not drawn or clickable
-_ROLL_DEGREES_TEXT = "15 degrees"
 AXIS_DISTANCE = 2.05  # axis balls sit this many half-edges from the centre
 _AXIS_HIDE_OFFSET = 1.0  # a ball nearly end-on to the viewer would cover the cube face
 _BALL_RADIUS = (9.0, 6.5)  # positive, negative
@@ -71,9 +70,6 @@ _FACES: tuple[tuple[str, Vec3, Vec3, Vec3], ...] = (
     ("top", (0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
     ("bottom", (0.0, 0.0, -1.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
 )
-HOME_ACTION = "view.named.isometric"
-ROLL_LEFT_ACTION = "view.roll_left"
-ROLL_RIGHT_ACTION = "view.roll_right"
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +232,7 @@ class CubeHit:
 
 
 class ViewCubeWidget(QWidget):
-    """Paints the cube, XYZ axis balls and home/roll buttons, and hit-tests them.
+    """Paints the cube and XYZ axis balls, and hit-tests them.
 
     A Qt child widget cannot draw over QVTK's native OpenGL surface, so in the app this
     widget is never shown: the cluster renders it to an image (:meth:`render_image`),
@@ -320,16 +316,6 @@ class ViewCubeWidget(QWidget):
     def _to_view(self, point: QPointF) -> Vec2:
         return ((point.x() - self._centre.x()) / CUBE_SCALE, (self._centre.y() - point.y()) / CUBE_SCALE)
 
-    def _button_rect(self, action_id: str) -> QRectF:
-        size = 24.0
-        if action_id == HOME_ACTION:
-            return QRectF(CUBE_MARGIN - 6, CUBE_MARGIN - 6, size, size)
-        if action_id == ROLL_LEFT_ACTION:
-            return QRectF(CUBE_WIDGET_SIZE - size - CUBE_MARGIN + 6, CUBE_MARGIN - 6, size, size)
-        return QRectF(CUBE_WIDGET_SIZE - size - CUBE_MARGIN + 6, CUBE_WIDGET_SIZE - size - CUBE_MARGIN + 6, size, size)
-
-    _BUTTONS = (HOME_ACTION, ROLL_LEFT_ACTION, ROLL_RIGHT_ACTION)
-
     @property
     def axes(self) -> tuple[AxisBall, ...]:
         return self._axes
@@ -340,15 +326,6 @@ class ViewCubeWidget(QWidget):
     def hit_at(self, point: QPointF) -> CubeHit | None:
         """What a click at ``point`` (widget pixels) would do, or None."""
 
-        if self._show_cube:
-            titles = {
-                HOME_ACTION: "Isometric view (Ctrl+7)",
-                ROLL_LEFT_ACTION: f"Roll view left {_ROLL_DEGREES_TEXT}",
-                ROLL_RIGHT_ACTION: f"Roll view right {_ROLL_DEGREES_TEXT}",
-            }
-            for action_id in self._BUTTONS:
-                if self._button_rect(action_id).contains(point):
-                    return CubeHit(action_id, titles[action_id])
         view_point = self._to_view(point)
         if self._show_axes:
             for ball in sorted(self._axes, key=lambda item: item.depth):  # nearest first
@@ -416,7 +393,7 @@ class ViewCubeWidget(QWidget):
         hover_axis = hover[len("view.named.") : -len("#axis")] if hover is not None and hover.endswith("#axis") else None
         hover_name = (
             hover[len("view.named.") :]
-            if hover is not None and hover.startswith("view.named.") and not hover.endswith("#axis") and hover != HOME_ACTION
+            if hover is not None and hover.startswith("view.named.") and not hover.endswith("#axis")
             else None
         )
         # Painter's algorithm: far to near, so balls pass behind and in front of the cube.
@@ -434,9 +411,6 @@ class ViewCubeWidget(QWidget):
                 items.append((ball.depth, partial(self._paint_ball, painter, ball, ball.name == hover_axis)))
         for _depth, draw in sorted(items, key=lambda item: -item[0]):
             draw()
-        if self._show_cube:
-            for action_id in self._BUTTONS:
-                self._paint_button(painter, action_id)
 
     def _face_path(self) -> QPainterPath:
         s = CUBE_SCALE
@@ -467,8 +441,8 @@ class ViewCubeWidget(QWidget):
         painter.setTransform(self._face_transform(face), False)
         shade = 0.70 + 0.30 * face.facing
         gradient = QLinearGradient(0.0, -s, 0.0, s)
-        gradient.setColorAt(0.0, QColor.fromRgbF(0.46 * shade, 0.52 * shade, 0.61 * shade, 0.96))
-        gradient.setColorAt(1.0, QColor.fromRgbF(0.28 * shade, 0.33 * shade, 0.41 * shade, 0.96))
+        gradient.setColorAt(0.0, QColor.fromRgbF(0.46 * shade, 0.52 * shade, 0.61 * shade))
+        gradient.setColorAt(1.0, QColor.fromRgbF(0.28 * shade, 0.33 * shade, 0.41 * shade))
         path = self._face_path()
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
@@ -499,7 +473,9 @@ class ViewCubeWidget(QWidget):
         bounds = text.boundingRect()
         text.translate(-bounds.center().x(), -bounds.center().y())
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(248, 251, 253, 240))
+        # Labels on faces turned steeply away would only be a smear: fade them out.
+        legibility = min(max((face.facing - 0.2) / 0.35, 0.0), 1.0)
+        painter.setBrush(QColor(248, 251, 253, round(240 * legibility)))
         painter.drawPath(text)
         painter.restore()
 
@@ -551,37 +527,6 @@ class ViewCubeWidget(QWidget):
             painter.drawEllipse(centre, radius + 2.2, radius + 2.2)
         painter.restore()
 
-    def _paint_button(self, painter: QPainter, action_id: str) -> None:
-        rect = self._button_rect(action_id)
-        hovered = self._hover == action_id
-        painter.save()
-        painter.setPen(QPen(QColor(168, 200, 222, 200), 1.0))
-        painter.setBrush(_ACCENT if hovered else QColor(30, 40, 50, 195))
-        painter.drawEllipse(rect.adjusted(1, 1, -1, -1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(QColor(240, 247, 251), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        c = rect.center()
-        if action_id == HOME_ACTION:
-            roof = QPolygonF([QPointF(c.x() - 6, c.y()), QPointF(c.x(), c.y() - 6), QPointF(c.x() + 6, c.y())])
-            painter.drawPolyline(roof)
-            painter.drawPolyline(
-                QPolygonF([QPointF(c.x() - 4, c.y()), QPointF(c.x() - 4, c.y() + 5), QPointF(c.x() + 4, c.y() + 5), QPointF(c.x() + 4, c.y())])
-            )
-        else:
-            clockwise = action_id == ROLL_RIGHT_ACTION
-            arc = rect.adjusted(6, 6, -6, -6)
-            painter.drawArc(arc, (35 if clockwise else 145) * 16, (-255 if clockwise else 255) * 16)
-            tip_x = c.x() + (5.5 if clockwise else -5.5)
-            direction = 1 if clockwise else -1
-            painter.setBrush(QColor(240, 247, 251))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawPolygon(
-                QPolygonF([QPointF(tip_x + 2.5 * direction, c.y() - 3), QPointF(tip_x - 2.5 * direction, c.y() - 4), QPointF(tip_x, c.y() + 1)])
-            )
-        painter.restore()
-
-
 def _dot(first: Iterable[float], second: Iterable[float]) -> float:
     return sum(a * b for a, b in zip(first, second))
 
@@ -609,10 +554,7 @@ __all__ = (
     "AXIS_DISTANCE",
     "AxisBall",
     "CubeHit",
-    "HOME_ACTION",
     "ProjectedFace",
-    "ROLL_LEFT_ACTION",
-    "ROLL_RIGHT_ACTION",
     "ViewCubeWidget",
     "axis_title",
     "cell_view_name",

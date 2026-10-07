@@ -745,9 +745,13 @@ class OverlayTests(unittest.TestCase):
             _ready_without_native_render(viewport)
             cluster = viewport.navigation_cluster
             widget = cluster.widget
+            widget.set_orientation((0.0, 1.0, 0.0), (0.0, 0.0, 1.0))  # looking at the front face
             x, y, _w, _h = cluster.logical_bounds
-            for action_id in ("view.named.isometric", "view.roll_left", "view.roll_right"):
-                centre = widget._button_rect(action_id).center()
+            targets = {
+                "view.named.front": QPointF(widget._centre.x(), widget._centre.y()),  # the face
+                "view.named.top": QPointF(*(widget._ball_pixel(next(b for b in widget.axes if b.name == "top")).toTuple())),
+            }
+            for action_id, centre in targets.items():
                 point = QPointF(x + centre.x(), y + centre.y())
                 for kind, buttons in (
                     (QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton),

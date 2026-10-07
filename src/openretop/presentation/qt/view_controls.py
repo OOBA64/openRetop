@@ -75,7 +75,7 @@ class _CubeImageOverlay:
         self.image = vtkImageData()
         self.actor = vtkImageActor()
         self.actor.SetInputData(self.image)
-        self.actor.InterpolateOff()
+        self.actor.InterpolateOn()  # harmless when pixel-aligned, smooth if the scale is fractional
         self.actor.PickableOff()
         self.actor.DragableOff()
         self.renderer = vtkRenderer()
@@ -121,8 +121,12 @@ class _CubeImageOverlay:
         if self._size != (width, height):
             self._size = (width, height)
             camera = self.renderer.GetActiveCamera()
-            camera.SetFocalPoint(width / 2.0, height / 2.0, 0.0)
-            camera.SetPosition(width / 2.0, height / 2.0, 10.0 * max(width, height))
+            # Image pixel i is centred on world coordinate i, so the visible range must be
+            # [-0.5, size - 0.5]; centring on size / 2 would put every display pixel on the
+            # boundary between two image pixels and make glyph rows round unevenly.
+            centre_x, centre_y = (width - 1) / 2.0, (height - 1) / 2.0
+            camera.SetFocalPoint(centre_x, centre_y, 0.0)
+            camera.SetPosition(centre_x, centre_y, 10.0 * max(width, height))
             camera.SetViewUp(0.0, 1.0, 0.0)
             camera.SetParallelScale(height / 2.0)
             camera.SetClippingRange(1.0, 100.0 * max(width, height))

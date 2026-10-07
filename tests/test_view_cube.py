@@ -21,9 +21,6 @@ from openretop.presentation.qt.view_cube import (
     AXIS_DISTANCE,
     CUBE_SCALE,
     CUBE_WIDGET_SIZE,
-    HOME_ACTION,
-    ROLL_LEFT_ACTION,
-    ROLL_RIGHT_ACTION,
     ViewCubeWidget,
     axis_title,
     cell_view_name,
@@ -286,14 +283,13 @@ class CubeWidgetTests(unittest.TestCase):
         self.assertIsNone(widget.hit_at(self._point(widget, 1.3, 1.3)))
         self.assertIsNone(widget.hit_at(QPointF(CUBE_WIDGET_SIZE / 2, 2.0)))
 
-    def test_home_and_roll_buttons_map_to_actions(self) -> None:
+    def test_there_are_no_buttons_only_cube_regions_and_axis_balls(self) -> None:
         widget = ViewCubeWidget()
-        for action_id in (HOME_ACTION, ROLL_LEFT_ACTION, ROLL_RIGHT_ACTION):
-            with self.subTest(action=action_id):
-                centre = widget._button_rect(action_id).center()
-                hit = widget.hit_at(centre)
-                self.assertIsNotNone(hit)
-                self.assertEqual(hit.action_id, action_id)
+        widget.set_orientation(*_orientation("front"))
+        corners = [QPointF(4, 4), QPointF(CUBE_WIDGET_SIZE - 4, 4), QPointF(4, CUBE_WIDGET_SIZE - 4), QPointF(CUBE_WIDGET_SIZE - 4, CUBE_WIDGET_SIZE - 4)]
+        for corner in corners:
+            with self.subTest(corner=(corner.x(), corner.y())):
+                self.assertIsNone(widget.hit_at(corner))
 
     def test_orientation_follows_the_camera_and_back_faces_are_not_clickable(self) -> None:
         widget = ViewCubeWidget()
