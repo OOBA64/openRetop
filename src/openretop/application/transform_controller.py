@@ -108,10 +108,41 @@ class TransformController(ControllerBase):
         self._angle_delta: float | None = None
         self._modal_object_before: ObjectTransformSnapshot | None = None
         self._modal_section_before: SectionWorkflowSnapshot | None = None
+        self._typed = ""  # a value typed during the grab (Blender style); overrides the mouse
 
     @property
     def last_readout(self) -> str | None:
         return self._last_readout
+
+    @property
+    def typed_value_text(self) -> str:
+        return self._typed
+
+    def set_typed_value(self, text: str) -> CommandResult:
+        """Set the value typed during a grab: a distance in project units, or degrees.
+
+        Applied along the locked axis (X when nothing is locked, the first axis of a locked
+        plane); the mouse is ignored while a value is typed.  The next update applies it.
+        """
+
+        if self.state.transform_state is None:
+            return CommandResult.failure("No transform is active.")
+        cleaned = "".join(character for character in str(text) if character in "0123456789.-")
+        if cleaned.count("-") > 1 or cleaned.rfind("-") > 0 or cleaned.count(".") > 1:
+            return CommandResult.failure(f"Not a number: {text}")
+        self._typed = cleaned
+        self._last_readout = None
+        return CommandResult.ok(status=self.active_status(), changed=True)
+
+    def _typed_number(self) -> float | None:
+        if not self._typed:
+            return None
+        if self._typed in {"-", ".", "-."}:
+            return 0.0  # a sign or point on its own: the value is still being typed
+        try:
+            return float(self._typed)
+        except ValueError:
+            return None
 
     @property
     def angle_delta(self) -> float | None:
@@ -337,6 +368,7 @@ class TransformController(ControllerBase):
         self.state.active_transform_mode = mode_key
         self.state.active_transform_axis = self._display_axis(self.state.transform_state)
         self._last_readout = None
+        self._typed = ""
         self._angle_delta = 0.0 if mode_key == TRANSFORM_ROTATE else None
         self.events.publish(ActiveToolChangedEvent(tool_id=f"transform.{mode_key}"))
         publish_scene_change(
@@ -661,8 +693,11 @@ class TransformController(ControllerBase):
         mesh_object = self.state.mesh_object
         if mesh_object is None:
             return False
+        typed = self._typed_number()
         if session.mode == TRANSFORM_MOVE:
-            if session.axis_constraint is None:
+            if typed is not None:
+                movement, readout = self._typed_move(session, typed)
+            elif session.axis_constraint is None:
                 movement, readout = camera_relative_move_delta(
                     session.mouse_start,
                     position,
@@ -691,17 +726,22 @@ class TransformController(ControllerBase):
             self._angle_delta = None
         else:
             axis = self._display_axis(session) or "Z"
-            next_rotation, angle = mesh_rotate_delta(
-                session.mouse_start,
-                position,
-                session.rotation,
-                axis,
-                fine=fine,
-            )
+            if typed is not None:
+                next_rotation = np.asarray(session.rotation, dtype=float).copy()
+                next_rotation[("X", "Y", "Z").index(axis)] += typed
+                angle = typed
+            else:
+                next_rotation, angle = mesh_rotate_delta(
+                    session.mouse_start,
+                    position,
+                    session.rotation,
+                    axis,
+                    fine=fine,
+                )
             changed = not np.allclose(mesh_object.rotation, next_rotation, atol=1e-12)
             mesh_object.rotation = next_rotation
             self.state.active_transform_axis = axis
-            self._last_readout = f"{angle:.1f} deg"
+            self._last_readout = f"{self._typed} deg (typed)" if typed is not None else f"{angle:.1f} deg"
             self._angle_delta = angle
         self._apply_object_transform()
         return changed
@@ -719,8 +759,11 @@ class TransformController(ControllerBase):
             return False
         old_origin = plane_origin(plane)
         old_normal = plane_normal(plane)
+        typed = self._typed_number()
         if session.mode == TRANSFORM_MOVE:
-            if session.axis_constraint is None:
+            if typed is not None:
+                movement, readout = self._typed_move(session, typed)
+            elif session.axis_constraint is None:
                 movement, _readout = camera_relative_move_delta(
                     session.mouse_start,
                     position,
@@ -764,13 +807,16 @@ class TransformController(ControllerBase):
             self._angle_delta = None
         else:
             axis = self._display_axis(session)
-            _rotation, angle = mesh_rotate_delta(
-                session.mouse_start,
-                position,
-                np.zeros(3, dtype=float),
-                axis or "Z",
-                fine=fine,
-            )
+            if typed is not None:
+                angle = typed
+            else:
+                _rotation, angle = mesh_rotate_delta(
+                    session.mouse_start,
+                    position,
+                    np.zeros(3, dtype=float),
+                    axis or "Z",
+                    fine=fine,
+                )
             rotation_axis = (
                 world_axis_vector(axis)
                 if axis in {"X", "Y", "Z"}
@@ -789,6 +835,19 @@ class TransformController(ControllerBase):
             np.allclose(old_origin, plane_origin(plane), atol=1e-12)
             and np.allclose(old_normal, plane_normal(plane), atol=1e-12)
         )
+
+    def _typed_move(self, session: ActiveTransformState, typed: float) -> tuple[np.ndarray, str]:
+        """An exact move by the typed value along the locked axis (X if nothing is locked)."""
+
+        constraint = session.axis_constraint
+        if constraint == "N":
+            direction = normalized_vector(session.section_normal, fallback=world_axis_vector("Z"))
+            label = "normal"
+        else:
+            axis = "X" if constraint is None else constraint[0]  # a plane lock: its first axis
+            direction = world_axis_vector(axis)
+            label = axis
+        return (direction * typed, f"Delta {label}: {self._typed} (typed)")
 
     def _restore_transform_start(self, session: ActiveTransformState) -> None:
         if session.selected_item == SELECT_MODEL:
@@ -1042,6 +1101,7 @@ class TransformController(ControllerBase):
         return f"Rotating {name} around {label}: {self._last_readout}"
 
     def _clear_session(self) -> None:
+        self._typed = ""
         self.state.transform_state = None
         self.state.active_transform_mode = None
         self.state.active_transform_axis = None

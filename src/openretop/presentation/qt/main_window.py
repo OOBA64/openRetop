@@ -525,8 +525,12 @@ class OpenRetopV3Window(ApplicationShell):
         elif action_id in {"transform.move", "transform.rotate"}:
             self.tool_modes.enter(
                 "transform",
-                "Move the pointer. X/Y/Z lock an axis, Shift+X/Y/Z a plane. Enter confirms, Esc cancels.",
+                "Move the pointer or type a value. X/Y/Z lock an axis, Shift+X/Y/Z a plane. "
+                "Enter confirms, Esc cancels.",
             )
+            if self.viewport.interactor is not None:
+                # keys belong to the grab now (locks, typed values), not to the tree or a field
+                self.viewport.interactor.setFocus()
         elif action_id in {"manual_curve.finish", "manual_curve.apply", "region.finish", "transform.confirm"}:
             self.tool_modes.finish()
         elif action_id in {"manual_curve.cancel", "transform.cancel"}:
@@ -772,20 +776,39 @@ class OpenRetopV3Window(ApplicationShell):
         return point, False, None, session.plane_normal
 
     def keyPressEvent(self, event: object) -> None:
-        if self._handle_tool_key(event.key()):
+        if self._handle_tool_key(event.key(), event.text()):
             event.accept()
             return
         super().keyPressEvent(event)
 
     def eventFilter(self, watched: object, event: object) -> bool:
-        if (
-            watched is self.viewport.interactor
-            and event.type() == QEvent.KeyPress
-            and self._handle_tool_key(event.key())
-        ):
-            event.accept()
-            return True
+        if watched is self.viewport.interactor:
+            if event.type() == QEvent.ShortcutOverride and self._is_typed_value_key(event.key(), event.text()):
+                # While grabbing, digits type a value: claim them before shortcuts such as
+                # "0" (Isometric) can fire.
+                event.accept()
+                return True
+            if event.type() == QEvent.KeyPress and self._handle_tool_key(event.key(), event.text()):
+                event.accept()
+                return True
         return super().eventFilter(watched, event)
+
+    def _is_typed_value_key(self, key: int, text: str) -> bool:
+        return self.composition.transform_controller.active and (
+            key == Qt.Key_Backspace or (len(text) == 1 and text in "0123456789.-")
+        )
+
+    def _type_transform_value(self, key: int, text: str) -> None:
+        transform = self.composition.transform_controller
+        current = transform.typed_value_text
+        typed = current[:-1] if key == Qt.Key_Backspace else current + text
+        result = transform.set_typed_value(typed)
+        if not result.success:
+            return  # e.g. a second decimal point: ignore the key
+        self._consume_result(
+            "transform.pointer",
+            self._update_transform(self.viewport.last_pointer_position),
+        )
 
     def _other_tool_active(self) -> str:
         """Name of a tool that owns the pointer right now (so measuring cannot start), or ''."""
@@ -830,7 +853,10 @@ class OpenRetopV3Window(ApplicationShell):
             self.tool_modes.cancel()
         return changed
 
-    def _handle_tool_key(self, key: int) -> bool:
+    def _handle_tool_key(self, key: int, text: str = "") -> bool:
+        if self._is_typed_value_key(key, text):
+            self._type_transform_value(key, text)
+            return True
         if key in {Qt.Key_Return, Qt.Key_Enter}:
             manual = self.composition.manual_curve_controller.session
             if manual.active:

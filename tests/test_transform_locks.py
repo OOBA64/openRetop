@@ -226,6 +226,85 @@ class TransformLockWindowTests(unittest.TestCase):
         self.assertAlmostEqual(float(rotation[0]), 20.0, places=6)
         np.testing.assert_allclose(rotation[1:], 0.0, atol=1e-12)
 
+    # -- typed values (UX-35) ---------------------------------------------------------
+
+    def _type(self, window: OpenRetopV3Window, text: str) -> None:
+        for character in text:
+            key = Qt.Key.Key_Backspace if character == "\b" else 0
+            self.assertTrue(window._handle_tool_key(key, "" if character == "\b" else character))
+
+    def test_g_x_10_enter_moves_exactly_ten_units_along_x(self) -> None:
+        from openretop.application.actions import ACTION_UNDO
+
+        window = self._window()
+        start = self._grab(window)
+        self._motion(window, start[0] + 33, start[1] - 17)  # the mouse is ignored once a value is typed
+        self._act(window, "transform.constrain_x")
+        self._type(window, "10")
+        self._motion(window, start[0] + 90, start[1] + 40)
+        np.testing.assert_allclose(self._location(window), (10.0, 0.0, 0.0), atol=1e-12)
+        self.assertIn("10", window.statusBar().currentMessage())
+        self.assertTrue(self._act(window, "transform.confirm"))
+        np.testing.assert_allclose(self._location(window), (10.0, 0.0, 0.0), atol=1e-12)
+        self._act(window, ACTION_UNDO)
+        np.testing.assert_allclose(self._location(window), 0.0, atol=1e-12)
+
+    def test_typing_without_a_lock_moves_along_x_and_a_lock_redirects_it(self) -> None:
+        window = self._window()
+        self._grab(window)
+        self._type(window, "-2.5")
+        np.testing.assert_allclose(self._location(window), (-2.5, 0.0, 0.0), atol=1e-12)
+        self._act(window, "transform.constrain_z")
+        np.testing.assert_allclose(self._location(window), (0.0, 0.0, -2.5), atol=1e-12)
+
+    def test_backspace_edits_and_an_empty_value_hands_back_to_the_mouse(self) -> None:
+        window = self._window()
+        start = self._grab(window)
+        self._act(window, "transform.constrain_y")
+        self._type(window, "123\b\b")
+        np.testing.assert_allclose(self._location(window), (0.0, 1.0, 0.0), atol=1e-12)
+        self._type(window, "\b")
+        self._motion(window, start[0], start[1] - 40)
+        self.assertNotAlmostEqual(float(self._location(window)[1]), 1.0)
+
+    def test_a_second_point_or_an_inner_minus_is_ignored(self) -> None:
+        window = self._window()
+        self._grab(window)
+        self._type(window, "1.5.-2")
+        self.assertEqual(window.composition.transform_controller.typed_value_text, "1.52")
+
+    def test_r_z_90_rotates_exactly_ninety_degrees(self) -> None:
+        window = self._window()
+        self._grab(window, "transform.rotate")
+        self._act(window, "transform.constrain_z")
+        self._type(window, "90")
+        self._act(window, "transform.confirm")
+        np.testing.assert_allclose(window.composition.state.mesh_object.rotation, (0.0, 0.0, 90.0), atol=1e-12)
+
+    def test_digits_are_claimed_from_shortcuts_only_during_a_grab(self) -> None:
+        from PySide6.QtGui import QKeyEvent
+
+        window = self._window()
+        interactor = window.viewport.interactor
+
+        def override(text: str) -> bool:
+            event = QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_0, Qt.KeyboardModifier.NoModifier, text)
+            return bool(window.eventFilter(interactor, event))
+
+        self.assertFalse(override("0"), "outside a grab, 0 is still the Isometric shortcut")
+        self._grab(window)
+        self.assertTrue(override("0"))
+        self.assertFalse(override("g"))
+
+    def test_a_typed_value_is_dropped_when_the_grab_ends(self) -> None:
+        window = self._window()
+        self._grab(window)
+        self._type(window, "4")
+        self._act(window, "transform.cancel")
+        self.assertEqual(window.composition.transform_controller.typed_value_text, "")
+        np.testing.assert_allclose(self._location(window), 0.0, atol=1e-12)
+        self.assertFalse(window._handle_tool_key(0, "4"), "digits do nothing outside a grab")
+
     # -- what the user sees -----------------------------------------------------------
 
     def test_a_lock_draws_guide_lines_and_dims_the_free_axes(self) -> None:
