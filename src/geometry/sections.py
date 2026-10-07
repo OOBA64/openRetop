@@ -171,18 +171,13 @@ def _extract_section_for_plane(
         else max(float(weld_tolerance), intersection_tolerance)
     )
 
-    segments: list[np.ndarray] = []
-    for triangle_indices in triangles:
-        triangle_points = vertices[triangle_indices]
-        segment = _intersect_triangle_plane(
-            triangle_points,
-            plane_origin=plane_origin,
-            plane_normal=plane_normal,
-            tolerance=intersection_tolerance,
-        )
-        if segment is not None:
-            segments.append(segment)
-
+    segments = _plane_segments(
+        vertices,
+        triangles,
+        plane_origin=plane_origin,
+        plane_normal=plane_normal,
+        tolerance=intersection_tolerance,
+    )
     polylines = _segments_to_polylines(segments, point_weld_tolerance)
     return SectionResult(
         axis=axis,
@@ -195,50 +190,60 @@ def _extract_section_for_plane(
     )
 
 
-def _intersect_triangle_plane(
-    triangle_points: np.ndarray,
+def _plane_segments(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
     *,
     plane_origin: np.ndarray,
     plane_normal: np.ndarray,
     tolerance: float,
-) -> np.ndarray | None:
-    distances = (triangle_points - plane_origin) @ plane_normal
+) -> np.ndarray:
+    """Plane/triangle intersection segments as an (n, 2, 3) array.
 
-    if np.all(np.abs(distances) <= tolerance):
-        return None
+    One signed-distance pass over the vertices, then only triangles that touch
+    the plane are examined. A triangle contributes the farthest pair of its
+    on-plane corners and edge crossings; triangles lying in the plane add none.
+    """
 
-    hits: list[np.ndarray] = []
-    for start_index, end_index in ((0, 1), (1, 2), (2, 0)):
-        start_distance = float(distances[start_index])
-        end_distance = float(distances[end_index])
-        start_point = triangle_points[start_index]
-        end_point = triangle_points[end_index]
+    signed = (vertices - plane_origin) @ plane_normal
+    corner_distance = signed[triangles]
+    touching = (corner_distance.min(axis=1) <= tolerance) & (corner_distance.max(axis=1) >= -tolerance)
+    on_plane = np.abs(corner_distance) <= tolerance
+    touching &= ~on_plane.all(axis=1)
+    touched = np.flatnonzero(touching)
+    if len(touched) == 0:
+        return np.zeros((0, 2, 3))
 
-        if abs(start_distance) <= tolerance:
-            hits.append(start_point)
+    distance = corner_distance[touched]
+    corners = vertices[triangles[touched]]
+    on = on_plane[touched]
 
-        crosses_plane = (
-            start_distance < -tolerance
-            and end_distance > tolerance
-            or start_distance > tolerance
-            and end_distance < -tolerance
+    candidates: list[np.ndarray] = []
+    valid: list[np.ndarray] = []
+    # Same visiting order as the original edge loop: start corner, crossing, end corner.
+    for start, end in ((0, 1), (1, 2), (2, 0)):
+        d_start, d_end = distance[:, start], distance[:, end]
+        crossing = ((d_start < -tolerance) & (d_end > tolerance)) | (
+            (d_start > tolerance) & (d_end < -tolerance)
         )
-        if crosses_plane:
-            ratio = -start_distance / (end_distance - start_distance)
-            hits.append(start_point + ratio * (end_point - start_point))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(crossing, -d_start / (d_end - d_start), 0.0)
+        point = corners[:, start] + ratio[:, None] * (corners[:, end] - corners[:, start])
+        candidates.extend([corners[:, start], point, corners[:, end]])
+        valid.extend([on[:, start], crossing, on[:, end]])
 
-        if abs(end_distance) <= tolerance:
-            hits.append(end_point)
-
-    unique_hits = _unique_points(hits, tolerance)
-    if len(unique_hits) < 2:
-        return None
-
-    start_point, end_point = _farthest_pair(unique_hits)
-    if np.linalg.norm(start_point - end_point) <= tolerance:
-        return None
-
-    return np.vstack((start_point, end_point))
+    points = np.stack(candidates, axis=1)  # (m, 9, 3)
+    mask = np.stack(valid, axis=1)  # (m, 9)
+    gaps = np.linalg.norm(points[:, :, None, :] - points[:, None, :, :], axis=3)
+    usable = mask[:, :, None] & mask[:, None, :]
+    usable &= np.triu(np.ones((9, 9), dtype=bool), k=1)[None]
+    gaps = np.where(usable, gaps, -1.0)
+    flat_best = gaps.reshape(len(touched), -1).argmax(axis=1)
+    best = gaps.reshape(len(touched), -1)[np.arange(len(touched)), flat_best]
+    keep = best > tolerance
+    first, second = np.divmod(flat_best[keep], 9)
+    rows = np.arange(len(touched))[keep]
+    return np.stack([points[rows, first], points[rows, second]], axis=1)
 
 
 def _plane_origin_normal(
@@ -312,51 +317,35 @@ def _normalized_vector(value: object, *, fallback: np.ndarray) -> np.ndarray:
     return vector / length
 
 
-def _unique_points(points: Iterable[np.ndarray], tolerance: float) -> list[np.ndarray]:
-    unique: list[np.ndarray] = []
-    for point in points:
-        if not any(np.linalg.norm(point - existing) <= tolerance for existing in unique):
-            unique.append(np.asarray(point, dtype=float))
-
-    return unique
-
-
-def _farthest_pair(points: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    best_pair = (points[0], points[1])
-    best_distance = -1.0
-
-    for start_index, start_point in enumerate(points):
-        for end_point in points[start_index + 1 :]:
-            distance = float(np.linalg.norm(start_point - end_point))
-            if distance > best_distance:
-                best_distance = distance
-                best_pair = (start_point, end_point)
-
-    return best_pair
-
-
 def _segments_to_polylines(
-    segments: list[np.ndarray],
+    segments: np.ndarray,
     weld_tolerance: float,
 ) -> list[np.ndarray]:
-    if not segments:
+    segments = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
+    if len(segments) == 0:
         return []
 
-    points: list[np.ndarray] = []
-    point_index_by_key: dict[tuple[int, int, int], int] = {}
+    # Weld endpoints on a grid. Indices follow first appearance, so output order
+    # matches a sequential walk over the segments.
+    endpoints = segments.reshape((-1, 3))
+    keys = np.round(endpoints / weld_tolerance).astype(np.int64)
+    _, first_seen, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    appearance_order = np.argsort(first_seen, kind="stable")
+    rank = np.empty_like(appearance_order)
+    rank[appearance_order] = np.arange(len(appearance_order))
+    points = endpoints[first_seen[appearance_order]]
+    index_pairs = rank[np.asarray(inverse).reshape(-1)].reshape((-1, 2))
+
+    # Drop zero-length and repeated edges, keeping first-appearance order.
+    index_pairs = index_pairs[index_pairs[:, 0] != index_pairs[:, 1]]
+    undirected = np.sort(index_pairs, axis=1)
+    _, first_edge = np.unique(undirected, axis=0, return_index=True)
+    index_pairs = index_pairs[np.sort(first_edge)]
+
     adjacency: dict[int, set[int]] = {}
-    edges: set[tuple[int, int]] = set()
-
-    def point_key(point: np.ndarray) -> tuple[int, int, int]:
-        return tuple(int(round(float(value) / weld_tolerance)) for value in point)
-
-    def point_index(point: np.ndarray) -> int:
-        key = point_key(point)
-        if key not in point_index_by_key:
-            point_index_by_key[key] = len(points)
-            points.append(np.asarray(point, dtype=float))
-
-        return point_index_by_key[key]
+    for start_index, end_index in index_pairs.tolist():
+        adjacency.setdefault(start_index, set()).add(end_index)
+        adjacency.setdefault(end_index, set()).add(start_index)
 
     def edge_key(start_index: int, end_index: int) -> tuple[int, int]:
         return (
@@ -364,20 +353,6 @@ def _segments_to_polylines(
             if start_index <= end_index
             else (end_index, start_index)
         )
-
-    for segment in segments:
-        start_index = point_index(segment[0])
-        end_index = point_index(segment[1])
-        if start_index == end_index:
-            continue
-
-        key = edge_key(start_index, end_index)
-        if key in edges:
-            continue
-
-        edges.add(key)
-        adjacency.setdefault(start_index, set()).add(end_index)
-        adjacency.setdefault(end_index, set()).add(start_index)
 
     visited_edges: set[tuple[int, int]] = set()
     polylines: list[np.ndarray] = []
