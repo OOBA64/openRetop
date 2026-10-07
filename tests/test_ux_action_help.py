@@ -105,3 +105,32 @@ class ActionTooltipTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActionCatalogueTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_help_text_and_view_shortcuts_refer_to_real_actions(self) -> None:
+        from openretop.application import actions
+
+        ids = {item.id for item in CORE_ACTIONS}
+        self.assertEqual(set(actions._DESCRIPTIONS) - ids, set())
+        self.assertEqual(set(actions._VIEW_SHORTCUTS) - ids, set())
+
+    def test_primary_commands_have_specific_descriptions(self) -> None:
+        generic = [
+            item.id
+            for item in CORE_ACTIONS
+            if item.id in {"section.compute", "section.add_plane", "region.start", "manual_curve.create", "surface.editable_brep_loft"}
+            and item.description.endswith("in the current workflow.")
+        ]
+        self.assertEqual(generic, [])
+
+    def test_no_shortcut_is_bound_to_two_actions(self) -> None:
+        window = OpenRetopV3Window(create_application(settings_repository=InMemorySettingsRepository()))
+        self.addCleanup(window.close)
+        self.assertEqual(window._framework_actions.shortcut_conflicts(), {})
+        self.assertEqual(window._framework_actions.require("view.frame_all").shortcut, "Home")
+        self.assertEqual(window._framework_actions.require("view.named.top").shortcut, "Ctrl+5")

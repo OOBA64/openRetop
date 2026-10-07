@@ -351,7 +351,7 @@ REPRESENTATIVE_ACTIONS: tuple[ActionDefinition, ...] = (
         label="Frame All",
         description="Frame the visible scene in the viewport.",
         category="View",
-        shortcut=None,
+        shortcut="Home",
         command_id="viewport.frame_all",
         metadata={"legacy_handler": "frame_all", "migration_task": 75},
     ),
@@ -411,6 +411,53 @@ REPRESENTATIVE_ACTIONS: tuple[ActionDefinition, ...] = (
 )
 
 
+# Specific help text for the commands people use most; everything else gets a generic line.
+_DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
+    {
+        "section.add_plane": "Add a cutting plane. Slide it along an axis in the Properties panel, then compute the section.",
+        "section.compute": "Slice the scan with the active section plane; the outline becomes a curve.",
+        "section.clear_active": "Remove the active section result and its curves.",
+        "section.clear_all": "Remove every section result and its curves.",
+        "manual_curve.create": "Draw a curve by clicking points on the scan. Enter finishes, Esc cancels.",
+        "manual_curve.edit": "Edit the points of the selected hand-drawn curve.",
+        "region.start": "Click a smooth area of the scan to select it; the threshold controls how far it spreads.",
+        "region.extract_boundary": "Turn the outline of the selected region into curves.",
+        "surface.fill": "Fill one closed curve with a surface.",
+        "surface.brep_face": "Create a CAD face from the selected closed curve (needs the CAD kernel).",
+        "surface.brep_loft": "Create a CAD surface skinned between two curves (needs the CAD kernel).",
+        "surface.editable_brep_loft": "Loft a CAD surface between two curves; changing the curves rebuilds it (needs the CAD kernel).",
+        "surface.rebuild_brep": "Rebuild the selected CAD surface from its source curves.",
+        "curve.join": "Join selected curves whose ends meet within the join tolerance.",
+        "curve.auto_close": "Close the selected open curve if its ends are close enough.",
+        "curve.simplify": "Remove points from the selected curve while staying within the tolerance.",
+        "curve.smooth": "Smooth the selected curve.",
+        "view.frame_all": "Fit everything in the view.",
+        "view.frame_selected": "Fit the selected objects in the view.",
+        "view.reset": "Return to the default camera.",
+        "transform.move": "Move the selected object. Type X, Y or Z to constrain; Enter confirms, Esc cancels.",
+        "transform.rotate": "Rotate the selected object. Type X, Y or Z to constrain; Enter confirms, Esc cancels.",
+        "edit.undo": "Undo the last change.",
+        "edit.redo": "Redo the change you just undid.",
+        "scene.show_all": "Show every hidden object.",
+        "scene.delete_selected": "Delete the selected objects (can be undone).",
+    }
+)
+
+# Named-view shortcuts follow the common CAD convention (Ctrl+1..7).
+_VIEW_SHORTCUTS: Mapping[str, str] = MappingProxyType(
+    {
+        "view.frame_all": "Home",
+        "view.named.front": "Ctrl+1",
+        "view.named.back": "Ctrl+2",
+        "view.named.left": "Ctrl+3",
+        "view.named.right": "Ctrl+4",
+        "view.named.top": "Ctrl+5",
+        "view.named.bottom": "Ctrl+6",
+        "view.named.isometric": "Ctrl+7",
+    }
+)
+
+
 def _workflow_action(
     action_id: str,
     label: str,
@@ -426,9 +473,9 @@ def _workflow_action(
     return ActionDefinition(
         id=action_id,
         label=label,
-        description=description or f"{label} in the current workflow.",
+        description=description or _DESCRIPTIONS.get(action_id) or f"{label} in the current workflow.",
         category=category,
-        shortcut=shortcut,
+        shortcut=shortcut or _VIEW_SHORTCUTS.get(action_id),
         command_id=action_id,
         enabled_when=enabled_when,
         visible_when=visible_when,

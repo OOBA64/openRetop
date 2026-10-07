@@ -39,7 +39,7 @@ Principles and findings: [UX_AUDIT.md](UX_AUDIT.md).
 | UX-12 | P0 | S | done | One message area in the status bar plus a separate tool-hint area; no triplicated text; idle state shows model name, units, triangle count | Status bar never shows the same text twice; idle shows e.g. `part.stl - mm - 327,680 triangles`. |
 | UX-01 / UX-11 | P0 | M | done | Properties panel when nothing is selected becomes a **Model & Next steps** panel: empty state with *Open scan* / recent files; once a model exists, a model summary and the next sensible actions as buttons | No model: "Open a scan" button, supported formats, recent projects. Model loaded, no sections: "Add a section plane" and "Compute section" buttons. Curves exist: "Loft between curves". BREP exists: "Export STEP". Each button dispatches the existing action and is disabled with a reason when not applicable. |
 | UX-03 | P0 | S | done | Drag-and-drop `.stl/.obj/.ply/.openretop` onto the window; recent files list | Dropping a mesh runs the normal import flow (including the unit prompt); dropping a project opens it; other extensions are rejected with a message. |
-| UX-09 | P1 | S | todo | View shortcuts: Home = Frame All, F = Frame Selected, Ctrl+1/3/7 = Front/Right/Top (Ctrl+Shift for opposite), 0 = Isometric | Conflict check (`shortcut_conflicts`) is empty; documented in the cheat sheet. |
+| UX-09 | P1 | S | done | View shortcuts: Home = Frame All, F = Frame Selected, Ctrl+1/3/7 = Front/Right/Top (Ctrl+Shift for opposite), 0 = Isometric | Conflict check (`shortcut_conflicts`) is empty; documented in the cheat sheet. |
 | UX-16 | P2 | S | todo | Fix the Properties header/"Diagnostics" overlap | Screenshot comparison in a test or manual check recorded in the commit. |
 
 ### Slice B
