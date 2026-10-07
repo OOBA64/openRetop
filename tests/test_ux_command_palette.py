@@ -7,11 +7,11 @@ import unittest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from workbench_ui import ActionDefinition, ActionRegistry, CommandPalette, CommandPaletteDialog
 
 from openretop.bootstrap import create_application
 from openretop.infrastructure.settings_repository import InMemorySettingsRepository
 from openretop.presentation.qt.main_window import OpenRetopV3Window
+from workbench_ui import ActionDefinition, ActionRegistry, CommandPalette, CommandPaletteDialog
 
 
 def _registry(calls: list[str]) -> ActionRegistry:
