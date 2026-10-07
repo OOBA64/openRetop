@@ -78,6 +78,7 @@ class AppDisplaySettings:
 @dataclass
 class AppImportSettings:
     default_proxy_quality: str
+    default_units: str = "mm"
 
 
 @dataclass

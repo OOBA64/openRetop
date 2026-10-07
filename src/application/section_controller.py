@@ -383,7 +383,7 @@ class SectionController(ControllerBase):
 
     def _curve_fit_tolerance(self, mesh: object) -> float:
         bounds = mesh.get_axis_aligned_bounding_box()
-        return curve_fit_tolerance(float(bounds.get_max_extent()))
+        return curve_fit_tolerance(float(bounds.get_max_extent()), self.state.units)
 
     def compute(
         self,

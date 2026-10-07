@@ -41,6 +41,7 @@ class PreferencesDialog(QDialog):
         display = self._settings.display
         keybinds = self._settings.keybinds
         fields: list[FieldDefinition] = [
+            FieldDefinition("default_units", "Default import units", self._settings.import_settings.default_units, "combo", group="Import", options=("mm", "cm", "m", "in")),
             FieldDefinition("proxy_quality", "Default proxy quality", self._settings.import_settings.default_proxy_quality, "combo", group="Import", options=("Low", "Medium", "High", "Full")),
             FieldDefinition("show_grid", "Show grid", display.show_grid, "checkbox", group="Display"),
             FieldDefinition("show_axes", "Show axes", display.show_axes, "checkbox", group="Display"),
@@ -90,6 +91,8 @@ class PreferencesDialog(QDialog):
         for field_id, value in values.items():
             if field_id == "proxy_quality":
                 data["import"]["default_proxy_quality"] = value
+            elif field_id == "default_units":
+                data["import"]["default_units"] = value
             elif field_id.startswith("color."):
                 data["display"][field_id.split(".", 1)[1]] = value
             elif field_id.startswith("keybind."):

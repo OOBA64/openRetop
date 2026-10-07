@@ -53,6 +53,8 @@ def restore_project_state(
     """Restore all persistent V3 records while keeping controller state identity stable."""
 
     warnings: list[str] = []
+    state.units = project.units
+    state.units_assumed = bool(project.units_assumed)
     _restore_display(settings, project)
     _restore_mesh(state, project)
     state.section_collection = _restore_sections(project, warnings)

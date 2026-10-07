@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from json import JSONDecodeError
 from pathlib import Path
 
+from geometry.units import get_unit
 from mesh.display_proxy import normalize_proxy_quality
 from settings.settings_data import (
     DEFAULT_REGION_SELECTION_OPACITY,
@@ -79,6 +80,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, object]:
             "default_proxy_quality": normalize_proxy_quality(
                 settings.import_settings.default_proxy_quality
             ),
+            "default_units": get_unit(settings.import_settings.default_units).code,
         },
         "ui": {
             "window_width": int(settings.ui.window_width),
@@ -196,6 +198,14 @@ def settings_from_dict(data: object) -> AppSettings:
                     defaults.import_settings.default_proxy_quality,
                 ),
                 "import.default_proxy_quality",
+            ),
+            default_units=_units_value(
+                _nested_value(
+                    import_data,
+                    "default_units",
+                    defaults.import_settings.default_units,
+                ),
+                "import.default_units",
             ),
         ),
         ui=AppUiSettings(
@@ -353,6 +363,15 @@ def _proxy_quality_value(value: object, field_name: str) -> str:
     if normalized != value:
         raise ValueError(f"{field_name} must be Low, Medium, or High.")
     return normalized
+
+
+def _units_value(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string.")
+    try:
+        return get_unit(value).code
+    except ValueError as exc:
+        raise ValueError(f"{field_name}: {exc}") from exc
 
 
 def _window_mode_value(value: object, field_name: str) -> str:

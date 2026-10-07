@@ -77,10 +77,11 @@ class StepExportService:
         cad_object: object,
         path: str | Path,
         *,
+        units: str = "mm",
         progress: ProgressListener | None = None,
     ) -> StepExportResult:
         _emit(progress, ProgressEvent("step_export", "start", "Exporting STEP"))
-        result = export_step(cad_object, path)
+        result = export_step(cad_object, path, units)
         _emit(
             progress,
             ProgressEvent(

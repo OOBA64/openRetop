@@ -108,7 +108,12 @@ class PublicCadAdapter:
                 return method()
         raise RuntimeError("CAD backend does not expose tessellation.")
 
-    def export_step(self, cad_object: object, path: str | Path) -> StepExportResult:
+    def export_step(
+        self,
+        cad_object: object,
+        path: str | Path,
+        units: str = "mm",
+    ) -> StepExportResult:
         if not self.capabilities.step_export:
             return StepExportResult(False, None, self.info.status)
-        return export_step(cad_object, path)
+        return export_step(cad_object, path, units)

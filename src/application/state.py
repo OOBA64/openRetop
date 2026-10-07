@@ -106,6 +106,9 @@ class AppState:
         default_factory=FourBoundaryPatchFeatureCollection
     )
     region_collection: RegionCollection = field(default_factory=RegionCollection)
+    # Length unit of all model-space coordinates (mesh, curves, CAD).
+    units: str = "mm"
+    units_assumed: bool = False
 
     def clear_selection(self) -> None:
         self.selected_item = None

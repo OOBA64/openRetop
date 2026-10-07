@@ -69,7 +69,7 @@ def _backend(build: _Build | None = None) -> FunctionCadBackend:
     return FunctionCadBackend(
         planar_face_builder=lambda _curve: outcome,
         loft_builder=lambda _curves, _options: outcome,
-        step_exporter=lambda _obj, _path: _Export(path=str(_path)),
+        step_exporter=lambda _obj, _path, _units="mm": _Export(path=str(_path)),
     )
 
 

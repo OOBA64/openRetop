@@ -50,6 +50,8 @@ def project_from_app_state(
     four_boundary_feature_collection: FourBoundaryPatchFeatureCollection | None = None,
     selected_scene_ids: Iterable[str] = (),
     primary_selection_id: str | None = None,
+    units: str = "mm",
+    units_assumed: bool = False,
 ) -> ProjectData:
     defaults = default_project_data()
     mesh_path = None
@@ -107,6 +109,8 @@ def project_from_app_state(
         mesh_path=mesh_path,
         mesh_name=mesh_name,
         mesh_visible=mesh_visible,
+        units=units,
+        units_assumed=bool(units_assumed),
         transform=transform,
         display=ProjectDisplaySettings(
             proxy_quality=str(proxy_quality),

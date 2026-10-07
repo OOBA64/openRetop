@@ -21,9 +21,8 @@ from application.feature_dependencies import (
 from application.results import CommandResult
 from application.selection import SelectionKind, SelectionSnapshot
 from application.state import AppState
+from geometry.tolerances import curve_join_tolerance, curve_simplify_tolerance
 from curves.curve_state import (
-    DEFAULT_CURVE_REPAIR_TOLERANCE,
-    DEFAULT_CURVE_SIMPLIFY_TOLERANCE,
     DEFAULT_CURVE_SMOOTH_ITERATIONS,
     CurveCollection,
     CurveProcessingError,
@@ -121,7 +120,7 @@ class CurveController(ControllerBase):
         *,
         curve_id: str | None = None,
         name: str | None = None,
-        tolerance: float = DEFAULT_CURVE_REPAIR_TOLERANCE,
+        tolerance: float | None = None,
     ) -> CommandResult:
         selected = self._selected_curves()
         if len(selected) < 2:
@@ -129,6 +128,7 @@ class CurveController(ControllerBase):
                 "Select at least two curves to join.",
                 status="Select at least two curves to join",
             )
+        tolerance = curve_join_tolerance(self.state.units) if tolerance is None else tolerance
         created_id = curve_id or self._new_curve_id()
         created_name = name or self._unique_name("Joined Curve")
         try:
@@ -154,7 +154,7 @@ class CurveController(ControllerBase):
         *,
         curve_id: str | None = None,
         name: str | None = None,
-        tolerance: float = DEFAULT_CURVE_REPAIR_TOLERANCE,
+        tolerance: float | None = None,
     ) -> CommandResult:
         source = self._single_selected_curve()
         if source is None:
@@ -162,6 +162,7 @@ class CurveController(ControllerBase):
                 "Select exactly one open curve to auto-close.",
                 status="Select exactly one open curve to auto-close",
             )
+        tolerance = curve_join_tolerance(self.state.units) if tolerance is None else tolerance
         refresh_curve_diagnostics(source)
         try:
             curve = auto_close_curve(
@@ -186,7 +187,7 @@ class CurveController(ControllerBase):
         *,
         curve_id: str | None = None,
         name: str | None = None,
-        tolerance: float = DEFAULT_CURVE_SIMPLIFY_TOLERANCE,
+        tolerance: float | None = None,
     ) -> CommandResult:
         source = self._single_selected_curve()
         if source is None:
@@ -194,6 +195,7 @@ class CurveController(ControllerBase):
                 "Select exactly one curve to simplify.",
                 status="Select exactly one curve to simplify",
             )
+        tolerance = curve_simplify_tolerance(self.state.units) if tolerance is None else tolerance
         try:
             curve = simplify_curve(
                 source,

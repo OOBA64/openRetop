@@ -138,6 +138,7 @@ class SettingsIOTests(unittest.TestCase):
                 },
                 "import": {
                     "default_proxy_quality": "High",
+                    "default_units": "mm",
                 },
                 "ui": {
                     "window_width": 1440,

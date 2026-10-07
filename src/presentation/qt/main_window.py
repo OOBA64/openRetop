@@ -71,6 +71,7 @@ from application.state import AppState, MeshObjectState
 from application.workflow_service import PRESENTATION_ACTION_IDS
 from bootstrap import ApplicationComposition, create_application
 from curves.manual_curve import is_manual_curve_like, parse_manual_curve_metadata_v2
+from geometry.units import UNIT_CODES, get_unit
 from infrastructure.io_services import ProgressEvent
 from mesh.display_proxy import normalize_proxy_quality
 from project.project_session import restore_project_state
@@ -123,6 +124,7 @@ _FILE_ACTIONS = (
     ("file.save_project", "Save Project", "File", "Ctrl+S"),
     ("file.save_project_as", "Save Project As", "File", "Ctrl+Shift+S"),
     ("file.export_step", "Export STEP", "File", None),
+    ("file.set_units", "Set Model Units...", "Edit", None),
     ("file.preferences", "Preferences", "Edit", "Ctrl+,"),
     ("file.quit", "Quit", "File", "Alt+F4"),
     ("help.about", "About openRetop V3", "Help", None),
@@ -290,6 +292,8 @@ class OpenRetopV3Window(ApplicationShell):
             return self.save_project(as_dialog=True)
         if action_id == "file.export_step":
             return self.export_step()
+        if action_id == "file.set_units":
+            return self.set_model_units()
         if action_id == "file.preferences":
             return self.show_preferences()
         if action_id == "file.quit":
@@ -962,11 +966,22 @@ class OpenRetopV3Window(ApplicationShell):
         path, _ = QFileDialog.getOpenFileName(self, "Open Model", "", "Mesh files (*.stl *.obj *.ply)")
         return False if not path else self.open_model_path(Path(path))
 
-    def open_model_path(self, path: Path) -> bool:
+    def open_model_path(self, path: Path, units: str | None = None) -> bool:
+        """Open a mesh; ``units`` skips the prompt (used by scripts and tests)."""
+
         if not self._confirm_discard("opening a model"):
             return False
+        if units is None:
+            units = self._ask_units(
+                "Model units",
+                f"What length unit are the coordinates of {path.name} in?",
+                self.composition.settings.import_settings.default_units,
+            )
+            if units is None:
+                return False
         try:
             self._reset_state()
+            self.composition.state.units = get_unit(units).code
             self._load_model_path(path)
         except (OSError, RuntimeError, ValueError, SystemExit) as exc:
             self._report_error("Model import failed", str(exc))
@@ -975,8 +990,33 @@ class OpenRetopV3Window(ApplicationShell):
         self.composition.undo.clear()
         self.set_project_dirty(False)
         self._camera_request = CameraRequest.frame_all()
-        self.set_status_message(f"Loaded {path.name}")
+        self.set_status_message(f"Loaded {path.name} ({self.composition.state.units})")
         self.refresh()
+        return True
+
+    def _ask_units(self, title: str, prompt: str, current: str) -> str | None:
+        labels = [f"{get_unit(code).label} ({code})" for code in UNIT_CODES]
+        index = UNIT_CODES.index(get_unit(current).code)
+        choice, accepted = QInputDialog.getItem(self, title, prompt, labels, index, False)
+        if not accepted:
+            return None
+        return UNIT_CODES[labels.index(choice)]
+
+    def set_model_units(self) -> bool:
+        """Re-label the model's length unit (does not rescale any geometry)."""
+
+        state = self.composition.state
+        chosen = self._ask_units(
+            "Set model units",
+            "Length unit of the model coordinates (existing numbers are not rescaled):",
+            state.units,
+        )
+        if chosen is None:
+            return False
+        state.units = chosen
+        state.units_assumed = False
+        self.set_project_dirty(True)
+        self.set_status_message(f"Model units set to {chosen}")
         return True
 
     def open_project(self) -> bool:
@@ -1098,6 +1138,8 @@ class OpenRetopV3Window(ApplicationShell):
             four_boundary_feature_collection=state.four_boundary_feature_collection,
             selected_scene_ids=selection.ids,
             primary_selection_id=selection.primary_id,
+            units=state.units,
+            units_assumed=state.units_assumed,
         )
         project.name = path.stem
         result = self.composition.project_files.save_project(project, path, progress=self._progress)
@@ -1120,7 +1162,9 @@ class OpenRetopV3Window(ApplicationShell):
         path, _ = QFileDialog.getSaveFileName(self, "Export STEP", "", "STEP files (*.step *.stp)")
         if not path:
             return False
-        result = self.composition.step_export.export(runtime, path, progress=self._progress)
+        result = self.composition.step_export.export(
+            runtime, path, units=self.composition.state.units, progress=self._progress
+        )
         self._close_progress()
         if not result.success:
             self._report_error("STEP export failed", result.reason)

@@ -106,7 +106,9 @@ class CadBackendPort(Protocol):
     ) -> CadBuildOutcome:
         ...
 
-    def export_step(self, cad_object: object, path: Path) -> StepExportOutcome:
+    def export_step(
+        self, cad_object: object, path: Path, units: str = "mm"
+    ) -> StepExportOutcome:
         ...
 
 
@@ -118,7 +120,7 @@ class FunctionCadBackend:
     loft_builder: Callable[
         [Sequence[StoredCurve], LoftFeatureOptions | None], CadBuildOutcome
     ]
-    step_exporter: Callable[[object, Path], StepExportOutcome] | None = None
+    step_exporter: Callable[..., StepExportOutcome] | None = None
 
     def build_planar_face(self, curve: StoredCurve) -> CadBuildOutcome:
         return self.planar_face_builder(curve)
@@ -130,10 +132,12 @@ class FunctionCadBackend:
     ) -> CadBuildOutcome:
         return self.loft_builder(curves, options)
 
-    def export_step(self, cad_object: object, path: Path) -> StepExportOutcome:
+    def export_step(
+        self, cad_object: object, path: Path, units: str = "mm"
+    ) -> StepExportOutcome:
         if self.step_exporter is None:
             raise RuntimeError("STEP export is unavailable.")
-        return self.step_exporter(cad_object, path)
+        return self.step_exporter(cad_object, path, units)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1013,7 +1017,7 @@ class BrepController(ControllerBase):
                 "Rebuild the selected BREP surface before exporting it."
             )
         try:
-            outcome = backend.export_step(runtime, Path(path))
+            outcome = backend.export_step(runtime, Path(path), self.state.units)
         except Exception as exc:
             return CommandResult.failure(f"STEP export failed: {exc}")
         if not bool(outcome.success):

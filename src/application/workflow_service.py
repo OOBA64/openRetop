@@ -36,6 +36,7 @@ from application.state import AppState
 from application.surface_controller import SurfaceController
 from application.transform_controller import TransformController
 from application.undo import UndoStack
+from geometry.tolerances import curve_simplify_tolerance
 from application.visibility_controller import VisibilityController
 from curves.curve_state import (
     StoredCurve,
@@ -284,11 +285,11 @@ class WorkflowService:
             )
 
         if action == "curve.join":
-            return self.curve.join_selected(tolerance=float(payload.get("tolerance", 0.01)))
+            return self.curve.join_selected(tolerance=_optional_float(payload.get("tolerance")))
         if action == "curve.auto_close":
-            return self.curve.auto_close_selected(tolerance=float(payload.get("tolerance", 0.01)))
+            return self.curve.auto_close_selected(tolerance=_optional_float(payload.get("tolerance")))
         if action == "curve.simplify":
-            return self.curve.simplify_selected(tolerance=float(payload.get("tolerance", 0.001)))
+            return self.curve.simplify_selected(tolerance=_optional_float(payload.get("tolerance")))
         if action == "curve.smooth":
             return self.curve.smooth_selected(iterations=int(payload.get("iterations", 2)))
         if action == "curve.project":
@@ -683,7 +684,8 @@ class WorkflowService:
             source,
             curve_id=f"curve-{uuid4().hex}",
             name=self._next_curve_name("Reduced Guide Curve"),
-            tolerance=float(payload.get("tolerance", 0.001)),
+            tolerance=_optional_float(payload.get("tolerance"))
+            or curve_simplify_tolerance(self.state.units),
             projection_mesh=self._transformed_mesh(),
             mesh_revision=self._mesh_revision(),
         )
@@ -765,3 +767,9 @@ def _optional_float(value: object) -> float | None:
 
 
 __all__ = ("PRESENTATION_ACTION_IDS", "WorkflowService")
+
+
+def _optional_float(value: object) -> float | None:
+    """A payload number, or None when the caller did not supply one."""
+
+    return None if value is None else float(value)
