@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import platform
 import sys
 import traceback
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKBENCH_ROOT = ROOT / "packages" / "workbench_ui"
@@ -60,10 +59,6 @@ def run(argv: list[str] | None = None) -> int:
         # Process-local diagnostic selection; production viewport code never
         # mutates QT_QPA_PLATFORM.
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
-
-    for path in (ROOT / "src", WORKBENCH_ROOT):
-        if str(path) not in sys.path:
-            sys.path.insert(0, str(path))
 
     print(f"python_executable={sys.executable}")
     print(f"python_version={platform.python_version()}")

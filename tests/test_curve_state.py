@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import (
+from openretop.curves.curve_state import (
     CurveCollection,
     CurveRepairError,
     StoredCurve,
@@ -17,8 +13,8 @@ from curves.curve_state import (
     clear_curve_selection,
     clear_curves_for_plane,
     clear_curves_for_section_result,
-    get_tiny_curves,
     get_selected_curves,
+    get_tiny_curves,
     get_visible_curves,
     join_curves,
     remove_curve,

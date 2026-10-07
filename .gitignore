@@ -8,3 +8,6 @@ build/
 dist/
 .venv-v3/
 .venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh.display_proxy import PROXY_QUALITY_LOW, build_display_mesh
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.mesh.display_proxy import PROXY_QUALITY_LOW, build_display_mesh
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 class DisplayProxyTests(unittest.TestCase):

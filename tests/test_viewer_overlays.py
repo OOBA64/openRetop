@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from viewer.overlays import (
+from openretop.viewer.overlays import (
     SELECTED_BOUNDING_BOX_COLOR,
     build_active_axis_indicator,
     build_bounding_box_outline,

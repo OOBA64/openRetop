@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-import sys
 from time import perf_counter
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
-
-from application.state import AppState
-from bootstrap import create_application
-from curves.curve_state import CurveCollection, StoredCurve
-from project.project_io import project_from_dict, project_to_dict
-from project.project_state import project_from_app_state
-from viewer.scene_builder import SceneBuilder
+from openretop.application.state import AppState
+from openretop.bootstrap import create_application
+from openretop.curves.curve_state import CurveCollection, StoredCurve
+from openretop.project.project_io import project_from_dict, project_to_dict
+from openretop.project.project_state import project_from_app_state
+from openretop.viewer.scene_builder import SceneBuilder
 from workbench_ui import FieldDefinition, PropertyInspectorModel, SceneNode, SceneTreeModel
 
 

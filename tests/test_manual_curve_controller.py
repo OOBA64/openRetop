@@ -1,25 +1,20 @@
 from __future__ import annotations
 
 import ast
-import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.manual_curve_controller import ManualCurveController
-from curves.curve_state import StoredCurve
-from curves.manual_curve import (
+from openretop.application.manual_curve_controller import ManualCurveController
+from openretop.curves.manual_curve import (
     CURVE_POINT_CORNER,
-    CURVE_POINT_SMOOTH,
     CURVE_POINT_SOURCE_MANUAL,
     MANUAL_CURVE_METHOD_POLYLINE,
     MANUAL_CURVE_METHOD_SMOOTH_GUIDE,
 )
-from mesh.spatial_index import MeshClosestPointResult
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.mesh.spatial_index import MeshClosestPointResult
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 class _FakeMeshQueryService:
@@ -349,7 +344,7 @@ class ManualCurveControllerTests(unittest.TestCase):
 
     def test_architecture_has_no_window_shadow_arrays_or_ui_imports(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        controller_source = (root / "src/application/manual_curve_controller.py").read_text(
+        controller_source = (root / "src/openretop/application/manual_curve_controller.py").read_text(
             encoding="utf-8"
         )
         lowered = controller_source.lower()
@@ -359,7 +354,7 @@ class ManualCurveControllerTests(unittest.TestCase):
         self.assertNotIn("openretopwindow", lowered)
 
         tree = ast.parse(
-            (root / "src/presentation/qt/main_window.py").read_text(encoding="utf-8")
+            (root / "src/openretop/presentation/qt/main_window.py").read_text(encoding="utf-8")
         )
         window_class = next(
             node

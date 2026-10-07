@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import CurveCollection, StoredCurve, add_curve
-from curves.manual_curve import DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
-from geometry.sections import SectionPolyline, SectionResult
-from project.project_data import PROJECT_VERSION
-from project.project_state import project_from_app_state
-from sections.section_state import (
+from openretop.curves.curve_state import CurveCollection, StoredCurve, add_curve
+from openretop.curves.manual_curve import DEFAULT_MANUAL_CURVE_SAMPLE_COUNT
+from openretop.geometry.sections import SectionPolyline, SectionResult
+from openretop.project.project_data import PROJECT_VERSION
+from openretop.project.project_state import project_from_app_state
+from openretop.sections.section_state import (
     SectionCollection,
     SectionPlaneState,
     StoredSectionResult,
@@ -22,13 +19,13 @@ from sections.section_state import (
     add_result,
     set_active_plane,
 )
-from surfaces.brep_state import (
+from openretop.surfaces.brep_state import (
     BREP_TYPE_PLANAR_FACE,
     BrepSurfaceCollection,
     BrepSurfaceRecord,
     add_brep_surface,
 )
-from surfaces.surface_state import SurfaceCollection, SurfacePatch, add_surface
+from openretop.surfaces.surface_state import SurfaceCollection, SurfacePatch, add_surface
 
 
 class ProjectStateTests(unittest.TestCase):

@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=68", "wheel>=0.42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openretop"
+dynamic = ["version"]
+description = "Scan-to-CAD desktop application: mesh sections to curves to NURBS surfaces and STEP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<3",
+    "trimesh>=4.0,<6",
+    "vtk>=9.3,<10",
+    "PySide6>=6.7,<7",
+    # Pinned to the version the test-suite is run against: CadQuery's STEP/loft
+    # API has changed between minor releases.
+    "cadquery==2.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.gui-scripts]
+openretop = "openretop.main:main"
+
+# The reusable UI framework lives beside the app but ships in the same wheel.
+[tool.setuptools.packages.find]
+where = ["src", "packages/workbench_ui"]
+include = ["openretop*", "workbench_ui*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "openretop.__version__" }
+
+# --------------------------------------------------------------------- tooling
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "packages/workbench_ui", "tests"]
+extend-exclude = ["thirdparty", "test_assets"]
+
+[tool.ruff.lint]
+# Correctness-oriented rules only; style rules would churn ~40k lines of existing code.
+select = ["E4", "E7", "E9", "F", "B", "I"]
+ignore = [
+    "B008",  # function calls in argument defaults (dataclass field factories etc.)
+    "E741",  # ambiguous variable names (l, I, O) used in geometry maths
+    "B905",  # zip() without strict=: lengths are validated by the callers
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["openretop", "workbench_ui"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = ["src", "packages/workbench_ui"]
+packages = ["openretop", "workbench_ui"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true
+
+# Modules that predate type checking and still have errors. New and cleaned-up
+# modules are checked strictly; delete a line here once its module passes.
+[[tool.mypy.overrides]]
+module = [
+    "openretop.analysis.deviation",
+    "openretop.application.brep_controller",
+    "openretop.application.controller_support",
+    "openretop.application.curve_controller",
+    "openretop.application.feature_dependencies",
+    "openretop.application.manual_curve_controller",
+    "openretop.application.region_controller",
+    "openretop.application.scene_controller",
+    "openretop.application.section_controller",
+    "openretop.application.selection_controller",
+    "openretop.application.state",
+    "openretop.application.surface_controller",
+    "openretop.application.transform_controller",
+    "openretop.application.visibility_controller",
+    "openretop.application.workflow_service",
+    "openretop.bootstrap.composition_root",
+    "openretop.cad_kernel.backend",
+    "openretop.cad_kernel.curve_wire",
+    "openretop.cad_kernel.occ_backend",
+    "openretop.cad_kernel.types",
+    "openretop.curves.manual_curve",
+    "openretop.curves.manual_curve_session",
+    "openretop.curves.projection",
+    "openretop.curves.rebuild",
+    "openretop.curves.validation",
+    "openretop.geometry.sections",
+    "openretop.infrastructure.io_services",
+    "openretop.mesh.adjacency",
+    "openretop.mesh.display_proxy",
+    "openretop.mesh.loader",
+    "openretop.mesh.mesh_state",
+    "openretop.mesh.spatial_index",
+    "openretop.presentation.qt.main_window",
+    "openretop.presentation.qt.orientation_gizmo",
+    "openretop.presentation.qt.preferences_dialog",
+    "openretop.presentation.qt.transform_overlays",
+    "openretop.presentation.qt.view_controls",
+    "openretop.presentation.qt.viewport",
+    "openretop.project.project_io",
+    "openretop.project.project_session",
+    "openretop.regions.boundary",
+    "openretop.surfaces.loft_feature",
+    "openretop.surfaces.surface_preview",
+    "openretop.viewer.actor_factories",
+    "openretop.viewer.camera_controller",
+    "openretop.viewer.mesh_actors",
+    "openretop.viewer.overlays",
+    "openretop.viewer.picking_service",
+    "openretop.viewer.region_actors",
+    "openretop.viewer.scene_builder",
+    "openretop.viewer.scene_types",
+    "openretop.viewer.style_conversion",
+    "openretop.viewer.vtk_actor_utils",
+    "workbench_ui.shell",
+    "workbench_ui.viewport",
+    "workbench_ui.widgets",
+]
+ignore_errors = true

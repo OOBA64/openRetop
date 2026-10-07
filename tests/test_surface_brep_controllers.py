@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.brep_controller import BrepController, FunctionCadBackend
-from application.events import EventPublisher, SceneChangedEvent, SelectionChangedEvent
-from application.state import AppState
-from application.surface_controller import SurfaceController
-from curves.curve_state import StoredCurve, add_curve, set_selected_curves
-from surfaces.four_boundary_feature import FourBoundaryPatchFeatureRecord
-from surfaces.brep_state import BrepSurfaceRecord, add_brep_surface
-from surfaces.loft_feature import LoftFeatureOptions, LoftFeatureRecord, add_loft_feature
-from surfaces.surface_state import SurfacePatch, add_surface
+from openretop.application.brep_controller import BrepController, FunctionCadBackend
+from openretop.application.events import EventPublisher, SceneChangedEvent, SelectionChangedEvent
+from openretop.application.state import AppState
+from openretop.application.surface_controller import SurfaceController
+from openretop.curves.curve_state import StoredCurve, add_curve, set_selected_curves
+from openretop.surfaces.brep_state import BrepSurfaceRecord, add_brep_surface
+from openretop.surfaces.four_boundary_feature import FourBoundaryPatchFeatureRecord
+from openretop.surfaces.loft_feature import LoftFeatureOptions, LoftFeatureRecord, add_loft_feature
+from openretop.surfaces.surface_state import SurfacePatch, add_surface
 
 
 def _curve(

@@ -1,33 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import os
-from pathlib import Path
 import platform
 import sys
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+from scripts.diagnose_vtk_viewport import add_diagnostic_sphere  # noqa: E402
 
-from bootstrap import create_application  # noqa: E402
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from presentation.qt.viewport import (  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.presentation.qt.viewport import (  # noqa: E402
     QtSceneViewport,
     normalized_background_color,
 )
-from scripts.diagnose_vtk_viewport import add_diagnostic_sphere  # noqa: E402
-from viewer.scene_types import (  # noqa: E402
+from openretop.viewer.scene_types import (  # noqa: E402
     CameraRequest,
     DisplayStyleSnapshot,
     MeshRenderItem,
@@ -304,9 +301,9 @@ class VTKViewportStartupTests(unittest.TestCase):
             window.close()
 
     def test_main_window_does_not_rely_on_deleted_tk_shell(self) -> None:
-        legacy_source = ROOT / "src" / "app"
+        legacy_source = ROOT / "src" / "openretop" / "app"
         self.assertFalse(legacy_source.exists() and any(legacy_source.glob("*.py")))
-        source = (ROOT / "src" / "presentation" / "qt" / "main_window.py").read_text(
+        source = (ROOT / "src" / "openretop" / "presentation" / "qt" / "main_window.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("tkinter", source)

@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import trimesh
+from tests.section_reference import _intersect_triangle_plane
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from geometry.sections import (
+from openretop.geometry.sections import (
     _plane_segments,
     extract_section,
     extract_section_by_plane,
 )
-from section_reference import _intersect_triangle_plane
 
 
 def _reference_segments(vertices, triangles, origin, normal, tolerance) -> np.ndarray:

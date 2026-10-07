@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh.triangle_mesh import TriangleMeshData
-from regions.primitive_fit import (
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.regions.primitive_fit import (
     fit_plane_to_region,
     project_region_boundary_to_plane,
     region_plane_fit_error_summary,
 )
-from regions.region_state import RegionSelection
+from openretop.regions.region_state import RegionSelection
 
 
 def _region(*triangle_indices: int) -> RegionSelection:

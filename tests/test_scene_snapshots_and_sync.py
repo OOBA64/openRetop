@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import replace
-import sys
-from pathlib import Path
-from types import SimpleNamespace
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
+from vtkmodules.vtkRenderingCore import vtkRenderer
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.state import AppState, MeshObjectState
-from curves.curve_state import CurveCollection, StoredCurve
-from mesh.triangle_mesh import TriangleMeshData
-from viewer.actor_factories import VTKActorAdapter
-from viewer.camera_controller import CameraController, frame_pose, named_view_vectors
-from viewer.picking_service import PickKind, PickingService
-from viewer.scene_builder import SceneBuildOptions, SceneBuilder
-from viewer.scene_synchronizer import SceneSynchronizer
-from viewer.scene_types import (
+from openretop.application.state import AppState, MeshObjectState
+from openretop.curves.curve_state import CurveCollection, StoredCurve
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.viewer.actor_factories import VTKActorAdapter
+from openretop.viewer.camera_controller import CameraController, frame_pose, named_view_vectors
+from openretop.viewer.picking_service import PickingService, PickKind
+from openretop.viewer.scene_builder import SceneBuilder, SceneBuildOptions
+from openretop.viewer.scene_synchronizer import SceneSynchronizer
+from openretop.viewer.scene_types import (
     CameraRequest,
     CurveRenderItem,
     DisplayStyleSnapshot,
@@ -26,10 +23,7 @@ from viewer.scene_types import (
     SceneSnapshot,
     SelectionRenderState,
     SurfaceRenderItem,
-    geometry_revision,
 )
-
-from vtkmodules.vtkRenderingCore import vtkRenderer
 
 
 def _mesh() -> TriangleMeshData:
@@ -59,7 +53,7 @@ class _RecordingAdapter:
         self.removed: list[object] = []
 
     def create_actor(self, _category: str, item: object) -> object:
-        actor = SimpleNamespace(id=getattr(item, "id"))
+        actor = SimpleNamespace(id=item.id)
         self.created.append(actor)
         return actor
 

@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
-from bootstrap import create_application
-from application.state import AppState
-from cad_kernel.types import CadKernelInfo
-from infrastructure.cad_adapter import PublicCadAdapter
-from infrastructure.persistence import JsonProjectRepository
-from project.project_session import restore_project_state
-
+from openretop.application.state import AppState
+from openretop.bootstrap import create_application
+from openretop.cad_kernel.types import CadKernelInfo
+from openretop.infrastructure.cad_adapter import PublicCadAdapter
+from openretop.infrastructure.persistence import JsonProjectRepository
+from openretop.project.project_session import restore_project_state
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,7 +58,7 @@ class ReleaseCandidateTests(unittest.TestCase):
         self.assertFalse(composition.cad.export_step(object(), "unused.step").success)
 
     def test_supported_entry_point_and_framework_metadata_are_present(self) -> None:
-        entry = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
+        entry = (ROOT / "src" / "openretop" / "main.py").read_text(encoding="utf-8")
         package_metadata = (ROOT / "packages" / "workbench_ui" / "pyproject.toml").read_text(
             encoding="utf-8"
         )

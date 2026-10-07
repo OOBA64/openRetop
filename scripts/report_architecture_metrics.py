@@ -5,12 +5,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
-import json
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Sequence
-
+from typing import Iterator, Mapping, Sequence
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPOSITORY_ROOT / "tests" / "architecture_dependency_baseline.json"
@@ -128,7 +127,7 @@ def collect_module_metrics(
 
 
 def main_window_method_count(root: Path = REPOSITORY_ROOT) -> int:
-    path = root / "src" / "presentation" / "qt" / "main_window.py"
+    path = root / "src" / "openretop" / "presentation" / "qt" / "main_window.py"
     _text, tree = _read_tree(path)
     window = next(
         (
@@ -147,7 +146,7 @@ def main_window_method_count(root: Path = REPOSITORY_ROOT) -> int:
 
 
 def legacy_main_window_method_count(root: Path = REPOSITORY_ROOT) -> int:
-    path = root / "src" / "app" / "main_window.py"
+    path = root / "src" / "openretop" / "app" / "main_window.py"
     if not path.exists():
         return 0
     _text, tree = _read_tree(path)
@@ -173,6 +172,17 @@ def _module_name(path: Path, src_root: Path) -> str:
     return ".".join(parts)
 
 
+NAMESPACE = "openretop"
+
+
+def _strip_namespace(module: str) -> str:
+    """``openretop.mesh.loader`` -> ``mesh.loader`` (package names are reported un-namespaced)."""
+
+    if module == NAMESPACE:
+        return ""
+    return module.removeprefix(NAMESPACE + ".")
+
+
 def _imported_modules(tree: ast.AST) -> Iterator[tuple[str, int]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -194,7 +204,7 @@ def _resolved_graph_imports(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                yield alias.name
+                yield _strip_namespace(alias.name)
             continue
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -212,7 +222,7 @@ def _resolved_graph_imports(
                 package_parts.extend(node.module.split("."))
             base_module = ".".join(package_parts)
         else:
-            base_module = node.module or ""
+            base_module = _strip_namespace(node.module or "")
 
         known_candidates = [
             f"{base_module}.{alias.name}" if base_module else alias.name
@@ -231,8 +241,8 @@ def _resolved_graph_imports(
 def collect_import_graph(
     root: Path = REPOSITORY_ROOT,
 ) -> tuple[dict[str, set[str]], Counter[tuple[str, str]]]:
-    src_root = root / "src"
-    paths = python_files(root, "src")
+    src_root = root / "src" / NAMESPACE
+    paths = python_files(root, f"src/{NAMESPACE}")
     module_by_path = {path: _module_name(path, src_root) for path in paths}
     known_modules = {name for name in module_by_path.values() if name}
     known_packages = {
@@ -338,9 +348,9 @@ def _is_ui_import(module: str) -> bool:
 def dependency_violations(
     root: Path = REPOSITORY_ROOT,
 ) -> list[DependencyViolation]:
-    src_root = root / "src"
+    src_root = root / "src" / NAMESPACE
     violations: list[DependencyViolation] = []
-    for path in python_files(root, "src"):
+    for path in python_files(root, f"src/{NAMESPACE}"):
         relative = path.relative_to(src_root)
         relative_name = relative.as_posix()
         package = relative.parts[0]

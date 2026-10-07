@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.manual_curve import (
+from openretop.curves.manual_curve import (
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     CURVE_POINT_SOURCE_LEGACY,
@@ -17,7 +13,7 @@ from curves.manual_curve import (
     ManualCurveControlDataV2,
     ManualCurvePoint,
 )
-from curves.manual_curve_session import ManualCurveSessionState
+from openretop.curves.manual_curve_session import ManualCurveSessionState
 
 
 class ManualCurveSessionStateTests(unittest.TestCase):

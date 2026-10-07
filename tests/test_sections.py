@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from geometry.sections import extract_section, extract_section_by_plane
+from openretop.geometry.sections import extract_section, extract_section_by_plane
 
 
 class SimpleMesh:

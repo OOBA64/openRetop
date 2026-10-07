@@ -1,6 +1,6 @@
 # openRetop V3 desktop shell
 
-Run the only supported shell with `python src/main.py`.
+Run the only supported shell with `openretop` (or `python -m openretop`).
 
 The independent `workbench_ui` framework provides the main window, menus,
 toolbars, docks, scene tree, property inspector, command palette, themes, and

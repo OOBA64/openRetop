@@ -11,7 +11,7 @@ PySide6 presentation
   -> Qt/VTK presentation adapters
 ```
 
-`src/main.py` selects the V3 Qt presentation. `bootstrap.create_application`
+`openretop.main` (`openretop` / `python -m openretop`) selects the V3 Qt presentation. `bootstrap.create_application`
 constructs one explicit, instance-scoped graph: state, events, action/command
 registries, controllers, repositories/services, mesh-query cache, CAD adapter,
 scene builder, and settings. There is no service locator or legacy shell.

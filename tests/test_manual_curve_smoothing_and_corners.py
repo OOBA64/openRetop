@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
+from tests.mesh_query_reference import ReferenceMeshQueryService
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.manual_curve import (
+from openretop.curves.manual_curve import (
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     CURVE_POINT_SOURCE_AUTO,
@@ -26,14 +23,13 @@ from curves.manual_curve import (
     sample_smooth_guide_manual_curve,
     simplify_manual_curve_control_data,
 )
-from mesh.triangle_mesh import TriangleMeshData
-from surfaces.surface_preview import (
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.surfaces.surface_preview import (
     MESH_CONFORMING_LOFT,
     SurfacePreviewMesh,
     build_surface_preview,
 )
-from surfaces.surface_state import SurfacePatch
-from mesh_query_reference import ReferenceMeshQueryService
+from openretop.surfaces.surface_state import SurfacePatch
 
 
 def _plane_mesh() -> TriangleMeshData:

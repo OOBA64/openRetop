@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,13 +8,11 @@ from unittest import mock
 import numpy as np
 import trimesh
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh import loader
-from mesh.adjacency import build_triangle_adjacency, cached_triangle_adjacency, grow_connected_region
-from mesh.loader import MeshDependencyError, load_mesh
-from mesh.triangle_mesh import TriangleMeshData
-from mesh.weld import weld_vertices
+from openretop.mesh import loader
+from openretop.mesh.adjacency import build_triangle_adjacency, cached_triangle_adjacency, grow_connected_region
+from openretop.mesh.loader import MeshDependencyError, load_mesh
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.mesh.weld import weld_vertices
 
 
 def _export_box(directory: str, extension: str, extents=(2.0, 3.0, 4.0)) -> Path:
@@ -126,8 +123,7 @@ class AdjacencyCacheTests(unittest.TestCase):
         mesh = self._mesh()
         cached_triangle_adjacency(mesh)
         self.assertFalse(hasattr(loader, "_ADJACENCY_CACHE"))
-        import mesh.adjacency as adjacency_module
-
+        import openretop.mesh.adjacency as adjacency_module
         self.assertFalse(hasattr(adjacency_module, "_ADJACENCY_CACHE"))
 
     def test_cache_not_shared_between_equal_shaped_meshes(self) -> None:

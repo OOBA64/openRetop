@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import StoredCurve
-from curves.manual_curve import (
+from openretop.curves.curve_state import StoredCurve
+from openretop.curves.manual_curve import (
     DEFAULT_MANUAL_CURVE_METHOD,
     DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
     MANUAL_CURVE_METHOD_CATMULL_ROM,

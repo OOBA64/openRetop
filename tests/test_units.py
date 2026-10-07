@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,26 +9,24 @@ from unittest.mock import patch
 import trimesh
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from application.state import AppState  # noqa: E402
-from bootstrap import create_application  # noqa: E402
-from cad_kernel.export_step import export_step  # noqa: E402
-from geometry.tolerances import (  # noqa: E402
+from openretop.application.state import AppState  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.cad_kernel.export_step import export_step  # noqa: E402
+from openretop.geometry.tolerances import (  # noqa: E402
     curve_fit_tolerance,
     curve_join_tolerance,
     curve_simplify_tolerance,
 )
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from project.project_data import default_project_data  # noqa: E402
-from project.project_session import restore_project_state  # noqa: E402
-from project.project_state import project_from_app_state  # noqa: E402
-from settings.settings_data import default_app_settings  # noqa: E402
-from settings.settings_io import settings_from_dict, settings_to_dict  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.project.project_data import default_project_data  # noqa: E402
+from openretop.project.project_session import restore_project_state  # noqa: E402
+from openretop.project.project_state import project_from_app_state  # noqa: E402
+from openretop.settings.settings_data import default_app_settings  # noqa: E402
+from openretop.settings.settings_io import settings_from_dict, settings_to_dict  # noqa: E402
 
 try:
     import cadquery as cq
@@ -144,7 +141,7 @@ class WindowUnitTests(unittest.TestCase):
                 self.assertEqual(window.composition.state.units, "in")
                 self.assertEqual(len(window.composition.state.mesh_object.source_mesh.vertices), 8)
                 with patch(
-                    "presentation.qt.main_window.QFileDialog.getSaveFileName",
+                    "openretop.presentation.qt.main_window.QFileDialog.getSaveFileName",
                     return_value=(str(project_path), ""),
                 ):
                     self.assertTrue(window.save_project(as_dialog=True))

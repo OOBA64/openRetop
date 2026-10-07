@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import argparse
 import json
+from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
 from vtkmodules.vtkRenderingCore import vtkRenderer
 
-from viewer.actor_factories import VTKActorAdapter
-from viewer.scene_synchronizer import SceneSynchronizer
-from viewer.scene_types import CurveRenderItem, SceneSnapshot
+from openretop.viewer.actor_factories import VTKActorAdapter
+from openretop.viewer.scene_synchronizer import SceneSynchronizer
+from openretop.viewer.scene_types import CurveRenderItem, SceneSnapshot
 
 
 def run(iterations: int) -> dict[str, float | int]:

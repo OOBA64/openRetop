@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.scene_labels import surface_display_label
-from surfaces.brep_state import BrepSurfaceRecord
+from openretop.application.scene_labels import surface_display_label
+from openretop.surfaces.brep_state import BrepSurfaceRecord
 
 
 class SceneBrowserBrepLabelTests(unittest.TestCase):

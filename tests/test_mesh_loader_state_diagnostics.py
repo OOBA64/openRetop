@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh.diagnostics import format_diagnostic_lines
-from mesh.loader import load_mesh
-from mesh.mesh_state import MeshState
+from openretop.mesh.diagnostics import format_diagnostic_lines
+from openretop.mesh.loader import load_mesh
+from openretop.mesh.mesh_state import MeshState
 
 
 class FakeBounds:

@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.events import (
+from openretop.application.events import (
     ActiveToolChangedEvent,
     ApplicationEvent,
     EventPublisher,
     SceneChangedEvent,
     SelectionChangedEvent,
 )
-from application.region_controller import RegionController
-from application.region_session import RegionSessionState
-from application.state import AppState, MeshObjectState
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.application.region_controller import RegionController
+from openretop.application.region_session import RegionSessionState
+from openretop.application.state import AppState, MeshObjectState
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 def _quad_mesh() -> TriangleMeshData:

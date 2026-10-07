@@ -1,35 +1,30 @@
 from __future__ import annotations
 
-import math
 import os
-from pathlib import Path
 import platform
-import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent, QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from application.scene_ids import NODE_MESH, section_plane_node_id  # noqa: E402
-from application.state import MeshObjectState  # noqa: E402
-from bootstrap import create_application  # noqa: E402
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from presentation.qt.pointer_gestures import PointerGestureState  # noqa: E402
-from presentation.qt.viewport import QtSceneViewport  # noqa: E402
-from viewer.picking_service import SceneObjectPickResult  # noqa: E402
-from viewer.scene_types import CameraRequest  # noqa: E402
+from openretop.application.scene_ids import NODE_MESH, section_plane_node_id  # noqa: E402
+from openretop.application.state import MeshObjectState  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.presentation.qt.pointer_gestures import PointerGestureState  # noqa: E402
+from openretop.presentation.qt.viewport import QtSceneViewport  # noqa: E402
+from openretop.viewer.picking_service import SceneObjectPickResult  # noqa: E402
+from openretop.viewer.scene_types import CameraRequest  # noqa: E402
 from workbench_ui.viewport import VTKViewportWidget  # noqa: E402
 
 
@@ -350,7 +345,7 @@ class MouseRoutingTests(unittest.TestCase):
             viewport = QtSceneViewport()
             events: list[str] = []
             viewport.pointer_event.connect(
-                lambda name, _x, _y, _pick: events.append(name)
+                lambda name, _x, _y, _pick, events=events: events.append(name)
             )
             viewport.set_left_capture_owner(owner)
             try:

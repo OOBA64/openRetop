@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from geometry.sections import SectionResult
-from sections.section_state import (
+from openretop.geometry.sections import SectionResult
+from openretop.sections.section_state import (
     SectionCollection,
     SectionPlaneState,
     StoredSectionResult,

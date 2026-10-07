@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from cad_kernel.export_step import export_step
+from openretop.cad_kernel.export_step import export_step
 
 
 class DirectStepWriter:
@@ -57,7 +54,7 @@ class CadKernelStepExportTests(unittest.TestCase):
     def test_export_step_reports_unsupported_object_without_cad_dependency(self) -> None:
         with TemporaryDirectory() as tmpdir:
             with patch(
-                "cad_kernel.export_step._export_step_with_opencascade",
+                "openretop.cad_kernel.export_step._export_step_with_opencascade",
                 side_effect=ModuleNotFoundError("missing"),
             ):
                 result = export_step(object(), Path(tmpdir) / "unsupported.step")

@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh.adjacency import (
+from openretop.mesh.adjacency import (
     build_triangle_adjacency,
     cached_triangle_adjacency,
     grow_connected_region,
 )
-from mesh.triangle_mesh import TriangleMeshData
-from regions.region_state import (
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.regions.region_state import (
     DEFAULT_REGION_MAX_TRIANGLES,
     DEFAULT_REGION_THRESHOLD_DEGREES,
     RegionCollection,

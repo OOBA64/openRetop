@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh.triangle_mesh import TriangleMeshData
-from regions.boundary import extract_region_boundary_polylines
-from regions.region_state import RegionSelection
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.regions.boundary import extract_region_boundary_polylines
+from openretop.regions.region_state import RegionSelection
 
 
 def _region(*triangle_indices: int) -> RegionSelection:

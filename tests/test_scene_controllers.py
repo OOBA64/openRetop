@@ -1,46 +1,43 @@
 from __future__ import annotations
 
 import ast
-import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.events import (
+from openretop.application.events import (
     EventPublisher,
     SceneChangedEvent,
     SelectionChangedEvent,
 )
-from application.feature_dependencies import (
+from openretop.application.feature_dependencies import (
     plan_feature_dependency_removal,
     prune_feature_dependencies,
 )
-from application.scene_controller import SceneController
-from application.scene_ids import (
+from openretop.application.scene_controller import SceneController
+from openretop.application.scene_ids import (
     NODE_MESH,
     curve_node_id,
     region_node_id,
 )
-from application.selection_controller import SelectionController
-from application.state import ActiveTransformState, AppState, MeshObjectState
-from application.visibility_controller import VisibilityController
-from curves.curve_state import StoredCurve, add_curve
-from mesh.triangle_mesh import TriangleMeshData
-from regions.region_state import RegionSelection
-from surfaces.brep_state import BrepSurfaceRecord, add_brep_surface
-from surfaces.four_boundary_feature import (
+from openretop.application.selection_controller import SelectionController
+from openretop.application.state import AppState, MeshObjectState
+from openretop.application.visibility_controller import VisibilityController
+from openretop.curves.curve_state import StoredCurve, add_curve
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.regions.region_state import RegionSelection
+from openretop.surfaces.brep_state import BrepSurfaceRecord, add_brep_surface
+from openretop.surfaces.four_boundary_feature import (
     FourBoundaryPatchFeatureRecord,
     add_four_boundary_feature,
 )
-from surfaces.loft_feature import (
+from openretop.surfaces.loft_feature import (
     LoftFeatureOptions,
     LoftFeatureRecord,
     add_loft_feature,
 )
-from surfaces.surface_state import SurfacePatch, add_surface
+from openretop.surfaces.surface_state import SurfacePatch, add_surface
 
 
 def _mesh_object() -> MeshObjectState:
@@ -269,7 +266,7 @@ class SceneControllerTests(unittest.TestCase):
 
 class ControllerArchitectureTests(unittest.TestCase):
     def test_application_controllers_do_not_import_ui_or_legacy_app(self) -> None:
-        root = Path(__file__).resolve().parents[1] / "src" / "application"
+        root = Path(__file__).resolve().parents[1] / "src" / "openretop" / "application"
         for filename in (
             "state.py",
             "controller_support.py",

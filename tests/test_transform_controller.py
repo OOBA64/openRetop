@@ -3,19 +3,16 @@ from __future__ import annotations
 import inspect
 import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.events import EventPublisher, SceneChangedEvent
-from application.section_controller import SectionController
-from application.state import AppState, MeshObjectState
-from application.transform_controller import CameraVectors, TransformController
-from application.transform_math import build_object_transform_matrix
-from mesh.triangle_mesh import TriangleMeshData
-from surfaces.surface_state import SurfacePatch, add_surface
+from openretop.application.events import EventPublisher, SceneChangedEvent
+from openretop.application.section_controller import SectionController
+from openretop.application.state import AppState, MeshObjectState
+from openretop.application.transform_controller import CameraVectors, TransformController
+from openretop.application.transform_math import build_object_transform_matrix
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.surfaces.surface_state import SurfacePatch, add_surface
 
 
 def _cube_mesh() -> TriangleMeshData:

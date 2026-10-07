@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import ast
-from dataclasses import replace
-import sys
 import unittest
-from pathlib import Path
+from dataclasses import replace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import application
-from application.actions import (
+from openretop import application
+from openretop.application.actions import (
     ACTION_FRAME_ALL,
     ACTION_FRAME_SELECTED,
     ACTION_REDO,
@@ -25,25 +20,25 @@ from application.actions import (
     ActionRegistry,
     create_core_action_registry,
 )
-from application.commands import (
+from openretop.application.commands import (
     CommandDispatcher,
     CommandRejected,
     CommandRequest,
 )
-from application.dependencies import ApplicationDependencies
-from application.events import (
+from openretop.application.dependencies import ApplicationDependencies
+from openretop.application.events import (
     ApplicationEvent,
     CommandEvent,
     CommandPhase,
     EventPublisher,
     StatusEvent,
 )
-from application.results import (
+from openretop.application.results import (
     CommandResult,
     ViewportRequest,
     ViewportRequestKind,
 )
-from application.selection import (
+from openretop.application.selection import (
     CallbackSelectionProvider,
     SelectionKind,
     SelectionSnapshot,

@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import StoredCurve
-from cad_kernel.types import (
+from openretop.cad_kernel.types import (
     CadBuildResult,
     CadCurveInput,
     StepExportResult,
     clean_cad_curve_points,
     curve_points_from_stored_curve,
 )
+from openretop.curves.curve_state import StoredCurve
 
 
 def _stored_curve(

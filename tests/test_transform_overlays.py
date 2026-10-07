@@ -1,33 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import os
-from pathlib import Path
 import platform
-import sys
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from application.scene_ids import NODE_MESH  # noqa: E402
-from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
-from presentation.qt.transform_overlays import (  # noqa: E402
+from openretop.application.scene_ids import NODE_MESH  # noqa: E402
+from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
+from openretop.presentation.qt.transform_overlays import (  # noqa: E402
     AXIS_COLORS,
     RING_SEGMENTS,
     overlay_reference_extent,
     transformed_object_origin,
 )
-from presentation.qt.viewport import QtSceneViewport  # noqa: E402
-from viewer.scene_types import (  # noqa: E402
+from openretop.presentation.qt.viewport import QtSceneViewport  # noqa: E402
+from openretop.viewer.scene_types import (  # noqa: E402
     CameraRequest,
     MeshRenderItem,
     SceneSnapshot,

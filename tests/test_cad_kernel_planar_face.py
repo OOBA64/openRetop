@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from cad_kernel.backend import build_planar_face_from_curve
-from cad_kernel.types import CadCurveInput, CadKernelInfo
+from openretop.cad_kernel.backend import build_planar_face_from_curve
+from openretop.cad_kernel.types import CadCurveInput, CadKernelInfo
 
 
 def _curve_input(
@@ -75,8 +71,8 @@ class CadKernelPlanarFaceTests(unittest.TestCase):
         fake_backend = SimpleNamespace(build_planar_face_from_points=fake_builder)
 
         with (
-            patch("cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
-            patch("cad_kernel.backend.import_cad_backend", return_value=fake_backend),
+            patch("openretop.cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
+            patch("openretop.cad_kernel.backend.import_cad_backend", return_value=fake_backend),
         ):
             result = build_planar_face_from_curve(curve_input)
 
@@ -109,8 +105,8 @@ class CadKernelPlanarFaceTests(unittest.TestCase):
         )
 
         with (
-            patch("cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
-            patch("cad_kernel.backend.import_cad_backend", return_value=fake_backend),
+            patch("openretop.cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
+            patch("openretop.cad_kernel.backend.import_cad_backend", return_value=fake_backend),
         ):
             result = build_planar_face_from_curve(curve_input)
 
@@ -124,7 +120,7 @@ class CadKernelPlanarFaceTests(unittest.TestCase):
             is_closed=False,
         )
 
-        with patch("cad_kernel.backend.import_cad_backend") as import_backend:
+        with patch("openretop.cad_kernel.backend.import_cad_backend") as import_backend:
             result = build_planar_face_from_curve(curve_input)
 
         self.assertFalse(result.success)
@@ -180,8 +176,8 @@ class CadKernelPlanarFaceTests(unittest.TestCase):
         )
 
         with (
-            patch("cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
-            patch("cad_kernel.backend.import_cad_backend", return_value=fake_backend),
+            patch("openretop.cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
+            patch("openretop.cad_kernel.backend.import_cad_backend", return_value=fake_backend),
         ):
             result = build_planar_face_from_curve(curve_input)
 
@@ -204,8 +200,8 @@ class CadKernelPlanarFaceTests(unittest.TestCase):
         )
 
         with (
-            patch("cad_kernel.backend.cad_kernel_info", return_value=_unavailable_info()),
-            patch("cad_kernel.backend.import_cad_backend") as import_backend,
+            patch("openretop.cad_kernel.backend.cad_kernel_info", return_value=_unavailable_info()),
+            patch("openretop.cad_kernel.backend.import_cad_backend") as import_backend,
         ):
             result = build_planar_face_from_curve(curve_input)
 
@@ -230,8 +226,8 @@ class CadKernelPlanarFaceTests(unittest.TestCase):
         fake_backend = SimpleNamespace(build_planar_face_from_points=failing_builder)
 
         with (
-            patch("cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
-            patch("cad_kernel.backend.import_cad_backend", return_value=fake_backend),
+            patch("openretop.cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
+            patch("openretop.cad_kernel.backend.import_cad_backend", return_value=fake_backend),
         ):
             result = build_planar_face_from_curve(curve_input)
 

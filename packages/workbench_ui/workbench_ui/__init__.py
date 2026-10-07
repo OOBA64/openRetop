@@ -17,9 +17,9 @@ from workbench_ui.contracts import (
     SelectionContext,
     Theme,
     ThemeManager,
-    ToolModeManager,
     ToolbarItem,
     ToolbarSchema,
+    ToolModeManager,
 )
 from workbench_ui.shell import ApplicationShell
 from workbench_ui.viewport import VTKViewportWidget

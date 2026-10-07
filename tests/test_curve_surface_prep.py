@@ -1,24 +1,20 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
+from tests.mesh_query_reference import ReferenceMeshQueryService
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import StoredCurve
-from curves.projection import project_curve_points_to_mesh, project_stored_curve_to_mesh
-from curves.rebuild import rebuild_curve_by_arc_length, rebuild_stored_curve
-from curves.validation import (
+from openretop.application.scene_labels import curve_display_label
+from openretop.curves.curve_state import StoredCurve
+from openretop.curves.projection import project_curve_points_to_mesh, project_stored_curve_to_mesh
+from openretop.curves.rebuild import rebuild_curve_by_arc_length, rebuild_stored_curve
+from openretop.curves.validation import (
     estimate_curve_planarity_error,
     validate_curve_for_fill,
     validate_curves_for_loft,
 )
-from application.scene_labels import curve_display_label
-from mesh.triangle_mesh import TriangleMeshData
-from mesh_query_reference import ReferenceMeshQueryService
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 def _mesh() -> TriangleMeshData:

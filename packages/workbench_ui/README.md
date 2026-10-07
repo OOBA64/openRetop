@@ -21,9 +21,8 @@ connect to its one-shot `ready` signal if scene work must wait for native VTK,
 then call idempotent `start()`. Rendering before readiness is a safe no-op, and
 native initialization/rendering are suppressed under `QT_QPA_PLATFORM=offscreen`.
 
-Run the framework demo from the repository root after installing PySide6:
+Run the framework demo after `pip install -e .` from the repository root:
 
-```powershell
-$env:PYTHONPATH = "packages/workbench_ui"
+```bash
 python -m workbench_ui.demo
 ```

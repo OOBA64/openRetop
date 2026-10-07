@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
-from application.actions import CORE_ACTIONS
-from application.commands import CommandRequest
-from application.scene_ids import NODE_MESH
-from application.state import MeshObjectState
-from bootstrap import create_application
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.application.actions import CORE_ACTIONS
+from openretop.application.commands import CommandRequest
+from openretop.application.scene_ids import NODE_MESH
+from openretop.application.state import MeshObjectState
+from openretop.bootstrap import create_application
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 def _mesh() -> TriangleMeshData:

@@ -1,27 +1,27 @@
 # V3 developer and release setup
 
-Use Python 3.11 and install the supported environment:
+Use Python 3.11 or newer and install the app in editable mode with the dev tools
+(Windows: `.venv\Scripts\activate`; Linux/macOS: `source .venv/bin/activate`):
 
-```powershell
-python -m venv .venv-v3
-.\.venv-v3\Scripts\Activate.ps1
+```bash
+python -m venv .venv
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
-Run the supported Qt shell and independent framework demo:
+Run the supported Qt shell and the independent framework demo:
 
-```powershell
-python src/main.py
-$env:PYTHONPATH = "packages/workbench_ui"
+```bash
+openretop              # same as: python -m openretop
 python -m workbench_ui.demo
 ```
 
-Run release verification from the repository root:
+Run release verification from the repository root (set `QT_QPA_PLATFORM=offscreen`
+first: `export QT_QPA_PLATFORM=offscreen` or `$env:QT_QPA_PLATFORM = "offscreen"`):
 
-```powershell
-$env:PYTHONPATH = "src;packages/workbench_ui"
-$env:QT_QPA_PLATFORM = "offscreen"
+```bash
+ruff check .
+mypy
 python -m compileall -q src packages/workbench_ui/workbench_ui
 python scripts/report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"

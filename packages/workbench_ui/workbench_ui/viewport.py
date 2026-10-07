@@ -7,8 +7,7 @@ import os
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QLabel, QFrame, QVBoxLayout, QWidget
-
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 _LOG = logging.getLogger(__name__)
 _VTK_IMPORT_ERROR: str | None = None
@@ -18,8 +17,8 @@ _FREETYPE_AVAILABLE = False
 # by importing vtkRenderingCore.  These imports must precede construction of the
 # QVTK widget so vtkRenderWindow resolves to the platform OpenGL implementation.
 try:
-    import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
     import vtkmodules.vtkInteractionStyle  # noqa: F401
+    import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 
     try:
         import vtkmodules.vtkRenderingFreeType  # noqa: F401

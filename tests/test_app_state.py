@@ -1,39 +1,36 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.selection_controller import (
+from openretop.application.selection_controller import (
     SELECT_CURVE,
     SELECT_MODEL,
     SELECT_SECTION_PLANE,
     SELECT_SURFACE,
 )
-from application.state import ActiveTransformState, AppState, MeshObjectState
-from curves.curve_state import CurveCollection
-from geometry.curves import CurveFitResult
-from geometry.sections import SectionResult
-from mesh.display_proxy import DEFAULT_PROXY_QUALITY
-from mesh.triangle_mesh import TriangleMeshData
-from regions.region_state import RegionCollection
-from sections.section_state import (
+from openretop.application.state import ActiveTransformState, AppState, MeshObjectState
+from openretop.curves.curve_state import CurveCollection
+from openretop.geometry.curves import CurveFitResult
+from openretop.geometry.sections import SectionResult
+from openretop.mesh.display_proxy import DEFAULT_PROXY_QUALITY
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.regions.region_state import RegionCollection
+from openretop.sections.section_state import (
     SectionCollection,
     StoredSectionResult,
     plane_normal,
     plane_origin,
 )
-from surfaces.brep_state import (
+from openretop.surfaces.brep_state import (
     BREP_TYPE_PLANAR_FACE,
     BrepSurfaceCollection,
     BrepSurfaceRecord,
     add_brep_surface,
 )
-from surfaces.surface_state import SurfaceCollection
+from openretop.surfaces.surface_state import SurfaceCollection
 
 
 def _mesh() -> TriangleMeshData:

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import ast
-from collections import Counter
 import importlib.util
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
-
+from collections import Counter
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 METRICS_PATH = ROOT / "scripts" / "report_architecture_metrics.py"
@@ -63,7 +62,7 @@ class ArchitectureBaselineTests(unittest.TestCase):
         self.assertEqual(application_violations, [])
 
     def test_controllers_state_and_support_do_not_import_presentation(self) -> None:
-        application_root = ROOT / "src" / "application"
+        application_root = ROOT / "src" / "openretop" / "application"
         expected_controllers = {
             "analysis_controller.py",
             "brep_controller.py",
@@ -123,7 +122,7 @@ class ArchitectureBaselineTests(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_scene_id_codecs_have_one_authoritative_module(self) -> None:
-        path = ROOT / "src" / "application" / "scene_ids.py"
+        path = ROOT / "src" / "openretop" / "application" / "scene_ids.py"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         required_codecs = {
             "curve_group_id_from_node",
@@ -205,15 +204,15 @@ class ArchitectureScannerCharacterizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             samples = {
-                "src/application/bad.py": "import tkinter\n",
-                "src/analysis/bad_vtk.py": "from vtk import vtkActor\n",
-                "src/curves/bad.py": "from PyQt6 import QtWidgets\n",
-                "src/project/bad.py": "import PySide6\n",
-                "src/settings/bad.py": (
+                "src/openretop/application/bad.py": "import tkinter\n",
+                "src/openretop/analysis/bad_vtk.py": "from vtk import vtkActor\n",
+                "src/openretop/curves/bad.py": "from PyQt6 import QtWidgets\n",
+                "src/openretop/project/bad.py": "import PySide6\n",
+                "src/openretop/settings/bad.py": (
                     "from vtkmodules.vtkRenderingCore import vtkActor\n"
                 ),
-                "src/cad_kernel/bad.py": "import pyvista\n",
-                "src/mesh/query_service.py": (
+                "src/openretop/cad_kernel/bad.py": "import pyvista\n",
+                "src/openretop/mesh/query_service.py": (
                     "from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera\n"
                 ),
             }
@@ -227,13 +226,13 @@ class ArchitectureScannerCharacterizationTests(unittest.TestCase):
         self.assertEqual(len(violations), len(samples))
         self.assertEqual(
             {item.path for item in violations},
-            {path.removeprefix("src/") for path in samples},
+            {path.removeprefix("src/openretop/") for path in samples},
         )
 
     def test_mesh_query_scanner_allows_computational_vtk_locator_imports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            path = root / "src" / "mesh" / "spatial_index.py"
+            path = root / "src" / "openretop" / "mesh" / "spatial_index.py"
             path.parent.mkdir(parents=True)
             path.write_text(
                 "\n".join(
@@ -253,13 +252,13 @@ class ArchitectureScannerCharacterizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sources = {
-                "src/alpha/__init__.py": "",
-                "src/alpha/one.py": "from beta import two\n",
-                "src/beta/__init__.py": "",
-                "src/beta/two.py": "from alpha import one\n",
-                "src/gamma/__init__.py": "",
-                "src/gamma/left.py": "from . import right\n",
-                "src/gamma/right.py": "from . import left\n",
+                "src/openretop/alpha/__init__.py": "",
+                "src/openretop/alpha/one.py": "from openretop.beta import two\n",
+                "src/openretop/beta/__init__.py": "",
+                "src/openretop/beta/two.py": "from openretop.alpha import one\n",
+                "src/openretop/gamma/__init__.py": "",
+                "src/openretop/gamma/left.py": "from . import right\n",
+                "src/openretop/gamma/right.py": "from . import left\n",
             }
             for relative, source in sources.items():
                 path = root / relative

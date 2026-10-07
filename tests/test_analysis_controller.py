@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.analysis_controller import AnalysisController, AnalysisSnapshot
-from application.events import ApplicationEvent, EventPublisher, StatusEvent, StatusLevel
-from application.state import AppState, MeshObjectState
-from mesh.spatial_index import MeshClosestPointResult
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.application.analysis_controller import AnalysisController, AnalysisSnapshot
+from openretop.application.events import ApplicationEvent, EventPublisher, StatusEvent, StatusLevel
+from openretop.application.state import AppState, MeshObjectState
+from openretop.mesh.spatial_index import MeshClosestPointResult
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 def _mesh() -> TriangleMeshData:

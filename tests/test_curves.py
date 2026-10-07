@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from geometry.curves import fit_section_polylines, fit_smooth_polyline
+from openretop.geometry.curves import fit_section_polylines, fit_smooth_polyline
 
 
 def _circle(radius: float, count: int, closed: bool = True, noise: float = 0.0) -> np.ndarray:

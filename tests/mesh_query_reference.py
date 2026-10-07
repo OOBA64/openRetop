@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from mesh.spatial_index import MeshClosestPointResult
-from mesh.triangle_mesh import TriangleMeshData
-
+from openretop.mesh.spatial_index import MeshClosestPointResult
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 REFERENCE_BACKEND = "test-brute-force-reference"
 

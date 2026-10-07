@@ -1,28 +1,24 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from cad_kernel.backend import (
+from openretop.cad_kernel.backend import (
     build_loft_surface_from_cad_wires,
     build_planar_face_from_cad_wire,
 )
-from cad_kernel.curve_wire import build_cad_wire_from_curve
-from cad_kernel.types import CadKernelInfo
-from curves.manual_curve import (
+from openretop.cad_kernel.curve_wire import build_cad_wire_from_curve
+from openretop.cad_kernel.types import CadKernelInfo
+from openretop.curves.curve_state import StoredCurve
+from openretop.curves.manual_curve import (
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     MANUAL_CURVE_METHOD_HYBRID,
     build_manual_stored_curve,
 )
-from curves.curve_state import StoredCurve
 
 
 def _curve(point_types: list[str], *, closed: bool = True):
@@ -58,8 +54,8 @@ class CadCurveWireTests(unittest.TestCase):
 
         backend = SimpleNamespace(build_cad_wire_from_segments=builder)
         with (
-            patch("cad_kernel.curve_wire.detect_cad_kernel_backend", return_value=_available_info()),
-            patch("cad_kernel.curve_wire.import_cad_backend", return_value=backend),
+            patch("openretop.cad_kernel.curve_wire.detect_cad_kernel_backend", return_value=_available_info()),
+            patch("openretop.cad_kernel.curve_wire.import_cad_backend", return_value=backend),
         ):
             result = build_cad_wire_from_curve(curve)
         return result, captured
@@ -104,7 +100,7 @@ class CadCurveWireTests(unittest.TestCase):
     def test_unavailable_backend_fails_without_crashing(self) -> None:
         info = CadKernelInfo(False, "unavailable", None, "CAD unavailable")
         with patch(
-            "cad_kernel.curve_wire.detect_cad_kernel_backend",
+            "openretop.cad_kernel.curve_wire.detect_cad_kernel_backend",
             return_value=info,
         ):
             result = build_cad_wire_from_curve(_curve([CURVE_POINT_CORNER] * 4))
@@ -153,8 +149,8 @@ class CadCurveWireTests(unittest.TestCase):
             build_loft_from_wires=lambda wires, **options: loft,
         )
         with (
-            patch("cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
-            patch("cad_kernel.backend.import_cad_backend", return_value=backend),
+            patch("openretop.cad_kernel.backend.cad_kernel_info", return_value=_available_info()),
+            patch("openretop.cad_kernel.backend.import_cad_backend", return_value=backend),
         ):
             face_result = build_planar_face_from_cad_wire(object())
             loft_result = build_loft_surface_from_cad_wires(

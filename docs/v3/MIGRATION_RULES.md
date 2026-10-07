@@ -307,7 +307,7 @@ At minimum:
 - accelerated-query tests when mesh projection/query behavior is touched;
 - architecture dependency and cycle tests;
 - `python -m compileall -q src`;
-- the complete unittest suite with `PYTHONPATH=src`.
+- the complete unittest suite (after `pip install -e .`).
 
 Record exact commands/results, files changed, risks, known issues, and the next
 task starting point in `docs/v3/STATUS.md`.

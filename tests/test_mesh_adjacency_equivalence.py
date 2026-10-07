@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 import trimesh
+from tests.adjacency_reference import reference_triangle_adjacency
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from adjacency_reference import reference_triangle_adjacency
-from mesh.adjacency import build_triangle_adjacency
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.mesh.adjacency import build_triangle_adjacency
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 def _mesh(vertices, triangles) -> TriangleMeshData:
@@ -51,6 +46,19 @@ class VectorisedAdjacencyTests(unittest.TestCase):
         self.assertEqual(build_triangle_adjacency(_mesh(np.zeros((0, 3)), np.zeros((0, 3)))), ())
         mesh = _mesh(np.zeros((6, 3)), [[0, 1, 2], [3, 4, 5]])
         self.assertEqual(build_triangle_adjacency(mesh), ((), ()))
+
+
+class WatertightTests(unittest.TestCase):
+    def test_closed_meshes_are_watertight_and_open_ones_are_not(self) -> None:
+        sphere = trimesh.creation.icosphere(subdivisions=2)
+        self.assertTrue(_mesh(sphere.vertices, sphere.faces).is_watertight())
+        open_box = _mesh(trimesh.creation.box().vertices, trimesh.creation.box().faces[:-2])
+        self.assertFalse(open_box.is_watertight())
+        self.assertFalse(_mesh(np.zeros((0, 3)), np.zeros((0, 3))).is_watertight())
+
+    def test_unwelded_triangle_soup_is_not_watertight(self) -> None:
+        soup = _mesh(np.arange(36, dtype=float).reshape(12, 3), np.arange(12).reshape(4, 3))
+        self.assertFalse(soup.is_watertight())
 
 
 class VertexNormalTests(unittest.TestCase):

@@ -1,28 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import os
-from pathlib import Path
 import platform
-import sys
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from application.commands import CommandRequest  # noqa: E402
-from application.results import CommandResult  # noqa: E402
-from application.scene_ids import (  # noqa: E402
+from openretop.application.commands import CommandRequest  # noqa: E402
+from openretop.application.results import CommandResult  # noqa: E402
+from openretop.application.scene_ids import (  # noqa: E402
     NODE_MESH,
     curve_node_id,
     region_node_id,
@@ -30,27 +26,27 @@ from application.scene_ids import (  # noqa: E402
     section_result_node_id,
     surface_node_id,
 )
-from application.state import MeshObjectState  # noqa: E402
-from bootstrap import create_application  # noqa: E402
-from curves.curve_state import StoredCurve, add_curve  # noqa: E402
-from geometry.sections import SectionResult  # noqa: E402
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from presentation.qt.orientation_gizmo import GIZMO_LOGICAL_SIZE  # noqa: E402
-from presentation.qt.pointer_gestures import PointerGestureState  # noqa: E402
-from presentation.qt.view_controls import TriangularViewButton  # noqa: E402
-from presentation.qt.viewport import QtSceneViewport  # noqa: E402
-from regions.region_state import RegionSelection  # noqa: E402
-from sections.section_state import StoredSectionResult  # noqa: E402
-from surfaces.brep_state import BrepSurfaceRecord, add_brep_surface  # noqa: E402
-from surfaces.surface_state import SurfacePatch, add_surface  # noqa: E402
-from viewer.scene_builder import SceneBuildOptions, SceneBuilder  # noqa: E402
-from viewer.picking_service import (  # noqa: E402
+from openretop.application.state import MeshObjectState  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.curves.curve_state import StoredCurve, add_curve  # noqa: E402
+from openretop.geometry.sections import SectionResult  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.presentation.qt.orientation_gizmo import GIZMO_LOGICAL_SIZE  # noqa: E402
+from openretop.presentation.qt.pointer_gestures import PointerGestureState  # noqa: E402
+from openretop.presentation.qt.view_controls import TriangularViewButton  # noqa: E402
+from openretop.presentation.qt.viewport import QtSceneViewport  # noqa: E402
+from openretop.regions.region_state import RegionSelection  # noqa: E402
+from openretop.sections.section_state import StoredSectionResult  # noqa: E402
+from openretop.surfaces.brep_state import BrepSurfaceRecord, add_brep_surface  # noqa: E402
+from openretop.surfaces.surface_state import SurfacePatch, add_surface  # noqa: E402
+from openretop.viewer.picking_service import (  # noqa: E402
     MeshPickResult,
     SceneObjectPickResult,
 )
-from viewer.scene_types import (  # noqa: E402
+from openretop.viewer.scene_builder import SceneBuilder, SceneBuildOptions  # noqa: E402
+from openretop.viewer.scene_types import (  # noqa: E402
     CameraRequest,
     MeshRenderItem,
     SceneSnapshot,

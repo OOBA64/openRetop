@@ -8,15 +8,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from mesh.query_service import MeshQueryService
-from mesh.triangle_mesh import TriangleMeshData
+from openretop.mesh.query_service import MeshQueryService
+from openretop.mesh.triangle_mesh import TriangleMeshData
 
 
 def _grid_mesh(target_triangle_count: int) -> TriangleMeshData:

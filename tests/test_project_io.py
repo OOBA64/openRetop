@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import json
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from project.project_data import (
+from openretop.project.project_data import (
     PROJECT_VERSION,
     ProjectBrepSurface,
     ProjectCurve,
@@ -23,7 +20,7 @@ from project.project_data import (
     ProjectTransform,
     default_project_data,
 )
-from project.project_io import (
+from openretop.project.project_io import (
     load_project,
     project_from_dict,
     project_to_dict,

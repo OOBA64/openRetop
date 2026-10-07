@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
-from bootstrap import create_application
-from application.scene_ids import region_node_id
-from application.state import AppState
-from infrastructure.io_services import ProgressEvent, ProjectFileService
-from infrastructure.persistence import JsonProjectRepository
-from infrastructure.settings_repository import JsonSettingsRepository
-from project.project_data import ProjectRegion, default_project_data
-from project.project_session import restore_project_state
-from project.project_state import project_from_app_state
-from regions.region_state import RegionCollection, RegionSelection
-from settings.settings_data import default_app_settings
+from openretop.application.scene_ids import region_node_id
+from openretop.application.state import AppState
+from openretop.bootstrap import create_application
+from openretop.infrastructure.io_services import ProgressEvent, ProjectFileService
+from openretop.infrastructure.persistence import JsonProjectRepository
+from openretop.infrastructure.settings_repository import JsonSettingsRepository
+from openretop.project.project_data import ProjectRegion, default_project_data
+from openretop.project.project_session import restore_project_state
+from openretop.project.project_state import project_from_app_state
+from openretop.regions.region_state import RegionCollection, RegionSelection
+from openretop.settings.settings_data import default_app_settings
 
 
 class ProjectBoundaryTests(unittest.TestCase):

@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import CurveCollection, StoredCurve
-from curves.manual_curve import (
+from openretop.curves.curve_state import CurveCollection, StoredCurve
+from openretop.curves.manual_curve import (
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     MANUAL_CURVE_METHOD_HYBRID,
@@ -23,8 +20,8 @@ from curves.manual_curve import (
     parse_manual_curve_metadata_v2,
     sample_hybrid_manual_curve,
 )
-from project.project_io import load_project, save_project
-from project.project_state import project_from_app_state
+from openretop.project.project_io import load_project, save_project
+from openretop.project.project_state import project_from_app_state
 
 
 def _square() -> np.ndarray:

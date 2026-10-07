@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from curves.curve_state import StoredCurve
-from surfaces.surface_preview import (
+from openretop.curves.curve_state import StoredCurve
+from openretop.surfaces.surface_preview import (
     BOUNDARY_PATCH,
-    CLOSED_CURVE_FILL,
     CURVE_NETWORK_PATCH,
-    FOUR_CURVE_PATCH,
     FAN_FILL_WARNING,
+    FOUR_CURVE_PATCH,
     LOFT_PAIR_DISTANCE_WARNING,
     SurfacePreviewMesh,
     build_boundary_patch_preview,
@@ -23,7 +18,7 @@ from surfaces.surface_preview import (
     build_surface_preview,
     build_surface_preview_mesh,
 )
-from surfaces.surface_state import SurfacePatch
+from openretop.surfaces.surface_state import SurfacePatch
 
 
 def _curve(

@@ -1,21 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from geometry.units import get_unit, unit_scale
-from infrastructure.persistence import JsonProjectRepository
-from project.atomic_io import write_text_atomic
-from project.migrations import migrate_project_dict
-from project.project_data import PROJECT_VERSION, ProjectRegion, default_project_data
-from project.project_io import load_project, save_project
+from openretop.geometry.units import get_unit, unit_scale
+from openretop.infrastructure.persistence import JsonProjectRepository
+from openretop.project.atomic_io import write_text_atomic
+from openretop.project.migrations import migrate_project_dict
+from openretop.project.project_data import PROJECT_VERSION, ProjectRegion, default_project_data
+from openretop.project.project_io import load_project, save_project
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -25,7 +21,7 @@ class AtomicWriteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "p.openretop"
             target.write_text("original", encoding="utf-8")
-            with mock.patch("project.atomic_io.os.replace", side_effect=OSError("disk gone")):
+            with mock.patch("openretop.project.atomic_io.os.replace", side_effect=OSError("disk gone")):
                 with self.assertRaises(OSError):
                     write_text_atomic(target, "replacement")
             self.assertEqual(target.read_text(encoding="utf-8"), "original")
@@ -57,7 +53,7 @@ class AtomicProjectSaveTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 target = Path(directory) / "p.openretop"
                 target.write_text("original", encoding="utf-8")
-                with mock.patch("project.atomic_io.os.replace", side_effect=OSError("boom")):
+                with mock.patch("openretop.project.atomic_io.os.replace", side_effect=OSError("boom")):
                     try:
                         save(default_project_data(), target)
                     except OSError:

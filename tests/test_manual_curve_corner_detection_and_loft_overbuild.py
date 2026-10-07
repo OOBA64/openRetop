@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from analysis.deviation import DeviationResult, DeviationSample
-from curves.curve_state import StoredCurve
-from curves.manual_curve import (
+from openretop.analysis.deviation import DeviationResult, DeviationSample
+from openretop.curves.curve_state import StoredCurve
+from openretop.curves.manual_curve import (
     CURVE_POINT_CORNER,
     CURVE_POINT_SMOOTH,
     CURVE_POINT_SOURCE_MANUAL,
@@ -22,9 +18,9 @@ from curves.manual_curve import (
     detect_corner_point_types_by_angle,
     sample_hybrid_manual_curve,
 )
-from surfaces.loft_feature import LoftFeatureOptions
-from surfaces.surface_preview import TWO_CURVE_LOFT, build_surface_preview
-from surfaces.surface_state import SurfacePatch
+from openretop.surfaces.loft_feature import LoftFeatureOptions
+from openretop.surfaces.surface_preview import TWO_CURVE_LOFT, build_surface_preview
+from openretop.surfaces.surface_state import SurfacePatch
 
 
 def _curve(curve_id: str, y_value: float) -> StoredCurve:
@@ -98,7 +94,7 @@ class AngleCornerDetectionTests(unittest.TestCase):
         )
 
         with patch(
-            "curves.manual_curve.detect_corner_point_types_by_angle"
+            "openretop.curves.manual_curve.detect_corner_point_types_by_angle"
         ) as detector:
             sampled = sample_hybrid_manual_curve(control_data)
 

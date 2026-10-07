@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication
 
 from workbench_ui import (
     ActionDefinition,
@@ -20,9 +20,9 @@ from workbench_ui import (
     SceneNode,
     SceneTreeModel,
     SceneTreeWidget,
-    ToolInstructionBar,
     ToolbarItem,
     ToolbarSchema,
+    ToolInstructionBar,
     VTKViewportWidget,
 )
 

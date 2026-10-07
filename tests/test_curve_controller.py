@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import ast
-import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.curve_controller import CurveController
-from application.events import ApplicationEvent, EventPublisher, SceneChangedEvent
-from application.state import AppState
-from curves.curve_state import StoredCurve, add_curve, set_selected_curves
-from mesh.triangle_mesh import TriangleMeshData
-from surfaces.brep_state import BrepSurfaceRecord
-from surfaces.four_boundary_feature import FourBoundaryPatchFeatureRecord
-from surfaces.loft_feature import LoftFeatureOptions, LoftFeatureRecord
-from surfaces.surface_state import SurfacePatch
+from openretop.application.curve_controller import CurveController
+from openretop.application.events import ApplicationEvent, EventPublisher, SceneChangedEvent
+from openretop.application.state import AppState
+from openretop.curves.curve_state import StoredCurve, add_curve, set_selected_curves
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.surfaces.brep_state import BrepSurfaceRecord
+from openretop.surfaces.four_boundary_feature import FourBoundaryPatchFeatureRecord
+from openretop.surfaces.loft_feature import LoftFeatureOptions, LoftFeatureRecord
+from openretop.surfaces.surface_state import SurfacePatch
 
 
 def _curve(curve_id: str, points: list[list[float]]) -> StoredCurve:
@@ -154,7 +151,7 @@ class CurveControllerTests(unittest.TestCase):
         self.assertFalse(state.curve_collection.curves)
 
     def test_application_controller_imports_are_presentation_free(self) -> None:
-        application_dir = Path(__file__).resolve().parents[1] / "src" / "application"
+        application_dir = Path(__file__).resolve().parents[1] / "src" / "openretop" / "application"
         for filename in (
             "curve_controller.py",
             "region_controller.py",

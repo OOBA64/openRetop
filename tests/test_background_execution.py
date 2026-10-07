@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import threading
 import time
@@ -10,17 +9,15 @@ from pathlib import Path
 import trimesh
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from bootstrap import create_application  # noqa: E402
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from presentation.qt.background import InlineExecutor, ThreadedExecutor  # noqa: E402
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.presentation.qt.background import InlineExecutor, ThreadedExecutor  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
 
 
 def pump(condition, timeout: float = 20.0) -> bool:

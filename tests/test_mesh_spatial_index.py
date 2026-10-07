@@ -1,28 +1,24 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from analysis.deviation import compute_point_deviation_to_mesh
-from curves import projection as curve_projection
-from curves.projection import project_curve_points_to_mesh
-from mesh.query_service import MeshQueryService
-from mesh.spatial_index import MeshSpatialIndex, vtk_available
-from mesh.triangle_mesh import TriangleMeshData
-from surfaces.surface_preview import MESH_CONFORMING_LOFT, build_surface_preview
-from surfaces.surface_state import SurfacePatch
-from curves.curve_state import StoredCurve
-from mesh_query_reference import (
+from tests.mesh_query_reference import (
     ReferenceMeshQueryService,
     ReferenceMeshSpatialIndex,
     reference_query_closest_points,
 )
+
+from openretop.analysis.deviation import compute_point_deviation_to_mesh
+from openretop.curves import projection as curve_projection
+from openretop.curves.curve_state import StoredCurve
+from openretop.curves.projection import project_curve_points_to_mesh
+from openretop.mesh.query_service import MeshQueryService
+from openretop.mesh.spatial_index import MeshSpatialIndex, vtk_available
+from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.surfaces.surface_preview import MESH_CONFORMING_LOFT, build_surface_preview
+from openretop.surfaces.surface_state import SurfacePatch
 
 
 def _query_mesh() -> TriangleMeshData:
@@ -167,7 +163,7 @@ class MeshQueryServiceTests(unittest.TestCase):
         mesh = _query_mesh()
 
         with patch(
-            "mesh.query_service.MeshSpatialIndex.from_mesh",
+            "openretop.mesh.query_service.MeshSpatialIndex.from_mesh",
             side_effect=lambda candidate, source_signature=None: _FakeIndex(
                 candidate, source_signature
             ),
@@ -198,7 +194,7 @@ class MeshQueryServiceTests(unittest.TestCase):
         second = _query_mesh().copy()
 
         with patch(
-            "mesh.query_service.MeshSpatialIndex.from_mesh",
+            "openretop.mesh.query_service.MeshSpatialIndex.from_mesh",
             side_effect=lambda candidate, source_signature=None: _FakeIndex(
                 candidate, source_signature
             ),

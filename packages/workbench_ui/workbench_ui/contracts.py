@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
-from typing import Any, Callable, Iterable, Mapping, Sequence
-
+from dataclasses import dataclass, field
+from typing import Callable, Iterable, Mapping
 
 ActionCallback = Callable[[Mapping[str, object]], object]
 

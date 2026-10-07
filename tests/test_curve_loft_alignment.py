@@ -1,21 +1,17 @@
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from application.brep_controller import _prepared_loft_source_curves
-from curves.curve_state import StoredCurve
-from geometry.curve_alignment import align_closed_points, align_open_points, polygon_normal
-from geometry.curves import fit_smooth_polyline
-from infrastructure.cad_adapter import PublicCadAdapter
-from surfaces.loft_feature import LoftFeatureOptions
+from openretop.application.brep_controller import _prepared_loft_source_curves
+from openretop.curves.curve_state import StoredCurve
+from openretop.geometry.curve_alignment import align_closed_points, align_open_points, polygon_normal
+from openretop.geometry.curves import fit_smooth_polyline
+from openretop.infrastructure.cad_adapter import PublicCadAdapter
+from openretop.surfaces.loft_feature import LoftFeatureOptions
 
 try:  # CAD kernel is optional; the tests that need it skip without it.
     import cadquery  # noqa: F401

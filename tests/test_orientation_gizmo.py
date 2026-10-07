@@ -1,37 +1,33 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import platform
-import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from application.scene_ids import NODE_MESH  # noqa: E402
-from bootstrap import create_application  # noqa: E402
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
-from presentation.qt.orientation_gizmo import (  # noqa: E402
+from openretop.application.scene_ids import NODE_MESH  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.presentation.qt.orientation_gizmo import (  # noqa: E402
     GIZMO_LOGICAL_MARGIN,
     GIZMO_LOGICAL_SIZE,
     normalized_camera_orientation,
     normalized_gizmo_viewport,
 )
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from presentation.qt.viewport import QtSceneViewport  # noqa: E402
-from viewer.scene_types import CameraRequest, MeshRenderItem, SceneSnapshot  # noqa: E402
+from openretop.presentation.qt.viewport import QtSceneViewport  # noqa: E402
+from openretop.viewer.scene_types import CameraRequest, MeshRenderItem, SceneSnapshot  # noqa: E402
 
 
 def _mesh() -> TriangleMeshData:

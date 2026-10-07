@@ -1,32 +1,31 @@
 from __future__ import annotations
 
-import json
 import copy
-import numpy as np
-from pathlib import Path
-import sys
+import json
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "packages" / "workbench_ui"))
+import numpy as np
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from application.actions import CORE_ACTIONS  # noqa: E402
-from application.scene_ids import curve_node_id, region_node_id, surface_node_id  # noqa: E402
-from application.state import MeshObjectState  # noqa: E402
-from bootstrap import create_application  # noqa: E402
-from curves.curve_state import StoredCurve, add_curve  # noqa: E402
-from infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
-from mesh.triangle_mesh import TriangleMeshData  # noqa: E402
-from presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from regions.region_state import RegionSelection  # noqa: E402
-from surfaces.surface_state import SurfacePatch, add_surface  # noqa: E402
-from viewer.picking_service import MeshPickResult  # noqa: E402
+from openretop.application.actions import CORE_ACTIONS  # noqa: E402
+from openretop.application.scene_ids import curve_node_id, region_node_id, surface_node_id  # noqa: E402
+from openretop.application.state import MeshObjectState  # noqa: E402
+from openretop.bootstrap import create_application  # noqa: E402
+from openretop.curves.curve_state import StoredCurve, add_curve  # noqa: E402
+from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
+from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
+from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.regions.region_state import RegionSelection  # noqa: E402
+from openretop.surfaces.surface_state import SurfacePatch, add_surface  # noqa: E402
+from openretop.viewer.picking_service import MeshPickResult  # noqa: E402
 
 
 def _composition():
@@ -92,11 +91,11 @@ class MainWindowWorkflowTests(unittest.TestCase):
             path = Path(directory) / "v3.openretop"
             window = OpenRetopV3Window(_composition())
             try:
-                with patch("presentation.qt.main_window.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+                with patch("openretop.presentation.qt.main_window.QFileDialog.getSaveFileName", return_value=(str(path), "")):
                     self.assertTrue(window.save_project(as_dialog=True))
                 self.assertTrue(path.exists())
                 self.assertIn("version", json.loads(path.read_text(encoding="utf-8")))
-                with patch("presentation.qt.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+                with patch("openretop.presentation.qt.main_window.QFileDialog.getOpenFileName", return_value=(str(path), "")):
                     self.assertTrue(window.open_project())
             finally:
                 window.close()
@@ -107,7 +106,7 @@ class MainWindowWorkflowTests(unittest.TestCase):
         candidate.keybinds.undo = "Ctrl+U"
         window = OpenRetopV3Window(composition)
         try:
-            with patch("presentation.qt.main_window.PreferencesDialog") as dialog_type:
+            with patch("openretop.presentation.qt.main_window.PreferencesDialog") as dialog_type:
                 dialog = dialog_type.return_value
                 dialog.exec.return_value = True
                 dialog.settings = candidate

@@ -1,27 +1,24 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from project.project_data import (
+from openretop.application.state import AppState
+from openretop.project.project_data import (
     ProjectFourBoundaryPatchFeature,
     ProjectLoftFeature,
     default_project_data,
 )
-from application.state import AppState
-from project.project_io import load_project, save_project
-from project.project_state import project_from_app_state
-from surfaces.four_boundary_feature import (
+from openretop.project.project_io import load_project, save_project
+from openretop.project.project_state import project_from_app_state
+from openretop.surfaces.four_boundary_feature import (
     FourBoundaryPatchFeatureCollection,
     FourBoundaryPatchFeatureRecord,
     add_four_boundary_feature,
     mark_four_boundary_features_dirty_for_curve,
 )
-from surfaces.loft_feature import (
+from openretop.surfaces.loft_feature import (
     LoftFeatureCollection,
     LoftFeatureOptions,
     LoftFeatureRecord,

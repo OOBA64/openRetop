@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from cad_kernel.backend import cad_kernel_status, is_cad_kernel_available
-from cad_kernel.occ_backend import detect_cad_kernel_backend
-from cad_kernel.types import CadKernelInfo
+from openretop.cad_kernel.backend import cad_kernel_status, is_cad_kernel_available
+from openretop.cad_kernel.occ_backend import detect_cad_kernel_backend
+from openretop.cad_kernel.types import CadKernelInfo
 
 
 class CadKernelBackendTests(unittest.TestCase):
@@ -23,7 +19,7 @@ class CadKernelBackendTests(unittest.TestCase):
         )
 
     def test_detection_reports_unavailable_without_optional_modules(self) -> None:
-        with patch("cad_kernel.occ_backend.importlib.util.find_spec", return_value=None):
+        with patch("openretop.cad_kernel.occ_backend.importlib.util.find_spec", return_value=None):
             info = detect_cad_kernel_backend()
 
         self.assertIsInstance(info, CadKernelInfo)
@@ -37,7 +33,7 @@ class CadKernelBackendTests(unittest.TestCase):
                 return SimpleNamespace(origin="test")
             return None
 
-        with patch("cad_kernel.occ_backend.importlib.util.find_spec", fake_find_spec):
+        with patch("openretop.cad_kernel.occ_backend.importlib.util.find_spec", fake_find_spec):
             info = detect_cad_kernel_backend()
 
         self.assertTrue(info.available)

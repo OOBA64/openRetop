@@ -5,82 +5,54 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install Linux display dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb libgl1 libglu1-mesa libxrender1 libxkbcommon-x11-0
-
-      - name: Install project dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-
-      - name: Verify required desktop dependencies
-        run: python -c "import PySide6; import vtkmodules"
-
-      - name: Compile V3 source
-        run: python -m compileall -q src packages/workbench_ui/workbench_ui
-
-      - name: Verify architecture boundaries
-        run: python scripts/report_architecture_metrics.py --fail-on-new
-
-      - name: Run V3 focused suites
-        env:
-          PYTHONPATH: src:packages/workbench_ui
-          QT_QPA_PLATFORM: offscreen
-        run: >-
-          python -m unittest
-          tests.test_scene_snapshots_and_sync
-          tests.test_project_and_service_boundaries
-          tests.test_workbench_ui_framework
-          tests.test_main_window_workflows
-          tests.test_entry_points_and_legacy_removal
-          tests.test_release_fixtures_and_composition
-          tests.test_v3_workflow_service
-
-      - name: Run accelerated mesh-query tests
-        env:
-          PYTHONPATH: src
-        run: python -m unittest discover -s tests -p "test_mesh_spatial_index.py"
-
-      - name: Run complete test suite
-        env:
-          PYTHONPATH: src:packages/workbench_ui
-        run: xvfb-run -a python -m unittest discover -s tests -p "test_*.py"
-
-      - name: Run informative V3 benchmarks
-        env:
-          PYTHONPATH: src:packages/workbench_ui
-        run: |
-          python benchmarks/benchmark_scene_sync.py --iterations 10
-          python benchmarks/benchmark_v3_workflows.py --iterations 5 --curves 100
-
-  windows-v3:
-    runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install project dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-      - name: Compile and run V3 boundary suites
-        env:
-          PYTHONPATH: src;packages/workbench_ui
-          QT_QPA_PLATFORM: offscreen
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy
+        run: mypy
+      - name: Compile
+        run: python -m compileall -q src packages/workbench_ui/workbench_ui
+      - name: Architecture boundaries
+        run: python scripts/report_architecture_metrics.py --fail-on-new
+
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install Linux display libraries
+        if: runner.os == 'Linux'
         run: |
-          python -m compileall -q src packages/workbench_ui/workbench_ui
-          python scripts/report_architecture_metrics.py --fail-on-new
-          python -m unittest tests.test_scene_snapshots_and_sync tests.test_project_and_service_boundaries tests.test_workbench_ui_framework tests.test_main_window_workflows tests.test_entry_points_and_legacy_removal tests.test_release_fixtures_and_composition tests.test_v3_workflow_service
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libglu1-mesa libxrender1 libxkbcommon-x11-0 libegl1
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Run test suite
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Informative benchmarks
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        run: |
+          python benchmarks/benchmark_scene_sync.py --iterations 10
+          python benchmarks/benchmark_v3_workflows.py --iterations 5 --curves 100

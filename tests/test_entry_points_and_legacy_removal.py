@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 import ast
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupportedEntryPointTests(unittest.TestCase):
     def test_supported_entry_point_is_v3_only(self) -> None:
-        source = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
-        self.assertIn("presentation.qt.main_window", source)
+        source = (ROOT / "src" / "openretop" / "main.py").read_text(encoding="utf-8")
+        self.assertIn("openretop.presentation.qt.main_window", source)
         self.assertNotIn("app.main_window", source)
         self.assertNotIn("tkinter", source)
 
@@ -21,11 +20,11 @@ class SupportedEntryPointTests(unittest.TestCase):
             self.assertNotIn("tkinter", source, path)
 
     def test_legacy_shell_viewport_and_compatibility_package_are_physically_absent(self) -> None:
-        self.assertFalse((ROOT / "src" / "app" / "main_window.py").exists())
-        self.assertFalse((ROOT / "src" / "app" / "scene_browser.py").exists())
-        self.assertFalse((ROOT / "src" / "app" / "menus.py").exists())
-        self.assertFalse((ROOT / "src" / "app" / "preferences_dialog.py").exists())
-        self.assertFalse((ROOT / "src" / "viewer" / "embedded_viewport.py").exists())
+        self.assertFalse((ROOT / "src" / "openretop" / "app" / "main_window.py").exists())
+        self.assertFalse((ROOT / "src" / "openretop" / "app" / "scene_browser.py").exists())
+        self.assertFalse((ROOT / "src" / "openretop" / "app" / "menus.py").exists())
+        self.assertFalse((ROOT / "src" / "openretop" / "app" / "preferences_dialog.py").exists())
+        self.assertFalse((ROOT / "src" / "openretop" / "viewer" / "embedded_viewport.py").exists())
 
     def test_production_has_no_legacy_app_imports(self) -> None:
         violations: list[tuple[Path, int, str]] = []
@@ -46,7 +45,7 @@ class SupportedEntryPointTests(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_v3_viewport_uses_shared_snapshot_synchronizer(self) -> None:
-        source = (ROOT / "src" / "presentation" / "qt" / "viewport.py").read_text(
+        source = (ROOT / "src" / "openretop" / "presentation" / "qt" / "viewport.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("SceneSynchronizer", source)

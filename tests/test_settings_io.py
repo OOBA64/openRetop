@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import json
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from settings.settings_data import (
-    DEFAULT_REGION_SELECTION_EDGE_COLOR,
+from openretop.settings.settings_data import (
     DEFAULT_REGION_SELECTION_COLOR,
+    DEFAULT_REGION_SELECTION_EDGE_COLOR,
     DEFAULT_REGION_SELECTION_OPACITY,
     DISPLAY_COLOR_FIELDS,
     SETTINGS_VERSION,
@@ -21,7 +18,7 @@ from settings.settings_data import (
     AppUiSettings,
     default_app_settings,
 )
-from settings.settings_io import (
+from openretop.settings.settings_io import (
     load_settings,
     save_settings,
     settings_from_dict,

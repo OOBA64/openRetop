@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
-import sys
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = ROOT / "packages" / "workbench_ui"
-sys.path.insert(0, str(PACKAGE_ROOT))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -20,8 +18,8 @@ from workbench_ui import (  # noqa: E402
     PropertyInspectorModel,
     SceneNode,
     SceneTreeModel,
-    ToolModeManager,
     ThemeManager,
+    ToolModeManager,
 )
 
 

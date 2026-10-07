@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from application.keybindings import action_for_shortcut, shortcut_overrides
-from settings.settings_data import default_app_settings
+from openretop.application.keybindings import action_for_shortcut, shortcut_overrides
+from openretop.settings.settings_data import default_app_settings
 
 
 class KeybindTests(unittest.TestCase):
