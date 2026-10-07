@@ -23,6 +23,8 @@ class ActionDefinition:
     checked: bool = False
     dispatch: ActionCallback | None = None
     metadata: dict[str, object] = field(default_factory=dict)
+    # Why the action is currently disabled ("" when it is enabled); shown in tooltips.
+    disabled_reason: str = ""
 
     def __post_init__(self) -> None:
         if not self.id or self.id.strip() != self.id:
@@ -80,7 +82,7 @@ class ActionRegistry:
     def update(self, action_id: str, **changes: object) -> ActionDefinition:
         definition = self.require(action_id)
         for field_name, value in changes.items():
-            if field_name not in {"enabled", "visible", "checked", "label", "shortcut"}:
+            if field_name not in {"enabled", "visible", "checked", "label", "shortcut", "disabled_reason"}:
                 raise ValueError(f"Unsupported action state field: {field_name}")
             setattr(definition, field_name, value)
         for listener in tuple(self._listeners):

@@ -30,6 +30,19 @@ from workbench_ui.contracts import (
 )
 
 
+def action_tooltip(definition: ActionDefinition) -> str:
+    """Tooltip text: label, description, shortcut, and why the action is disabled."""
+
+    lines = [definition.label]
+    if definition.description:
+        lines.append(definition.description)
+    if definition.shortcut:
+        lines.append(f"Shortcut: {definition.shortcut}")
+    if not definition.enabled and definition.disabled_reason:
+        lines.append(f"Unavailable - needs {definition.disabled_reason}")
+    return "\n".join(lines)
+
+
 class ApplicationShell(QMainWindow):
     """Host window for panels, actions, workspace content, and status."""
 
@@ -73,6 +86,8 @@ class ApplicationShell(QMainWindow):
         if action is None:
             return
         action.setText(definition.label)
+        action.setToolTip(action_tooltip(definition))
+        action.setStatusTip(definition.description or definition.label)
         action.setEnabled(definition.enabled)
         action.setVisible(definition.visible)
         action.setCheckable(definition.checkable)
@@ -83,6 +98,7 @@ class ApplicationShell(QMainWindow):
     def _build_menus(self, schemas: tuple[MenuSchema, ...]) -> None:
         for schema in schemas:
             menu = self.menuBar().addMenu(schema.title)
+            menu.setToolTipsVisible(True)
             self._populate_menu(menu, schema.items)
 
     def _populate_menu(self, menu: QMenu, items: tuple) -> None:

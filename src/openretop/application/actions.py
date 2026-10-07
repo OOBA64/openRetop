@@ -60,6 +60,53 @@ class ActionCondition(str, Enum):
     HAS_RUNTIME_BREP = "has_runtime_brep"
 
 
+# What to tell a user when a command is unavailable because ``condition`` is unmet.
+# Phrased as a requirement ("Needs ..."), shown in tooltips and the command palette.
+CONDITION_REQUIREMENTS: Mapping[ActionCondition, str] = MappingProxyType(
+    {
+        ActionCondition.HAS_SCENE_OBJECTS: "something in the scene",
+        ActionCondition.HAS_SCENE_SELECTION: "a selection in the scene",
+        ActionCondition.CAN_UNDO: "something to undo",
+        ActionCondition.CAN_REDO: "something to redo",
+        ActionCondition.HAS_MESH: "a loaded scan (File > Open Model)",
+        ActionCondition.NOT_BUSY: "the current task to finish",
+        ActionCondition.SINGLE_SELECTION: "exactly one item selected",
+        ActionCondition.MULTI_SELECTION: "more than one item selected",
+        ActionCondition.HAS_SECTION_PLANE: "a section plane",
+        ActionCondition.HAS_SECTION_RESULT: "a computed section",
+        ActionCondition.HAS_CURVES: "at least one curve",
+        ActionCondition.HAS_CURVE_SELECTION: "a selected curve",
+        ActionCondition.SINGLE_CURVE: "exactly one curve selected",
+        ActionCondition.TWO_CURVES: "exactly two curves selected",
+        ActionCondition.AT_LEAST_TWO_CURVES: "two or more curves selected",
+        ActionCondition.AT_LEAST_THREE_CURVES: "three or more curves selected",
+        ActionCondition.FOUR_CURVES: "exactly four curves selected",
+        ActionCondition.SINGLE_CLOSED_CURVE: "one closed curve selected",
+        ActionCondition.SINGLE_OPEN_CURVE: "one open curve selected",
+        ActionCondition.SINGLE_EDITABLE_CURVE: "one hand-drawn (editable) curve selected",
+        ActionCondition.HAS_SURFACE_SELECTION: "a selected surface",
+        ActionCondition.SINGLE_SURFACE: "exactly one surface selected",
+        ActionCondition.HAS_REGION: "a selected region (Create > Region Select)",
+        ActionCondition.HAS_BREP_SELECTION: "a selected BREP surface",
+        ActionCondition.HAS_LOFT_FEATURE: "an editable loft",
+        ActionCondition.HAS_SOURCE_CURVES: "a surface with source curves",
+        ActionCondition.CAN_TRANSFORM: "the model or a section plane selected",
+        ActionCondition.TRANSFORM_ACTIVE: "a move/rotate in progress",
+        ActionCondition.MANUAL_CURVE_ACTIVE: "the curve tool active",
+        ActionCondition.MANUAL_CURVE_IDLE: "the curve tool to be finished first",
+        ActionCondition.MANUAL_CURVE_CREATING: "a new curve being drawn",
+        ActionCondition.MANUAL_CURVE_EDITING: "a curve being edited",
+        ActionCondition.CAN_ADD_MANUAL_POINT: "the curve tool active",
+        ActionCondition.HAS_MANUAL_CONTROL_POINT: "a selected curve point",
+        ActionCondition.REGION_TOOL_ACTIVE: "the region tool active",
+        ActionCondition.HAS_REGION_BOUNDARY_CURVES: "extracted region boundary curves",
+        ActionCondition.SELECTED_REGION_BOUNDARY_CURVE: "a region boundary curve selected",
+        ActionCondition.CAD_AVAILABLE: "the CAD kernel (CadQuery) to be installed",
+        ActionCondition.HAS_RUNTIME_BREP: "a built BREP (rebuild it first)",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ActionContext:
     """Typed state used to evaluate action availability."""
@@ -232,6 +279,15 @@ class ActionDefinition:
         """Compatibility spelling for callers that prefer an explicit name."""
 
         return self.id
+
+    def unmet_requirements(self, context: ActionContext) -> tuple[str, ...]:
+        """Plain-language reasons this action is currently unavailable (empty if it is available)."""
+
+        return tuple(
+            CONDITION_REQUIREMENTS[condition]
+            for condition in self.enabled_when
+            if not context.satisfies(condition)
+        )
 
     def resolve(self, context: ActionContext) -> ActionState:
         return ActionState(

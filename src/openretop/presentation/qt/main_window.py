@@ -144,16 +144,16 @@ class _ModelRead:
 
 
 _FILE_ACTIONS = (
-    ("file.new_project", "New Project", "File", "Ctrl+N"),
-    ("file.open_model", "Open Model", "File", "Ctrl+O"),
-    ("file.open_project", "Open Project", "File", "Ctrl+Shift+O"),
-    ("file.save_project", "Save Project", "File", "Ctrl+S"),
-    ("file.save_project_as", "Save Project As", "File", "Ctrl+Shift+S"),
-    ("file.export_step", "Export STEP", "File", None),
-    ("file.set_units", "Set Model Units...", "Edit", None),
-    ("file.preferences", "Preferences", "Edit", "Ctrl+,"),
-    ("file.quit", "Quit", "File", "Alt+F4"),
-    ("help.about", "About openRetop V3", "Help", None),
+    ("file.new_project", "New Project", "File", "Ctrl+N", "Start an empty project."),
+    ("file.open_model", "Open Model", "File", "Ctrl+O", "Import an STL, OBJ or PLY scan and choose its length unit."),
+    ("file.open_project", "Open Project", "File", "Ctrl+Shift+O", "Open an .openretop project and reload its scan."),
+    ("file.save_project", "Save Project", "File", "Ctrl+S", "Save the project (the scan itself is referenced, not copied)."),
+    ("file.save_project_as", "Save Project As", "File", "Ctrl+Shift+S", "Save the project under a new name."),
+    ("file.export_step", "Export STEP", "File", None, "Write the selected, built BREP surface to a STEP file in the model's units."),
+    ("file.set_units", "Set Model Units...", "Edit", None, "Change the length unit the model coordinates are labelled with (does not rescale)."),
+    ("file.preferences", "Preferences", "Edit", "Ctrl+,", "Display, import and keyboard settings."),
+    ("file.quit", "Quit", "File", "Alt+F4", "Close openRetop."),
+    ("help.about", "About openRetop V3", "Help", None, "Version and credits."),
 )
 
 
@@ -169,6 +169,9 @@ class OpenRetopV3Window(ApplicationShell):
     ) -> None:
         self.composition = composition or create_application()
         self._executor: TaskExecutor = executor or InlineExecutor()
+        busy_changed = getattr(self._executor, "busy_changed", None)
+        if busy_changed is not None:
+            busy_changed.connect(lambda _busy: self._sync_action_state())
         self._application_actions = create_core_action_registry()
         self._framework_actions = self._make_framework_actions()
         super().__init__(
@@ -246,12 +249,13 @@ class OpenRetopV3Window(ApplicationShell):
                     metadata={"command_id": definition.command_id, **dict(definition.metadata)},
                 )
             )
-        for action_id, label, category, shortcut in _FILE_ACTIONS:
+        for action_id, label, category, shortcut, description in _FILE_ACTIONS:
             registry.register(
                 ActionDefinition(
                     action_id,
                     label,
                     category=category,
+                    description=description,
                     shortcut=shortcut,
                     dispatch=lambda payload, action_id=action_id: self._dispatch_framework_action(action_id, payload),
                 )
@@ -900,10 +904,18 @@ class OpenRetopV3Window(ApplicationShell):
             selected_region_boundary_curve=bool(selected_curve and is_region_boundary_curve(selected_curve)),
             cad_available=self.composition.cad.capabilities.available,
             has_runtime_brep=bool(self.composition.brep_controller.runtime_objects),
+            busy=self._executor.busy,
         )
         for app_action in self._application_actions.definitions:
             resolved = app_action.resolve(context)
-            self._framework_actions.update(app_action.id, enabled=resolved.enabled, visible=resolved.visible, checked=resolved.checked)
+            reason = "" if resolved.enabled else "; ".join(app_action.unmet_requirements(context))
+            self._framework_actions.update(
+                app_action.id,
+                enabled=resolved.enabled,
+                visible=resolved.visible,
+                checked=resolved.checked,
+                disabled_reason=reason,
+            )
 
     def _inspector_fields(self) -> tuple[FieldDefinition, ...]:
         state = self.composition.state
