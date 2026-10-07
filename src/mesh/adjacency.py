@@ -13,7 +13,7 @@ from mesh.triangle_mesh import TriangleMeshData
 
 
 MeshAdjacency = tuple[tuple[int, ...], ...]
-_ADJACENCY_CACHE: dict[tuple[int, int, int], MeshAdjacency] = {}
+_CACHE_ATTRIBUTE = "_triangle_adjacency_cache"
 
 
 @dataclass(frozen=True)
@@ -52,16 +52,34 @@ def build_triangle_adjacency(mesh: TriangleMeshData) -> MeshAdjacency:
 
 
 def cached_triangle_adjacency(mesh: TriangleMeshData) -> MeshAdjacency:
-    """Return cached adjacency for the current mesh object."""
+    """Return adjacency for ``mesh``, cached on the mesh object itself.
 
-    triangles = _triangle_array(mesh)
-    vertices = _vertex_array(mesh)
-    key = (id(mesh), int(len(vertices)), int(len(triangles)))
-    adjacency = _ADJACENCY_CACHE.get(key)
-    if adjacency is None:
-        adjacency = build_triangle_adjacency(mesh)
-        _ADJACENCY_CACHE[key] = adjacency
+    The entry holds a reference to the triangle array it was built from, so it
+    is dropped with the mesh and is rebuilt whenever ``mesh.triangles`` is
+    replaced. In-place edits of the triangle array are not detected; call
+    ``invalidate_triangle_adjacency`` after making them.
+    """
+
+    triangles = getattr(mesh, "triangles", None)
+    entry = getattr(mesh, _CACHE_ATTRIBUTE, None)
+    if entry is not None and entry[0] is triangles:
+        return entry[1]
+
+    adjacency = build_triangle_adjacency(mesh)
+    try:
+        setattr(mesh, _CACHE_ATTRIBUTE, (triangles, adjacency))
+    except AttributeError:
+        pass  # mesh type without a writable __dict__: just don't cache
     return adjacency
+
+
+def invalidate_triangle_adjacency(mesh: TriangleMeshData) -> None:
+    """Drop any adjacency cached on ``mesh``."""
+
+    try:
+        setattr(mesh, _CACHE_ATTRIBUTE, None)
+    except AttributeError:
+        pass
 
 
 def triangle_normals(mesh: TriangleMeshData) -> np.ndarray:

@@ -118,7 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         loaded = load_mesh_with_metadata(args.mesh_path)
-    except (FileNotFoundError, ValueError, SystemExit) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
         print(f"Error: {exc}")
         return 1
 
