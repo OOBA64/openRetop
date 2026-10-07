@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -389,6 +389,7 @@ class CommandPaletteWidget(QWidget):
             item.setToolTip(f"{definition.category}: {definition.description}")
             if not definition.enabled:
                 item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
+                item.setForeground(QColor("#7d838c"))
             self.results.addItem(item)
         self._select_first_enabled()
 

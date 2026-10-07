@@ -12,6 +12,7 @@ from typing import Mapping
 
 import numpy as np
 from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -30,6 +31,7 @@ from openretop.application.controller_support import (
     is_region_boundary_curve,
     is_repaired_curve,
 )
+from openretop.application.guidance import build_guidance
 from openretop.application.keybindings import shortcut_overrides
 from openretop.application.results import CommandResult
 from openretop.application.scene_ids import (
@@ -75,6 +77,7 @@ from openretop.geometry.units import UNIT_CODES, get_unit
 from openretop.infrastructure.io_services import ProgressEvent
 from openretop.mesh.display_proxy import normalize_proxy_quality
 from openretop.presentation.qt.background import InlineExecutor, TaskExecutor, ThreadedExecutor
+from openretop.presentation.qt.next_steps import NextStepsPanel
 from openretop.presentation.qt.preferences_dialog import PreferencesDialog
 from openretop.presentation.qt.transform_overlays import transformed_object_origin
 from openretop.presentation.qt.viewport import QtSceneViewport
@@ -113,6 +116,7 @@ from workbench_ui import (
     ToolbarSchema,
     ToolInstructionBar,
 )
+from workbench_ui.shell import action_tooltip
 
 _LOG = logging.getLogger(__name__)
 
@@ -134,6 +138,8 @@ HEAVY_ACTIONS = frozenset(
 
 
 _IMPORT_ERRORS = (OSError, RuntimeError, ValueError)
+MESH_SUFFIXES = frozenset({".stl", ".obj", ".ply"})
+PROJECT_SUFFIX = ".openretop"
 
 
 @dataclass(frozen=True)
@@ -224,7 +230,16 @@ class OpenRetopV3Window(ApplicationShell):
         self._diagnostics = QLabel("", self)
         self._diagnostics.setWordWrap(True)
         self.add_panel(PanelDescriptor("scene", "Scene", area="left"), self.scene_tree)
-        self.add_panel(PanelDescriptor("properties", "Properties", area="right"), self.inspector)
+        self.next_steps = NextStepsPanel(self)
+        self.next_steps.action_requested.connect(lambda action_id: self._framework_actions.invoke(action_id))
+        self.next_steps.recent_requested.connect(lambda value: self.open_project_path(Path(value)))
+        properties = QWidget(self)
+        properties_layout = QVBoxLayout(properties)
+        properties_layout.setContentsMargins(0, 0, 0, 0)
+        properties_layout.addWidget(self.next_steps)
+        properties_layout.addWidget(self.inspector)
+        self.add_panel(PanelDescriptor("properties", "Properties", area="right"), properties)
+        self.setAcceptDrops(True)
         self.add_panel(PanelDescriptor("commands", "Command Palette", area="bottom", visible=False), self.palette)
         diagnostics = QWidget(self)
         diagnostics_layout = QVBoxLayout(diagnostics)
@@ -711,7 +726,7 @@ class OpenRetopV3Window(ApplicationShell):
             nodes.append(
                 SceneNode(
                     "scene.empty_hint",
-                    "Open a scan to begin (File > Open Model, or drop a file here)",
+                    "Open a scan to begin",
                     "hint",
                     "scene",
                     **group_defaults,
@@ -842,6 +857,58 @@ class OpenRetopV3Window(ApplicationShell):
             self._diagnostics.setText("Viewport initialization pending; latest scene snapshot retained.")
         self._camera_request = CameraRequest()
         self._sync_action_state()
+        self._refresh_next_steps()
+
+    def _refresh_next_steps(self) -> None:
+        """Nothing selected: show the Model & Next steps panel; otherwise the inspector."""
+
+        state = self.composition.state
+        has_selection = bool(self._scene_model.selected_ids)
+        self.inspector.setVisible(has_selection)
+        self.next_steps.setVisible(not has_selection)
+        if has_selection:
+            return
+        guidance = build_guidance(
+            state,
+            cad_available=self.composition.cad.capabilities.available,
+            has_runtime_brep=bool(self.composition.brep_controller.runtime_objects),
+            selected_curve_count=len(state.curve_collection.selected_curve_ids),
+        )
+
+        def availability(action_id: str) -> tuple[bool, str]:
+            try:
+                definition = self._framework_actions.require(action_id)
+            except KeyError:
+                return False, ""
+            return definition.enabled, action_tooltip(definition)
+
+        self.next_steps.set_guidance(guidance, availability, self._recent_projects())
+
+    # --- drag and drop ---------------------------------------------------------
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt API
+        if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt API
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        event.acceptProposedAction()
+        if paths:
+            self.open_dropped_file(paths[0])
+
+    def open_dropped_file(self, path: Path) -> bool:
+        """Open a dropped file: a project, or a scan (which asks for its units)."""
+
+        suffix = Path(path).suffix.lower()
+        if suffix == PROJECT_SUFFIX:
+            return self.open_project_path(Path(path))
+        if suffix in MESH_SUFFIXES:
+            return self.open_model_path(Path(path))
+        supported = ", ".join(sorted(MESH_SUFFIXES | {PROJECT_SUFFIX}))
+        self.set_status_message(f"Cannot open {Path(path).name}: supported files are {supported}")
+        return False
 
     def _viewport_left_capture_owner(self) -> str | None:
         """Return the one active workflow allowed to consume ordinary left input."""
