@@ -577,7 +577,7 @@ class TransformOverlayLayerTests(unittest.TestCase):
         diagnostics = viewport.diagnostic_state().transform_overlay
         self.assertFalse(diagnostics.move_actor_in_main_renderer)
         self.assertFalse(diagnostics.ring_actor_in_main_renderer)
-        self.assertEqual(viewport.renderer.GetViewProps().GetNumberOfItems(), 2 + 1)  # mesh, grid, selection box
+        self.assertEqual(viewport.renderer.GetViewProps().GetNumberOfItems(), 3 + 1)  # mesh, grid lines, grid axes, selection box
 
     def test_nothing_is_drawn_when_an_object_is_merely_selected(self) -> None:
         viewport = self._viewport(_snapshot(mode=None, selected=True))

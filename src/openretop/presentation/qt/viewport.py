@@ -11,6 +11,7 @@ from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
 
 from openretop.application.transform_controller import CameraVectors
+from openretop.presentation.qt.adaptive_grid import AdaptiveGrid
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
 from openretop.presentation.qt.selection_overlay import SelectionBoxOverlay
 from openretop.presentation.qt.transform_overlays import (
@@ -71,6 +72,7 @@ class QtSceneViewport(VTKViewportWidget):
     """Apply openRetop scene snapshots after the generic host becomes ready."""
 
     pointer_event = Signal(str, int, int, object)
+    grid_spacing_changed = Signal(float)
     scene_synchronized = Signal(object)
 
     def __init__(self, parent: object | None = None) -> None:
@@ -84,8 +86,7 @@ class QtSceneViewport(VTKViewportWidget):
         self._pending_camera_request: CameraRequest | None = None
         self._synchronization_count = 0
         self._last_scene_error: str | None = None
-        self._grid_actor: object | None = None
-        self._grid_signature: tuple[float, float, float] | None = None
+        self.grid = AdaptiveGrid(self.renderer, on_spacing_changed=self.grid_spacing_changed.emit)
         self.transform_overlays = TransformOverlayController(self.renderer)
         self.selection_box = SelectionBoxOverlay(self.renderer)
         self._pointer_gesture = PointerGestureState()
@@ -321,6 +322,7 @@ class QtSceneViewport(VTKViewportWidget):
             self._qt_filter_installed = False
         self.transform_overlays.close()
         self.selection_box.close()
+        self.grid.close()
         self.navigation_cluster.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
@@ -495,6 +497,7 @@ class QtSceneViewport(VTKViewportWidget):
                     )
                 self.camera_controller.apply(request, snapshot)
                 self._pending_camera_request = None
+                self.grid.sync()
             self.navigation_cluster.sync_camera()
             rendered = self.render()
             if not rendered and self.last_error:
@@ -520,19 +523,8 @@ class QtSceneViewport(VTKViewportWidget):
     def _update_display_overlays(self, snapshot: SceneSnapshot) -> None:
         if self.renderer is None:
             return
-        self._ensure_display_overlays()
-        assert self._grid_actor is not None
-        self._grid_actor.SetVisibility(bool(snapshot.display.get("show_grid", True)))
-        bounds = snapshot.visible_bounds()
-        extent = _overlay_extent(bounds)
-        if snapshot.active_transform_mode and self._grid_signature is not None:
-            # The grid is sized from the scene bounds, so dragging an object away would
-            # rescale it every frame and look like the camera moving. Hold it still.
-            extent = self._grid_signature[0]
-        signature = (extent, 0.0, 0.0)
-        if signature != self._grid_signature:
-            _set_grid_geometry(self._grid_actor, extent)
-            self._grid_signature = signature
+        # The grid follows the camera, not the scene, so moving an object never rescales it.
+        self.grid.set_visible(bool(snapshot.display.get("show_grid", True)))
 
         self.selection_box.update(snapshot)
         if not self.transform_overlays.update(snapshot):
@@ -545,22 +537,6 @@ class QtSceneViewport(VTKViewportWidget):
             controls=bool(snapshot.display.get("show_viewcube", True)),
         )
         self.navigation_cluster.sync_camera()
-
-    def _ensure_display_overlays(self) -> None:
-        if self._grid_actor is not None:
-            return
-        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
-
-        grid_actor = vtkActor()
-        grid_actor.SetMapper(vtkPolyDataMapper())
-        grid_actor.GetProperty().SetColor(0.30, 0.34, 0.39)
-        grid_actor.GetProperty().SetOpacity(0.42)
-        grid_actor.GetProperty().SetLineWidth(1.0)
-        grid_actor.PickableOff()
-        grid_actor.DragableOff()
-
-        self.renderer.AddActor(grid_actor)
-        self._grid_actor = grid_actor
 
     def _render_navigation(self) -> None:
         if self.is_ready and not self._closing:
@@ -612,7 +588,8 @@ class QtSceneViewport(VTKViewportWidget):
 
     def _overlay_actor_inventory(self) -> tuple[Mapping[str, object], ...]:
         values = (
-            ("grid", self._grid_actor, 0, self.renderer),
+            ("grid", self.grid.lines_actor, 0, self.renderer),
+            ("grid_axes", self.grid.axes_actor, 0, self.renderer),
             ("transform_axes", self._transform_axes_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
             ("rotation_ring", self._rotation_ring_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
             ("selection_box", self.selection_box.actor, 0, self.renderer),
@@ -639,7 +616,8 @@ class QtSceneViewport(VTKViewportWidget):
                 if entry is not None:
                     roles[id(entry.actor)] = f"{category}:{item_id}"
         for role, actor in (
-            ("grid", self._grid_actor),
+            ("grid", self.grid.lines_actor),
+            ("grid_axes", self.grid.axes_actor),
             ("transform_axes", self._transform_axes_actor),
             ("rotation_ring", self._rotation_ring_actor),
             ("selection_box", self.selection_box.actor),
@@ -694,31 +672,6 @@ def _hex_color(value: object) -> tuple[float, float, float] | None:
         return tuple(int(value[index : index + 2], 16) / 255.0 for index in (1, 3, 5))
     except ValueError:
         return None
-
-
-def _set_grid_geometry(actor: object, extent: float) -> None:
-    from vtkmodules.vtkCommonCore import vtkPoints
-    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
-
-    points = vtkPoints()
-    lines = vtkCellArray()
-    subdivisions = 10
-    step = (extent * 2.0) / subdivisions
-    for index in range(subdivisions + 1):
-        coordinate = -extent + index * step
-        for first, second in (
-            ((-extent, coordinate, 0.0), (extent, coordinate, 0.0)),
-            ((coordinate, -extent, 0.0), (coordinate, extent, 0.0)),
-        ):
-            first_id = points.InsertNextPoint(*first)
-            second_id = points.InsertNextPoint(*second)
-            lines.InsertNextCell(2)
-            lines.InsertCellPoint(first_id)
-            lines.InsertCellPoint(second_id)
-    data = vtkPolyData()
-    data.SetPoints(points)
-    data.SetLines(lines)
-    actor.GetMapper().SetInputData(data)
 
 
 def _actor_record(
@@ -804,6 +757,7 @@ def _semantic_category(role: str) -> str:
         "section_result": "scene_geometry",
         "tool_preview": "selection_overlay",
         "grid": "grid",
+        "grid_axes": "grid",
         "transform_axes": "transform_axes",
         "rotation_ring": "rotation_ring",
         "view_cube": "view_cube",

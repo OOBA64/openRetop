@@ -442,7 +442,7 @@ class ViewportCubeIntegrationTests(unittest.TestCase):
             self.assertEqual(renderer.GetBackgroundAlpha(), 0.0)
             self.assertEqual(renderer.GetViewProps().GetNumberOfItems(), 1)
             self.assertFalse(bool(cluster.overlay_actor.GetPickable()))
-            self.assertEqual(viewport.renderer.GetViewProps().GetNumberOfItems(), 2)  # mesh + grid only
+            self.assertEqual(viewport.renderer.GetViewProps().GetNumberOfItems(), 3)  # mesh, grid lines, grid axes
             x0, y0, x1, y1 = state.overlay_viewport
             self.assertGreater(x1, x0)
             self.assertGreater(y1, y0)

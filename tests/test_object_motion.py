@@ -177,11 +177,13 @@ class ObjectMotionTests(unittest.TestCase):
         start = (10, max(height // 2, 1))
         self._start(window, "transform.move", start)
         self._motion(window, *start)
-        before = viewport._grid_signature
+        before, rebuilds = viewport.grid.spec, viewport.grid.rebuild_count
         self.assertIsNotNone(before)
         for step in range(1, 30):
             self._motion(window, start[0] + step * 60, start[1])
-        self.assertEqual(viewport._grid_signature, before)
+        # the grid follows the camera, not the scene: dragging an object far away changes nothing
+        self.assertEqual(viewport.grid.spec, before)
+        self.assertEqual(viewport.grid.rebuild_count, rebuilds)
 
     # -- click selection ---------------------------------------------------------------
 

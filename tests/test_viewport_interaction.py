@@ -777,7 +777,7 @@ class OverlayTests(unittest.TestCase):
             )
             self.assertEqual(
                 {item["role"] for item in state.overlay_actor_inventory},
-                {"grid", "view_cube"},
+                {"grid", "grid_axes", "view_cube"},
             )
             self.assertTrue(
                 all(not item["pickable"] for item in state.overlay_actor_inventory)
@@ -788,8 +788,8 @@ class OverlayTests(unittest.TestCase):
             self.assertEqual(mesh["cell_count"], 1)
             self.assertEqual(
                 viewport.renderer.GetViewProps().GetNumberOfItems(),
-                2,
-                "idle main renderer must contain only the mesh and grid",
+                3,
+                "idle main renderer must contain only the mesh and the grid (lines and axes)",
             )
         finally:
             viewport.close()

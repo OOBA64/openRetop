@@ -76,6 +76,7 @@ from openretop.curves.manual_curve import is_manual_curve_like, parse_manual_cur
 from openretop.geometry.units import UNIT_CODES, get_unit
 from openretop.infrastructure.io_services import ProgressEvent
 from openretop.mesh.display_proxy import normalize_proxy_quality
+from openretop.presentation.qt.adaptive_grid import format_spacing
 from openretop.presentation.qt.background import InlineExecutor, TaskExecutor, ThreadedExecutor
 from openretop.presentation.qt.next_steps import NextStepsPanel
 from openretop.presentation.qt.preferences_dialog import PreferencesDialog
@@ -230,6 +231,7 @@ class OpenRetopV3Window(ApplicationShell):
         self.viewport.initialization_failed.connect(self._on_viewport_failure)
         self.viewport.render_failed.connect(self._on_viewport_failure)
         self.viewport.scene_synchronized.connect(self._on_scene_synchronized)
+        self.viewport.grid_spacing_changed.connect(lambda _spacing: self.set_info_message(self._model_info_text()))
         self.viewport.ready.connect(self._on_viewport_ready)
         if self.viewport.interactor is not None:
             self.viewport.interactor.installEventFilter(self)
@@ -901,7 +903,11 @@ class OpenRetopV3Window(ApplicationShell):
         if mesh is None:
             return "No model"
         triangles = int(getattr(mesh, "source_triangle_count", 0) or len(mesh.source_mesh.triangles))
-        return f"{mesh.name}  -  {state.units}  -  {triangles:,} triangles"
+        text = f"{mesh.name}  -  {state.units}  -  {triangles:,} triangles"
+        spacing = self.viewport.grid.spacing
+        if spacing is not None and self.viewport.grid.visible:
+            text += f"  -  grid {format_spacing(spacing, state.units)}"
+        return text
 
     def refresh(self) -> None:
         self.set_info_message(self._model_info_text())
