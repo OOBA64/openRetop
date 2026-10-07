@@ -439,18 +439,41 @@ class CommandPalette:
     def __init__(self, registry: ActionRegistry) -> None:
         self.registry = registry
 
-    def search(self, query: str) -> tuple[ActionDefinition, ...]:
-        needle = str(query).strip().casefold()
-        candidates = [item for item in self.registry.definitions if item.visible and item.enabled]
-        if not needle:
+    def search(self, query: str, *, include_disabled: bool = False) -> tuple[ActionDefinition, ...]:
+        """Actions matching ``query``, best match first (all words must match somewhere).
+
+        Disabled actions are only returned with ``include_disabled`` so callers can
+        show them greyed out with their ``disabled_reason``.
+        """
+
+        words = str(query).strip().casefold().split()
+        candidates = [
+            item for item in self.registry.definitions if item.visible and (include_disabled or item.enabled)
+        ]
+        if not words:
             return tuple(candidates)
-        return tuple(
-            item
-            for item in candidates
-            if needle in item.label.casefold()
-            or needle in item.id.casefold()
-            or needle in item.description.casefold()
-        )
+        scored: list[tuple[int, str, ActionDefinition]] = []
+        for item in candidates:
+            score = self._score(item, words)
+            if score is not None:
+                scored.append((score, item.label.casefold(), item))
+        scored.sort(key=lambda row: (row[0], row[1]))
+        return tuple(row[2] for row in scored)
+
+    @staticmethod
+    def _score(item: ActionDefinition, words: list[str]) -> int | None:
+        label = item.label.casefold()
+        haystack = " ".join((label, item.category.casefold(), item.id.casefold(), item.description.casefold()))
+        if not all(word in haystack for word in words):
+            return None
+        joined = " ".join(words)
+        if label.startswith(joined):
+            return 0
+        if all(word in label for word in words):
+            return 1
+        if any(word in label for word in words):
+            return 2
+        return 3
 
 
 @dataclass(frozen=True)

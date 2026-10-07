@@ -24,6 +24,7 @@ from workbench_ui.contracts import (
 from workbench_ui.shell import ApplicationShell
 from workbench_ui.viewport import VTKViewportWidget
 from workbench_ui.widgets import (
+    CommandPaletteDialog,
     CommandPaletteWidget,
     PropertyInspectorWidget,
     SceneTreeWidget,
@@ -35,6 +36,7 @@ __all__ = [
     "ActionRegistry",
     "ApplicationShell",
     "CommandPalette",
+    "CommandPaletteDialog",
     "CommandPaletteWidget",
     "DockLayoutManager",
     "FieldDefinition",

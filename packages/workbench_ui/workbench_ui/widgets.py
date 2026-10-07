@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -347,27 +348,107 @@ class ToolInstructionBar(QWidget):
 
 
 class CommandPaletteWidget(QWidget):
+    """Searchable command list. Unavailable commands stay visible, greyed, with the reason."""
+
     action_triggered = Signal(str)
 
     def __init__(self, registry: ActionRegistry, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.palette = CommandPalette(registry)
         self.search = QLineEdit(self)
-        self.search.setPlaceholderText("Search commands")
+        self.search.setPlaceholderText("Type a command, e.g. section, loft, export...")
+        self.search.setClearButtonEnabled(True)
         self.results = QListWidget(self)
         layout = QVBoxLayout(self)
         layout.addWidget(self.search)
         layout.addWidget(self.results)
         self.search.textChanged.connect(self.refresh)
+        self.search.installEventFilter(self)
         self.results.itemDoubleClicked.connect(self._trigger)
+        self.results.itemActivated.connect(self._trigger)
         self.refresh("")
 
-    def refresh(self, query: str) -> None:
+    def refresh(self, query: str = "") -> None:
         self.results.clear()
-        for definition in self.palette.search(query):
-            item = QListWidgetItem(f"{definition.label}  ·  {definition.id}")
+        for definition in self.palette.search(query, include_disabled=True):
+            parts = [definition.label]
+            if definition.shortcut:
+                parts.append(f"[{definition.shortcut}]")
+            text = "  ".join(parts)
+            detail = definition.description
+            if not definition.enabled and definition.disabled_reason:
+                detail = f"needs {definition.disabled_reason}"
+            item = QListWidgetItem(f"{text}\n    {detail}" if detail else text)
             item.setData(Qt.UserRole, definition.id)
+            item.setToolTip(f"{definition.category}: {definition.description}")
+            if not definition.enabled:
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
             self.results.addItem(item)
+        self._select_first_enabled()
+
+    def _select_first_enabled(self) -> None:
+        for row in range(self.results.count()):
+            if self.results.item(row).flags() & Qt.ItemIsEnabled:
+                self.results.setCurrentRow(row)
+                return
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if watched is self.search and event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                item = self.results.currentItem()
+                if item is not None:
+                    self._trigger(item)
+                return True
+            if key in (Qt.Key_Down, Qt.Key_Up):
+                self._move(1 if key == Qt.Key_Down else -1)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _move(self, step: int) -> None:
+        row = self.results.currentRow()
+        while 0 <= row + step < self.results.count():
+            row += step
+            if self.results.item(row).flags() & Qt.ItemIsEnabled:
+                self.results.setCurrentRow(row)
+                return
 
     def _trigger(self, item: QListWidgetItem) -> None:
-        self.action_triggered.emit(str(item.data(Qt.UserRole)))
+        if item.flags() & Qt.ItemIsEnabled:
+            self.action_triggered.emit(str(item.data(Qt.UserRole)))
+
+
+class CommandPaletteDialog(QDialog):
+    """Ctrl+K style popup around CommandPaletteWidget; closes after a command is chosen."""
+
+    action_triggered = Signal(str)
+
+    def __init__(self, registry: ActionRegistry, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.setObjectName("command_palette_dialog")
+        self.widget = CommandPaletteWidget(registry, self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.addWidget(self.widget)
+        self.resize(560, 420)
+        self.widget.action_triggered.connect(self._on_triggered)
+
+    def open_palette(self) -> None:
+        self.widget.search.clear()
+        self.widget.refresh("")
+        parent = self.parentWidget()
+        if parent is not None:
+            centre = parent.geometry().center()
+            self.move(centre.x() - self.width() // 2, parent.geometry().top() + 80)
+        self.show()
+        self.widget.search.setFocus(Qt.OtherFocusReason)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt API
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+    def _on_triggered(self, action_id: str) -> None:
+        self.close()
+        self.action_triggered.emit(action_id)

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Mapping
 
 import numpy as np
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -98,6 +98,7 @@ from workbench_ui import (
     ActionDefinition,
     ActionRegistry,
     ApplicationShell,
+    CommandPaletteDialog,
     CommandPaletteWidget,
     FieldDefinition,
     MenuItem,
@@ -150,6 +151,7 @@ _FILE_ACTIONS = (
     ("file.save_project", "Save Project", "File", "Ctrl+S", "Save the project (the scan itself is referenced, not copied)."),
     ("file.save_project_as", "Save Project As", "File", "Ctrl+Shift+S", "Save the project under a new name."),
     ("file.export_step", "Export STEP", "File", None, "Write the selected, built BREP surface to a STEP file in the model's units."),
+    ("view.command_palette", "Command Palette...", "View", "Ctrl+K", "Search every command by name; unavailable ones show what they need."),
     ("file.set_units", "Set Model Units...", "Edit", None, "Change the length unit the model coordinates are labelled with (does not rescale)."),
     ("file.preferences", "Preferences", "Edit", "Ctrl+,", "Display, import and keyboard settings."),
     ("file.quit", "Quit", "File", "Alt+F4", "Close openRetop."),
@@ -216,6 +218,8 @@ class OpenRetopV3Window(ApplicationShell):
         self.inspector.validation_failed.connect(self._on_inspector_validation_failed)
         self.palette = CommandPaletteWidget(self._framework_actions, self)
         self.palette.action_triggered.connect(self._dispatch_framework_action)
+        self._palette_dialog = CommandPaletteDialog(self._framework_actions, self)
+        self._palette_dialog.action_triggered.connect(self._run_palette_action)
         self.instructions = ToolInstructionBar(self.tool_modes, self)
         self._diagnostics = QLabel("", self)
         self._diagnostics.setWordWrap(True)
@@ -326,6 +330,8 @@ class OpenRetopV3Window(ApplicationShell):
             return self.save_project(as_dialog=True)
         if action_id == "file.export_step":
             return self.export_step()
+        if action_id == "view.command_palette":
+            return self.show_command_palette()
         if action_id == "file.set_units":
             return self.set_model_units()
         if action_id == "file.preferences":
@@ -1092,6 +1098,15 @@ class OpenRetopV3Window(ApplicationShell):
         if not accepted:
             return None
         return UNIT_CODES[labels.index(choice)]
+
+    def show_command_palette(self) -> bool:
+        """Open the Ctrl+K palette; the chosen command runs after the popup has closed."""
+
+        self._palette_dialog.open_palette()
+        return True
+
+    def _run_palette_action(self, action_id: str) -> None:
+        QTimer.singleShot(0, lambda: self._framework_actions.invoke(action_id))
 
     def set_model_units(self) -> bool:
         """Re-label the model's length unit (does not rescale any geometry)."""
