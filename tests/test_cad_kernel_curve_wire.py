@@ -113,7 +113,7 @@ class CadCurveWireTests(unittest.TestCase):
         self.assertEqual(result.reason, "CAD unavailable")
         self.assertEqual(result.metadata["cad_wire_line_edge_count"], 4)
 
-    def test_legacy_curve_uses_fitted_point_fallback(self) -> None:
+    def test_legacy_curve_is_fitted_with_a_bspline_not_a_polygon(self) -> None:
         fitted_points = np.asarray(
             [[0.0, 0.0, 0.0], [0.5, 0.2, 0.0], [1.0, 0.0, 0.0]],
             dtype=float,
@@ -137,11 +137,12 @@ class CadCurveWireTests(unittest.TestCase):
         result, captured = self._build_with_fake_backend(curve)
 
         self.assertTrue(result.success)
-        self.assertEqual(result.metadata["cad_point_source"], "fitted_points_fallback")
-        self.assertEqual(result.metadata["cad_wire_line_edge_count"], 2)
+        self.assertEqual(result.metadata["cad_point_source"], "fitted_points_bspline")
+        self.assertEqual(result.metadata["cad_wire_line_edge_count"], 0)
+        self.assertEqual(result.metadata["cad_wire_spline_edge_count"], 1)
         self.assertEqual(
             [segment["kind"] for segment in captured["segments"]],
-            ["line", "line"],
+            ["bspline"],
         )
 
     def test_wire_builders_create_face_and_capped_loft(self) -> None:

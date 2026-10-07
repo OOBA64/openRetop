@@ -1,4 +1,4 @@
-"""Lightweight curve fitting prototypes for extracted mesh sections."""
+"""Section-curve fitting: tolerance-driven B-splines instead of corner cutting."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ from typing import Iterable
 
 import numpy as np
 
+from geometry.bspline import FittedCurve, fit_curve
 from geometry.sections import SectionPolyline
+from geometry.tolerances import curve_fit_tolerance
 
 
 @dataclass(frozen=True)
@@ -17,108 +19,72 @@ class CurveFitResult:
     mean_error: float
     max_error: float
     is_closed: bool
+    fitted_curve: FittedCurve | None = None
+    tolerance: float = 0.0
 
 
 def fit_section_polylines(
     polylines: Iterable[SectionPolyline],
     *,
-    iterations: int = 2,
+    tolerance: float | None = None,
 ) -> list[CurveFitResult]:
-    """Fit a smoothed polyline for every usable section polyline."""
+    """Fit a B-spline curve to every usable section polyline.
+
+    ``tolerance`` is the allowed deviation from the section points; when omitted
+    it is derived from the size of the polyline's bounding box.
+    """
 
     results: list[CurveFitResult] = []
     for polyline in polylines:
         if len(polyline.points) < 2:
             continue
-
-        results.append(
-            fit_smooth_polyline(polyline.points, iterations=max(int(iterations), 0))
-        )
-
+        results.append(fit_smooth_polyline(polyline.points, tolerance=tolerance))
     return results
 
 
-def fit_smooth_polyline(points: np.ndarray, *, iterations: int = 2) -> CurveFitResult:
-    """Fit a simple smoothed polyline using Chaikin corner cutting."""
+def fit_smooth_polyline(
+    points: np.ndarray,
+    *,
+    tolerance: float | None = None,
+) -> CurveFitResult:
+    """Fit ``points`` with B-splines within ``tolerance``.
 
-    original_points = np.asarray(points, dtype=float)
-    if len(original_points) < 3 or iterations <= 0:
-        fitted_points = original_points.copy()
-    else:
-        fitted_points = original_points.copy()
-        is_closed = _is_closed(fitted_points)
-        for _ in range(iterations):
-            fitted_points = _chaikin_iteration(fitted_points, is_closed=is_closed)
+    Closed input (first point equals last) yields a closed curve whose sampled
+    points start and end on the same point. Fewer than two distinct points are
+    returned unchanged with zero error.
+    """
 
-    mean_error, max_error = _polyline_fit_error(original_points, fitted_points)
+    original_points = np.asarray(points, dtype=float).reshape((-1, 3))
+    extent = (
+        float(np.max(original_points.max(axis=0) - original_points.min(axis=0)))
+        if len(original_points)
+        else 0.0
+    )
+    resolved = float(tolerance) if tolerance is not None else curve_fit_tolerance(extent)
+    is_closed = _is_closed(original_points)
+    try:
+        fitted = fit_curve(original_points, tolerance=resolved, closed=is_closed)
+    except ValueError:
+        return CurveFitResult(
+            original_points=original_points,
+            fitted_points=original_points.copy(),
+            mean_error=0.0,
+            max_error=0.0,
+            is_closed=is_closed,
+            tolerance=resolved,
+        )
     return CurveFitResult(
         original_points=original_points,
-        fitted_points=fitted_points,
-        mean_error=mean_error,
-        max_error=max_error,
-        is_closed=_is_closed(original_points),
+        fitted_points=fitted.sample(),
+        mean_error=fitted.mean_error,
+        max_error=fitted.max_error,
+        is_closed=is_closed,
+        fitted_curve=fitted,
+        tolerance=resolved,
     )
 
 
 def _is_closed(points: np.ndarray, tolerance: float = 1e-8) -> bool:
     if len(points) < 3:
         return False
-
     return bool(np.linalg.norm(points[0] - points[-1]) <= tolerance)
-
-
-def _chaikin_iteration(points: np.ndarray, *, is_closed: bool) -> np.ndarray:
-    if is_closed:
-        working_points = points[:-1] if np.array_equal(points[0], points[-1]) else points
-        smoothed: list[np.ndarray] = []
-        point_count = len(working_points)
-        for index in range(point_count):
-            start = working_points[index]
-            end = working_points[(index + 1) % point_count]
-            smoothed.append((0.75 * start) + (0.25 * end))
-            smoothed.append((0.25 * start) + (0.75 * end))
-
-        smoothed.append(smoothed[0].copy())
-        return np.asarray(smoothed)
-
-    smoothed = [points[0]]
-    for start, end in zip(points[:-1], points[1:]):
-        smoothed.append((0.75 * start) + (0.25 * end))
-        smoothed.append((0.25 * start) + (0.75 * end))
-    smoothed.append(points[-1])
-
-    return np.asarray(smoothed)
-
-
-def _polyline_fit_error(
-    original_points: np.ndarray,
-    fitted_points: np.ndarray,
-) -> tuple[float, float]:
-    if len(original_points) == 0 or len(fitted_points) < 2:
-        return (0.0, 0.0)
-
-    distances = [
-        _point_to_polyline_distance(point, fitted_points) for point in original_points
-    ]
-    if not distances:
-        return (0.0, 0.0)
-
-    return (float(np.mean(distances)), float(np.max(distances)))
-
-
-def _point_to_polyline_distance(point: np.ndarray, polyline: np.ndarray) -> float:
-    best_distance = float("inf")
-    for start, end in zip(polyline[:-1], polyline[1:]):
-        segment = end - start
-        segment_length_squared = float(np.dot(segment, segment))
-        if segment_length_squared == 0.0:
-            distance = float(np.linalg.norm(point - start))
-        else:
-            ratio = float(np.dot(point - start, segment) / segment_length_squared)
-            ratio = min(1.0, max(0.0, ratio))
-            projection = start + (ratio * segment)
-            distance = float(np.linalg.norm(point - projection))
-
-        best_distance = min(best_distance, distance)
-
-    return best_distance if best_distance != float("inf") else 0.0

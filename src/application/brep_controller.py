@@ -29,6 +29,7 @@ from application.feature_dependencies import (
 )
 from application.results import CommandResult
 from application.state import AppState
+from geometry.curve_alignment import align_closed_points
 from curves.curve_state import (
     CurveCollection,
     StoredCurve,
@@ -1419,7 +1420,17 @@ def _prepared_loft_source_curves(
         points = np.asarray(curve.fitted_points, dtype=float).reshape((-1, 3))
         if len(reference_points) < 2 or len(points) < 2:
             continue
-        if options.match_curve_directions:
+        controls = parse_manual_curve_metadata_v2(curve) if curve.is_closed else None
+        if (
+            curve.is_closed
+            and controls is None
+            and (options.match_curve_directions or options.align_closed_curve_seams)
+        ):
+            # Section curves have no editable control points: re-wind and re-seam
+            # the sampled ring directly so the loft does not twist.
+            curve.fitted_points = align_closed_points(curve.fitted_points, reference_points)
+            continue
+        if options.match_curve_directions and (not curve.is_closed or controls is not None):
             direct = float(
                 np.linalg.norm(reference_points[0] - points[0])
                 + np.linalg.norm(reference_points[-1] - points[-1])

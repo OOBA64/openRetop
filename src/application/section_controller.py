@@ -33,6 +33,7 @@ from curves.curve_state import (
     refresh_curve_diagnostics,
 )
 from geometry.curves import fit_section_polylines
+from geometry.tolerances import curve_fit_tolerance
 from geometry.sections import extract_section, extract_section_by_plane, normalize_axis
 from sections.section_state import (
     SectionCollection,
@@ -380,6 +381,10 @@ class SectionController(ControllerBase):
             )
         return result
 
+    def _curve_fit_tolerance(self, mesh: object) -> float:
+        bounds = mesh.get_axis_aligned_bounding_box()
+        return curve_fit_tolerance(float(bounds.get_max_extent()))
+
     def compute(
         self,
         mesh: object,
@@ -416,7 +421,12 @@ class SectionController(ControllerBase):
                     axis=plane.axis,
                     offset=plane.offset,
                 )
-            curve_fits = tuple(fit_section_polylines(section_result.polylines))
+            curve_fits = tuple(
+                fit_section_polylines(
+                    section_result.polylines,
+                    tolerance=self._curve_fit_tolerance(mesh),
+                )
+            )
         except (TypeError, ValueError) as exc:
             return CommandResult.failure(str(exc), status="Section computation failed")
 

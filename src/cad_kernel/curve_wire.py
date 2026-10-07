@@ -6,6 +6,7 @@ import importlib
 
 import numpy as np
 
+from geometry.bspline import BSplineFit, fit_curve
 from cad_kernel.occ_backend import detect_cad_kernel_backend, import_cad_backend
 from cad_kernel.types import CadBuildResult, clean_cad_curve_points
 from curves.manual_curve import (
@@ -33,7 +34,7 @@ def build_cad_wire_from_curve(curve: object) -> CadBuildResult:
         points = control_data.control_points
         is_closed = control_data.is_closed
     else:
-        cad_point_source = "fitted_points_fallback"
+        cad_point_source = "fitted_points_bspline"
         try:
             points = clean_cad_curve_points(
                 getattr(curve, "fitted_points", None),
@@ -46,18 +47,7 @@ def build_cad_wire_from_curve(curve: object) -> CadBuildResult:
                 reason=f"CAD wire input is invalid: {exc}",
                 metadata={"cad_point_source": cad_point_source},
             )
-        segment_count = len(points) if is_closed else len(points) - 1
-        segments = [
-            {
-                "kind": "line",
-                "points": np.asarray(
-                    [points[index], points[(index + 1) % len(points)]],
-                    dtype=float,
-                ),
-                "closed": False,
-            }
-            for index in range(max(segment_count, 0))
-        ]
+        segments = _bspline_segments(points, closed=is_closed)
 
     if len(points) < (3 if is_closed else 2) or not segments:
         return CadBuildResult(
@@ -68,7 +58,7 @@ def build_cad_wire_from_curve(curve: object) -> CadBuildResult:
         )
 
     line_count = sum(str(segment.get("kind")) == "line" for segment in segments)
-    spline_count = sum(str(segment.get("kind")) == "spline" for segment in segments)
+    spline_count = sum(str(segment.get("kind")) in ("spline", "bspline") for segment in segments)
     result_metadata: dict[str, object] = {
         "cad_wire_edge_count": int(line_count + spline_count),
         "cad_wire_line_edge_count": int(line_count),
@@ -129,6 +119,36 @@ def build_cad_wire_from_curve(curve: object) -> CadBuildResult:
     )
 
 
+# Fit tolerance relative to the curve's own size. The input points already come
+# from a fitted curve, so this only has to reproduce them closely.
+_WIRE_FIT_RELATIVE_TOLERANCE = 1e-4
+
+
+def _bspline_segments(points: np.ndarray, *, closed: bool) -> list[dict[str, object]]:
+    """Approximate ``points`` with B-spline (and, at sharp corners, line) segments."""
+
+    extent = float(np.max(points.max(axis=0) - points.min(axis=0)))
+    fitted = fit_curve(
+        points,
+        tolerance=max(extent * _WIRE_FIT_RELATIVE_TOLERANCE, 1e-9),
+        closed=closed,
+    )
+    segments: list[dict[str, object]] = []
+    for piece in fitted.segments:
+        if piece.degree == 1 and len(piece.poles) == 2:
+            segments.append({"kind": "line", "points": piece.poles.copy(), "closed": False})
+        else:
+            segments.append(
+                {
+                    "kind": "bspline",
+                    "fit": piece,
+                    "points": piece.sample(max(16, 4 * len(piece.poles))),
+                    "closed": bool(piece.periodic),
+                }
+            )
+    return segments
+
+
 def _build_wire_with_backend(
     backend_module: object,
     control_points: np.ndarray,
@@ -162,12 +182,18 @@ def _cadquery_wire(
     *,
     closed: bool,
 ) -> object:
-    vectors = [_cadquery_vector(cadquery, point) for point in control_points]
     if all(segment.get("kind") == "line" for segment in segments):
+        polygon_points = [np.asarray(segment["points"], dtype=float)[0] for segment in segments]
+        if not closed:
+            polygon_points.append(np.asarray(segments[-1]["points"], dtype=float)[-1])
+        vectors = [_cadquery_vector(cadquery, point) for point in polygon_points]
         return cadquery.Wire.makePolygon(vectors, close=bool(closed))
 
     edges: list[object] = []
     for segment in segments:
+        if segment.get("kind") == "bspline":
+            edges.append(_cadquery_bspline_edge(cadquery, segment["fit"]))
+            continue
         segment_points = np.asarray(segment["points"], dtype=float).reshape((-1, 3))
         if segment.get("kind") == "line":
             edges.append(
@@ -189,6 +215,30 @@ def _cadquery_wire(
         return assemble(edges)
     combined = cadquery.Wire.combine(edges)
     return combined[0] if isinstance(combined, list) and combined else combined
+
+
+def _cadquery_bspline_edge(cadquery: object, fit: BSplineFit) -> object:
+    """Exact NURBS edge (non-rational B-spline) built from the fitted poles and knots."""
+
+    geom = importlib.import_module("OCP.Geom")
+    gp = importlib.import_module("OCP.gp")
+    tcolgp = importlib.import_module("OCP.TColgp")
+    tcolstd = importlib.import_module("OCP.TColStd")
+    builder = importlib.import_module("OCP.BRepBuilderAPI")
+
+    pole_array = tcolgp.TColgp_Array1OfPnt(1, len(fit.poles))
+    for index, pole in enumerate(fit.poles, start=1):
+        pole_array.SetValue(index, gp.gp_Pnt(float(pole[0]), float(pole[1]), float(pole[2])))
+    distinct, multiplicities = fit.occ_knots_and_multiplicities()
+    knot_array = tcolstd.TColStd_Array1OfReal(1, len(distinct))
+    mult_array = tcolstd.TColStd_Array1OfInteger(1, len(distinct))
+    for index, (knot, multiplicity) in enumerate(zip(distinct, multiplicities), start=1):
+        knot_array.SetValue(index, float(knot))
+        mult_array.SetValue(index, int(multiplicity))
+    curve = geom.Geom_BSplineCurve(
+        pole_array, knot_array, mult_array, int(fit.degree), bool(fit.periodic)
+    )
+    return cadquery.Edge(builder.BRepBuilderAPI_MakeEdge(curve).Edge())
 
 
 def _cadquery_vector(cadquery: object, point: np.ndarray) -> object:
