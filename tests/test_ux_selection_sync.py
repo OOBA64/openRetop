@@ -8,12 +8,12 @@ from pathlib import Path
 
 import trimesh
 from PySide6.QtWidgets import QApplication, QGroupBox
-from workbench_ui import FieldDefinition, PropertyInspectorModel
 
 from openretop.application.scene_ids import curve_node_id
 from openretop.bootstrap import create_application
 from openretop.infrastructure.settings_repository import InMemorySettingsRepository
 from openretop.presentation.qt.main_window import OpenRetopV3Window
+from workbench_ui import FieldDefinition, PropertyInspectorModel
 
 
 class SelectionSyncTests(unittest.TestCase):
