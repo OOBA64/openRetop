@@ -613,8 +613,8 @@ class QtSceneViewport(VTKViewportWidget):
     def _overlay_actor_inventory(self) -> tuple[Mapping[str, object], ...]:
         values = (
             ("grid", self._grid_actor, 0, self.renderer),
-            ("transform_axes", self._transform_axes_actor, 0, self.renderer),
-            ("rotation_ring", self._rotation_ring_actor, 0, self.renderer),
+            ("transform_axes", self._transform_axes_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
+            ("rotation_ring", self._rotation_ring_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
             ("selection_box", self.selection_box.actor, 0, self.renderer),
             (
                 "view_cube",

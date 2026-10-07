@@ -528,5 +528,93 @@ class TransformOverlayTests(unittest.TestCase):
             viewport.close()
 
 
+class TransformOverlayLayerTests(unittest.TestCase):
+    """UX-30: the transform lines draw over everything, and only while grabbing."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _viewport(self, snapshot: SceneSnapshot) -> QtSceneViewport:
+        viewport = QtSceneViewport()
+        viewport.resize(600, 400)
+        viewport.render_snapshot(snapshot)
+        _ready_without_native_render(viewport)
+        self.addCleanup(viewport.close)
+        return viewport
+
+    def test_props_live_in_their_own_layer_above_the_scene_sharing_its_camera(self) -> None:
+        for mode in ("move", "rotate"):
+            with self.subTest(mode=mode):
+                viewport = self._viewport(_snapshot(mode=mode, selected=True))
+                controller = viewport.transform_overlays
+                layer_renderer = controller.layer_renderer
+                self.assertIsNotNone(layer_renderer)
+                self.assertGreaterEqual(layer_renderer.GetLayer(), 1)
+                self.assertGreater(layer_renderer.GetLayer(), viewport.renderer.GetLayer())
+                self.assertIs(layer_renderer.GetActiveCamera(), viewport.renderer.GetActiveCamera())
+                self.assertFalse(bool(layer_renderer.GetInteractive()))
+                self.assertEqual(layer_renderer.GetBackgroundAlpha(), 0.0)
+                # colour is kept from the scene below, depth is cleared: nothing can hide the lines
+                self.assertTrue(bool(layer_renderer.GetPreserveColorBuffer()))
+                self.assertFalse(bool(layer_renderer.GetPreserveDepthBuffer()))
+                # Erase stays ON: in VTK it is what clears the depth buffer (colour is preserved)
+                self.assertTrue(bool(layer_renderer.GetErase()))
+                self.assertTrue(bool(layer_renderer.HasViewProp(viewport._transform_axes_actor)))
+                self.assertTrue(bool(layer_renderer.HasViewProp(viewport._rotation_ring_actor)))
+                self.assertFalse(bool(viewport.renderer.HasViewProp(viewport._transform_axes_actor)))
+                self.assertFalse(bool(viewport.renderer.HasViewProp(viewport._rotation_ring_actor)))
+                self.assertEqual(controller.diagnostics().overlay_layer, layer_renderer.GetLayer())
+
+    def test_the_layer_does_not_collide_with_the_view_cube_layer(self) -> None:
+        viewport = self._viewport(_snapshot(mode="move", selected=True))
+        layers = [int(renderer.GetLayer()) for renderer in _renderers(viewport.render_window)]
+        self.assertEqual(len(layers), len(set(layers)), layers)
+        self.assertEqual(viewport.render_window.GetNumberOfLayers(), max(layers) + 1)
+
+    def test_the_scene_renderer_never_holds_the_transform_props(self) -> None:
+        viewport = self._viewport(_snapshot(mode="move", selected=True))
+        diagnostics = viewport.diagnostic_state().transform_overlay
+        self.assertFalse(diagnostics.move_actor_in_main_renderer)
+        self.assertFalse(diagnostics.ring_actor_in_main_renderer)
+        self.assertEqual(viewport.renderer.GetViewProps().GetNumberOfItems(), 2 + 1)  # mesh, grid, selection box
+
+    def test_nothing_is_drawn_when_an_object_is_merely_selected(self) -> None:
+        viewport = self._viewport(_snapshot(mode=None, selected=True))
+        self.assertIsNone(viewport.transform_overlays.layer_renderer)  # not even created
+        self.assertIsNone(viewport._transform_axes_actor)
+        self.assertIsNone(viewport._rotation_ring_actor)
+
+    def test_the_lines_appear_with_the_grab_and_disappear_when_it_ends(self) -> None:
+        viewport = self._viewport(_snapshot(mode=None, selected=True))
+        self.assertIsNone(viewport._transform_axes_actor)
+        _submit(viewport, _snapshot(revision=2, mode="move", selected=True))
+        self.assertTrue(bool(viewport._transform_axes_actor.GetVisibility()))
+        _submit(viewport, _snapshot(revision=3, mode=None, selected=True))  # confirmed or cancelled
+        self.assertFalse(bool(viewport._transform_axes_actor.GetVisibility()))
+        self.assertFalse(bool(viewport._rotation_ring_actor.GetVisibility()))
+        _submit(viewport, _snapshot(revision=4, mode="rotate", selected=True))
+        self.assertTrue(bool(viewport._rotation_ring_actor.GetVisibility()))
+        self.assertFalse(bool(viewport._transform_axes_actor.GetVisibility()))
+
+    def test_closing_the_viewport_removes_the_layer(self) -> None:
+        viewport = QtSceneViewport()
+        viewport.render_snapshot(_snapshot(mode="move", selected=True))
+        _ready_without_native_render(viewport)
+        layer_renderer = viewport.transform_overlays.layer_renderer
+        window = viewport.render_window
+        viewport.close()
+        self.assertFalse(any(renderer is layer_renderer for renderer in _renderers(window)))
+
+
+def _renderers(render_window: object) -> list[object]:
+    collection = render_window.GetRenderers()
+    collection.InitTraversal()
+    result = []
+    while (renderer := collection.GetNextItem()) is not None:
+        result.append(renderer)
+    return result
+
+
 if __name__ == "__main__":
     unittest.main()

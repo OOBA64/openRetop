@@ -8,6 +8,7 @@ from typing import Mapping
 
 import numpy as np
 
+from openretop.presentation.qt.overlay_layers import attach_overlay_renderer
 from openretop.viewer.scene_types import Bounds3, SceneSnapshot
 
 AXIS_COLORS: Mapping[str, tuple[float, float, float]] = {
@@ -51,13 +52,21 @@ class TransformOverlayDiagnosticState:
     ring_actor_contributes_to_bounds: bool
     hidden_reason: str | None
     last_error: str | None
+    overlay_layer: int | None = None  # the layer above the scene the props are drawn in
 
 
 class TransformOverlayController:
-    """Own and reuse the two props that present authoritative transform state."""
+    """Own and reuse the two props that present authoritative transform state.
+
+    The props are drawn in their own layer above the scene, sharing its camera but with the
+    depth buffer cleared, so the move axes and rotation rings are never hidden inside or
+    behind the scan or the grid.  They are visible only while a Move/Rotate is active.
+    """
 
     def __init__(self, renderer: object | None) -> None:
         self.renderer = renderer
+        self.layer_renderer: object | None = None
+        self.overlay_layer: int | None = None
         self.move_actor: object | None = None
         self.ring_actor: object | None = None
         self._closed = False
@@ -235,6 +244,7 @@ class TransformOverlayController:
             ),
             hidden_reason=self._hidden_reason,
             last_error=self._last_error,
+            overlay_layer=self.overlay_layer,
         )
 
     def close(self) -> None:
@@ -244,18 +254,46 @@ class TransformOverlayController:
             if actor is None:
                 continue
             actor.SetVisibility(False)
-            if self.renderer is not None and _renderer_has_prop(self.renderer, actor):
-                self.renderer.RemoveViewProp(actor)
+            for owner in (self.layer_renderer, self.renderer):
+                if owner is not None and _renderer_has_prop(owner, actor):
+                    owner.RemoveViewProp(actor)
+        if self.layer_renderer is not None and self.renderer is not None:
+            window = self.renderer.GetRenderWindow()
+            if window is not None:
+                try:
+                    window.RemoveRenderer(self.layer_renderer)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    pass
         self.move_actor = None
         self.ring_actor = None
+        self.layer_renderer = None
         self.renderer = None
         self._closed = True
+
+    def _target_renderer(self) -> object:
+        """The overlay layer for the props (created once); the scene renderer if there is no window."""
+
+        assert self.renderer is not None
+        if self.layer_renderer is not None:
+            return self.layer_renderer
+        window = self.renderer.GetRenderWindow()
+        if window is None:
+            return self.renderer
+        from vtkmodules.vtkRenderingCore import vtkRenderer
+
+        layer_renderer = vtkRenderer()
+        layer_renderer.SetActiveCamera(self.renderer.GetActiveCamera())  # one camera: always in sync
+        self.overlay_layer = attach_overlay_renderer(window, self.renderer, layer_renderer, over_scene=True)
+        self.layer_renderer = layer_renderer
+        return layer_renderer
 
     def _create_actors(self) -> None:
         if self._closed or self.renderer is None:
             return
         from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
         from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+
+        target = self._target_renderer()
 
         if self.move_actor is None:
             actor = vtkAxesActor()
@@ -272,7 +310,7 @@ class TransformOverlayController:
             actor.SetConeRadius(0.10)
             actor.SetCylinderResolution(20)
             actor.SetConeResolution(24)
-            self.renderer.AddActor(actor)
+            target.AddActor(actor)
             self.move_actor = actor
             self._move_actor_creation_count += 1
         if self.ring_actor is None:
@@ -288,7 +326,7 @@ class TransformOverlayController:
             actor.DragableOff()
             actor.UseBoundsOff()
             actor.SetVisibility(False)
-            self.renderer.AddActor(actor)
+            target.AddActor(actor)
             self.ring_actor = actor
             self._ring_actor_creation_count += 1
 

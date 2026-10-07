@@ -16,6 +16,7 @@ from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
+from openretop.presentation.qt.overlay_layers import attach_overlay_renderer, render_window_renderers
 from openretop.presentation.qt.view_cube import (
     CUBE_MARGIN,
     CUBE_WIDGET_SIZE,
@@ -79,27 +80,10 @@ class _CubeImageOverlay:
         self.actor.PickableOff()
         self.actor.DragableOff()
         self.renderer = vtkRenderer()
-        self.renderer.InteractiveOff()
-        self.renderer.SetBackgroundAlpha(0.0)
-        self.renderer.SetPreserveColorBuffer(True)
-        self.renderer.SetPreserveDepthBuffer(False)
-        self.renderer.EraseOff()
         self.renderer.SetDraw(False)
         self.renderer.AddViewProp(self.actor)
-        camera = self.renderer.GetActiveCamera()
-        camera.ParallelProjectionOn()
-        occupied = {
-            int(renderer.GetLayer())
-            for renderer in _renderers(render_window)
-            if renderer is not main_renderer
-        }
-        layer = 1
-        while layer in occupied:
-            layer += 1
-        self.renderer.SetLayer(layer)
-        if int(render_window.GetNumberOfLayers()) < layer + 1:
-            render_window.SetNumberOfLayers(layer + 1)
-        render_window.AddRenderer(self.renderer)
+        self.renderer.GetActiveCamera().ParallelProjectionOn()
+        attach_overlay_renderer(render_window, main_renderer, self.renderer)
         self._size = (0, 0)
 
     def set_viewport(self, viewport: tuple[float, float, float, float]) -> None:
@@ -135,7 +119,7 @@ class _CubeImageOverlay:
         self.renderer.SetDraw(bool(draw))
 
     def attached(self) -> bool:
-        return any(renderer is self.renderer for renderer in _renderers(self.render_window))
+        return any(renderer is self.renderer for renderer in render_window_renderers(self.render_window))
 
     def close(self) -> None:
         try:
@@ -452,18 +436,6 @@ class ViewportNavigationCluster(QObject):
 
     def _on_interaction(self, _caller: object, _event: object) -> None:
         self.sync_camera()
-
-
-def _renderers(render_window: object) -> tuple[object, ...]:
-    collection = render_window.GetRenderers()  # type: ignore[attr-defined]
-    collection.InitTraversal()
-    result: list[object] = []
-    while True:
-        renderer = collection.GetNextItem()
-        if renderer is None:
-            break
-        result.append(renderer)
-    return tuple(result)
 
 
 __all__ = (
