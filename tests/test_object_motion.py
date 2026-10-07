@@ -193,6 +193,8 @@ class ObjectMotionTests(unittest.TestCase):
         self.assertLess(window.minimumSizeHint().height(), 300)
         self.assertGreater(tall_panel, 250)  # the panel itself is tall; the window does not care
         self.assertFalse(window.next_steps.isVisible() and window.inspector.isVisible())
+        # ...but it is never squeezed: a scroll area alone reports almost no minimum width
+        self.assertGreaterEqual(window._docks["properties"].minimumSizeHint().width(), 280)
 
     # -- the grid must not rescale during a drag --------------------------------------
 

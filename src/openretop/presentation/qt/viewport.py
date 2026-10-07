@@ -80,6 +80,7 @@ class QtSceneViewport(VTKViewportWidget):
         super().__init__(parent)
         self.synchronizer: SceneSynchronizer | None = None
         self.camera_controller: CameraController | None = None
+        self._studio_lights = False
         self.last_snapshot: SceneSnapshot | None = None
         self.last_diagnostics: ActorUpdateDiagnostics | None = None
         self.picking: PickingService | None = None
@@ -167,9 +168,13 @@ class QtSceneViewport(VTKViewportWidget):
         return self._flush_pending_snapshot()
 
     def set_background(self, value: object) -> tuple[float, float, float]:
+        """The background setting is the floor colour of a soft vertical gradient."""
+
         color = normalized_background_color(value)
         if self.renderer is not None:
             self.renderer.SetBackground(*color)
+            self.renderer.SetBackground2(*gradient_top_color(color))
+            self.renderer.GradientBackgroundOn()
         return color
 
     def diagnostic_state(self) -> ViewportDiagnosticState:
@@ -471,6 +476,9 @@ class QtSceneViewport(VTKViewportWidget):
             )
         if self.camera_controller is None:
             self.camera_controller = CameraController(self.renderer)
+        if not self._studio_lights:
+            install_studio_lights(self.renderer)
+            self._studio_lights = True
         self.navigation_cluster.start()
 
     def _flush_pending_snapshot(self) -> ActorUpdateDiagnostics | None:
@@ -664,6 +672,40 @@ class QtSceneViewport(VTKViewportWidget):
         if not np.all(np.isfinite(value)) or abs(float(value[3])) <= 1e-12:
             return None
         return value[:3] / value[3]
+
+
+GRADIENT_TOP_TINT = (0.23, 0.255, 0.30)  # a cool slate the top of the view fades towards
+GRADIENT_TOP_MIX = 0.55
+
+
+def gradient_top_color(bottom: tuple[float, float, float]) -> tuple[float, float, float]:
+    """The top of the background gradient: the floor colour lifted towards a cool slate."""
+
+    return tuple(  # type: ignore[return-value]
+        float(base + (tint - base) * GRADIENT_TOP_MIX) for base, tint in zip(bottom, GRADIENT_TOP_TINT)
+    )
+
+
+def install_studio_lights(renderer: object) -> None:
+    """Key, fill, back and head lights instead of VTK's single headlight.
+
+    Fixed to the camera, so the model is lit the same way from every view: the key light
+    from the upper left gives shape, the fill keeps shadows readable, the back light picks
+    out the silhouette.
+    """
+
+    from vtkmodules.vtkRenderingCore import vtkLightKit
+
+    renderer.RemoveAllLights()  # type: ignore[attr-defined]
+    kit = vtkLightKit()
+    kit.SetKeyLightIntensity(0.85)
+    kit.SetKeyLightElevation(50.0)
+    kit.SetKeyLightAzimuth(-25.0)
+    kit.SetKeyToFillRatio(2.6)
+    kit.SetKeyToHeadRatio(3.2)
+    kit.SetKeyToBackRatio(3.0)
+    kit.MaintainLuminanceOff()
+    kit.AddLightsToRenderer(renderer)
 
 
 def normalized_background_color(

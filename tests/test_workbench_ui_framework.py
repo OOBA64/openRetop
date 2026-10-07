@@ -121,6 +121,32 @@ class WorkbenchContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ThemeManager.built_in("unknown")
 
+    def test_the_stylesheet_covers_every_widget_the_workbench_uses(self) -> None:
+        stylesheet = ThemeManager(ThemeManager.built_in("dark")).stylesheet()
+        for selector in (
+            "QDockWidget::title", "QMenu::item", "QToolButton", "QPushButton[primary=\"true\"]",
+            "QDoubleSpinBox", "QComboBox::down-arrow", "QCheckBox::indicator:checked", "QGroupBox::title",
+            "QTreeView::item:selected", "QScrollBar::handle", "QStatusBar", "QToolTip",
+        ):
+            self.assertIn(selector, stylesheet)
+        self.assertNotIn("{{", stylesheet)  # every template brace was resolved
+
+    def test_stylesheet_assets_exist(self) -> None:
+        import re
+
+        stylesheet = ThemeManager(ThemeManager.built_in("dark")).stylesheet()
+        paths = re.findall(r"url\(([^)]+)\)", stylesheet)
+        self.assertTrue(paths)
+        for path in paths:
+            self.assertTrue(Path(path).is_file(), path)
+
+    def test_both_themes_define_every_token(self) -> None:
+        from workbench_ui.theme import DARK, LIGHT
+
+        self.assertEqual(set(DARK), set(LIGHT))
+        manager = ThemeManager(ThemeManager.built_in("light"))
+        self.assertEqual(manager.color("panel"), LIGHT["panel"])
+
     def test_qt_offscreen_shell_and_vtk_host_are_constructible(self) -> None:
         app = QApplication.instance() or QApplication([])
         from workbench_ui import ApplicationShell, VTKViewportWidget

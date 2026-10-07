@@ -40,8 +40,7 @@ class NextStepsPanel(QWidget):
         self._clear()
 
         title = QLabel(guidance.title, self)
-        title.setObjectName("next_steps_title")
-        title.setStyleSheet("font-size: 13pt; font-weight: 600;")
+        title.setObjectName("next_steps_title")  # styled by the workbench theme
         title.setWordWrap(True)
         self._layout.addWidget(title)
 
@@ -60,11 +59,7 @@ class NextStepsPanel(QWidget):
             enabled, tooltip = availability(step.action_id)
             button = QPushButton(step.label, self)
             button.setObjectName(f"next_step_{step.action_id.replace('.', '_')}")
-            button.setProperty("primary", step.primary)
-            if step.primary:
-                button.setStyleSheet(
-                    "font-weight: 600; border: 1px solid #00d1ff; padding: 5px;"
-                )
+            button.setProperty("primary", step.primary)  # the theme fills primary buttons with the accent
             button.setEnabled(enabled)
             hint = step.hint
             button.setToolTip(f"{hint}\n\n{tooltip}" if hint and tooltip else hint or tooltip)
@@ -75,12 +70,12 @@ class NextStepsPanel(QWidget):
                 note = QLabel(step.hint, self)
                 note.setObjectName("next_step_hint")
                 note.setWordWrap(True)
-                note.setStyleSheet("color: #9aa0a6; margin: 0 0 4px 4px;")
+                note.setContentsMargins(2, 0, 0, 6)
                 self._layout.addWidget(note)
 
         if guidance.stage is Stage.START and recent_projects:
-            heading = QLabel("Recent projects", self)
-            heading.setStyleSheet("font-weight: 600; margin-top: 8px;")
+            heading = QLabel("RECENT PROJECTS", self)
+            heading.setObjectName("next_steps_section")
             self._layout.addWidget(heading)
             for path in recent_projects:
                 button = QPushButton(Path(path).name, self)
@@ -94,7 +89,7 @@ class NextStepsPanel(QWidget):
             warning = QLabel(guidance.cad_note, self)
             warning.setObjectName("next_steps_cad_note")
             warning.setWordWrap(True)
-            warning.setStyleSheet("color: #e0a030; margin-top: 8px;")
+            warning.setContentsMargins(0, 8, 0, 0)
             self._layout.addWidget(warning)
         self._layout.addStretch(1)
 

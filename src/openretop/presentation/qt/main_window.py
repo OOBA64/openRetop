@@ -140,6 +140,8 @@ HEAVY_ACTIONS = frozenset(
 )
 
 
+PROPERTIES_MIN_WIDTH = 280  # px: fits the Next-steps buttons and the X/Y/Z boxes without clipping
+
 # Starting any of these ends the measure tool, which would otherwise compete for the clicks.
 _TOOL_START_ACTIONS = frozenset(
     {"region.start", "manual_curve.create", "manual_curve.edit", "transform.move", "transform.rotate"}
@@ -268,6 +270,8 @@ class OpenRetopV3Window(ApplicationShell):
         properties_scroll.setFrameShape(QFrame.Shape.NoFrame)
         properties_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         properties_scroll.setWidget(properties)
+        # a scroll area reports almost no minimum width, which collapsed the dock to a sliver
+        properties_scroll.setMinimumWidth(PROPERTIES_MIN_WIDTH)
         self.add_panel(PanelDescriptor("properties", "Properties", area="right"), properties_scroll)
         self.setAcceptDrops(True)
         self.add_panel(PanelDescriptor("commands", "Command Palette", area="bottom", visible=False), self.palette)

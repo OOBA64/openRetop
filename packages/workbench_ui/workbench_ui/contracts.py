@@ -487,41 +487,31 @@ class Theme:
 
 class ThemeManager:
     def __init__(self, theme: Theme | None = None) -> None:
-        self.theme = theme or Theme(
-            "dark",
-            {"window": "#202225", "panel": "#2b2d31", "text": "#f2f3f5", "accent": "#00d1ff"},
-        )
+        self.theme = theme or self.built_in("dark")
 
     def set_theme(self, theme: Theme) -> None:
         self.theme = theme
 
     @staticmethod
     def built_in(name: str) -> Theme:
+        from workbench_ui.theme import DARK, LIGHT
+
         normalized = str(name).strip().casefold()
         if normalized == "light":
-            return Theme(
-                "light",
-                {"window": "#f3f4f6", "panel": "#ffffff", "text": "#17191c", "accent": "#0078d4"},
-            )
+            return Theme("light", dict(LIGHT))
         if normalized == "dark":
-            return Theme(
-                "dark",
-                {"window": "#202225", "panel": "#2b2d31", "text": "#f2f3f5", "accent": "#00d1ff"},
-            )
+            return Theme("dark", dict(DARK))
         raise ValueError(f"Unknown built-in theme: {name}")
 
+    def color(self, token: str) -> str:
+        from workbench_ui.theme import tokens
+
+        return tokens(self.theme.colors)[token]
+
     def stylesheet(self) -> str:
-        colors = self.theme.colors
-        return (
-            "QMainWindow, QWidget {"
-            f"background-color: {colors.get('window', '#202225')};"
-            f"color: {colors.get('text', '#f2f3f5')};"
-            "} QDockWidget, QMenu, QToolBar {"
-            f"background-color: {colors.get('panel', '#2b2d31')};"
-            "} QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {"
-            f"selection-background-color: {colors.get('accent', '#00d1ff')};"
-            "}"
-        )
+        from workbench_ui.theme import build_stylesheet
+
+        return build_stylesheet(self.theme.colors)
 
 
 @dataclass

@@ -6,7 +6,7 @@ import numpy as np
 
 from openretop.viewer.scene_types import Bounds3, SceneSnapshot
 
-SELECTION_BOX_COLOR = (0.55, 0.72, 0.82)
+SELECTION_BOX_COLOR = (0.42, 0.63, 1.0)  # the workbench accent, a touch lighter to read on dark
 SELECTION_BOX_LINE_WIDTH = 1.5
 # Corner order matches _EDGES: bottom face counter-clockwise, then the top face.
 _EDGES = (
