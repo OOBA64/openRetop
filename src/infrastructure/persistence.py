@@ -7,7 +7,12 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from project.project_data import PROJECT_VERSION, ProjectData
+import os
+from dataclasses import replace
+
+from project.atomic_io import write_text_atomic
+from project.migrations import migrate_project_dict
+from project.project_data import ProjectData
 from project.project_io import project_from_dict, project_to_dict
 
 
@@ -86,19 +91,33 @@ class JsonProjectRepository:
                 errors=(PersistenceMessage("invalid_project_shape", "Project data must be a dictionary."),),
             )
 
-        migrated = False
-        version = raw.get("version")
-        if version in (None, 0):
-            raw = {"version": PROJECT_VERSION, **raw}
-            migrated = True
-            warnings.append(
-                PersistenceMessage("legacy_project_version", "Legacy project metadata was upgraded in memory.")
-            )
-        elif isinstance(version, int) and version > PROJECT_VERSION:
+        try:
+            raw, applied = migrate_project_dict(raw)
+        except ValueError as exc:
             return ProjectLoadResult(
                 None,
                 project_path,
-                errors=(PersistenceMessage("unsupported_project_version", f"Unsupported project version: {version}"),),
+                errors=(PersistenceMessage("unsupported_project_version", str(exc)),),
+            )
+        migrated = bool(applied)
+        if applied and applied[0] == 0:
+            warnings.append(
+                PersistenceMessage("legacy_project_version", "Legacy project metadata was upgraded in memory.")
+            )
+        if migrated:
+            warnings.append(
+                PersistenceMessage(
+                    "migrated_project",
+                    "Project was written by an older version and was upgraded in memory "
+                    f"(from v{applied[0]}); saving will write the current format.",
+                )
+            )
+        if raw.get("units_assumed"):
+            warnings.append(
+                PersistenceMessage(
+                    "units_assumed",
+                    f"Project has no recorded length unit; assuming {raw.get('units', 'mm')}.",
+                )
             )
 
         try:
@@ -130,11 +149,10 @@ class JsonProjectRepository:
         try:
             if not isinstance(project, ProjectData):
                 raise TypeError("Expected ProjectData.")
-            payload = project_to_dict(project)
-            project_path.parent.mkdir(parents=True, exist_ok=True)
-            project_path.write_text(
+            payload = project_to_dict(self.relativize_mesh_path(project, project_path))
+            write_text_atomic(
+                project_path,
                 json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-                encoding="utf-8",
             )
         except (OSError, TypeError, ValueError) as exc:
             return ProjectSaveResult(
@@ -157,6 +175,26 @@ class JsonProjectRepository:
         if not result.success:
             message = result.errors[0].message if result.errors else "Project could not be saved."
             raise OSError(message)
+
+    @staticmethod
+    def relativize_mesh_path(project: ProjectData, project_path: str | Path) -> ProjectData:
+        """Return a copy whose mesh path is stored relative to the project file.
+
+        Keeps projects portable when the project and mesh move together. Falls
+        back to the absolute path when no relative form exists (other drive).
+        """
+
+        if not project.mesh_path:
+            return project
+        mesh = Path(project.mesh_path).expanduser()
+        if not mesh.is_absolute():
+            mesh = Path(project_path).expanduser().parent / mesh
+        base = Path(project_path).expanduser().resolve(strict=False).parent
+        try:
+            relative = os.path.relpath(mesh.resolve(strict=False), base)
+        except ValueError:
+            return replace(project, mesh_path=str(mesh.resolve(strict=False)))
+        return replace(project, mesh_path=Path(relative).as_posix())
 
     @staticmethod
     def resolve_mesh_path(project_path: str | Path, mesh_path: str | None) -> Path | None:

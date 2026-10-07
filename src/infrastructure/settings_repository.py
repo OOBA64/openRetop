@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Protocol
 
+from project.atomic_io import write_text_atomic
 from settings.settings_data import AppSettings, default_app_settings
 from settings.settings_io import (
     default_settings_path,
@@ -73,10 +74,9 @@ class JsonSettingsRepository:
     def write(self, settings: AppSettings, path: str | Path | None = None) -> SettingsSaveResult:
         settings_path = Path(path) if path is not None else default_settings_path()
         try:
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-            settings_path.write_text(
+            write_text_atomic(
+                settings_path,
                 json.dumps(settings_to_dict(settings), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-                encoding="utf-8",
             )
         except (OSError, TypeError, ValueError) as exc:
             return SettingsSaveResult(

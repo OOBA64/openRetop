@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from math import dist
 
 
-PROJECT_VERSION = 1
+PROJECT_VERSION = 2
 CURVE_TINY_MIN_POINT_COUNT = 2
 CURVE_TINY_MIN_LENGTH = 0.01
 CURVE_TINY_MIN_BOUNDING_BOX_SIZE = 0.01
@@ -225,6 +225,10 @@ class ProjectData:
     active_section_plane_id: str | None = None
     mesh_name: str | None = None
     mesh_visible: bool = True
+    # Length unit of the mesh coordinates; all model-space numbers use it.
+    units: str = "mm"
+    # True when the unit was not chosen by the user (e.g. migrated from v1).
+    units_assumed: bool = False
     section_results: list[ProjectSectionResult] = field(default_factory=list)
     curves: list[ProjectCurve] = field(default_factory=list)
     region: ProjectRegion | None = None

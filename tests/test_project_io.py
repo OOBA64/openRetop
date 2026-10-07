@@ -219,6 +219,8 @@ class ProjectIOTests(unittest.TestCase):
                 "mesh_path": "models/scan.stl",
                 "mesh_name": "Scan Object",
                 "mesh_visible": False,
+                "units": "mm",
+                "units_assumed": False,
                 "transform": {
                     "location": [1.0, 2.0, 3.0],
                     "rotation": [10.0, 20.0, 30.0],
@@ -1149,7 +1151,7 @@ class ProjectIOTests(unittest.TestCase):
             text = project_path.read_text(encoding="utf-8")
             raw_data = json.loads(text)
             self.assertTrue(text.startswith("{\n"))
-            self.assertIn('\n  "version": 1,', text)
+            self.assertIn('\n  "version": 2,', text)
             self.assertEqual(raw_data["name"], "Scan Cleanup")
             self.assertEqual(load_project(project_path), project)
 

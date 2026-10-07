@@ -7,6 +7,9 @@ from collections.abc import Iterable, Mapping
 from json import JSONDecodeError
 from pathlib import Path
 
+from geometry.units import get_unit
+from project.atomic_io import write_text_atomic
+from project.migrations import migrate_project_dict
 from project.project_data import (
     PROJECT_VERSION,
     ProjectBrepSurface,
@@ -32,6 +35,8 @@ _KNOWN_PROJECT_KEYS = frozenset(
         "mesh_path",
         "mesh_name",
         "mesh_visible",
+        "units",
+        "units_assumed",
         "transform",
         "display",
         "section",
@@ -52,10 +57,9 @@ _KNOWN_PROJECT_KEYS = frozenset(
 
 
 def save_project(project: ProjectData, path: Path) -> None:
-    project_path = Path(path)
-    project_path.write_text(
+    write_text_atomic(
+        Path(path),
         json.dumps(project_to_dict(project), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
 
 
@@ -81,6 +85,8 @@ def project_to_dict(project: ProjectData) -> dict[str, object]:
         "mesh_path": project.mesh_path,
         "mesh_name": project.mesh_name,
         "mesh_visible": bool(project.mesh_visible),
+        "units": get_unit(project.units).code,
+        "units_assumed": bool(project.units_assumed),
         "transform": {
             "location": list(project.transform.location),
             "rotation": list(project.transform.rotation),
@@ -271,6 +277,7 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
     if not isinstance(data, Mapping):
         raise ValueError("Project data must be a dictionary.")
 
+    data, _ = migrate_project_dict(data)
     defaults = default_project_data()
     raw_metadata = data.get("metadata", {})
     if raw_metadata is not None and not isinstance(raw_metadata, Mapping):
@@ -296,6 +303,10 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
     mesh_visible = _bool_value(
         data.get("mesh_visible", defaults.mesh_visible),
         "mesh_visible",
+    )
+    units = get_unit(_string_value(data.get("units", defaults.units), "units")).code
+    units_assumed = _bool_value(
+        data.get("units_assumed", defaults.units_assumed), "units_assumed"
     )
     transform_data = _optional_mapping(data.get("transform"), "transform")
     display_data = _optional_mapping(data.get("display"), "display")
@@ -394,6 +405,8 @@ def project_from_dict(data: dict[str, object]) -> ProjectData:
         mesh_path=mesh_path,
         mesh_name=mesh_name,
         mesh_visible=mesh_visible,
+        units=units,
+        units_assumed=units_assumed,
         transform=transform,
         display=display,
         section=section,
