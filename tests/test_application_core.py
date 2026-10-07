@@ -168,6 +168,7 @@ class ApplicationActionTests(unittest.TestCase):
                 "BREP",
                 "Curves",
                 "Edit",
+                "Inspect",
                 "Manual Curve",
                 "Regions",
                 "Scene",
@@ -186,6 +187,7 @@ class ApplicationActionTests(unittest.TestCase):
                 "analysis",
                 "curve",
                 "manual_curve",
+                "measure",
                 "region",
                 "scene",
                 "section",
@@ -258,6 +260,8 @@ class ApplicationActionTests(unittest.TestCase):
                 has_manual_control_point=True
             ),
             ActionCondition.REGION_TOOL_ACTIVE: ActionContext(region_tool_active=True),
+            ActionCondition.MEASURE_TOOL_ACTIVE: ActionContext(measure_tool_active=True),
+            ActionCondition.HAS_MEASUREMENTS: ActionContext(has_measurements=True),
             ActionCondition.HAS_REGION_BOUNDARY_CURVES: ActionContext(
                 has_region_boundary_curves=True
             ),

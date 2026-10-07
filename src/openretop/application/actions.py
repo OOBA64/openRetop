@@ -54,6 +54,8 @@ class ActionCondition(str, Enum):
     CAN_ADD_MANUAL_POINT = "can_add_manual_point"
     HAS_MANUAL_CONTROL_POINT = "has_manual_control_point"
     REGION_TOOL_ACTIVE = "region_tool_active"
+    MEASURE_TOOL_ACTIVE = "measure_tool_active"
+    HAS_MEASUREMENTS = "has_measurements"
     HAS_REGION_BOUNDARY_CURVES = "has_region_boundary_curves"
     SELECTED_REGION_BOUNDARY_CURVE = "selected_region_boundary_curve"
     CAD_AVAILABLE = "cad_available"
@@ -99,6 +101,8 @@ CONDITION_REQUIREMENTS: Mapping[ActionCondition, str] = MappingProxyType(
         ActionCondition.CAN_ADD_MANUAL_POINT: "the curve tool active",
         ActionCondition.HAS_MANUAL_CONTROL_POINT: "a selected curve point",
         ActionCondition.REGION_TOOL_ACTIVE: "the region tool active",
+        ActionCondition.MEASURE_TOOL_ACTIVE: "the measure tool active",
+        ActionCondition.HAS_MEASUREMENTS: "a measurement on the scan (Inspect > Measure Distance)",
         ActionCondition.HAS_REGION_BOUNDARY_CURVES: "extracted region boundary curves",
         ActionCondition.SELECTED_REGION_BOUNDARY_CURVE: "a region boundary curve selected",
         ActionCondition.CAD_AVAILABLE: "the CAD kernel (CadQuery) to be installed",
@@ -139,6 +143,8 @@ class ActionContext:
     can_add_manual_point: bool = False
     has_manual_control_point: bool = False
     region_tool_active: bool = False
+    measure_tool_active: bool = False
+    has_measurements: bool = False
     has_region_boundary_curves: bool = False
     selected_region_boundary_curve: bool = False
     cad_available: bool = False
@@ -193,6 +199,10 @@ class ActionContext:
             return self.selected_surface_count == 1
         if condition is ActionCondition.HAS_REGION:
             return self.has_region
+        if condition is ActionCondition.MEASURE_TOOL_ACTIVE:
+            return self.measure_tool_active
+        if condition is ActionCondition.HAS_MEASUREMENTS:
+            return self.has_measurements
         if condition is ActionCondition.HAS_BREP_SELECTION:
             return self.selected_brep_count > 0
         if condition is ActionCondition.HAS_LOFT_FEATURE:
@@ -421,6 +431,10 @@ _DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
         "manual_curve.create": "Draw a curve by clicking points on the scan. Enter finishes, Esc cancels.",
         "manual_curve.edit": "Edit the points of the selected hand-drawn curve.",
         "region.start": "Click a smooth area of the scan to select it; the threshold controls how far it spreads.",
+        "measure.distance": "Click two points on the scan to measure the distance between them in the project's units.",
+        "measure.model_size": "Show the scan's overall size (X x Y x Z and diagonal) to check it against the real part.",
+        "measure.clear": "Remove every measurement from the view.",
+        "measure.finish": "Leave the measure tool; finished measurements stay on screen.",
         "region.extract_boundary": "Turn the outline of the selected region into curves.",
         "surface.fill": "Fill one closed curve with a surface.",
         "surface.brep_face": "Create a CAD face from the selected closed curve (needs the CAD kernel).",
@@ -627,6 +641,12 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("manual_curve.placement_option", "Manual Curve Point Placement", "Manual Curve", "_on_manual_curve_placement_changed", enabled_when=_MANUAL),
     _workflow_action("manual_curve.auto_corners_option", "Manual Curve Auto Corners", "Manual Curve", "_on_manual_curve_auto_corners_changed", enabled_when=_MANUAL),
     _workflow_action("manual_curve.keep_on_mesh_option", "Keep Manual Curve on Mesh", "Manual Curve", "_on_manual_curve_keep_on_mesh_changed", enabled_when=(ActionCondition.HAS_MESH,)),
+
+    # Measuring the scan.
+    _workflow_action("measure.distance", "Measure Distance", "Inspect", "start_measure_mode", enabled_when=_MESH, shortcut="M"),
+    _workflow_action("measure.model_size", "Show Model Size", "Inspect", "show_model_size", enabled_when=_MESH),
+    _workflow_action("measure.clear", "Clear Measurements", "Inspect", "clear_measurements", enabled_when=(ActionCondition.HAS_MEASUREMENTS,)),
+    _workflow_action("measure.finish", "Done Measuring", "Inspect", "finish_measure_mode", enabled_when=(ActionCondition.MEASURE_TOOL_ACTIVE,), visible_when=(ActionCondition.MEASURE_TOOL_ACTIVE,)),
 
     # Region selection and derived-boundary workflows.
     _workflow_action("region.start", "Region Select", "Regions", "start_region_select_mode", enabled_when=_MESH),

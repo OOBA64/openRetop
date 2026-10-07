@@ -61,4 +61,18 @@ def attach_overlay_renderer(
     return layer
 
 
-__all__ = ("attach_overlay_renderer", "next_overlay_layer", "render_window_renderers")
+def create_over_scene_layer(main_renderer: object) -> tuple[object, int] | None:
+    """A new 3D layer drawn over the scene, sharing its camera; None if there is no render window."""
+
+    window = main_renderer.GetRenderWindow()  # type: ignore[attr-defined]
+    if window is None:
+        return None
+    from vtkmodules.vtkRenderingCore import vtkRenderer
+
+    layer_renderer = vtkRenderer()
+    layer_renderer.SetActiveCamera(main_renderer.GetActiveCamera())  # type: ignore[attr-defined]  # one camera: always in sync
+    layer = attach_overlay_renderer(window, main_renderer, layer_renderer, over_scene=True)
+    return layer_renderer, layer
+
+
+__all__ = ("attach_overlay_renderer", "create_over_scene_layer", "next_overlay_layer", "render_window_renderers")

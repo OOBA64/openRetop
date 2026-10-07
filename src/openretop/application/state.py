@@ -80,6 +80,33 @@ def _default_section_collection() -> SectionCollection:
     return collection
 
 
+@dataclass(frozen=True, slots=True)
+class Measurement:
+    """Two points on the scan, in world (project-unit) coordinates."""
+
+    id: str
+    start: tuple[float, float, float]
+    end: tuple[float, float, float]
+
+    @property
+    def delta(self) -> tuple[float, float, float]:
+        return (self.end[0] - self.start[0], self.end[1] - self.start[1], self.end[2] - self.start[2])
+
+    @property
+    def distance(self) -> float:
+        dx, dy, dz = self.delta
+        return float((dx * dx + dy * dy + dz * dz) ** 0.5)
+
+
+@dataclass(slots=True)
+class MeasureState:
+    """The measure tool's session. A viewing aid: not saved with the project, not undoable."""
+
+    active: bool = False
+    pending: tuple[float, float, float] | None = None  # first point of an unfinished measurement
+    measurements: list[Measurement] = field(default_factory=list)
+
+
 @dataclass
 class AppState:
     """Own mutable application state that is independent from UI widgets."""
@@ -109,6 +136,7 @@ class AppState:
     # Length unit of all model-space coordinates (mesh, curves, CAD).
     units: str = "mm"
     units_assumed: bool = False
+    measure: MeasureState = field(default_factory=MeasureState)
 
     def clear_selection(self) -> None:
         self.selected_item = None

@@ -138,6 +138,11 @@ HEAVY_ACTIONS = frozenset(
 )
 
 
+# Starting any of these ends the measure tool, which would otherwise compete for the clicks.
+_TOOL_START_ACTIONS = frozenset(
+    {"region.start", "manual_curve.create", "manual_curve.edit", "transform.move", "transform.rotate"}
+)
+
 # Commands that engage the Section tool, which is what makes the section planes visible.
 _SECTION_TOOL_ACTIONS = frozenset(
     {
@@ -337,6 +342,7 @@ class OpenRetopV3Window(ApplicationShell):
                         "section.add_plane",
                         "manual_curve.create",
                         "region.start",
+                        "measure.distance",
                     )
                 ),
             ),
@@ -391,6 +397,15 @@ class OpenRetopV3Window(ApplicationShell):
             return self._dispatch_view_action(action_id)
         if self._reject_while_busy():
             return False
+        if action_id == "measure.distance":
+            busy_tool = self._other_tool_active()
+            if busy_tool:
+                self.set_status_message(f"Finish the {busy_tool} first (Enter or Esc), then measure.")
+                return False
+        elif action_id in _TOOL_START_ACTIONS and self.composition.measure_controller.active:
+            self.composition.measure_controller.finish()
+            if self.tool_modes.state.id == "measure":
+                self.tool_modes.cancel()
         if action_id in _SECTION_TOOL_ACTIONS:
             self._enter_section_tool()
         if action_id in {"transform.move", "transform.rotate"} and not (payload and "mouse_start" in payload):
@@ -482,6 +497,10 @@ class OpenRetopV3Window(ApplicationShell):
             )
         elif action_id == "region.start":
             self.tool_modes.enter("region", "Click the mesh to grow a region; Esc finishes.")
+        elif action_id == "measure.distance":
+            self.tool_modes.enter("measure", "Click two points on the scan to measure. Esc cancels a point, then finishes.")
+        elif action_id == "measure.finish" and self.tool_modes.state.id == "measure":
+            self.tool_modes.finish()
         elif action_id in {"transform.move", "transform.rotate"}:
             self.tool_modes.enter("transform", "Move the pointer; Enter confirms and Esc cancels.")
         elif action_id in {"manual_curve.finish", "manual_curve.apply", "region.finish", "transform.confirm"}:
@@ -587,6 +606,17 @@ class OpenRetopV3Window(ApplicationShell):
                 self._consume_result("region.pointer", result)
             elif gesture.changed:
                 self.refresh()
+            return
+
+        measure = self.composition.measure_controller
+        if measure.active:
+            # Measuring: a click places a point on the scan; drags still orbit, and picks never
+            # change the selection.
+            if event_name == "left_release" and self.viewport.last_pointer_release_was_click:
+                if not isinstance(pick, MeshPickResult):
+                    pick = self.viewport.pick_mesh(x_position, y_position)
+                point = pick.position if isinstance(pick, MeshPickResult) and pick.hit else None
+                self._consume_result("measure.pointer", measure.add_point(point))
             return
 
         if event_name != "left_release" or not self.viewport.last_pointer_release_was_click:
@@ -715,6 +745,17 @@ class OpenRetopV3Window(ApplicationShell):
             return True
         return super().eventFilter(watched, event)
 
+    def _other_tool_active(self) -> str:
+        """Name of a tool that owns the pointer right now (so measuring cannot start), or ''."""
+
+        if self.composition.transform_controller.active:
+            return "move or rotate"
+        if self.composition.manual_curve_controller.session.active:
+            return "curve tool"
+        if self.composition.region_controller.session.active:
+            return "region tool"
+        return ""
+
     def _section_planes_selected(self) -> bool:
         ids = self.composition.selection_controller.snapshot().ids
         return any(value == NODE_SECTION_PLANES or section_plane_id_from_node(value) is not None for value in ids)
@@ -761,6 +802,9 @@ class OpenRetopV3Window(ApplicationShell):
             if self.composition.region_controller.session.active:
                 self._dispatch_application_action("region.finish")
                 return True
+            if self.composition.measure_controller.active:
+                self._dispatch_application_action("measure.finish")
+                return True
         if key == Qt.Key_Escape:
             if self.composition.transform_controller.active:
                 self._dispatch_application_action("transform.cancel")
@@ -770,6 +814,14 @@ class OpenRetopV3Window(ApplicationShell):
                 return True
             if self.composition.region_controller.session.active:
                 self._dispatch_application_action("region.finish")
+                return True
+            measure = self.composition.measure_controller
+            if measure.active:
+                if measure.cancel_pending():
+                    self.set_status_message("Measurement cancelled")
+                    self.refresh()
+                else:
+                    self._dispatch_application_action("measure.finish")
                 return True
             if self._leave_section_tool():
                 self.set_status_message("Left the Section tool")
@@ -957,6 +1009,8 @@ class OpenRetopV3Window(ApplicationShell):
             object_origin=_active_transform_origin(self.composition.state),
             active_transform_angle_delta=self.composition.transform_controller.angle_delta,
         )
+        measure = self.composition.measure_controller
+        self.viewport.set_measurements(measure.measurements, measure.pending, self.composition.state.units)
         diagnostics = self.viewport.render_snapshot(snapshot)
         if diagnostics is None and not self.viewport.is_ready:
             self._diagnostics.setText("Viewport initialization pending; latest scene snapshot retained.")
@@ -1085,6 +1139,8 @@ class OpenRetopV3Window(ApplicationShell):
             can_add_manual_point=manual.active,
             has_manual_control_point=manual.selected_control_point_index is not None,
             region_tool_active=self.composition.region_controller.session.active,
+            measure_tool_active=self.composition.measure_controller.active,
+            has_measurements=self.composition.measure_controller.has_measurements,
             has_region_boundary_curves=any(is_region_boundary_curve(item) for item in state.curve_collection.curves),
             selected_region_boundary_curve=bool(selected_curve and is_region_boundary_curve(selected_curve)),
             cad_available=self.composition.cad.capabilities.available,
@@ -1432,6 +1488,8 @@ class OpenRetopV3Window(ApplicationShell):
 
     def _install_model(self, path: Path, model: _ModelRead) -> None:
         self._section_tool = False
+        self.composition.measure_controller.finish()
+        self.composition.measure_controller.clear()
         loaded, proxy = model.loaded, model.proxy
         bounds_min = np.min(loaded.mesh.vertices, axis=0) if len(loaded.mesh.vertices) else np.zeros(3)
         bounds_max = np.max(loaded.mesh.vertices, axis=0) if len(loaded.mesh.vertices) else np.zeros(3)

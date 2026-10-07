@@ -8,7 +8,7 @@ from typing import Mapping
 
 import numpy as np
 
-from openretop.presentation.qt.overlay_layers import attach_overlay_renderer
+from openretop.presentation.qt.overlay_layers import create_over_scene_layer
 from openretop.viewer.scene_types import Bounds3, SceneSnapshot
 
 AXIS_COLORS: Mapping[str, tuple[float, float, float]] = {
@@ -276,16 +276,11 @@ class TransformOverlayController:
         assert self.renderer is not None
         if self.layer_renderer is not None:
             return self.layer_renderer
-        window = self.renderer.GetRenderWindow()
-        if window is None:
+        created = create_over_scene_layer(self.renderer)
+        if created is None:
             return self.renderer
-        from vtkmodules.vtkRenderingCore import vtkRenderer
-
-        layer_renderer = vtkRenderer()
-        layer_renderer.SetActiveCamera(self.renderer.GetActiveCamera())  # one camera: always in sync
-        self.overlay_layer = attach_overlay_renderer(window, self.renderer, layer_renderer, over_scene=True)
-        self.layer_renderer = layer_renderer
-        return layer_renderer
+        self.layer_renderer, self.overlay_layer = created
+        return self.layer_renderer
 
     def _create_actors(self) -> None:
         if self._closed or self.renderer is None:

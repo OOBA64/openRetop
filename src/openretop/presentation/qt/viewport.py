@@ -12,6 +12,7 @@ from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
 
 from openretop.application.transform_controller import CameraVectors
 from openretop.presentation.qt.adaptive_grid import AdaptiveGrid
+from openretop.presentation.qt.measurement_overlay import MeasurementOverlay
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
 from openretop.presentation.qt.selection_overlay import SelectionBoxOverlay
 from openretop.presentation.qt.transform_overlays import (
@@ -89,6 +90,7 @@ class QtSceneViewport(VTKViewportWidget):
         self.grid = AdaptiveGrid(self.renderer, on_spacing_changed=self.grid_spacing_changed.emit)
         self.transform_overlays = TransformOverlayController(self.renderer)
         self.selection_box = SelectionBoxOverlay(self.renderer)
+        self.measurement_overlay = MeasurementOverlay(self.renderer)
         self._pointer_gesture = PointerGestureState()
         self._left_capture_owner: str | None = None
         self._last_pointer_release_was_click = True
@@ -250,6 +252,13 @@ class QtSceneViewport(VTKViewportWidget):
         height = 0 if self.interactor is None else int(self.interactor.height())
         return (int(x_position), max(height - int(y_position) - 1, 0))
 
+    def set_measurements(self, measurements: object, pending: object, units: str) -> None:
+        """Show the measure tool's lines, points and distance labels over the scene."""
+
+        if self.renderer is None:
+            return
+        self.measurement_overlay.update(measurements, pending, units)  # type: ignore[arg-type]
+
     def camera_vectors(self) -> CameraVectors | None:
         if not self.is_ready or self.renderer is None:
             return None
@@ -322,6 +331,7 @@ class QtSceneViewport(VTKViewportWidget):
             self._qt_filter_installed = False
         self.transform_overlays.close()
         self.selection_box.close()
+        self.measurement_overlay.close()
         self.grid.close()
         self.navigation_cluster.close()
         self._pointer_gesture.cancel()
@@ -615,6 +625,8 @@ class QtSceneViewport(VTKViewportWidget):
                 entry = self.synchronizer.cache.get(category, item_id)
                 if entry is not None:
                     roles[id(entry.actor)] = f"{category}:{item_id}"
+        for measurement_actor in self.measurement_overlay.actors:
+            roles[id(measurement_actor)] = "measurement"
         for role, actor in (
             ("grid", self.grid.lines_actor),
             ("grid_axes", self.grid.axes_actor),
@@ -761,6 +773,7 @@ def _semantic_category(role: str) -> str:
         "transform_axes": "transform_axes",
         "rotation_ring": "rotation_ring",
         "view_cube": "view_cube",
+        "measurement": "measurement",
         "selection_box": "selection_overlay",
     }.get(prefix, "unidentified")
 

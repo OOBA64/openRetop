@@ -13,6 +13,7 @@ from openretop.application.curve_controller import CurveController
 from openretop.application.dependencies import ApplicationDependencies
 from openretop.application.events import EventPublisher
 from openretop.application.manual_curve_controller import ManualCurveController
+from openretop.application.measure_controller import MeasureController
 from openretop.application.region_controller import RegionController
 from openretop.application.scene_controller import SceneController
 from openretop.application.section_controller import SectionController
@@ -66,6 +67,7 @@ class ApplicationComposition:
     section_controller: SectionController
     curve_controller: CurveController
     region_controller: RegionController
+    measure_controller: MeasureController
     surface_controller: SurfaceController
     brep_controller: BrepController
     analysis_controller: AnalysisController
@@ -119,6 +121,12 @@ def create_application(
         mesh_query_service=mesh_query,
     )
     manual_curve_controller = ManualCurveController(mesh_query_service=mesh_query)
+    measure_controller = MeasureController(
+        state,
+        events=events,
+        mesh_query_service=mesh_query,
+        transformed_mesh_provider=transform_controller.transformed_source_mesh,
+    )
 
     workflow = WorkflowService(
         state=state,
@@ -132,6 +140,7 @@ def create_application(
         curve=curve_controller,
         manual_curve=manual_curve_controller,
         region=region_controller,
+        measure=measure_controller,
         surface=surface_controller,
         brep=brep_controller,
         analysis=analysis_controller,
@@ -170,6 +179,7 @@ def create_application(
         section_controller=section_controller,
         curve_controller=curve_controller,
         region_controller=region_controller,
+        measure_controller=measure_controller,
         surface_controller=surface_controller,
         brep_controller=brep_controller,
         analysis_controller=analysis_controller,

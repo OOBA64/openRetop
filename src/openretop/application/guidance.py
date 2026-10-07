@@ -115,6 +115,7 @@ def build_guidance(state: AppState, *, cad_available: bool, has_runtime_brep: bo
             GuidanceStep("section.add_plane", "Add a section plane", "Planes are cutting positions; move them in the Properties panel."),
             GuidanceStep("section.compute", "Compute section", "Slices the scan at the active plane.", primary=True),
             GuidanceStep("region.start", "Select a surface region", "Click a smooth area of the scan to pick it."),
+            GuidanceStep("measure.distance", "Measure the scan", "Click two points to check its size against the real part."),
             GuidanceStep("manual_curve.create", "Draw a curve by hand", "Click points on the scan."),
         ),
         cad_note,

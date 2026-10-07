@@ -19,6 +19,7 @@ from openretop.application.brep_controller import BrepController
 from openretop.application.controller_support import CallbackUndoPayload
 from openretop.application.curve_controller import CurveController
 from openretop.application.manual_curve_controller import ManualCurveActionResult, ManualCurveController
+from openretop.application.measure_controller import MeasureController
 from openretop.application.region_controller import RegionController
 from openretop.application.results import CommandResult, ViewportRequest, ViewportRequestKind
 from openretop.application.scene_controller import SceneController
@@ -85,6 +86,7 @@ class WorkflowService:
         curve: CurveController,
         manual_curve: ManualCurveController,
         region: RegionController,
+        measure: MeasureController,
         surface: SurfaceController,
         brep: BrepController,
         analysis: AnalysisController,
@@ -100,6 +102,7 @@ class WorkflowService:
         self.curve = curve
         self.manual_curve = manual_curve
         self.region = region
+        self.measure = measure
         self.surface = surface
         self.brep = brep
         self.analysis = analysis
@@ -244,6 +247,15 @@ class WorkflowService:
             return self.transform.center_geometry_on_origin()
         if action == "transform.reset":
             return self.transform.reset_object_transform()
+
+        if action == "measure.distance":
+            return self.measure.start()
+        if action == "measure.finish":
+            return self.measure.finish()
+        if action == "measure.model_size":
+            return self.measure.describe_model_size()
+        if action == "measure.clear":
+            return self.measure.clear()
 
         if action == "section.add_plane":
             return self.section.add_plane(
