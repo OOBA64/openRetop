@@ -337,26 +337,29 @@ class OpenRetopV3Window(ApplicationShell):
 
     @staticmethod
     def _toolbar_schemas() -> tuple[ToolbarSchema, ...]:
+        # (action, icon, short label, starts a new group): file | history | view | transform | scan tools
+        items = (
+            ("file.open_model", "open_scan", "Open Scan", False),
+            ("file.open_project", "open_project", "Open Project", False),
+            ("file.save_project", "save", "Save", False),
+            ("edit.undo", "undo", "Undo", True),
+            ("edit.redo", "redo", "Redo", False),
+            ("view.frame_all", "frame_all", "Frame All", True),
+            ("view.frame_selected", "frame_selected", "Frame Selected", False),
+            ("transform.move", "move", "Move", True),
+            ("transform.rotate", "rotate", "Rotate", False),
+            ("section.add_plane", "section_plane", "Section Plane", True),
+            ("section.compute", "section_cut", "Cut Section", False),
+            ("manual_curve.create", "curve", "Draw Curve", False),
+            ("region.start", "region", "Region", False),
+            ("measure.distance", "measure", "Measure", False),
+        )
         return (
             ToolbarSchema(
                 "Main",
                 tuple(
-                    ToolbarItem(value)
-                    for value in (
-                        "file.open_model",
-                        "file.open_project",
-                        "file.save_project",
-                        "edit.undo",
-                        "edit.redo",
-                        "view.frame_all",
-                        "view.frame_selected",
-                        "transform.move",
-                        "transform.rotate",
-                        "section.add_plane",
-                        "manual_curve.create",
-                        "region.start",
-                        "measure.distance",
-                    )
+                    ToolbarItem(action_id, icon=icon, label=label, separator_before=group)
+                    for action_id, icon, label, group in items
                 ),
             ),
         )

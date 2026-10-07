@@ -28,6 +28,7 @@ from workbench_ui.contracts import (
     ToolbarSchema,
     ToolModeManager,
 )
+from workbench_ui.icons import ICON_SIZE, themed_icon
 
 
 def action_tooltip(definition: ActionDefinition) -> str:
@@ -63,6 +64,7 @@ class ApplicationShell(QMainWindow):
         self.tool_modes = ToolModeManager()
         self.command_palette = CommandPalette(self.action_registry)
         self._qt_actions: dict[str, QAction] = {}
+        self._toolbar_icons: dict[str, str] = {}  # action id -> icon name
         self._docks: dict[str, QDockWidget] = {}
         # Left: the latest message (statusBar().showMessage). Right: a persistent
         # info label (e.g. "part.stl - mm - 12,000 triangles"), never a copy of the message.
@@ -117,9 +119,31 @@ class ApplicationShell(QMainWindow):
         for schema in schemas:
             toolbar = QToolBar(schema.title, self)
             toolbar.setObjectName(f"toolbar_{schema.title.replace(' ', '_')}")
-            for item in schema.items:
-                toolbar.addAction(self._qt_action(self.action_registry.require(item.action_id)))
+            toolbar.setMovable(False)
+            if any(item.icon for item in schema.items):
+                toolbar.setIconSize(ICON_SIZE)
+                toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            for index, item in enumerate(schema.items):
+                if item.separator_before and index:
+                    toolbar.addSeparator()
+                action = self._qt_action(self.action_registry.require(item.action_id))
+                if item.label:
+                    action.setIconText(item.label)  # the toolbar's short label; menus keep the full one
+                if item.icon:
+                    self._toolbar_icons[item.action_id] = item.icon
+                toolbar.addAction(action)
             self.addToolBar(toolbar)
+        self._paint_toolbar_icons()
+
+    def _paint_toolbar_icons(self) -> None:
+        """Draw the toolbar icons in the current theme's text colours."""
+
+        normal = self.theme_manager.color("text")
+        disabled = self.theme_manager.color("text_faint")
+        for action_id, name in self._toolbar_icons.items():
+            action = self._qt_actions.get(action_id)
+            if action is not None:
+                action.setIcon(themed_icon(name, normal, disabled))
 
     def add_panel(self, descriptor: PanelDescriptor, widget: QWidget) -> QDockWidget:
         self.panel_registry.register(descriptor)
@@ -202,3 +226,4 @@ class ApplicationShell(QMainWindow):
         theme = self.theme_manager.built_in(name)
         self.theme_manager.set_theme(theme)
         self.setStyleSheet(self.theme_manager.stylesheet())
+        self._paint_toolbar_icons()

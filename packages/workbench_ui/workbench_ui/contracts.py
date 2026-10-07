@@ -118,6 +118,9 @@ class MenuSchema:
 @dataclass(frozen=True)
 class ToolbarItem:
     action_id: str
+    icon: str = ""  # a name from workbench_ui.icons.ICONS
+    label: str = ""  # short text under the icon; the action's full label stays in menus
+    separator_before: bool = False  # starts a new group
 
 
 @dataclass(frozen=True)
