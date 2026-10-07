@@ -371,7 +371,7 @@ class OpenRetopV3Window(ApplicationShell):
         action_id: str,
         payload: Mapping[str, object] | None = None,
     ) -> bool:
-        if action_id in PRESENTATION_ACTION_IDS:
+        if action_id in PRESENTATION_ACTION_IDS or action_id.startswith("view.named."):
             return self._dispatch_view_action(action_id)
         if self._reject_while_busy():
             return False

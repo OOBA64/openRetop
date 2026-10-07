@@ -32,8 +32,24 @@ try:
     from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
     from vtkmodules.vtkRenderingCore import vtkRenderer
+
+    class GuardedVTKInteractor(QVTKRenderWindowInteractor):  # type: ignore[misc, valid-type]
+        """QVTK widget that ignores a late close event once its Python state is gone.
+
+        The host finalizes the render window explicitly.  If the Python wrapper is then
+        garbage collected before Qt destroys the C++ widget, Qt still delivers a close
+        event; QVTK's own handler would recurse on the emptied instance.
+        """
+
+        def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+            if "_Iren" not in self.__dict__:
+                event.accept()
+                return
+            super().closeEvent(event)
+
 except ImportError as exc:
     QVTKRenderWindowInteractor = None  # type: ignore[assignment]
+    GuardedVTKInteractor = None  # type: ignore[assignment, misc]
     vtkInteractorStyleTrackballCamera = None  # type: ignore[assignment]
     vtkRenderer = None  # type: ignore[assignment]
     _VTK_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
@@ -73,9 +89,9 @@ class VTKViewportWidget(QFrame):
             return
 
         try:
-            assert QVTKRenderWindowInteractor is not None
+            assert GuardedVTKInteractor is not None
             assert vtkRenderer is not None
-            interactor = QVTKRenderWindowInteractor(self)
+            interactor = GuardedVTKInteractor(self)
             render_window = interactor.GetRenderWindow()
             class_name = _vtk_class_name(render_window)
             if class_name == "vtkRenderWindow":

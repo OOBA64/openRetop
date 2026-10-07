@@ -11,15 +11,15 @@ from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
 
 from openretop.application.transform_controller import CameraVectors
-from openretop.presentation.qt.orientation_gizmo import (
-    OrientationGizmoDiagnosticState,
-)
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
 from openretop.presentation.qt.transform_overlays import (
     TransformOverlayController,
     TransformOverlayDiagnosticState,
 )
-from openretop.presentation.qt.view_controls import ViewportNavigationCluster
+from openretop.presentation.qt.view_controls import (
+    NavigationClusterDiagnosticState,
+    ViewportNavigationCluster,
+)
 from openretop.settings.settings_data import DEFAULT_BACKGROUND_COLOR
 from openretop.viewer.actor_factories import VTKActorAdapter
 from openretop.viewer.camera_controller import CameraController
@@ -57,7 +57,7 @@ class ViewportDiagnosticState:
     selection_eligible: bool
     gesture_distance: float
     gizmo_synchronization_count: int
-    orientation_gizmo: OrientationGizmoDiagnosticState
+    navigation: NavigationClusterDiagnosticState
     transform_overlay: TransformOverlayDiagnosticState
     scene_actor_inventory: tuple[Mapping[str, object], ...]
     overlay_actor_inventory: tuple[Mapping[str, object], ...]
@@ -98,10 +98,8 @@ class QtSceneViewport(VTKViewportWidget):
             self.interactor,
             self,
             device_pixel_ratio=self.devicePixelRatioF,
+            request_render=self._render_navigation,
         )
-        # Compatibility aliases keep the established presentation/test surface
-        # while the cluster remains the single lifecycle and layout owner.
-        self.orientation_gizmo = self.navigation_cluster.orientation_gizmo
         self.view_controls = self.navigation_cluster
         if self.interactor is not None:
             self.interactor.installEventFilter(self)
@@ -118,33 +116,13 @@ class QtSceneViewport(VTKViewportWidget):
 
     @property
     def observer_count(self) -> int:
-        return self.orientation_gizmo.observer_count
+        return self.navigation_cluster.observer_count
 
     @property
     def _observer_ids(self) -> tuple[tuple[object, int], ...]:
-        """Compatibility view of the gizmo controller's sole VTK observer."""
+        """The navigation cluster's sole VTK observer."""
 
-        return self.orientation_gizmo.observer_records
-
-    @property
-    def _axis_gizmo_renderer(self) -> object | None:
-        return self.orientation_gizmo.renderer
-
-    @property
-    def _axis_gizmo_actor(self) -> object | None:
-        return self.orientation_gizmo.actor
-
-    @property
-    def _axis_gizmo_visible(self) -> bool:
-        return self.orientation_gizmo.enabled
-
-    @property
-    def _axis_gizmo_camera_signature(self) -> tuple[float, ...] | None:
-        return self.orientation_gizmo.camera_signature
-
-    @property
-    def _axis_gizmo_synchronization_count(self) -> int:
-        return self.orientation_gizmo.camera_update_count
+        return self.navigation_cluster.observer_records
 
     @property
     def _transform_axes_actor(self) -> object | None:
@@ -192,7 +170,7 @@ class QtSceneViewport(VTKViewportWidget):
         snapshot = self.last_snapshot or self._pending_snapshot
         camera = None if self.renderer is None else self.renderer.GetActiveCamera()
         toolkit = super().diagnostic_state()
-        gizmo = self.orientation_gizmo.diagnostic_state()
+        navigation = self.navigation_cluster.diagnostic_state()
         return ViewportDiagnosticState(
             ready=self.is_ready,
             render_window_class=_string_or_none(toolkit.get("render_window_class")),
@@ -213,7 +191,7 @@ class QtSceneViewport(VTKViewportWidget):
             camera_view_angle=_camera_scalar(camera, "GetViewAngle"),
             background=_camera_tuple(self.renderer, "GetBackground", 3),
             synchronization_count=self._synchronization_count,
-            observer_count=gizmo.observer_count,
+            observer_count=navigation.observer_count,
             pointer_event_count=self._pointer_event_count,
             pick_count=self._pick_count,
             left_capture_owner=self._left_capture_owner,
@@ -223,8 +201,8 @@ class QtSceneViewport(VTKViewportWidget):
             ),
             selection_eligible=self._pointer_gesture.selection_eligible,
             gesture_distance=self._pointer_gesture.accumulated_distance,
-            gizmo_synchronization_count=gizmo.camera_update_count,
-            orientation_gizmo=gizmo,
+            gizmo_synchronization_count=navigation.camera_update_count,
+            navigation=navigation,
             transform_overlay=self.transform_overlays.diagnostics(),
             scene_actor_inventory=self._scene_actor_inventory(),
             overlay_actor_inventory=self._overlay_actor_inventory(),
@@ -347,6 +325,12 @@ class QtSceneViewport(VTKViewportWidget):
 
         if watched is not self.interactor:
             return super().eventFilter(watched, event)
+        if event.type() == QEvent.Leave:
+            self.navigation_cluster.leave()
+        elif isinstance(event, QMouseEvent) and self.navigation_cluster.handle_mouse_event(event):
+            # A click on the view cube must not start an orbit or a selection pick.
+            event.accept()
+            return True
         if event.type() == QEvent.Leave and self._pointer_gesture.active:
             position = self._pointer_gesture.current_position or (0.0, 0.0)
             tool_owner = self._pointer_gesture.active_tool_owner
@@ -545,20 +529,12 @@ class QtSceneViewport(VTKViewportWidget):
         self.renderer.AddActor(grid_actor)
         self._grid_actor = grid_actor
 
-    def _set_axis_gizmo_visible(self, visible: bool) -> None:
-        self.navigation_cluster.set_visibility(
-            gizmo=visible,
-            controls=self.navigation_cluster.visible,
-        )
-
-    def _position_axis_gizmo_renderer(self) -> None:
-        self.navigation_cluster.update_layout()
+    def _render_navigation(self) -> None:
+        if self.is_ready and not self._closing:
+            self.render()
 
     def _position_view_controls(self) -> None:
         self.navigation_cluster.update_layout()
-
-    def _sync_axis_gizmo_camera(self) -> None:
-        self.navigation_cluster.sync_camera()
 
     def _on_camera_modified(self, _caller: object, _event: object) -> None:
         self.navigation_cluster.sync_camera()
@@ -607,10 +583,10 @@ class QtSceneViewport(VTKViewportWidget):
             ("transform_axes", self._transform_axes_actor, 0, self.renderer),
             ("rotation_ring", self._rotation_ring_actor, 0, self.renderer),
             (
-                "orientation_gizmo",
-                self._axis_gizmo_actor,
-                self.orientation_gizmo.diagnostic_state().renderer_layer or 1,
-                self._axis_gizmo_renderer,
+                "view_cube",
+                self.navigation_cluster.overlay_actor,
+                _safe_vtk_call(self.navigation_cluster.overlay_renderer, "GetLayer", default=1),
+                self.navigation_cluster.overlay_renderer,
             ),
         )
         return tuple(
@@ -632,7 +608,7 @@ class QtSceneViewport(VTKViewportWidget):
             ("grid", self._grid_actor),
             ("transform_axes", self._transform_axes_actor),
             ("rotation_ring", self._rotation_ring_actor),
-            ("orientation_gizmo", self._axis_gizmo_actor),
+            ("view_cube", self.navigation_cluster.overlay_actor),
         ):
             if actor is not None:
                 roles[id(actor)] = role
@@ -795,7 +771,7 @@ def _semantic_category(role: str) -> str:
         "grid": "grid",
         "transform_axes": "transform_axes",
         "rotation_ring": "rotation_ring",
-        "orientation_gizmo": "orientation_gizmo",
+        "view_cube": "view_cube",
     }.get(prefix, "unidentified")
 
 

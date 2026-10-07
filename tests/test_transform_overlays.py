@@ -422,8 +422,7 @@ class TransformOverlayTests(unittest.TestCase):
             roles = {item["role"]: item for item in inventory}
             self.assertNotIn("unidentified", {item["semantic_category"] for item in inventory})
             self.assertEqual(roles["mesh:mesh"]["semantic_category"], "imported_scene_geometry")
-            self.assertEqual(roles["orientation_gizmo"]["layer"], 1)
-            self.assertFalse(roles["orientation_gizmo"]["main_renderer_member"])
+            self.assertNotIn("orientation_gizmo", roles)
             self.assertNotIn("transform_axes", roles)
             self.assertNotIn("rotation_ring", roles)
             self.assertFalse(any(item["role"].startswith("navigation") for item in inventory))

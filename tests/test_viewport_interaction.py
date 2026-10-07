@@ -11,7 +11,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -33,9 +33,7 @@ from openretop.geometry.sections import SectionResult  # noqa: E402
 from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
 from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
 from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
-from openretop.presentation.qt.orientation_gizmo import GIZMO_LOGICAL_SIZE  # noqa: E402
 from openretop.presentation.qt.pointer_gestures import PointerGestureState  # noqa: E402
-from openretop.presentation.qt.view_controls import TriangularViewButton  # noqa: E402
 from openretop.presentation.qt.viewport import QtSceneViewport  # noqa: E402
 from openretop.regions.region_state import RegionSelection  # noqa: E402
 from openretop.sections.section_state import StoredSectionResult  # noqa: E402
@@ -294,7 +292,7 @@ class PointerRoutingTests(unittest.TestCase):
             viewport.render_snapshot(_snapshot())
             _ready_without_native_render(viewport)
             viewport.render_window.SetSize(800, 600)
-            viewport._position_axis_gizmo_renderer()
+            viewport._position_view_controls()
             camera = viewport.renderer.GetActiveCamera()
             camera.SetPosition(8.0, 7.0, 6.0)
             camera.SetFocalPoint(1.0, 2.0, 3.0)
@@ -597,29 +595,26 @@ class OverlayTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_idle_scene_has_layered_gizmo_and_no_world_axes(self) -> None:
+    def test_idle_scene_has_view_cube_and_no_world_axes(self) -> None:
         viewport = QtSceneViewport()
         try:
+            viewport.resize(640, 400)
             viewport.render_snapshot(_snapshot())
             _ready_without_native_render(viewport)
-            viewport._position_axis_gizmo_renderer()
+            viewport._position_view_controls()
             state = viewport.diagnostic_state()
             inventory = {item["role"]: item for item in state.overlay_actor_inventory}
+            # The cube is one image in a transparent overlay layer above the scene.
             self.assertEqual(viewport.render_window.GetRenderers().GetNumberOfItems(), 2)
-            self.assertEqual(inventory["orientation_gizmo"]["layer"], 1)
-            self.assertTrue(inventory["orientation_gizmo"]["visible"])
+            self.assertEqual(inventory["view_cube"]["layer"], 1)
+            self.assertTrue(inventory["view_cube"]["visible"])
             self.assertNotIn("transform_axes", inventory)
             self.assertNotIn("rotation_ring", inventory)
-            self.assertEqual(viewport._axis_gizmo_renderer.GetBackgroundAlpha(), 0.0)
-            self.assertFalse(bool(viewport._axis_gizmo_renderer.GetInteractive()))
-            x0, y0, x1, y1 = viewport._axis_gizmo_renderer.GetViewport()
-            # Qt's offscreen QVTK child reports a synthetic 120x30 surface. The
-            # in-bounds layout may consume that full synthetic height; exact
-            # logical-pixel stability is asserted by the visible Win32 test.
-            self.assertGreaterEqual(x0, 0.0)
-            self.assertGreaterEqual(y0, 0.0)
-            self.assertGreater(x1, x0)
-            self.assertGreater(y1, y0)
+            self.assertTrue(state.navigation.cube_visible)
+            self.assertTrue(state.navigation.overlay_attached)
+            x, y, width, height = state.navigation.logical_bounds
+            self.assertGreaterEqual(x, 0)
+            self.assertLessEqual(x + width, viewport.width())
         finally:
             viewport.close()
 
@@ -699,7 +694,8 @@ class OverlayTests(unittest.TestCase):
                 _snapshot(show_axis_gizmo=False, show_viewcube=True)
             )
             _ready_without_native_render(viewport)
-            self.assertFalse(viewport._axis_gizmo_visible)
+            state = viewport.navigation_cluster.diagnostic_state()
+            self.assertFalse(state.triad_visible)
             self.assertTrue(viewport.view_controls.visible)
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 viewport.render_snapshot(
@@ -709,12 +705,12 @@ class OverlayTests(unittest.TestCase):
                         show_viewcube=False,
                     )
                 )
-            self.assertTrue(viewport._axis_gizmo_visible)
+            self.assertTrue(viewport.navigation_cluster.diagnostic_state().triad_visible)
             self.assertFalse(viewport.view_controls.visible)
         finally:
             viewport.close()
 
-    def test_orientation_gizmo_camera_tracks_the_scene_camera(self) -> None:
+    def test_view_cube_tracks_the_scene_camera(self) -> None:
         viewport = QtSceneViewport()
         try:
             viewport.render_snapshot(_snapshot())
@@ -723,20 +719,15 @@ class OverlayTests(unittest.TestCase):
             camera.SetFocalPoint(1.0, 2.0, 3.0)
             camera.SetPosition(7.0, -4.0, 11.0)
             camera.SetViewUp(0.2, 0.9, 0.3)
-            viewport._sync_axis_gizmo_camera()
-            self.assertTrue(
-                np.allclose(
-                    viewport._axis_gizmo_renderer.GetActiveCamera().GetDirectionOfProjection(),
-                    camera.GetDirectionOfProjection(),
-                )
-            )
-            actor = viewport._axis_gizmo_actor
-            renderer = viewport._axis_gizmo_renderer
+            viewport.navigation_cluster.sync_camera()
+            forward, up = viewport.navigation_cluster.widget.orientation
+            self.assertTrue(np.allclose(forward, camera.GetDirectionOfProjection()))
+            self.assertAlmostEqual(float(np.dot(forward, up)), 0.0)
+            widget = viewport.navigation_cluster.widget
             synchronization_count = viewport.diagnostic_state().gizmo_synchronization_count
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 viewport.render_snapshot(_snapshot(revision=2))
-            self.assertIs(viewport._axis_gizmo_actor, actor)
-            self.assertIs(viewport._axis_gizmo_renderer, renderer)
+            self.assertIs(viewport.navigation_cluster.widget, widget)
             self.assertEqual(
                 viewport.diagnostic_state().gizmo_synchronization_count,
                 synchronization_count,
@@ -744,17 +735,28 @@ class OverlayTests(unittest.TestCase):
         finally:
             viewport.close()
 
-    def test_view_control_buttons_are_triangular_and_emit_existing_action_ids(self) -> None:
+    def test_view_cube_emits_existing_action_ids(self) -> None:
         viewport = QtSceneViewport()
         actions: list[str] = []
         viewport.view_controls.action_requested.connect(actions.append)
         try:
-            button = viewport.view_controls.buttons["view.named.top"]
-            self.assertIsInstance(button, TriangularViewButton)
-            self.assertTrue(button.hitButton(QPoint(button.width() // 2, 4)))
-            self.assertFalse(button.hitButton(QPoint(0, 0)))
-            for action_id, control in viewport.view_controls.buttons.items():
-                control.click()
+            viewport.resize(700, 500)
+            viewport.render_snapshot(_snapshot())
+            _ready_without_native_render(viewport)
+            cluster = viewport.navigation_cluster
+            widget = cluster.widget
+            x, y, _w, _h = cluster.logical_bounds
+            for action_id in ("view.named.isometric", "view.roll_left", "view.roll_right"):
+                centre = widget._button_rect(action_id).center()
+                point = QPointF(x + centre.x(), y + centre.y())
+                for kind, buttons in (
+                    (QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton),
+                    (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton),
+                ):
+                    event = QMouseEvent(
+                        kind, point, point, Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier
+                    )
+                    self.assertTrue(viewport.eventFilter(viewport.interactor, event))
                 self.assertEqual(actions[-1], action_id)
         finally:
             viewport.close()
@@ -771,7 +773,7 @@ class OverlayTests(unittest.TestCase):
             )
             self.assertEqual(
                 {item["role"] for item in state.overlay_actor_inventory},
-                {"grid", "orientation_gizmo"},
+                {"grid", "view_cube"},
             )
             self.assertTrue(
                 all(not item["pickable"] for item in state.overlay_actor_inventory)
@@ -785,14 +787,10 @@ class OverlayTests(unittest.TestCase):
                 2,
                 "idle main renderer must contain only the mesh and grid",
             )
-            self.assertEqual(
-                viewport._axis_gizmo_renderer.GetViewProps().GetNumberOfItems(),
-                1,
-            )
         finally:
             viewport.close()
 
-    def test_main_window_view_controls_dispatch_central_named_view_actions(self) -> None:
+    def test_main_window_view_cube_dispatches_named_view_actions(self) -> None:
         composition = create_application(
             settings_repository=InMemorySettingsRepository()
         )
@@ -807,8 +805,8 @@ class OverlayTests(unittest.TestCase):
                 "pick_scene_object",
             ) as pick:
                 with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
-                    window.viewport.view_controls.buttons["view.named.top"].click()
-                dispatch.assert_called_once_with("view.named.top")
+                    window.viewport.view_controls.action_requested.emit("view.named.top+front")
+                dispatch.assert_called_once_with("view.named.top+front")
                 pick.assert_not_called()
         finally:
             window.set_project_dirty(False)
@@ -821,34 +819,33 @@ class OverlayTests(unittest.TestCase):
         window = OpenRetopV3Window(composition)
         try:
             _ready_without_native_render(window.viewport)
-            self.assertTrue(window.viewport.view_controls.visible)
-            self.assertTrue(window.viewport._axis_gizmo_visible)
+            cluster = window.viewport.navigation_cluster
+            self.assertTrue(cluster.visible)
+            self.assertTrue(cluster.diagnostic_state().triad_visible)
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 self.assertTrue(
                     window._dispatch_framework_action("view.toggle_view_controls")
                 )
-            self.assertFalse(window.viewport.view_controls.visible)
-            self.assertTrue(window.viewport._axis_gizmo_visible)
+            self.assertFalse(cluster.visible)
+            self.assertTrue(cluster.diagnostic_state().triad_visible)
             with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
                 self.assertTrue(
                     window._dispatch_framework_action("view.toggle_axis_gizmo")
                 )
-            self.assertFalse(window.viewport._axis_gizmo_visible)
+            self.assertFalse(cluster.diagnostic_state().triad_visible)
         finally:
             window.set_project_dirty(False)
             window.close()
 
-    def test_view_controls_reposition_within_the_viewport(self) -> None:
+    def test_view_cube_stays_within_the_viewport(self) -> None:
         viewport = QtSceneViewport()
         try:
             viewport.resize(640, 400)
             viewport.render_snapshot(_snapshot())
             _ready_without_native_render(viewport)
             viewport._position_view_controls()
-            for button in viewport.view_controls.buttons.values():
-                self.assertTrue(viewport.rect().contains(button.geometry()))
-                self.assertTrue(button.accessibleName())
-                self.assertTrue(button.toolTip())
+            x, y, width, height = viewport.navigation_cluster.logical_bounds
+            self.assertTrue(viewport.rect().contains(QRect(x, y, width, height)))
         finally:
             viewport.close()
 
@@ -879,7 +876,7 @@ class OverlayTests(unittest.TestCase):
         or platform.system() != "Windows",
         "requires the visible Windows Qt/VTK path",
     )
-    def test_real_win32_camera_gestures_gizmo_and_resize(self) -> None:
+    def test_real_win32_camera_gestures_view_cube_and_resize(self) -> None:
         viewport = QtSceneViewport()
         viewport.resize(760, 520)
         viewport.render_snapshot(
@@ -1003,13 +1000,7 @@ class OverlayTests(unittest.TestCase):
 
             viewport.resize(1000, 700)
             QTest.qWait(100)
-            x0, y0, x1, y1 = viewport._axis_gizmo_renderer.GetViewport()
-            width, height = viewport.render_window.GetSize()
-            expected = GIZMO_LOGICAL_SIZE * max(float(viewport.devicePixelRatioF()), 1.0)
-            self.assertAlmostEqual((x1 - x0) * width, expected, delta=3.0)
-            self.assertAlmostEqual((y1 - y0) * height, expected, delta=3.0)
-            for button in viewport.view_controls.buttons.values():
-                self.assertTrue(viewport.rect().contains(button.geometry()))
+            self.assertTrue(viewport.rect().contains(viewport.navigation_cluster.widget.geometry()))
             viewport.showMinimized()
             QTest.qWait(75)
             viewport.showNormal()

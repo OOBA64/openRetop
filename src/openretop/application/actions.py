@@ -542,8 +542,8 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("view.roll_right", "Roll View Right", "View", "roll_view", handler_args=(15.0,)),
     _workflow_action("view.toggle_grid", "Show Grid", "View", "_on_view_option_changed"),
     _workflow_action("view.toggle_axes", "Show Axes", "View", "_on_view_option_changed"),
-    _workflow_action("view.toggle_axis_gizmo", "Show Axis Gizmo", "View", "_on_view_option_changed"),
-    _workflow_action("view.toggle_view_controls", "Show View Controls", "View", "_on_view_option_changed"),
+    _workflow_action("view.toggle_axis_gizmo", "Show XYZ Axes", "View", "_on_view_option_changed"),
+    _workflow_action("view.toggle_view_controls", "Show View Cube", "View", "_on_view_option_changed"),
     _workflow_action("view.toggle_normals", "Show Normals", "View", "_on_view_option_changed", enabled_when=(ActionCondition.HAS_MESH,)),
     _workflow_action("view.proxy_quality", "Display Proxy Quality", "View", "_on_proxy_quality_changed", enabled_when=(ActionCondition.HAS_MESH,), requires_payload=True),
 

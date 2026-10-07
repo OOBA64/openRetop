@@ -32,6 +32,15 @@ def named_view_vectors(name: str) -> tuple[np.ndarray, np.ndarray]:
         "iso": ([1.0, -1.0, 0.75], [0.0, 0.0, 1.0]),
         "isometric": ([1.0, -1.0, 0.75], [0.0, 0.0, 1.0]),
     }
+    if "+" in key:
+        # Edge and corner views from the view cube: "top+front", "top+front+right".
+        parts = key.split("+")
+        if len(set(parts)) != len(parts) or any(part not in directions or part in {"iso", "isometric"} for part in parts):
+            raise ValueError(f"Unknown named view: {name}")
+        combined = np.sum([directions[part][0] for part in parts], axis=0)
+        if float(np.linalg.norm(combined)) <= 1e-9:
+            raise ValueError(f"Unknown named view: {name}")
+        directions[key] = (combined.tolist(), [0.0, 0.0, 1.0])
     if key not in directions:
         raise ValueError(f"Unknown named view: {name}")
     direction, view_up = directions[key]

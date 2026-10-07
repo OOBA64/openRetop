@@ -41,6 +41,7 @@ Severity: **S1** blocks or misleads a new user, **S2** slows people down, **S3**
 | F-08 | S2 | Toolbar is 12 text-only buttons with no icons, no grouping and no separators; `Compute Section` (the command that follows `Add Section Plane`) is not on it. | UX-07 |
 | F-09 | S2 | Internal jargon in user-facing labels: "Unassigned", "Repaired", "Projected", "Rebuilt", "Preview Surfaces", "Editable Features", "Mesh-Conforming Loft Preview", "Create Editable BREP Loft", "Convert Boundary to Guide Curve". | UX-08 vocabulary pass |
 | F-10 | S2 | View menu has 7 named views with no shortcuts; Frame All has none. Users expect Home/numpad conventions. | UX-09 |
+| F-21 | S2 | **The viewport gizmo is hard to read and hard to use** ([before](img/gizmo_before.png)): a red/green/blue VTK axes arrow with an "X" label, four small triangles that read as "Top/Bottom/Left/Right view" but sit around a *Y-up* arrow so they look like pan arrows, and a tiny cube icon for isometric. There is **no Front or Back**, no edge or corner views, nothing says which face you are looking at, and the whole cluster sits at the top-left over the grid. | UX-27 view cube |
 
 ### Guidance and feedback
 | ID | Sev | Finding | Fix |

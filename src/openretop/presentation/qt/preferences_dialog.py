@@ -46,8 +46,8 @@ class PreferencesDialog(QDialog):
             FieldDefinition("show_grid", "Show grid", display.show_grid, "checkbox", group="Display"),
             FieldDefinition("show_axes", "Show axes", display.show_axes, "checkbox", group="Display"),
             FieldDefinition("show_normals", "Show normals", display.show_normals, "checkbox", group="Display"),
-            FieldDefinition("show_axis_gizmo", "Show axis gizmo", display.show_axis_gizmo, "checkbox", group="Display"),
-            FieldDefinition("show_viewcube", "Show view controls", display.show_viewcube, "checkbox", group="Display"),
+            FieldDefinition("show_axis_gizmo", "Show XYZ axes", display.show_axis_gizmo, "checkbox", group="Display"),
+            FieldDefinition("show_viewcube", "Show view cube", display.show_viewcube, "checkbox", group="Display"),
             FieldDefinition("window_width", "Window width", self._settings.ui.window_width, "number", group="Window", minimum=800, maximum=7680, decimals=0),
             FieldDefinition("window_height", "Window height", self._settings.ui.window_height, "number", group="Window", minimum=600, maximum=4320, decimals=0),
         ]
