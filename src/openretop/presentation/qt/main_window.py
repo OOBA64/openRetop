@@ -696,20 +696,47 @@ class OpenRetopV3Window(ApplicationShell):
         ]
         if state.mesh_object is not None:
             nodes.append(SceneNode(NODE_MESH, state.mesh_object.name, "mesh", "scene", state.mesh_object.visible, metadata={"context_actions": common}))
-        nodes.extend(
-            (
-                SceneNode(NODE_SECTION_PLANES, "Section Planes", "group", "scene", checkable=False, selectable=False, renameable=False, metadata={"context_actions": ("section.add_plane", "scene.show_all")}),
-                SceneNode(NODE_SECTION_RESULTS, "Section Results", "group", "scene", checkable=False, selectable=False, renameable=False),
-                SceneNode(NODE_CURVES, "Curves", "group", "scene", checkable=False, selectable=False, renameable=False),
-                SceneNode(NODE_SURFACES, "Preview Surfaces", "group", "scene", checkable=False, selectable=False, renameable=False),
-                SceneNode(NODE_BREP_SURFACES, "BREP Surfaces", "group", "scene", checkable=False, selectable=False, renameable=False),
-                SceneNode(NODE_REGIONS, "Regions", "group", "scene", checkable=False, selectable=False, renameable=False),
-                SceneNode(NODE_FEATURES, "Editable Features", "group", "scene", checkable=False, selectable=False, renameable=False),
+        group_defaults = {"checkable": False, "selectable": False, "renameable": False}
+        if state.mesh_object is None and not _has_scene_content(state):
+            nodes.append(
+                SceneNode(
+                    "scene.empty_hint",
+                    "Open a scan to begin (File > Open Model, or drop a file here)",
+                    "hint",
+                    "scene",
+                    **group_defaults,
+                )
             )
+            return tuple(nodes)
+
+        # Groups only appear once they hold something, so a new project is not a
+        # wall of empty folders. Section planes are always offered with a model.
+        result_ids = {item.id for item in state.section_collection.results}
+        curve_parents = {_curve_parent(curve, result_ids) for curve in state.curve_collection.curves}
+        has_planes = bool(state.section_collection.planes) and state.mesh_object is not None
+        group_rows = (
+            (NODE_SECTION_PLANES, "Section Planes", has_planes, {"context_actions": ("section.add_plane", "scene.show_all")}),
+            (NODE_SECTION_RESULTS, "Section Results", bool(state.section_collection.results), {}),
+            (NODE_CURVES, "Curves", bool(state.curve_collection.curves), {}),
+            (NODE_SURFACES, "Preview Surfaces", bool(state.surface_collection.surfaces), {}),
+            (NODE_BREP_SURFACES, "BREP Surfaces", bool(state.brep_surface_collection.surfaces), {}),
+            (NODE_REGIONS, "Regions", state.region_collection.active_region is not None, {}),
+            (
+                NODE_FEATURES,
+                "Editable Features",
+                bool(state.loft_feature_collection.features or state.four_boundary_feature_collection.features),
+                {},
+            ),
+        )
+        nodes.extend(
+            SceneNode(node_id, label, "group", "scene", metadata=metadata, **group_defaults)
+            for node_id, label, present, metadata in group_rows
+            if present
         )
         nodes.extend(
             SceneNode(section_plane_node_id(plane.id), plane.name, "section_plane", NODE_SECTION_PLANES, plane.visible, metadata={"context_actions": common + ("section.compute",)})
             for plane in state.section_collection.planes
+            if has_planes
         )
         nodes.extend(
             SceneNode(section_result_node_id(result.id), result.name, "section_result", NODE_SECTION_RESULTS, result.visible, metadata={"context_actions": common})
@@ -723,12 +750,16 @@ class OpenRetopV3Window(ApplicationShell):
             (NODE_CURVE_GROUP_PROJECTED, "Projected"),
             (NODE_CURVE_GROUP_REBUILT, "Rebuilt"),
         )
-        nodes.extend(SceneNode(node_id, label, "curve_group", NODE_CURVES, checkable=False, selectable=False, renameable=False) for node_id, label in curve_groups)
         nodes.extend(
-            SceneNode(curve_group_node_id(result.id), result.name, "curve_group", NODE_CURVES, checkable=False, selectable=False, renameable=False)
-            for result in state.section_collection.results
+            SceneNode(node_id, label, "curve_group", NODE_CURVES, **group_defaults)
+            for node_id, label in curve_groups
+            if node_id in curve_parents
         )
-        result_ids = {item.id for item in state.section_collection.results}
+        nodes.extend(
+            SceneNode(curve_group_node_id(result.id), result.name, "curve_group", NODE_CURVES, **group_defaults)
+            for result in state.section_collection.results
+            if curve_group_node_id(result.id) in curve_parents
+        )
         for curve in state.curve_collection.curves:
             parent = _curve_parent(curve, result_ids)
             nodes.append(SceneNode(curve_node_id(curve.id), curve_display_label(curve), "curve", parent, curve.visible, metadata={"context_actions": common + ("curve.toggle_visibility",)}))
@@ -1596,6 +1627,18 @@ def _node_id_for_pick(pick: SceneObjectPickResult) -> str | None:
     }
     convert = converters.get(str(pick.object_type))
     return None if convert is None else convert(object_id)
+
+
+def _has_scene_content(state: AppState) -> bool:
+    return bool(
+        state.section_collection.results
+        or state.curve_collection.curves
+        or state.surface_collection.surfaces
+        or state.brep_surface_collection.surfaces
+        or state.region_collection.active_region is not None
+        or state.loft_feature_collection.features
+        or state.four_boundary_feature_collection.features
+    )
 
 
 def _curve_parent(curve: object, result_ids: set[str]) -> str:
