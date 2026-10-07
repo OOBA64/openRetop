@@ -25,7 +25,7 @@ from workbench_ui import (  # noqa: E402
 )
 
 
-class Task79ContractTests(unittest.TestCase):
+class WorkbenchContractTests(unittest.TestCase):
     def test_actions_propagate_state_and_palette_search(self) -> None:
         registry = ActionRegistry([ActionDefinition("view.frame_all", "Frame All", category="View")])
         palette = CommandPalette(registry)

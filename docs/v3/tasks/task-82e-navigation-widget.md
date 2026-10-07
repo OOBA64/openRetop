@@ -164,9 +164,9 @@ Production:
 
 Tests and evidence:
 
-- `tests/test_task82e_navigation_widget.py`: focused unit, lifecycle, layout,
+- `tests/test_navigation_widget.py`: focused unit, lifecycle, layout,
   action, camera, rendered-pixel, and visible Win32 coverage;
-- `tests/test_task82b_viewport_interaction.py`: the obsolete hard-coded
+- `tests/test_viewport_interaction.py`: the obsolete hard-coded
   96-pixel expectation now uses the shared gizmo-size constant;
 - `docs/v3/artifacts/task-82e/default.png`;
 - `docs/v3/artifacts/task-82e/maximized.png`;
@@ -273,15 +273,15 @@ python -m pip install -e .\packages\workbench_ui
 $env:PYTHONPATH = "src;packages/workbench_ui"
 
 python -m compileall -q src packages\workbench_ui\workbench_ui
-python -m unittest tests.test_task82a_viewport_startup
-python -m unittest tests.test_task82b_viewport_interaction
-python -m unittest tests.test_task82c_mouse_orbit
-python -m unittest tests.test_task82d_orientation_gizmo
-python -m unittest tests.test_task82e_navigation_widget
-python -m unittest tests.test_task79_workbench_ui
-python -m unittest tests.test_task80_v3_ui
-python -m unittest tests.test_task81_legacy_boundary
-python -m unittest tests.test_task82_release
+python -m unittest tests.test_viewport_startup
+python -m unittest tests.test_viewport_interaction
+python -m unittest tests.test_viewport_mouse_orbit
+python -m unittest tests.test_orientation_gizmo
+python -m unittest tests.test_navigation_widget
+python -m unittest tests.test_workbench_ui_framework
+python -m unittest tests.test_main_window_workflows
+python -m unittest tests.test_entry_points_and_legacy_removal
+python -m unittest tests.test_release_fixtures_and_composition
 python scripts\report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"
 python .\src\main.py

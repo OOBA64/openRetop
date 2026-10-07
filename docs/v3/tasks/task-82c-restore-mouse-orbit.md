@@ -147,8 +147,8 @@ Modified production files:
 
 Modified tests/documentation:
 
-- `tests/test_task82b_viewport_interaction.py`
-- `tests/test_task82c_mouse_orbit.py` (new)
+- `tests/test_viewport_interaction.py`
+- `tests/test_viewport_mouse_orbit.py` (new)
 - `docs/v3/STATUS.md`
 - `docs/v3/tasks/task-82c-restore-mouse-orbit.md` (new)
 
@@ -173,13 +173,13 @@ Environment:
 
 Focused final results:
 
-- `tests.test_task79_workbench_ui`: 9 passed in 1.552 seconds.
-- `tests.test_task80_v3_ui`: 7 passed in 2.089 seconds.
-- `tests.test_task82a_viewport_startup`: 18 passed with no skips on visible
+- `tests.test_workbench_ui_framework`: 9 passed in 1.552 seconds.
+- `tests.test_main_window_workflows`: 7 passed in 2.089 seconds.
+- `tests.test_viewport_startup`: 18 passed with no skips on visible
   Windows in 1.684 seconds.
-- `tests.test_task82b_viewport_interaction`: 26 passed with no skips on visible
+- `tests.test_viewport_interaction`: 26 passed with no skips on visible
   Windows in 3.366 seconds.
-- `tests.test_task82c_mouse_orbit`: 15 passed with no skips on visible Windows
+- `tests.test_viewport_mouse_orbit`: 15 passed with no skips on visible Windows
   in 2.518 seconds.
 - Task 82C offscreen run: 14 passed and the one real-visible-Windows test
   skipped in 2.093 seconds.
@@ -270,11 +270,11 @@ was `4718.683774`, and `last_rendering_error` remained `None`.
 $env:PYTHONPATH = "src;packages/workbench_ui"
 
 python -m compileall -q src packages\workbench_ui\workbench_ui
-python -m unittest tests.test_task82a_viewport_startup
-python -m unittest tests.test_task82b_viewport_interaction
-python -m unittest tests.test_task82c_mouse_orbit
-python -m unittest tests.test_task79_workbench_ui
-python -m unittest tests.test_task80_v3_ui
+python -m unittest tests.test_viewport_startup
+python -m unittest tests.test_viewport_interaction
+python -m unittest tests.test_viewport_mouse_orbit
+python -m unittest tests.test_workbench_ui_framework
+python -m unittest tests.test_main_window_workflows
 python scripts\report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"
 git diff --check

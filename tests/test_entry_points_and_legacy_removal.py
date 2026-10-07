@@ -8,7 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class Task81SupportedEntryPointTests(unittest.TestCase):
+class SupportedEntryPointTests(unittest.TestCase):
     def test_supported_entry_point_is_v3_only(self) -> None:
         source = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
         self.assertIn("presentation.qt.main_window", source)

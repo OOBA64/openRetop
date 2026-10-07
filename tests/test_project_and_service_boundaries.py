@@ -18,7 +18,7 @@ from regions.region_state import RegionCollection, RegionSelection
 from settings.settings_data import default_app_settings
 
 
-class Task78ProjectBoundaryTests(unittest.TestCase):
+class ProjectBoundaryTests(unittest.TestCase):
     def test_current_and_unknown_project_data_round_trip_deterministically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sample.openretop"
@@ -119,7 +119,7 @@ class Task78ProjectBoundaryTests(unittest.TestCase):
         self.assertEqual(project.selected_scene_ids, [region_node_id("region-a")])
 
 
-class Task78SettingsBoundaryTests(unittest.TestCase):
+class SettingsBoundaryTests(unittest.TestCase):
     def test_settings_repository_recovers_invalid_json_with_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
@@ -139,7 +139,7 @@ class Task78SettingsBoundaryTests(unittest.TestCase):
             self.assertEqual(first, path.read_text(encoding="utf-8"))
 
 
-class Task78ServiceAndBootstrapTests(unittest.TestCase):
+class ServiceAndBootstrapTests(unittest.TestCase):
     def test_project_service_emits_progress_without_dialogs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sample.openretop"

@@ -62,7 +62,7 @@ def _open_curve(curve_id: str, y_value: float, z_value: float):
     )
 
 
-class Task72SmoothGuideTests(unittest.TestCase):
+class ManualCurveSmoothGuideTests(unittest.TestCase):
     def test_smooth_guide_defaults_to_smooth_points_and_128_samples(self) -> None:
         points = np.asarray(
             [[0.0, 0.0, 0.0], [0.2, 0.5, 0.0], [0.5, 0.8, 0.0], [0.8, 0.5, 0.0], [1.0, 0.0, 0.0]],
@@ -205,7 +205,7 @@ class Task72SmoothGuideTests(unittest.TestCase):
         )
 
 
-class Task72ConformingLoftTests(unittest.TestCase):
+class ConformingLoftTests(unittest.TestCase):
     def setUp(self) -> None:
         self.query_service = ReferenceMeshQueryService()
 

@@ -122,7 +122,7 @@ def _camera_state(camera: object) -> dict[str, object]:
     }
 
 
-class Task82ENavigationControlTests(unittest.TestCase):
+class NavigationControlTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -340,7 +340,7 @@ class Task82ENavigationControlTests(unittest.TestCase):
             viewport.close()
 
 
-class Task82ECameraRollTests(unittest.TestCase):
+class CameraRollTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -434,7 +434,7 @@ class Task82ECameraRollTests(unittest.TestCase):
             window.close()
 
 
-class Task82EVisibleWindowsTests(unittest.TestCase):
+class NavigationVisibleWindowsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

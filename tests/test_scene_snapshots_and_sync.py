@@ -79,7 +79,7 @@ class _RecordingAdapter:
         self.removed.append(actor)
 
 
-class Task77SceneSnapshotTests(unittest.TestCase):
+class SceneSnapshotTests(unittest.TestCase):
     def test_visible_bounds_merge_transformed_categories_without_adding_origin(self) -> None:
         transform = np.identity(4)
         transform[:3, 3] = [10.0, -4.0, 2.0]
@@ -158,7 +158,7 @@ class Task77SceneSnapshotTests(unittest.TestCase):
         )
 
 
-class Task77IncrementalSyncTests(unittest.TestCase):
+class IncrementalSyncTests(unittest.TestCase):
     def test_sync_separates_geometry_style_transform_visibility_remove_and_reuse(self) -> None:
         adapter = _RecordingAdapter()
         synchronizer = SceneSynchronizer(adapter)
@@ -223,7 +223,7 @@ class Task77IncrementalSyncTests(unittest.TestCase):
         self.assertEqual(diagnostics.geometry_updated, 0)
 
 
-class Task77CameraAndPickingTests(unittest.TestCase):
+class CameraAndPickingTests(unittest.TestCase):
     def test_camera_pose_is_finite_for_point_and_flat_bounds(self) -> None:
         for bounds in (
             ((4.0, 5.0, 6.0), (4.0, 5.0, 6.0)),

@@ -14,7 +14,7 @@ from project.project_session import restore_project_state
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class Task82ReleaseCandidateTests(unittest.TestCase):
+class ReleaseCandidateTests(unittest.TestCase):
     def test_legacy_and_v3_fixtures_load_without_data_loss(self) -> None:
         repository = JsonProjectRepository()
         legacy = repository.read(ROOT / "tests" / "fixtures" / "legacy_minimal.openretop")

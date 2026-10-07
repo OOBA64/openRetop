@@ -133,7 +133,7 @@ def _logical_viewport_size(viewport: QtSceneViewport) -> tuple[float, float]:
     return ((x1 - x0) * width / ratio, (y1 - y0) * height / ratio)
 
 
-class Task82DGizmoLifecycleTests(unittest.TestCase):
+class GizmoLifecycleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -292,7 +292,7 @@ class Task82DGizmoLifecycleTests(unittest.TestCase):
             viewport.close()
 
 
-class Task82DGizmoCameraAndLayoutTests(unittest.TestCase):
+class GizmoCameraAndLayoutTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -428,7 +428,7 @@ class Task82DGizmoCameraAndLayoutTests(unittest.TestCase):
             viewport.close()
 
 
-class Task82DVisibleWindowsTests(unittest.TestCase):
+class GizmoVisibleWindowsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

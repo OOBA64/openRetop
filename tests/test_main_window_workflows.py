@@ -53,7 +53,7 @@ def _mesh_object() -> MeshObjectState:
     )
 
 
-class Task80V3UiTests(unittest.TestCase):
+class MainWindowWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

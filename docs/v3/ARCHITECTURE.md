@@ -76,5 +76,5 @@ can be built and run independently.
 `scripts/report_architecture_metrics.py --fail-on-new` and
 `tests/test_architecture.py` enforce an empty UI-import allowlist, no practical
 cycles, centralized scene-ID codecs, no legacy app imports, and release metrics.
-`tests/test_task81_legacy_boundary.py` asserts the removed Tk shell/facade stay
+`tests/test_entry_points_and_legacy_removal.py` asserts the removed Tk shell/facade stay
 absent.

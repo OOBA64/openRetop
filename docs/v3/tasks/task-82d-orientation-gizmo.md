@@ -155,8 +155,8 @@ Production:
 
 Tests and evidence:
 
-- `tests/test_task82d_orientation_gizmo.py` (new);
-- `tests/test_task82b_viewport_interaction.py` (only its factually invalid
+- `tests/test_orientation_gizmo.py` (new);
+- `tests/test_viewport_interaction.py` (only its factually invalid
   120 x 30 synthetic-surface coordinate assumption was corrected);
 - `docs/v3/artifacts/task-82d-orientation-gizmo.png` (visible acceptance);
 - `docs/v3/STATUS.md` and this report.
@@ -179,14 +179,14 @@ Environment:
 
 Required focused results on the visible Windows Qt platform:
 
-- `tests.test_task82a_viewport_startup`: 18 passed in 1.609 seconds;
-- `tests.test_task82b_viewport_interaction`: 26 passed in 3.074 seconds;
-- `tests.test_task82c_mouse_orbit`: 15 passed in 2.450 seconds;
-- `tests.test_task82d_orientation_gizmo`: 13 passed in 3.043 seconds;
-- `tests.test_task79_workbench_ui`: 9 passed in 0.360 seconds;
-- `tests.test_task80_v3_ui`: 7 passed in 1.459 seconds;
-- `tests.test_task81_legacy_boundary`: 5 passed in 0.327 seconds;
-- `tests.test_task82_release`: 5 passed in 0.004 seconds.
+- `tests.test_viewport_startup`: 18 passed in 1.609 seconds;
+- `tests.test_viewport_interaction`: 26 passed in 3.074 seconds;
+- `tests.test_viewport_mouse_orbit`: 15 passed in 2.450 seconds;
+- `tests.test_orientation_gizmo`: 13 passed in 3.043 seconds;
+- `tests.test_workbench_ui_framework`: 9 passed in 0.360 seconds;
+- `tests.test_main_window_workflows`: 7 passed in 1.459 seconds;
+- `tests.test_entry_points_and_legacy_removal`: 5 passed in 0.327 seconds;
+- `tests.test_release_fixtures_and_composition`: 5 passed in 0.004 seconds.
 
 The complete visible Windows discovery passed 556 tests with no skips in
 15.745 seconds. It ended cleanly without a traceback or late Win32 WGL error.
@@ -248,14 +248,14 @@ python -m pip install -e .\packages\workbench_ui
 $env:PYTHONPATH = "src;packages/workbench_ui"
 
 python -m compileall -q src packages\workbench_ui\workbench_ui
-python -m unittest tests.test_task82a_viewport_startup
-python -m unittest tests.test_task82b_viewport_interaction
-python -m unittest tests.test_task82c_mouse_orbit
-python -m unittest tests.test_task82d_orientation_gizmo
-python -m unittest tests.test_task79_workbench_ui
-python -m unittest tests.test_task80_v3_ui
-python -m unittest tests.test_task81_legacy_boundary
-python -m unittest tests.test_task82_release
+python -m unittest tests.test_viewport_startup
+python -m unittest tests.test_viewport_interaction
+python -m unittest tests.test_viewport_mouse_orbit
+python -m unittest tests.test_orientation_gizmo
+python -m unittest tests.test_workbench_ui_framework
+python -m unittest tests.test_main_window_workflows
+python -m unittest tests.test_entry_points_and_legacy_removal
+python -m unittest tests.test_release_fixtures_and_composition
 python scripts\report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"
 python .\src\main.py

@@ -139,7 +139,7 @@ def _ring_colors(actor: object) -> tuple[tuple[float, float, float, float], ...]
     return tuple(tuple(float(value) for value in scalars.GetTuple4(index)) for index in range(4))
 
 
-class Task82FTransformOverlayTests(unittest.TestCase):
+class TransformOverlayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

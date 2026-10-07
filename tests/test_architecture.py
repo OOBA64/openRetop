@@ -62,7 +62,7 @@ class ArchitectureBaselineTests(unittest.TestCase):
 
         self.assertEqual(application_violations, [])
 
-    def test_task76_controllers_state_and_support_do_not_import_presentation(self) -> None:
+    def test_controllers_state_and_support_do_not_import_presentation(self) -> None:
         application_root = ROOT / "src" / "application"
         expected_controllers = {
             "analysis_controller.py",

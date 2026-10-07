@@ -202,10 +202,10 @@ Production:
 
 Tests and evidence:
 
-- `tests/test_task82f_transform_overlays.py`: grouped coverage for all 46
+- `tests/test_transform_overlays.py`: grouped coverage for all 46
   required idle, Move, Rotate, artifact, framing, camera, lifecycle, and visible
   Win32 requirements;
-- `tests/test_task82b_viewport_interaction.py`: updated obsolete single-ring
+- `tests/test_viewport_interaction.py`: updated obsolete single-ring
   and eager-idle-prop expectations for the new presentation contract;
 - seven inspected screenshots under `docs/v3/artifacts/task-82f/`;
 - `docs/v3/STATUS.md` and this report.
@@ -284,16 +284,16 @@ python -m pip install -e .\packages\workbench_ui
 $env:PYTHONPATH = "src;packages/workbench_ui"
 
 python -m compileall -q src packages\workbench_ui\workbench_ui
-python -m unittest tests.test_task82a_viewport_startup
-python -m unittest tests.test_task82b_viewport_interaction
-python -m unittest tests.test_task82c_mouse_orbit
-python -m unittest tests.test_task82d_orientation_gizmo
-python -m unittest tests.test_task82e_navigation_widget
-python -m unittest tests.test_task82f_transform_overlays
-python -m unittest tests.test_task79_workbench_ui
-python -m unittest tests.test_task80_v3_ui
-python -m unittest tests.test_task81_legacy_boundary
-python -m unittest tests.test_task82_release
+python -m unittest tests.test_viewport_startup
+python -m unittest tests.test_viewport_interaction
+python -m unittest tests.test_viewport_mouse_orbit
+python -m unittest tests.test_orientation_gizmo
+python -m unittest tests.test_navigation_widget
+python -m unittest tests.test_transform_overlays
+python -m unittest tests.test_workbench_ui_framework
+python -m unittest tests.test_main_window_workflows
+python -m unittest tests.test_entry_points_and_legacy_removal
+python -m unittest tests.test_release_fixtures_and_composition
 python scripts\report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"
 python .\src\main.py

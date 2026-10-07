@@ -150,7 +150,7 @@ def _find_tree_item(tree: object, node_id: str) -> object | None:
     return None
 
 
-class Task82BPointerRoutingTests(unittest.TestCase):
+class PointerRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -378,7 +378,7 @@ class Task82BPointerRoutingTests(unittest.TestCase):
             window.close()
 
 
-class Task82BSceneTreeTests(unittest.TestCase):
+class SceneTreeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -596,7 +596,7 @@ class Task82BSceneTreeTests(unittest.TestCase):
             )
 
 
-class Task82BOverlayTests(unittest.TestCase):
+class OverlayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

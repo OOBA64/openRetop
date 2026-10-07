@@ -106,7 +106,7 @@ def _project_to_qt(viewport: QtSceneViewport, point: tuple[float, float, float])
     )
 
 
-class Task82CGestureStateTests(unittest.TestCase):
+class GestureStateTests(unittest.TestCase):
     def test_state_records_button_distance_native_owner_and_selection_eligibility(self) -> None:
         gesture = PointerGestureState(4.0)
         gesture.press(
@@ -145,7 +145,7 @@ class Task82CGestureStateTests(unittest.TestCase):
         self.assertFalse(gesture.release(4.01, 0.0).is_click)
 
 
-class Task82CRoutingTests(unittest.TestCase):
+class MouseRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
@@ -488,7 +488,7 @@ class Task82CRoutingTests(unittest.TestCase):
             window.set_project_dirty(False)
             window.close()
 
-    def test_task82b_checkbox_visibility_still_preserves_selection(self) -> None:
+    def test_checkbox_visibility_still_preserves_selection(self) -> None:
         window = _window()
         try:
             plane = window.composition.state.section_collection.planes[0]
@@ -507,7 +507,7 @@ class Task82CRoutingTests(unittest.TestCase):
             window.close()
 
 
-class Task82CVisibleWindowsTests(unittest.TestCase):
+class MouseOrbitVisibleWindowsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])

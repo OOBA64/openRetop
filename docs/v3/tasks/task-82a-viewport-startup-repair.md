@@ -231,7 +231,7 @@ evidence instead.
 - `src/presentation/qt/main_window.py`
 - `src/viewer/actor_factories.py`
 - `scripts/diagnose_vtk_viewport.py`
-- `tests/test_task82a_viewport_startup.py`
+- `tests/test_viewport_startup.py`
 - `docs/v3/tasks/task-82a-viewport-startup-repair.md`
 - `docs/v3/STATUS.md`
 
@@ -252,7 +252,7 @@ Results on Windows 10 build 26200:
 - `python -m compileall -q src packages/workbench_ui/workbench_ui`: passed.
 - Required focused suites, offscreen: 54 tests passed; the one real visible
   Windows render test was narrowly skipped as designed.
-- `python -m unittest tests.test_task82a_viewport_startup`, visible Windows:
+- `python -m unittest tests.test_viewport_startup`, visible Windows:
   18 tests passed, no skips, in 1.532 seconds.
 - `python scripts/report_architecture_metrics.py --fail-on-new`: passed with 0
   dependency violations, 0 practical cycles, and 0 duplicate action/menu
@@ -288,12 +288,12 @@ python .\scripts\diagnose_vtk_viewport.py --offscreen
 python .\src\main.py
 
 python -m compileall -q src packages\workbench_ui\workbench_ui
-python -m unittest tests.test_task77_viewport
-python -m unittest tests.test_task79_workbench_ui
-python -m unittest tests.test_task80_v3_ui
-python -m unittest tests.test_task81_legacy_boundary
-python -m unittest tests.test_task82_release
-python -m unittest tests.test_task82a_viewport_startup
+python -m unittest tests.test_scene_snapshots_and_sync
+python -m unittest tests.test_workbench_ui_framework
+python -m unittest tests.test_main_window_workflows
+python -m unittest tests.test_entry_points_and_legacy_removal
+python -m unittest tests.test_release_fixtures_and_composition
+python -m unittest tests.test_viewport_startup
 python scripts\report_architecture_metrics.py --fail-on-new
 python -m unittest discover -s tests -p "test_*.py"
 git diff --check

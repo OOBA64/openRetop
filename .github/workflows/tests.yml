@@ -40,12 +40,12 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: >-
           python -m unittest
-          tests.test_task77_viewport
-          tests.test_task78_boundaries
-          tests.test_task79_workbench_ui
-          tests.test_task80_v3_ui
-          tests.test_task81_legacy_boundary
-          tests.test_task82_release
+          tests.test_scene_snapshots_and_sync
+          tests.test_project_and_service_boundaries
+          tests.test_workbench_ui_framework
+          tests.test_main_window_workflows
+          tests.test_entry_points_and_legacy_removal
+          tests.test_release_fixtures_and_composition
           tests.test_v3_workflow_service
 
       - name: Run accelerated mesh-query tests
@@ -83,4 +83,4 @@ jobs:
         run: |
           python -m compileall -q src packages/workbench_ui/workbench_ui
           python scripts/report_architecture_metrics.py --fail-on-new
-          python -m unittest tests.test_task77_viewport tests.test_task78_boundaries tests.test_task79_workbench_ui tests.test_task80_v3_ui tests.test_task81_legacy_boundary tests.test_task82_release tests.test_v3_workflow_service
+          python -m unittest tests.test_scene_snapshots_and_sync tests.test_project_and_service_boundaries tests.test_workbench_ui_framework tests.test_main_window_workflows tests.test_entry_points_and_legacy_removal tests.test_release_fixtures_and_composition tests.test_v3_workflow_service

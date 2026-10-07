@@ -100,7 +100,7 @@ class _FakeInteractor:
         return int(self.initialized)
 
 
-class Task82AVTKViewportStartupTests(unittest.TestCase):
+class VTKViewportStartupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
