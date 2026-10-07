@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import fields
+from dataclasses import dataclass, fields
 import logging
 from pathlib import Path
 import sys
+import threading
 from typing import Mapping
 
 import numpy as np
@@ -109,12 +110,40 @@ from workbench_ui import (
     ToolbarItem,
     ToolbarSchema,
 )
+from presentation.qt.background import InlineExecutor, TaskExecutor, ThreadedExecutor
 from presentation.qt.preferences_dialog import PreferencesDialog
 from presentation.qt.transform_overlays import transformed_object_origin
 from presentation.qt.viewport import QtSceneViewport
 
 
 _LOG = logging.getLogger(__name__)
+
+
+# Commands that build geometry (sections, CAD faces/lofts) and can take seconds.
+# With a threaded executor they run off the UI thread while the window is locked.
+HEAVY_ACTIONS = frozenset(
+    {
+        "section.compute",
+        "surface.brep_face",
+        "surface.region_brep_face",
+        "surface.brep_loft",
+        "surface.editable_brep_loft",
+        "surface.rebuild_brep",
+        "surface.rebuild_loft",
+        "surface.rebuild_four_boundary",
+    }
+)
+
+
+_IMPORT_ERRORS = (OSError, RuntimeError, ValueError)
+
+
+@dataclass(frozen=True)
+class _ModelRead:
+    """A mesh read and display-proxied on a worker thread, not yet installed."""
+
+    loaded: object
+    proxy: object
 
 
 _FILE_ACTIONS = (
@@ -139,8 +168,10 @@ class OpenRetopV3Window(ApplicationShell):
         composition: ApplicationComposition | None = None,
         *,
         parent: QWidget | None = None,
+        executor: TaskExecutor | None = None,
     ) -> None:
         self.composition = composition or create_application()
+        self._executor: TaskExecutor = executor or InlineExecutor()
         self._application_actions = create_core_action_registry()
         self._framework_actions = self._make_framework_actions()
         super().__init__(
@@ -280,6 +311,8 @@ class OpenRetopV3Window(ApplicationShell):
         action_id: str,
         payload: Mapping[str, object] | None = None,
     ) -> object:
+        if action_id.startswith("file.") and action_id != "file.quit" and self._reject_while_busy():
+            return False
         if action_id == "file.new_project":
             return self.new_project()
         if action_id == "file.open_model":
@@ -318,6 +351,14 @@ class OpenRetopV3Window(ApplicationShell):
     ) -> bool:
         if action_id in PRESENTATION_ACTION_IDS:
             return self._dispatch_view_action(action_id)
+        if self._reject_while_busy():
+            return False
+        if action_id in HEAVY_ACTIONS and self._executor.asynchronous:
+            return self._run_background(
+                self._heavy_label(action_id),
+                lambda: self._command_result(action_id, payload),
+                lambda result: self._consume_result(action_id, result),
+            )
         if action_id == "scene.rename_selected" and not payload:
             selection = self.composition.selection_controller.snapshot()
             if len(selection.ids) != 1:
@@ -362,6 +403,8 @@ class OpenRetopV3Window(ApplicationShell):
         action_id: str,
         payload: Mapping[str, object] | None = None,
     ) -> CommandResult:
+        if self._executor.busy and threading.current_thread() is threading.main_thread():
+            return CommandResult.failure(f"Busy: {self._executor.label}", status=f"Busy: {self._executor.label}")
         definition = self._application_actions.require(action_id)
         return self.composition.commands.dispatch(
             CommandRequest(
@@ -979,20 +1022,28 @@ class OpenRetopV3Window(ApplicationShell):
             )
             if units is None:
                 return False
-        try:
+        unit_code = get_unit(units).code
+        outcome = {"opened": False}
+
+        def finish(model: object) -> None:
             self._reset_state()
-            self.composition.state.units = get_unit(units).code
-            self._load_model_path(path)
-        except (OSError, RuntimeError, ValueError, SystemExit) as exc:
+            self.composition.state.units = unit_code
+            self._install_model(path, model)
+            self.current_project_path = None
+            self.composition.undo.clear()
+            self.set_project_dirty(False)
+            self._camera_request = CameraRequest.frame_all()
+            self.set_status_message(f"Loaded {path.name} ({unit_code})")
+            self.refresh()
+            outcome["opened"] = True
+
+        def fail(exc: BaseException) -> None:
             self._report_error("Model import failed", str(exc))
-            return False
-        self.current_project_path = None
-        self.composition.undo.clear()
-        self.set_project_dirty(False)
-        self._camera_request = CameraRequest.frame_all()
-        self.set_status_message(f"Loaded {path.name} ({self.composition.state.units})")
-        self.refresh()
-        return True
+
+        started = self._run_background(
+            f"Loading {path.name}", self._model_reader(path), finish, fail, error_types=_IMPORT_ERRORS
+        )
+        return started if self._executor.asynchronous else outcome["opened"]
 
     def _ask_units(self, title: str, prompt: str, current: str) -> str | None:
         labels = [f"{get_unit(code).label} ({code})" for code in UNIT_CODES]
@@ -1031,16 +1082,36 @@ class OpenRetopV3Window(ApplicationShell):
         if not result.success or result.project is None:
             self._report_error("Project open failed", result.errors[0].message if result.errors else "Project could not be opened")
             return False
-        self._reset_state()
-        mesh_warning = None
-        if result.resolved_mesh_path is not None:
-            if result.resolved_mesh_path.exists():
-                try:
-                    self._load_model_path(result.resolved_mesh_path)
-                except (OSError, RuntimeError, ValueError, SystemExit) as exc:
-                    mesh_warning = f"Referenced mesh could not be loaded: {exc}"
-            else:
-                mesh_warning = f"Referenced mesh does not exist: {result.resolved_mesh_path}"
+        mesh_path = result.resolved_mesh_path
+        read_model = None if mesh_path is None or not mesh_path.exists() else self._model_reader(mesh_path)
+
+        def read() -> tuple[object | None, str | None]:
+            if mesh_path is None:
+                return None, None
+            if read_model is None:
+                return None, f"Referenced mesh does not exist: {mesh_path}"
+            try:
+                return read_model(), None
+            except _IMPORT_ERRORS as exc:
+                return None, f"Referenced mesh could not be loaded: {exc}"
+
+        outcome = {"opened": False}
+
+        def finish(payload: object) -> None:
+            model, mesh_warning = payload  # type: ignore[misc]
+            self._reset_state()
+            if model is not None:
+                self._install_model(mesh_path, model)
+            self._finish_open_project(path, result, mesh_warning)
+            outcome["opened"] = True
+
+        def fail(exc: BaseException) -> None:
+            self._report_error("Project open failed", str(exc))
+
+        started = self._run_background(f"Opening {Path(path).name}", read, finish, fail)
+        return started if self._executor.asynchronous else outcome["opened"]
+
+    def _finish_open_project(self, path: Path, result: object, mesh_warning: str | None) -> None:
         restored = restore_project_state(self.composition.state, result.project, settings=self.composition.settings)
         if restored.selected_scene_ids:
             self.composition.selection_controller.select_nodes(
@@ -1060,16 +1131,73 @@ class OpenRetopV3Window(ApplicationShell):
         self._camera_request = CameraRequest.frame_all()
         self.set_status_message(f"Opened {result.project.name}" + (f" with {len(warnings)} warning(s)" if warnings else ""))
         self.refresh()
+
+    def _model_reader(self, path: Path):
+        """Return a callable that reads ``path`` and builds its display proxy.
+
+        The callable touches no widgets or application state, so it can run on a
+        worker thread. Settings are read here, on the calling thread.
+        """
+
+        quality = normalize_proxy_quality(self.composition.settings.import_settings.default_proxy_quality)
+        mesh_import = self.composition.mesh_import
+        display_proxy = self.composition.display_proxy
+
+        def read() -> _ModelRead:
+            loaded = mesh_import.import_mesh(path)
+            return _ModelRead(loaded, display_proxy.build(loaded.mesh, quality=quality))
+
+        return read
+
+    def _run_background(
+        self,
+        label: str,
+        work,
+        on_done,
+        on_error=None,
+        *,
+        error_types: tuple[type[BaseException], ...] = (Exception,),
+    ) -> bool:
+        """Run ``work`` through the executor, then ``on_done(result)`` on the UI thread.
+
+        Returns False without doing anything when another task is running.
+        """
+
+        if self._executor.busy:
+            self.set_status_message(f"Busy: {self._executor.label}")
+            return False
+
+        def done(result: object) -> None:
+            self._close_progress()
+            on_done(result)
+
+        def failed(exc: BaseException) -> None:
+            self._close_progress()
+            if on_error is not None and isinstance(exc, error_types):
+                on_error(exc)
+            else:
+                raise exc
+
+        if self._executor.asynchronous:
+            self._progress(ProgressEvent("background", "start", label))
+        return self._executor.submit(label, work, done, failed)
+
+    def _reject_while_busy(self) -> bool:
+        if not self._executor.busy:
+            return False
+        self.set_status_message(f"Busy: {self._executor.label}")
         return True
 
-    def _load_model_path(self, path: Path) -> None:
-        loaded = self.composition.mesh_import.import_mesh(path, progress=self._progress)
-        proxy = self.composition.display_proxy.build(
-            loaded.mesh,
-            quality=normalize_proxy_quality(self.composition.settings.import_settings.default_proxy_quality),
-            progress=self._progress,
-        )
-        self._close_progress()
+    @staticmethod
+    def _heavy_label(action_id: str) -> str:
+        if action_id == "section.compute":
+            return "Computing section"
+        if action_id.startswith("surface.rebuild"):
+            return "Rebuilding surface"
+        return "Building surface"
+
+    def _install_model(self, path: Path, model: _ModelRead) -> None:
+        loaded, proxy = model.loaded, model.proxy
         bounds_min = np.min(loaded.mesh.vertices, axis=0) if len(loaded.mesh.vertices) else np.zeros(3)
         bounds_max = np.max(loaded.mesh.vertices, axis=0) if len(loaded.mesh.vertices) else np.zeros(3)
         self.composition.state.mesh_object = MeshObjectState(
@@ -1094,19 +1222,23 @@ class OpenRetopV3Window(ApplicationShell):
         mesh = self.composition.state.mesh_object
         if mesh is None:
             return False
-        proxy = self.composition.display_proxy.build(
-            mesh.source_mesh,
-            quality=normalize_proxy_quality(self.composition.settings.import_settings.default_proxy_quality),
-            progress=self._progress,
+        quality = normalize_proxy_quality(self.composition.settings.import_settings.default_proxy_quality)
+        source = mesh.source_mesh
+        display_proxy = self.composition.display_proxy
+
+        def apply(proxy: object) -> None:
+            mesh.display_mesh = proxy.display_mesh
+            mesh.display_triangle_count = proxy.display_triangle_count
+            mesh.display_proxy_enabled = proxy.proxy_enabled
+            mesh.display_reduction_percent = proxy.reduction_percent
+            mesh.proxy_quality = proxy.quality
+            self.refresh()
+
+        return self._run_background(
+            "Rebuilding display mesh",
+            lambda: display_proxy.build(source, quality=quality),
+            apply,
         )
-        self._close_progress()
-        mesh.display_mesh = proxy.display_mesh
-        mesh.display_triangle_count = proxy.display_triangle_count
-        mesh.display_proxy_enabled = proxy.proxy_enabled
-        mesh.display_reduction_percent = proxy.reduction_percent
-        mesh.proxy_quality = proxy.quality
-        self.refresh()
-        return True
 
     def save_project(self, *, as_dialog: bool = False) -> bool:
         path = self.current_project_path
@@ -1249,6 +1381,10 @@ class OpenRetopV3Window(ApplicationShell):
         return True
 
     def closeEvent(self, event: object) -> None:
+        if self._executor.busy:
+            self.set_status_message(f"Busy: {self._executor.label} - wait for it to finish before closing.")
+            event.ignore()
+            return
         if not self._confirm_discard("exiting"):
             event.ignore()
             return
@@ -1534,7 +1670,7 @@ def replace_dirty(result: CommandResult) -> CommandResult:
 
 def run_v3_app() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    window = OpenRetopV3Window()
+    window = OpenRetopV3Window(executor=ThreadedExecutor())
     window.show()
     if not window.viewport.start() and window.viewport.last_error:
         window._on_viewport_failure(window.viewport.last_error)

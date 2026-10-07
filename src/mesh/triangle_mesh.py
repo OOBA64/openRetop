@@ -89,8 +89,7 @@ class TriangleMeshData:
             self.vertex_normals = normals
             return
 
-        for face_index, triangle in enumerate(self.triangles):
-            normals[triangle] += self.triangle_normals[face_index]
+        np.add.at(normals, self.triangles.reshape(-1), np.repeat(self.triangle_normals, 3, axis=0))
 
         lengths = np.linalg.norm(normals, axis=1)
         valid = lengths > 1e-12

@@ -24,31 +24,58 @@ class RegionGrowResult:
 
 
 def build_triangle_adjacency(mesh: TriangleMeshData) -> MeshAdjacency:
-    """Build edge-sharing triangle adjacency for a mesh."""
+    """Build edge-sharing triangle adjacency for a mesh.
+
+    Triangles sharing an edge are neighbours; an edge shared by more than two
+    triangles (non-manifold) connects all of them. Neighbour tuples are sorted.
+    """
 
     triangles = _triangle_array(mesh)
     triangle_count = int(len(triangles))
     if triangle_count == 0:
         return tuple()
 
-    neighbors: list[set[int]] = [set() for _ in range(triangle_count)]
-    edge_to_triangles: dict[tuple[int, int], list[int]] = {}
-    for triangle_index, triangle in enumerate(triangles):
-        for edge in (
-            (int(triangle[0]), int(triangle[1])),
-            (int(triangle[1]), int(triangle[2])),
-            (int(triangle[2]), int(triangle[0])),
-        ):
-            edge_to_triangles.setdefault(tuple(sorted(edge)), []).append(triangle_index)
+    vertex_span = int(triangles.max()) + 1
+    edge_ends = triangles[:, [0, 1, 1, 2, 2, 0]].reshape((-1, 2))
+    low = edge_ends.min(axis=1).astype(np.int64)
+    high = edge_ends.max(axis=1).astype(np.int64)
+    edge_key = low * vertex_span + high
+    owner = np.repeat(np.arange(triangle_count), 3)
 
-    for shared_triangles in edge_to_triangles.values():
-        if len(shared_triangles) < 2:
-            continue
-        for first, second in combinations(shared_triangles, 2):
-            neighbors[first].add(second)
-            neighbors[second].add(first)
+    order = np.argsort(edge_key, kind="stable")
+    key_sorted = edge_key[order]
+    owner_sorted = owner[order]
+    same_as_next = key_sorted[:-1] == key_sorted[1:]
 
-    return tuple(tuple(sorted(triangle_neighbors)) for triangle_neighbors in neighbors)
+    first = owner_sorted[:-1][same_as_next]
+    second = owner_sorted[1:][same_as_next]
+    # Edges shared by 3+ triangles also pair non-adjacent entries of a run.
+    run_start = np.flatnonzero(np.concatenate([[True], ~same_as_next]))
+    run_length = np.diff(np.concatenate([run_start, [len(key_sorted)]]))
+    extra_first: list[int] = []
+    extra_second: list[int] = []
+    for start, length in zip(run_start[run_length > 2], run_length[run_length > 2]):
+        members = owner_sorted[start : start + length].tolist()
+        for a, b in combinations(members, 2):
+            extra_first.append(a)
+            extra_second.append(b)
+    if extra_first:
+        first = np.concatenate([first, extra_first])
+        second = np.concatenate([second, extra_second])
+
+    keep = first != second
+    pair_a = np.concatenate([first[keep], second[keep]])
+    pair_b = np.concatenate([second[keep], first[keep]])
+    if len(pair_a) == 0:
+        return tuple(() for _ in range(triangle_count))
+    pair_order = np.lexsort((pair_b, pair_a))
+    pair_a, pair_b = pair_a[pair_order], pair_b[pair_order]
+    distinct = np.concatenate([[True], (pair_a[1:] != pair_a[:-1]) | (pair_b[1:] != pair_b[:-1])])
+    pair_a, pair_b = pair_a[distinct], pair_b[distinct]
+
+    offsets = np.searchsorted(pair_a, np.arange(triangle_count + 1)).tolist()
+    flat = pair_b.tolist()
+    return tuple(tuple(flat[offsets[i] : offsets[i + 1]]) for i in range(triangle_count))
 
 
 def cached_triangle_adjacency(mesh: TriangleMeshData) -> MeshAdjacency:
