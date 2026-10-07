@@ -16,10 +16,12 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QInputDialog,
     QLabel,
     QMessageBox,
     QProgressDialog,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -259,7 +261,14 @@ class OpenRetopV3Window(ApplicationShell):
         properties_layout.setContentsMargins(0, 0, 0, 0)
         properties_layout.addWidget(self.next_steps)
         properties_layout.addWidget(self.inspector)
-        self.add_panel(PanelDescriptor("properties", "Properties", area="right"), properties)
+        # Scrolls instead of growing: a tall panel must never stretch the main window.
+        properties_scroll = QScrollArea(self)
+        properties_scroll.setObjectName("properties_scroll")
+        properties_scroll.setWidgetResizable(True)
+        properties_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        properties_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        properties_scroll.setWidget(properties)
+        self.add_panel(PanelDescriptor("properties", "Properties", area="right"), properties_scroll)
         self.setAcceptDrops(True)
         self.add_panel(PanelDescriptor("commands", "Command Palette", area="bottom", visible=False), self.palette)
         diagnostics = QWidget(self)
@@ -490,7 +499,10 @@ class OpenRetopV3Window(ApplicationShell):
             if relocked.status:
                 self.set_status_message(relocked.status)
         if action_id == "transform.pointer":
-            self._render_scene()  # panels catch up when the transform is confirmed or cancelled
+            # Only the 3D scene and the live transform values: the rest of the panels catch up
+            # when the transform is confirmed or cancelled (rebuilding them made drags stutter).
+            self._render_scene()
+            self._show_live_transform_values()
         else:
             self.refresh()
 
@@ -573,6 +585,19 @@ class OpenRetopV3Window(ApplicationShell):
         if ordinary_ids:
             self.composition.selection_controller.select_nodes(ordinary_ids)
         self._dispatch_framework_action(action_id)
+
+    def _show_live_transform_values(self) -> None:
+        state = self.composition.state
+        values: dict[str, object] = {}
+        if state.mesh_object is not None:
+            values["location"] = tuple(float(value) for value in state.mesh_object.location)
+            values["rotation"] = tuple(float(value) for value in state.mesh_object.rotation)
+        session = state.transform_state
+        if session is not None and session.section_plane_id is not None:
+            plane = next((item for item in state.section_collection.planes if item.id == session.section_plane_id), None)
+            if plane is not None:
+                values["section_offset"] = float(plane.offset)
+        self.inspector.show_values(values)
 
     def _update_transform(self, widget_position: tuple[int, int]) -> CommandResult:
         return self.composition.transform_controller.update(
@@ -1038,8 +1063,10 @@ class OpenRetopV3Window(ApplicationShell):
 
         state = self.composition.state
         has_selection = bool(self._scene_model.selected_ids)
-        self.inspector.setVisible(has_selection)
-        self.next_steps.setVisible(not has_selection)
+        # hide the outgoing panel first: both visible at once, even briefly, grew the window
+        outgoing, incoming = (self.next_steps, self.inspector) if has_selection else (self.inspector, self.next_steps)
+        outgoing.setVisible(False)
+        incoming.setVisible(True)
         if has_selection:
             return
         guidance = build_guidance(

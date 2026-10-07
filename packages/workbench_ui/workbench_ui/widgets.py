@@ -178,6 +178,62 @@ class SceneTreeWidget(QWidget):
             self.context_action_requested.emit(str(selected.data()), context)
 
 
+AXIS_LABEL_COLORS = ("#e5484d", "#46a758", "#3e8ef7")  # X, Y, Z: the viewport's axis colours
+
+
+class VectorEditor(QWidget):
+    """Three labelled number boxes (X, Y, Z), stacked like Blender's transform panel."""
+
+    committed = Signal(object)
+
+    def __init__(self, value: object, decimals: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        self.boxes: list[QDoubleSpinBox] = []
+        for name, color in zip(("X", "Y", "Z"), AXIS_LABEL_COLORS):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            label = QLabel(name, self)
+            label.setObjectName(f"vector_axis_{name.lower()}")
+            label.setStyleSheet(f"color: {color}; font-weight: 600;")
+            label.setFixedWidth(12)
+            box = QDoubleSpinBox(self)
+            box.setObjectName(f"vector_{name.lower()}")
+            box.setDecimals(decimals)
+            box.setRange(-1.0e12, 1.0e12)
+            box.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
+            box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            box.setKeyboardTracking(False)
+            box.editingFinished.connect(self._emit)
+            row.addWidget(label)
+            row.addWidget(box, 1)
+            layout.addLayout(row)
+            self.boxes.append(box)
+        self.set_value(value)
+
+    def value(self) -> tuple[float, float, float]:
+        return (self.boxes[0].value(), self.boxes[1].value(), self.boxes[2].value())
+
+    def set_value(self, value: object) -> None:
+        try:
+            components = [float(item) for item in value]  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            return
+        if len(components) != 3:
+            return
+        for box, component in zip(self.boxes, components):
+            if box.hasFocus():
+                continue  # never overwrite what the user is typing
+            box.blockSignals(True)
+            box.setValue(component)
+            box.blockSignals(False)
+
+    def _emit(self) -> None:
+        self.committed.emit(self.value())
+
+
 class PropertyInspectorWidget(QWidget):
     """Editor factory for live and apply/cancel property models."""
 
@@ -201,6 +257,27 @@ class PropertyInspectorWidget(QWidget):
     def set_model(self, model: PropertyInspectorModel) -> None:
         self.model = model
         self.refresh()
+
+    def show_values(self, values: dict[str, object]) -> None:
+        """Update shown values in place (no rebuild, no signals), e.g. live during a drag.
+
+        Fields that are not shown are ignored; a box the user is typing in is left alone.
+        """
+
+        for field_id, value in values.items():
+            editor = self._editors.get(field_id)
+            if isinstance(editor, VectorEditor):
+                editor.set_value(value)
+            elif isinstance(editor, QDoubleSpinBox) and not editor.hasFocus():
+                try:
+                    number = float(value)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    continue
+                editor.blockSignals(True)
+                editor.setValue(number)
+                editor.blockSignals(False)
+            elif isinstance(editor, QLabel):
+                editor.setText("" if value is None else str(value))
 
     def refresh(self) -> None:
         while self.layout.count():
@@ -295,12 +372,13 @@ class PropertyInspectorWidget(QWidget):
                 )
             )
             editor = number
+        elif field.editor == "vector":
+            vector = VectorEditor(value, field.decimals, self)
+            vector.committed.connect(lambda next_value, current=field_id: self._commit(current, next_value))
+            editor = vector
         else:
             line = QLineEdit(self)
-            if field.editor == "vector" and isinstance(value, (tuple, list)):
-                line.setText(", ".join(str(component) for component in value))
-            else:
-                line.setText("" if value is None else str(value))
+            line.setText("" if value is None else str(value))
             line.editingFinished.connect(
                 lambda current=field_id, widget=line, kind=field.editor: self._commit(
                     current, self._line_value(widget.text(), kind)

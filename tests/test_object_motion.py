@@ -168,6 +168,32 @@ class ObjectMotionTests(unittest.TestCase):
             self.assertTrue(window._dispatch_framework_action("transform.confirm"))
         inspector.assert_called()
 
+    def test_the_properties_panel_follows_the_drag_without_being_rebuilt(self) -> None:
+        from workbench_ui.widgets import VectorEditor
+
+        window = self._window()
+        height = int(window.viewport.interactor.height())
+        start = (30, max(height // 2, 1))
+        self._start(window, "transform.move", start)
+        self._motion(window, *start)
+        location_editor = window.inspector._editors["location"]
+        self.assertIsInstance(location_editor, VectorEditor)
+        with patch.object(window.inspector, "set_model") as rebuild:
+            self._motion(window, start[0] + 45, start[1] - 20)
+            rebuild.assert_not_called()
+        np.testing.assert_allclose(location_editor.value(), self._location(window), atol=1e-3)
+        self.assertGreater(abs(location_editor.value()[0]), 1e-3)
+
+    def test_the_properties_panel_scrolls_instead_of_stretching_the_window(self) -> None:
+        from PySide6.QtWidgets import QScrollArea
+
+        window = self._window()  # the scan is selected: the inspector shows its transform
+        self.assertIsInstance(window._docks["properties"].widget(), QScrollArea)
+        tall_panel = window.inspector.minimumSizeHint().height()
+        self.assertLess(window.minimumSizeHint().height(), 300)
+        self.assertGreater(tall_panel, 250)  # the panel itself is tall; the window does not care
+        self.assertFalse(window.next_steps.isVisible() and window.inspector.isVisible())
+
     # -- the grid must not rescale during a drag --------------------------------------
 
     def test_the_grid_keeps_its_size_while_an_object_is_dragged_far_away(self) -> None:
