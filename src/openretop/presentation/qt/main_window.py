@@ -375,6 +375,9 @@ class OpenRetopV3Window(ApplicationShell):
             return self._dispatch_view_action(action_id)
         if self._reject_while_busy():
             return False
+        if action_id in {"transform.move", "transform.rotate"} and not (payload and "mouse_start" in payload):
+            # Start from where the pointer is now (as the original app did), not from (0, 0).
+            payload = {**(payload or {}), "mouse_start": self.viewport.last_pointer_position}
         if action_id in HEAVY_ACTIONS and self._executor.asynchronous:
             return self._run_background(
                 self._heavy_label(action_id),
@@ -444,7 +447,10 @@ class OpenRetopV3Window(ApplicationShell):
         if result.dirty:
             self.set_project_dirty(True)
         self._sync_tool_mode(action_id, result)
-        self.refresh()
+        if action_id == "transform.pointer":
+            self._render_scene()  # panels catch up when the transform is confirmed or cancelled
+        else:
+            self.refresh()
 
     def _sync_tool_mode(self, action_id: str, result: CommandResult) -> None:
         if not result.success:
@@ -524,9 +530,9 @@ class OpenRetopV3Window(ApplicationShell):
         if self.composition.transform_controller.active:
             if event_name == "motion":
                 result = self.composition.transform_controller.update(
-                    (x_position, y_position),
+                    self.viewport.to_widget_position(x_position, y_position),
                     camera=self.viewport.camera_vectors(),
-                    model_bounds=self.viewport.model_bounds(),
+                    model_bounds=None,  # the model's own bounds: scene bounds grow as it moves, which accelerated the drag
                     fine=bool(
                         self.viewport.interactor is not None
                         and self.viewport.interactor.GetShiftKey()
@@ -570,6 +576,11 @@ class OpenRetopV3Window(ApplicationShell):
                 result = self.composition.selection_controller.select_nodes((node_id,))
                 self.set_status_message(result.status or "Selection changed")
                 self.refresh()
+        elif self.composition.selection_controller.snapshot().ids:
+            # A plain click on empty space deselects, as in every other CAD viewport.
+            self.composition.selection_controller.select_nodes(())
+            self.set_status_message("Selection cleared")
+            self.refresh()
 
     def _route_manual_pointer(
         self,
@@ -838,6 +849,18 @@ class OpenRetopV3Window(ApplicationShell):
         self._sync_tree_selection_from_controller()
         self.scene_tree.refresh()
         self.inspector.set_model(PropertyInspectorModel(self._inspector_fields()))
+        self._render_scene()
+        self._sync_action_state()
+        self._refresh_next_steps()
+
+    def _render_scene(self) -> None:
+        """Rebuild the scene snapshot and render it, leaving the side panels alone.
+
+        A Move/Rotate drag only changes the 3D scene, so it calls this directly: rebuilding
+        the tree, inspector and next-steps panel on every pointer event cost about 30 ms of
+        Qt layout each time and made the drag stutter.
+        """
+
         previews = self._surface_previews()
         active_surface_id = (
             self.composition.state.surface_collection.active_surface_id
@@ -871,8 +894,6 @@ class OpenRetopV3Window(ApplicationShell):
         if diagnostics is None and not self.viewport.is_ready:
             self._diagnostics.setText("Viewport initialization pending; latest scene snapshot retained.")
         self._camera_request = CameraRequest()
-        self._sync_action_state()
-        self._refresh_next_steps()
 
     def _refresh_next_steps(self) -> None:
         """Nothing selected: show the Model & Next steps panel; otherwise the inspector."""

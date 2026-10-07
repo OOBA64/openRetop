@@ -12,6 +12,7 @@ from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
 
 from openretop.application.transform_controller import CameraVectors
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
+from openretop.presentation.qt.selection_overlay import SelectionBoxOverlay
 from openretop.presentation.qt.transform_overlays import (
     TransformOverlayController,
     TransformOverlayDiagnosticState,
@@ -86,10 +87,12 @@ class QtSceneViewport(VTKViewportWidget):
         self._grid_actor: object | None = None
         self._grid_signature: tuple[float, float, float] | None = None
         self.transform_overlays = TransformOverlayController(self.renderer)
+        self.selection_box = SelectionBoxOverlay(self.renderer)
         self._pointer_gesture = PointerGestureState()
         self._left_capture_owner: str | None = None
         self._last_pointer_release_was_click = True
         self._pointer_event_count = 0
+        self._last_pointer: tuple[int, int] | None = None  # Qt widget coordinates (y down)
         self._pick_count = 0
         self._qt_filter_installed = False
         self.navigation_cluster = ViewportNavigationCluster(
@@ -225,6 +228,27 @@ class QtSceneViewport(VTKViewportWidget):
             return SceneObjectPickResult(hit=False)
         return self.picking.pick_scene_object(x_position, y_position)
 
+    @property
+    def last_pointer_position(self) -> tuple[int, int]:
+        """The last pointer position seen over the viewport, in widget coordinates (y down).
+
+        Falls back to the viewport centre before the pointer has ever been over it. This is
+        the reference a Move/Rotate transform starts from, so the object does not jump on the
+        first mouse movement.
+        """
+
+        if self._last_pointer is not None:
+            return self._last_pointer
+        width = 0 if self.interactor is None else int(self.interactor.width())
+        height = 0 if self.interactor is None else int(self.interactor.height())
+        return (width // 2, height // 2)
+
+    def to_widget_position(self, x_position: int, y_position: int) -> tuple[int, int]:
+        """Convert VTK display coordinates (y up) to widget coordinates (y down)."""
+
+        height = 0 if self.interactor is None else int(self.interactor.height())
+        return (int(x_position), max(height - int(y_position) - 1, 0))
+
     def camera_vectors(self) -> CameraVectors | None:
         if not self.is_ready or self.renderer is None:
             return None
@@ -296,6 +320,7 @@ class QtSceneViewport(VTKViewportWidget):
             self.interactor.removeEventFilter(self)
             self._qt_filter_installed = False
         self.transform_overlays.close()
+        self.selection_box.close()
         self.navigation_cluster.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
@@ -325,6 +350,9 @@ class QtSceneViewport(VTKViewportWidget):
 
         if watched is not self.interactor:
             return super().eventFilter(watched, event)
+        if isinstance(event, QMouseEvent):
+            point = event.position()
+            self._last_pointer = (int(round(point.x())), int(round(point.y())))
         if event.type() == QEvent.Leave:
             self.navigation_cluster.leave()
         elif isinstance(event, QMouseEvent) and self.navigation_cluster.handle_mouse_event(event):
@@ -497,11 +525,16 @@ class QtSceneViewport(VTKViewportWidget):
         self._grid_actor.SetVisibility(bool(snapshot.display.get("show_grid", True)))
         bounds = snapshot.visible_bounds()
         extent = _overlay_extent(bounds)
+        if snapshot.active_transform_mode and self._grid_signature is not None:
+            # The grid is sized from the scene bounds, so dragging an object away would
+            # rescale it every frame and look like the camera moving. Hold it still.
+            extent = self._grid_signature[0]
         signature = (extent, 0.0, 0.0)
         if signature != self._grid_signature:
             _set_grid_geometry(self._grid_actor, extent)
             self._grid_signature = signature
 
+        self.selection_box.update(snapshot)
         if not self.transform_overlays.update(snapshot):
             diagnostics = self.transform_overlays.diagnostics()
             if diagnostics.last_error:
@@ -582,6 +615,7 @@ class QtSceneViewport(VTKViewportWidget):
             ("grid", self._grid_actor, 0, self.renderer),
             ("transform_axes", self._transform_axes_actor, 0, self.renderer),
             ("rotation_ring", self._rotation_ring_actor, 0, self.renderer),
+            ("selection_box", self.selection_box.actor, 0, self.renderer),
             (
                 "view_cube",
                 self.navigation_cluster.overlay_actor,
@@ -608,6 +642,7 @@ class QtSceneViewport(VTKViewportWidget):
             ("grid", self._grid_actor),
             ("transform_axes", self._transform_axes_actor),
             ("rotation_ring", self._rotation_ring_actor),
+            ("selection_box", self.selection_box.actor),
             ("view_cube", self.navigation_cluster.overlay_actor),
         ):
             if actor is not None:
@@ -772,6 +807,7 @@ def _semantic_category(role: str) -> str:
         "transform_axes": "transform_axes",
         "rotation_ring": "rotation_ring",
         "view_cube": "view_cube",
+        "selection_box": "selection_overlay",
     }.get(prefix, "unidentified")
 
 

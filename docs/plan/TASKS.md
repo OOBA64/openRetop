@@ -69,6 +69,22 @@ Principles and findings: [UX_AUDIT.md](UX_AUDIT.md).
 
 ---
 
+## Bugs found by using the app
+
+Reported by the project owner after running the v3 viewport. A/B-measured against Codex's original v3 (`c2ed867`) and my branch: every item below except BUG-08 is **inherited from the v3 viewport, not introduced by the refactor**. The original (Tk) app on `main` behaves correctly in these respects, so it is the reference.
+
+| ID | Sev | Status | Finding | Fix / test |
+|---|---|---|---|---|
+| BUG-01 | S1 | fixed | Move/Rotate started with the pointer reference at (0, 0) (`payload.get("mouse_start", (0, 0))` and nothing supplied it), so the object jumped by the pointer's absolute screen position on the first mouse move (measured: 207 degrees of spin and a 4-8x overshoot). The Tk app uses `_last_viewport_mouse`. | Viewport tracks `last_pointer_position`; the window passes it as `mouse_start`. `tests/test_object_motion.py` |
+| BUG-02 | S1 | fixed | Vertical axis inverted: VTK pointer coordinates are y-up but the transform maths (ported from Tk) is y-down, so dragging down moved the object up. | `to_widget_position` converts before the transform; test fails if the flip is removed. |
+| BUG-03 | S1 | fixed | Every pointer event during a drag rebuilt the whole UI (tree, inspector, next-steps) - 30-65 ms per event, the "stutter". VTK rendering itself is about 2 ms. | `_render_scene()` re-renders only the 3D scene during a drag; panels refresh on confirm/cancel. 32 ms to 3 ms per event. |
+| BUG-04 | S2 | fixed | The grid is sized from the scene bounds, so dragging an object away rescaled the grid every frame, which looked like the camera moving (the camera itself does not move; verified). | Grid size is held while a transform is active. |
+| BUG-05 | S2 | fixed | Drag sensitivity used the scene's visible bounds, which grow as the object moves, so the drag accelerated. Tk used the model's own bounds. | Uses the model's own bounds. |
+| BUG-06 | S1 | fixed | No selection bounding box (the Tk app draws one around the selected scan), so selecting gave no visible feedback. | `presentation/qt/selection_overlay.py`; follows the object while it moves. |
+| BUG-07 | S2 | fixed | Clicking empty space did not deselect. | A click (not a drag) on empty space clears the selection. |
+| BUG-08 | S3 | open | The white square in the middle of the grid is the default **Section Plane 1** outline. It is drawn at full white and reads as a stray object. Needs a decision: dimmer/translucent, or drawn only when the Sections step is active (UX-10). | |
+| BUG-09 | S3 | open | While dragging, the Properties panel still shows the old Location/Rotation until the transform is confirmed (a consequence of BUG-03's fix; the status bar shows the live delta). | Update just the two transform fields during a drag if it is missed. |
+
 ## Track R - architecture roadmap (from the ChatGPT roadmap, re-sequenced)
 
 Rationale and disagreements: [ROADMAP_REVIEW.md](ROADMAP_REVIEW.md). None of these may
