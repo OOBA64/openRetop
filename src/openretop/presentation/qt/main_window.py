@@ -137,6 +137,19 @@ HEAVY_ACTIONS = frozenset(
 )
 
 
+# Commands that engage the Section tool, which is what makes the section planes visible.
+_SECTION_TOOL_ACTIONS = frozenset(
+    {
+        "section.add_plane",
+        "section.compute",
+        "section.delete_plane",
+        "section.set_axis",
+        "section.set_offset",
+        "section.toggle_plane_visibility",
+    }
+)
+
+
 _IMPORT_ERRORS = (OSError, RuntimeError, ValueError)
 MESH_SUFFIXES = frozenset({".stl", ".obj", ".ply"})
 PROJECT_SUFFIX = ".openretop"
@@ -193,6 +206,7 @@ class OpenRetopV3Window(ApplicationShell):
             self.composition.settings.ui.window_height,
         )
         self._camera_request = CameraRequest.frame_all()
+        self._section_tool = False  # the Section tool is engaged: section planes are shown
         self.current_project_path: Path | None = None
         self.project_dirty = False
         self._scene_model = SceneTreeModel()
@@ -375,6 +389,8 @@ class OpenRetopV3Window(ApplicationShell):
             return self._dispatch_view_action(action_id)
         if self._reject_while_busy():
             return False
+        if action_id in _SECTION_TOOL_ACTIONS:
+            self._enter_section_tool()
         if action_id in {"transform.move", "transform.rotate"} and not (payload and "mouse_start" in payload):
             # Start from where the pointer is now (as the original app did), not from (0, 0).
             payload = {**(payload or {}), "mouse_start": self.viewport.last_pointer_position}
@@ -455,6 +471,8 @@ class OpenRetopV3Window(ApplicationShell):
     def _sync_tool_mode(self, action_id: str, result: CommandResult) -> None:
         if not result.success:
             return
+        if action_id in {"manual_curve.create", "manual_curve.edit", "region.start"}:
+            self._section_tool = False
         if action_id in {"manual_curve.create", "manual_curve.edit"}:
             self.tool_modes.enter(
                 "manual_curve",
@@ -473,6 +491,9 @@ class OpenRetopV3Window(ApplicationShell):
         ids = tuple(getattr(selection, "ids", ()))
         feature_ids = [value for value in ids if _is_feature_node(value)]
         ordinary_ids = [value for value in ids if not _is_feature_node(value)]
+        self._section_tool = any(
+            value == NODE_SECTION_PLANES or section_plane_id_from_node(value) is not None for value in ids
+        )
         if feature_ids:
             self._activate_feature(feature_ids[0])
         result = self.composition.selection_controller.select_nodes(ordinary_ids)
@@ -573,10 +594,11 @@ class OpenRetopV3Window(ApplicationShell):
         if isinstance(pick, SceneObjectPickResult) and pick.hit:
             node_id = _node_id_for_pick(pick)
             if node_id is not None:
+                self._section_tool = section_plane_id_from_node(node_id) is not None
                 result = self.composition.selection_controller.select_nodes((node_id,))
                 self.set_status_message(result.status or "Selection changed")
                 self.refresh()
-        elif self.composition.selection_controller.snapshot().ids:
+        elif self._leave_section_tool() or self.composition.selection_controller.snapshot().ids:
             # A plain click on empty space deselects, as in every other CAD viewport.
             self.composition.selection_controller.select_nodes(())
             self.set_status_message("Selection cleared")
@@ -691,6 +713,38 @@ class OpenRetopV3Window(ApplicationShell):
             return True
         return super().eventFilter(watched, event)
 
+    def _section_planes_selected(self) -> bool:
+        ids = self.composition.selection_controller.snapshot().ids
+        return any(value == NODE_SECTION_PLANES or section_plane_id_from_node(value) is not None for value in ids)
+
+    def _section_tool_visible(self) -> bool:
+        """Section planes are drawn and listed only while the Section tool is engaged.
+
+        Engaged by Add/Compute Section (and the other plane commands) or by selecting a plane;
+        left again with Esc, by starting another tool, or by selecting something else.
+        """
+
+        return self.composition.state.mesh_object is not None and (self._section_tool or self._section_planes_selected())
+
+    def _enter_section_tool(self) -> None:
+        if not self._section_tool:
+            self._section_tool = True
+            self.tool_modes.enter(
+                "section",
+                "Section tool: G moves and R rotates the plane, Compute Section cuts the scan. Esc leaves the tool.",
+            )
+
+    def _leave_section_tool(self) -> bool:
+        """Hide the planes again; True if anything changed."""
+
+        changed = self._section_tool or self._section_planes_selected()
+        if self._section_planes_selected():
+            self.composition.selection_controller.select_nodes(())
+        self._section_tool = False
+        if self.tool_modes.state.id == "section":
+            self.tool_modes.cancel()
+        return changed
+
     def _handle_tool_key(self, key: int) -> bool:
         if key in {Qt.Key_Return, Qt.Key_Enter}:
             manual = self.composition.manual_curve_controller.session
@@ -714,6 +768,10 @@ class OpenRetopV3Window(ApplicationShell):
                 return True
             if self.composition.region_controller.session.active:
                 self._dispatch_application_action("region.finish")
+                return True
+            if self._leave_section_tool():
+                self.set_status_message("Left the Section tool")
+                self.refresh()
                 return True
         return False
 
@@ -749,7 +807,10 @@ class OpenRetopV3Window(ApplicationShell):
         # wall of empty folders. Section planes are always offered with a model.
         result_ids = {item.id for item in state.section_collection.results}
         curve_parents = {_curve_parent(curve, result_ids) for curve in state.curve_collection.curves}
-        has_planes = bool(state.section_collection.planes) and state.mesh_object is not None
+        has_planes = (
+            len(state.section_collection.planes) > 1  # the user added planes of their own
+            or (bool(state.section_collection.planes) and self._section_tool_visible())
+        ) and state.mesh_object is not None
         group_rows = (
             (NODE_SECTION_PLANES, "Section Planes", has_planes, {"context_actions": ("section.add_plane", "scene.show_all")}),
             (NODE_SECTION_RESULTS, "Section Results", bool(state.section_collection.results), {}),
@@ -876,7 +937,7 @@ class OpenRetopV3Window(ApplicationShell):
                 show_axis_gizmo=settings.show_axis_gizmo,
                 show_viewcube=settings.show_viewcube,
                 show_normals=settings.show_normals,
-                show_section_plane=True,
+                show_section_plane=self._section_tool_visible(),
                 display_colors={name: getattr(settings, name) for name in DISPLAY_COLOR_FIELDS},
                 region_color=settings.region_selection_color,
                 region_edge_color=settings.region_selection_edge_color,
@@ -1364,6 +1425,7 @@ class OpenRetopV3Window(ApplicationShell):
         return "Building surface"
 
     def _install_model(self, path: Path, model: _ModelRead) -> None:
+        self._section_tool = False
         loaded, proxy = model.loaded, model.proxy
         bounds_min = np.min(loaded.mesh.vertices, axis=0) if len(loaded.mesh.vertices) else np.zeros(3)
         bounds_max = np.max(loaded.mesh.vertices, axis=0) if len(loaded.mesh.vertices) else np.zeros(3)
@@ -1510,6 +1572,7 @@ class OpenRetopV3Window(ApplicationShell):
         return True
 
     def _reset_state(self) -> None:
+        self._section_tool = False
         fresh = AppState()
         for field in fields(AppState):
             setattr(self.composition.state, field.name, copy.deepcopy(getattr(fresh, field.name)))

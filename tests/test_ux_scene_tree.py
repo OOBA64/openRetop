@@ -44,12 +44,13 @@ class SceneTreeContentTests(unittest.TestCase):
 
         names = labels(window)
         self.assertIn("ball.stl", names)
-        self.assertIn("Section Planes", names)
+        self.assertNotIn("Section Planes", names)  # only once the Section tool is used
         for absent in ("Section Results", "Curves", "Unassigned", "Manual", "Rebuilt", "BREP Surfaces", "Regions"):
             self.assertNotIn(absent, names)
 
         self.assertTrue(window._dispatch_application_action("section.compute"))
         names = labels(window)
+        self.assertIn("Section Planes", names)
         self.assertIn("Section Results", names)
         self.assertIn("Curves", names)
         self.assertNotIn("Repaired", names)
