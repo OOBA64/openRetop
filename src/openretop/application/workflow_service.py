@@ -35,6 +35,7 @@ from openretop.application.selection_controller import SelectionController
 from openretop.application.state import AppState
 from openretop.application.surface_controller import SurfaceController
 from openretop.application.transform_controller import TransformController
+from openretop.application.transform_math import PLANE_CONSTRAINTS
 from openretop.application.undo import UndoStack
 from openretop.application.visibility_controller import VisibilityController
 from openretop.curves.curve_state import (
@@ -230,6 +231,9 @@ class WorkflowService:
             return self.transform.commit()
         if action == "transform.cancel":
             return self.transform.cancel()
+        if action.startswith("transform.constrain_plane_"):
+            excluded = action.rsplit("_", 1)[-1].upper()
+            return self.transform.set_axis_constraint(PLANE_CONSTRAINTS.get(excluded, excluded))
         if action.startswith("transform.constrain_"):
             return self.transform.set_axis_constraint(action.rsplit("_", 1)[-1].upper())
         if action == "transform.apply_numeric":

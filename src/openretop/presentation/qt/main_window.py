@@ -480,6 +480,15 @@ class OpenRetopV3Window(ApplicationShell):
         if result.dirty:
             self.set_project_dirty(True)
         self._sync_tool_mode(action_id, result)
+        if (
+            action_id.startswith("transform.constrain_")
+            and result.success
+            and self.composition.transform_controller.active
+        ):
+            # Changing the lock mid-grab moves the object at once, not on the next mouse move.
+            relocked = self._update_transform(self.viewport.last_pointer_position)
+            if relocked.status:
+                self.set_status_message(relocked.status)
         if action_id == "transform.pointer":
             self._render_scene()  # panels catch up when the transform is confirmed or cancelled
         else:
@@ -502,7 +511,10 @@ class OpenRetopV3Window(ApplicationShell):
         elif action_id == "measure.finish" and self.tool_modes.state.id == "measure":
             self.tool_modes.finish()
         elif action_id in {"transform.move", "transform.rotate"}:
-            self.tool_modes.enter("transform", "Move the pointer; Enter confirms and Esc cancels.")
+            self.tool_modes.enter(
+                "transform",
+                "Move the pointer. X/Y/Z lock an axis, Shift+X/Y/Z a plane. Enter confirms, Esc cancels.",
+            )
         elif action_id in {"manual_curve.finish", "manual_curve.apply", "region.finish", "transform.confirm"}:
             self.tool_modes.finish()
         elif action_id in {"manual_curve.cancel", "transform.cancel"}:
@@ -562,6 +574,17 @@ class OpenRetopV3Window(ApplicationShell):
             self.composition.selection_controller.select_nodes(ordinary_ids)
         self._dispatch_framework_action(action_id)
 
+    def _update_transform(self, widget_position: tuple[int, int]) -> CommandResult:
+        return self.composition.transform_controller.update(
+            widget_position,
+            camera=self.viewport.camera_vectors(),
+            model_bounds=None,  # the model's own bounds: scene bounds grow as it moves, which accelerated the drag
+            fine=bool(
+                self.viewport.interactor is not None
+                and self.viewport.interactor.GetShiftKey()
+            ),
+        )
+
     def _on_viewport_pointer(
         self,
         event_name: str,
@@ -571,16 +594,10 @@ class OpenRetopV3Window(ApplicationShell):
     ) -> None:
         if self.composition.transform_controller.active:
             if event_name == "motion":
-                result = self.composition.transform_controller.update(
-                    self.viewport.to_widget_position(x_position, y_position),
-                    camera=self.viewport.camera_vectors(),
-                    model_bounds=None,  # the model's own bounds: scene bounds grow as it moves, which accelerated the drag
-                    fine=bool(
-                        self.viewport.interactor is not None
-                        and self.viewport.interactor.GetShiftKey()
-                    ),
+                self._consume_result(
+                    "transform.pointer",
+                    self._update_transform(self.viewport.to_widget_position(x_position, y_position)),
                 )
-                self._consume_result("transform.pointer", result)
             return
 
         manual = self.composition.manual_curve_controller

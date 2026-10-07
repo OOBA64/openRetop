@@ -23,6 +23,9 @@ MIN_MOVE_SIZE = 0.25
 MAX_MOVE_SIZE = 750.0
 MIN_RING_RADIUS = 0.25
 MAX_RING_RADIUS = 600.0
+GUIDE_EXTENT_FACTOR = 60.0  # a locked axis is drawn far past the object, like an infinite line
+GUIDE_LINE_WIDTH = 1.5
+PLANE_CONSTRAINTS = frozenset({"YZ", "XZ", "XY"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +56,7 @@ class TransformOverlayDiagnosticState:
     hidden_reason: str | None
     last_error: str | None
     overlay_layer: int | None = None  # the layer above the scene the props are drawn in
+    guide_visible: bool = False  # the long line(s) along a locked axis or plane
 
 
 class TransformOverlayController:
@@ -69,6 +73,8 @@ class TransformOverlayController:
         self.overlay_layer: int | None = None
         self.move_actor: object | None = None
         self.ring_actor: object | None = None
+        self.guide_actor: object | None = None
+        self._guide_signature: tuple[object, ...] | None = None
         self._closed = False
         self._move_actor_creation_count = 0
         self._ring_actor_creation_count = 0
@@ -101,7 +107,7 @@ class TransformOverlayController:
 
         mode = _mode(snapshot.active_transform_mode)
         axis = _axis(snapshot.active_transform_axis)
-        constraint = _axis(snapshot.active_transform_constraint)
+        constraint = _constraint(snapshot.active_transform_constraint)
         show_axes = bool(snapshot.display.get("show_axes", True))
         origin = finite_world_origin(snapshot.object_origin)
         reference_bounds = snapshot.bounds_for_ids(snapshot.selection.selected_ids)
@@ -147,8 +153,9 @@ class TransformOverlayController:
             # Both retained props follow the authoritative origin, including
             # the currently hidden one.  No inactive mapper is parked at an
             # invented world-zero fallback.
-            self.move_actor.SetPosition(*origin)
+            _place_axes(self.move_actor, origin)
             self.ring_actor.SetPosition(*origin)
+            self._show_guide(constraint, origin, reference_extent)
             if mode == "move":
                 size = float(np.clip(reference_extent * 0.28, MIN_MOVE_SIZE, MAX_MOVE_SIZE))
                 move_signature = (round(size, 9), constraint)
@@ -204,8 +211,26 @@ class TransformOverlayController:
             self._last_error = f"{type(exc).__name__}: {exc}"
             return False
 
+    def _show_guide(
+        self,
+        constraint: str | None,
+        origin: tuple[float, float, float],
+        reference_extent: float,
+    ) -> None:
+        """A long line through the origin along each locked axis (one for X/Y/Z, two for a plane)."""
+
+        if self.guide_actor is None or constraint is None:
+            return
+        half_length = float(reference_extent) * GUIDE_EXTENT_FACTOR
+        signature = (constraint, round(half_length, 9))
+        if signature != self._guide_signature:
+            _set_guide_geometry(self.guide_actor, tuple(constraint), half_length)
+            self._guide_signature = signature
+        self.guide_actor.SetPosition(*origin)
+        self.guide_actor.SetVisibility(True)
+
     def _hide_actors(self) -> None:
-        for actor in (self.move_actor, self.ring_actor):
+        for actor in (self.move_actor, self.ring_actor, self.guide_actor):
             if actor is not None:
                 actor.SetVisibility(False)
 
@@ -245,12 +270,13 @@ class TransformOverlayController:
             hidden_reason=self._hidden_reason,
             last_error=self._last_error,
             overlay_layer=self.overlay_layer,
+            guide_visible=_bool_call(self.guide_actor, "GetVisibility"),
         )
 
     def close(self) -> None:
         if self._closed:
             return
-        for actor in (self.move_actor, self.ring_actor):
+        for actor in (self.move_actor, self.ring_actor, self.guide_actor):
             if actor is None:
                 continue
             actor.SetVisibility(False)
@@ -266,6 +292,7 @@ class TransformOverlayController:
                     pass
         self.move_actor = None
         self.ring_actor = None
+        self.guide_actor = None
         self.layer_renderer = None
         self.renderer = None
         self._closed = True
@@ -324,6 +351,21 @@ class TransformOverlayController:
             target.AddActor(actor)
             self.ring_actor = actor
             self._ring_actor_creation_count += 1
+        if self.guide_actor is None:
+            mapper = vtkPolyDataMapper()
+            mapper.SetScalarModeToUseCellData()
+            mapper.SetColorModeToDirectScalars()
+            mapper.ScalarVisibilityOn()
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetLineWidth(GUIDE_LINE_WIDTH)
+            actor.GetProperty().LightingOff()
+            actor.PickableOff()
+            actor.DragableOff()
+            actor.UseBoundsOff()
+            actor.SetVisibility(False)
+            target.AddActor(actor)
+            self.guide_actor = actor
 
 
 def transformed_object_origin(
@@ -382,9 +424,9 @@ def overlay_reference_extent(bounds: Bounds3 | None) -> float | None:
 def _style_move_axes(actor: object, constraint: str | None, size: float) -> None:
     lengths: list[float] = []
     for axis in ("X", "Y", "Z"):
-        emphasized = constraint is None or constraint == axis
+        emphasized = constraint is None or axis in constraint
         opacity = 1.0 if emphasized else 0.22
-        lengths.append(float(size) * (1.12 if constraint == axis else 1.0))
+        lengths.append(float(size) * (1.12 if constraint is not None and axis in constraint else 1.0))
         for suffix in ("Shaft", "Tip"):
             material = getattr(actor, f"Get{axis}Axis{suffix}Property")()
             material.SetColor(*AXIS_COLORS[axis])
@@ -439,6 +481,50 @@ def _set_rotation_ring_geometry(
     actor.GetMapper().SetInputData(data)
 
 
+def _place_axes(actor: object, origin: tuple[float, float, float]) -> None:
+    """Move the arrows to the object's origin.
+
+    vtkAxesActor ignores SetPosition when it draws (only a user transform reaches its parts),
+    which left the arrows at the world origin while the object moved away.
+    """
+
+    from vtkmodules.vtkCommonTransforms import vtkTransform
+
+    transform = actor.GetUserTransform()
+    if not isinstance(transform, vtkTransform):
+        transform = vtkTransform()
+        actor.SetUserTransform(transform)
+    transform.Identity()
+    transform.Translate(*origin)
+    actor.SetPosition(*origin)  # kept in step for anything that reads it back
+
+
+def _set_guide_geometry(actor: object, axes: tuple[str, ...], half_length: float) -> None:
+    from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+
+    points = vtkPoints()
+    lines = vtkCellArray()
+    colors = vtkUnsignedCharArray()
+    colors.SetName("TransformGuideRGBA")
+    colors.SetNumberOfComponents(4)
+    for axis in axes:
+        direction = [0.0, 0.0, 0.0]
+        direction[("X", "Y", "Z").index(axis)] = half_length
+        first = points.InsertNextPoint(*(-value for value in direction))
+        second = points.InsertNextPoint(*direction)
+        lines.InsertNextCell(2)
+        lines.InsertCellPoint(first)
+        lines.InsertCellPoint(second)
+        red, green, blue = AXIS_COLORS[axis]
+        colors.InsertNextTypedTuple((int(red * 255), int(green * 255), int(blue * 255), 200))
+    data = vtkPolyData()
+    data.SetPoints(points)
+    data.SetLines(lines)
+    data.GetCellData().SetScalars(colors)
+    actor.GetMapper().SetInputData(data)
+
+
 def _ring_point(axis: str, radius: float, angle: float) -> tuple[float, float, float]:
     cosine = math.cos(angle) * radius
     sine = math.sin(angle) * radius
@@ -475,6 +561,13 @@ def _mode(value: object) -> str | None:
 def _axis(value: object) -> str | None:
     normalized = str(value or "").strip().upper()
     return normalized if normalized in AXIS_COLORS else None
+
+
+def _constraint(value: object) -> str | None:
+    """An axis lock ("X") or a plane lock ("YZ"); anything else (no lock, the plane normal) is None."""
+
+    normalized = str(value or "").strip().upper()
+    return normalized if normalized in AXIS_COLORS or normalized in PLANE_CONSTRAINTS else None
 
 
 def _finite_angle(value: object) -> float:

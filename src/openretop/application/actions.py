@@ -569,14 +569,33 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     *tuple(
         _workflow_action(
             f"transform.constrain_{axis.lower()}",
-            f"Constrain {axis}",
+            label,
             "Transform",
             "_set_transform_axis_constraint",
             enabled_when=(ActionCondition.TRANSFORM_ACTIVE,),
             visible_when=(ActionCondition.TRANSFORM_ACTIVE,),
             handler_args=(axis,),
+            shortcut=axis,
         )
-        for axis in ("X", "Y", "Z", "N")
+        for axis, label in (
+            ("X", "Lock to X Axis"),
+            ("Y", "Lock to Y Axis"),
+            ("Z", "Lock to Z Axis"),
+            ("N", "Lock to Plane Normal"),
+        )
+    ),
+    *tuple(
+        _workflow_action(
+            f"transform.constrain_plane_{axis.lower()}",
+            f"Lock to {plane} Plane",
+            "Transform",
+            "_set_transform_axis_constraint",
+            enabled_when=(ActionCondition.TRANSFORM_ACTIVE,),
+            visible_when=(ActionCondition.TRANSFORM_ACTIVE,),
+            handler_args=(plane,),
+            shortcut=f"Shift+{axis}",
+        )
+        for axis, plane in (("X", "YZ"), ("Y", "XZ"), ("Z", "XY"))
     ),
     _workflow_action("transform.apply_numeric", "Apply Transform", "Transform", "_on_object_transform_changed", enabled_when=(ActionCondition.HAS_MESH,), requires_payload=True),
     _workflow_action("transform.origin_to_geometry", "Set Origin to Geometry", "Transform", "set_origin_to_geometry", enabled_when=(ActionCondition.HAS_MESH,)),

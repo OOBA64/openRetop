@@ -34,6 +34,8 @@ from openretop.application.transform_math import (
     camera_relative_move_delta,
     mesh_rotate_delta,
     normalized_vector,
+    plane_constrained_camera_move_delta,
+    plane_constraint_normal,
     rotate_vector_around_axis,
     transform_bounds,
     transform_point,
@@ -373,8 +375,14 @@ class TransformController(ControllerBase):
                     "Move Along Plane Normal is available while moving a section plane",
                     status="Move Along Plane Normal is available while moving a section plane",
                 )
+        elif plane_constraint_normal(axis_key) is not None:
+            if session is None:
+                return CommandResult.failure("Plane locks apply while moving.")
+            if session.mode == TRANSFORM_ROTATE:
+                # rotating "in the XY plane" is rotating around Z
+                axis_key = plane_constraint_normal(axis_key) or "Z"
         elif axis_key not in {"X", "Y", "Z"}:
-            return CommandResult.failure("Axis constraint must be X, Y, Z, or N.")
+            return CommandResult.failure("Axis constraint must be X, Y, Z, N, or a plane (YZ, XZ, XY).")
 
         if session is None:
             changed = self.state.active_transform_axis != axis_key
@@ -564,12 +572,12 @@ class TransformController(ControllerBase):
         axis = self._display_axis(session)
         parts = [label]
         if axis is not None:
-            parts.append(f"{axis} axis")
+            parts.append(_constraint_label(axis))
         if self._last_readout is not None:
             parts.append(self._last_readout)
         elif session.mode == TRANSFORM_MOVE and axis is None:
             parts.append(
-                "press X/Y/Z to constrain, Enter/Click to confirm, Esc/Right-click to cancel"
+                "X/Y/Z lock an axis, Shift+X/Y/Z a plane, Enter/Click to confirm, Esc/Right-click to cancel"
             )
         elif session.mode == TRANSFORM_ROTATE:
             parts.append("move mouse horizontally")
@@ -663,6 +671,8 @@ class TransformController(ControllerBase):
                     diagonal,
                     fine=fine,
                 )
+            elif plane_constraint_normal(session.axis_constraint) is not None:
+                movement, readout = _plane_move(session, position, camera, diagonal, fine)
             else:
                 movement, amount = axis_constrained_camera_move_delta(
                     session.mouse_start,
@@ -719,6 +729,9 @@ class TransformController(ControllerBase):
                     diagonal,
                     fine=fine,
                 )
+                readout = _section_movement_readout(movement)
+            elif plane_constraint_normal(session.axis_constraint) is not None:
+                movement, _readout = _plane_move(session, position, camera, diagonal, fine)
                 readout = _section_movement_readout(movement)
             elif session.axis_constraint == "N":
                 movement, amount = axis_constrained_camera_move_delta(
@@ -1014,9 +1027,11 @@ class TransformController(ControllerBase):
                     return f"Moving {name} along normal: drag mouse"
                 if axis in {"X", "Y", "Z"}:
                     return f"Moving {name} along {axis}: drag mouse"
+                if axis is not None:
+                    return f"Moving {name} in the {axis} plane: drag mouse"
                 return (
                     f"Moving {name}: camera-relative grab "
-                    "(X/Y/Z constrain, N normal, Enter/click confirm, Esc cancel)"
+                    "(X/Y/Z axis, Shift+X/Y/Z plane, N normal, Enter/click confirm, Esc cancel)"
                 )
             if axis == "N":
                 return f"Moving {name} along normal: {self._last_readout}"
@@ -1080,6 +1095,29 @@ def _section_movement_readout(movement: np.ndarray) -> str:
         f"Delta Y {values[1]:.3f}, "
         f"Delta Z {values[2]:.3f}"
     )
+
+
+def _plane_move(
+    session: ActiveTransformState,
+    position: tuple[int, int],
+    camera: CameraVectors,
+    diagonal: float,
+    fine: bool,
+) -> tuple[np.ndarray, str]:
+    plane = str(session.axis_constraint)
+    return plane_constrained_camera_move_delta(
+        session.mouse_start,
+        position,
+        (world_axis_vector(plane[0]), world_axis_vector(plane[1])),
+        camera.right,
+        camera.up,
+        diagonal,
+        fine=fine,
+    )
+
+
+def _constraint_label(constraint: str) -> str:
+    return f"{constraint} plane" if plane_constraint_normal(constraint) is not None else f"{constraint} axis"
 
 
 __all__ = (

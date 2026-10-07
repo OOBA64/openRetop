@@ -602,6 +602,7 @@ class QtSceneViewport(VTKViewportWidget):
             ("grid_axes", self.grid.axes_actor, 0, self.renderer),
             ("transform_axes", self._transform_axes_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
             ("rotation_ring", self._rotation_ring_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
+            ("transform_guide", self.transform_overlays.guide_actor, self.transform_overlays.overlay_layer or 0, self.transform_overlays.layer_renderer or self.renderer),
             ("selection_box", self.selection_box.actor, 0, self.renderer),
             (
                 "view_cube",
@@ -632,6 +633,7 @@ class QtSceneViewport(VTKViewportWidget):
             ("grid_axes", self.grid.axes_actor),
             ("transform_axes", self._transform_axes_actor),
             ("rotation_ring", self._rotation_ring_actor),
+            ("transform_guide", self.transform_overlays.guide_actor),
             ("selection_box", self.selection_box.actor),
             ("view_cube", self.navigation_cluster.overlay_actor),
         ):

@@ -607,6 +607,52 @@ class TransformOverlayLayerTests(unittest.TestCase):
         self.assertFalse(any(renderer is layer_renderer for renderer in _renderers(window)))
 
 
+class MoveArrowPlacementTests(unittest.TestCase):
+    """vtkAxesActor ignores SetPosition when drawing: the arrows stayed at the world origin."""
+
+    def _red_centroid_x(self, origin: tuple[float, float, float] | None) -> float:
+        import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+        from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
+        from vtkmodules.vtkRenderingCore import vtkRenderer, vtkRenderWindow, vtkWindowToImageFilter
+
+        from openretop.presentation.qt.transform_overlays import _place_axes
+
+        renderer = vtkRenderer()
+        window = vtkRenderWindow()
+        window.SetOffScreenRendering(1)
+        window.AddRenderer(renderer)
+        window.SetSize(200, 200)
+        actor = vtkAxesActor()
+        actor.AxisLabelsOff()
+        actor.SetTotalLength(1, 1, 1)
+        if origin is not None:
+            _place_axes(actor, origin)
+        renderer.AddActor(actor)
+        camera = renderer.GetActiveCamera()
+        camera.ParallelProjectionOn()
+        camera.SetPosition(0, 0, 10)
+        camera.SetFocalPoint(0, 0, 0)
+        camera.SetParallelScale(12)
+        renderer.ResetCameraClippingRange(-20, 20, -20, 20, -20, 20)
+        window.Render()
+        grab = vtkWindowToImageFilter()
+        grab.SetInput(window)
+        grab.Update()
+        pixels = vtk_to_numpy(grab.GetOutput().GetPointData().GetScalars()).reshape(200, 200, -1)
+        window.Finalize()
+        red = (pixels[..., 0] > 150) & (pixels[..., 1] < 100)
+        columns = np.nonzero(red)[1]
+        self.assertGreater(len(columns), 0)
+        return float(columns.mean())
+
+    def test_the_arrows_are_drawn_at_the_object_origin(self) -> None:
+        at_zero = self._red_centroid_x(None)
+        moved = self._red_centroid_x((8.0, 0.0, 0.0))
+        # 200 px across 24 units: 8 units is ~66.7 px, once (not twice: no double translation)
+        self.assertAlmostEqual(moved - at_zero, 8.0 * 200.0 / 24.0, delta=2.0)
+
+
 def _renderers(render_window: object) -> list[object]:
     collection = render_window.GetRenderers()
     collection.InitTraversal()

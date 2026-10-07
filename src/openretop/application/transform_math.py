@@ -189,6 +189,60 @@ def axis_constrained_camera_move_delta(
     return (axis * amount, amount)
 
 
+PLANE_CONSTRAINTS = {"X": "YZ", "Y": "XZ", "Z": "XY"}  # Shift+axis: move in the plane that excludes it
+_PLANE_MIN_SINGULAR_VALUE = 0.2  # an edge-on plane: at most 5x the free-move speed, never a jump
+
+
+def plane_constraint_normal(constraint: str) -> str | None:
+    """The excluded axis of a plane lock ("YZ" -> "X"), or None if this is not a plane lock."""
+
+    for axis, plane in PLANE_CONSTRAINTS.items():
+        if constraint == plane:
+            return axis
+    return None
+
+
+def plane_constrained_camera_move_delta(
+    mouse_start: tuple[int, int],
+    mouse_position: tuple[int, int],
+    plane_axes: tuple[np.ndarray, np.ndarray],
+    camera_right: np.ndarray,
+    camera_up: np.ndarray,
+    model_diagonal: float,
+    *,
+    fine: bool,
+) -> tuple[np.ndarray, str]:
+    """Movement within a plane spanned by two world axes that follows the pointer on screen.
+
+    Solves for the in-plane movement whose screen projection matches the drag, at the same
+    speed as a free move.  A plane seen almost edge-on cannot follow every drag direction, so
+    the solve is clamped: the part of the drag along the visible direction still moves the
+    object and the rest is ignored instead of exploding.
+    """
+
+    delta = np.asarray(mouse_delta(mouse_start, mouse_position), dtype=float)
+    scale = movement_scale(model_diagonal, fine=fine)
+    right = normalized_vector(camera_right, fallback=np.asarray([1.0, 0.0, 0.0], dtype=float))
+    up = normalized_vector(camera_up, fallback=np.asarray([0.0, 1.0, 0.0], dtype=float))
+    first = normalized_vector(plane_axes[0], fallback=np.asarray([1.0, 0.0, 0.0], dtype=float))
+    second = normalized_vector(plane_axes[1], fallback=np.asarray([0.0, 1.0, 0.0], dtype=float))
+    # screen direction (pixels, y down) of a unit step along each plane axis
+    screen = np.asarray(
+        [
+            [float(np.dot(first, right)), float(np.dot(second, right))],
+            [-float(np.dot(first, up)), -float(np.dot(second, up))],
+        ],
+        dtype=float,
+    )
+    left, singular, right_t = np.linalg.svd(screen)
+    # exact inverse for a plane facing the camera; past the cutoff the gain falls back to zero
+    cutoff = _PLANE_MIN_SINGULAR_VALUE
+    gains = np.where(singular >= cutoff, 1.0 / np.maximum(singular, 1e-12), singular / (cutoff * cutoff))
+    amounts = (right_t.T @ (gains * (left.T @ delta))) * scale
+    movement = first * float(amounts[0]) + second * float(amounts[1])
+    return (movement, movement_readout(movement))
+
+
 def world_axis_vector(axis: str) -> np.ndarray:
     vector = np.zeros(3, dtype=float)
     vector[_AXIS_TO_INDEX[axis]] = 1.0
