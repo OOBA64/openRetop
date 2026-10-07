@@ -334,17 +334,23 @@ class PropertyInspectorWidget(QWidget):
 
 
 class ToolInstructionBar(QWidget):
+    """Shows what the mouse and keys do in the active tool; hidden when no tool is active."""
+
     def __init__(self, tool_modes: ToolModeManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.label = QLabel("Ready", self)
+        self.setObjectName("tool_instruction_bar")
+        self.label = QLabel("", self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.addWidget(self.label)
+        self.setVisible(False)
         tool_modes.subscribe(self._update)
 
     def _update(self, state: object) -> None:
-        instructions = getattr(state, "instructions", "")
-        self.label.setText(instructions or "Ready")
+        instructions = str(getattr(state, "instructions", "") or "")
+        active = getattr(state, "phase", "inactive") not in {"inactive", "finished"}
+        self.label.setText(instructions)
+        self.setVisible(bool(instructions) and active)
 
 
 class CommandPaletteWidget(QWidget):

@@ -794,7 +794,16 @@ class OpenRetopV3Window(ApplicationShell):
         )
         return tuple(nodes)
 
+    def _model_info_text(self) -> str:
+        state = self.composition.state
+        mesh = state.mesh_object
+        if mesh is None:
+            return "No model"
+        triangles = int(getattr(mesh, "source_triangle_count", 0) or len(mesh.source_mesh.triangles))
+        return f"{mesh.name}  -  {state.units}  -  {triangles:,} triangles"
+
     def refresh(self) -> None:
+        self.set_info_message(self._model_info_text())
         self.viewport.set_left_capture_owner(self._viewport_left_capture_owner())
         self._scene_model.replace(self._scene_nodes())
         self.scene_tree.refresh()

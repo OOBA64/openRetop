@@ -64,8 +64,10 @@ class ApplicationShell(QMainWindow):
         self.command_palette = CommandPalette(self.action_registry)
         self._qt_actions: dict[str, QAction] = {}
         self._docks: dict[str, QDockWidget] = {}
-        self._status_label = QLabel("Ready", self)
-        self.statusBar().addPermanentWidget(self._status_label)
+        # Left: the latest message (statusBar().showMessage). Right: a persistent
+        # info label (e.g. "part.stl - mm - 12,000 triangles"), never a copy of the message.
+        self._info_label = QLabel("", self)
+        self.statusBar().addPermanentWidget(self._info_label)
         self.action_registry.subscribe(self._sync_qt_action)
         self._build_menus(tuple(menu_schemas))
         self._build_toolbars(tuple(toolbar_schemas))
@@ -159,8 +161,10 @@ class ApplicationShell(QMainWindow):
         self.setCentralWidget(widget)
 
     def set_status_message(self, message: str) -> None:
-        self._status_label.setText(str(message))
         self.statusBar().showMessage(str(message))
+
+    def set_info_message(self, message: str) -> None:
+        self._info_label.setText(str(message))
 
     def save_framework_settings(self) -> FrameworkSettings:
         state = bytes(self.saveState(self.layout_manager.schema_version))
