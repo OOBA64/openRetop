@@ -9,6 +9,7 @@ from typing import Mapping
 import numpy as np
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QResizeEvent
+from vtkmodules.vtkRenderingCore import vtkMapper
 
 from openretop.application.transform_controller import CameraVectors
 from openretop.presentation.qt.adaptive_grid import AdaptiveGrid
@@ -16,6 +17,7 @@ from openretop.presentation.qt.measurement_overlay import MeasurementOverlay
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
 from openretop.presentation.qt.selection_overlay import SelectionBoxOverlay
 from openretop.presentation.qt.tool_hint_overlay import ToolHintOverlay
+from openretop.presentation.qt.tool_preview_overlay import ToolPreviewOverlay
 from openretop.presentation.qt.transform_overlays import (
     TransformOverlayController,
     TransformOverlayDiagnosticState,
@@ -110,6 +112,11 @@ class QtSceneViewport(VTKViewportWidget):
         )
         self.view_controls = self.navigation_cluster
         self.tool_hint = ToolHintOverlay(self.render_window, self.renderer, device_pixel_ratio=self.devicePixelRatioF)
+        self.tool_preview_overlay = ToolPreviewOverlay(self.renderer)
+        # Curves and regions lie exactly on the scan's facets; without an offset they lose the
+        # depth test to the surface they sit on and mostly disappear (measured: 119 of ~400
+        # visible pixels of a curve on a capsule). Polygons are pushed back, lines pulled forward.
+        vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
         if self.interactor is not None:
             self.interactor.installEventFilter(self)
             self._qt_filter_installed = True
@@ -351,6 +358,7 @@ class QtSceneViewport(VTKViewportWidget):
         self.grid.close()
         self.navigation_cluster.close()
         self.tool_hint.close()
+        self.tool_preview_overlay.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
 
@@ -509,6 +517,10 @@ class QtSceneViewport(VTKViewportWidget):
             )
             self.set_background(background)
             self._update_display_overlays(snapshot)
+            self.tool_preview_overlay.update(
+                snapshot.tool_preview,
+                display_colors if isinstance(display_colors, Mapping) else None,
+            )
             diagnostics = self.synchronizer.synchronize(snapshot)
             self.last_snapshot = snapshot
             self.last_diagnostics = diagnostics
@@ -648,6 +660,8 @@ class QtSceneViewport(VTKViewportWidget):
                     roles[id(entry.actor)] = f"{category}:{item_id}"
         for measurement_actor in self.measurement_overlay.actors:
             roles[id(measurement_actor)] = "measurement"
+        for preview_actor in self.tool_preview_overlay.actors:
+            roles[id(preview_actor)] = "tool_preview"
         for role, actor in (
             ("grid", self.grid.lines_actor),
             ("grid_axes", self.grid.axes_actor),

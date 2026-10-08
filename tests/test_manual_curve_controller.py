@@ -263,8 +263,9 @@ class ManualCurveControllerTests(unittest.TestCase):
             plane_normal=[0.0, 0.0, 1.0],
             keep_curve_on_mesh=True,
         )
-        controller.append_point([0.0, 0.0, 1.0])
-        controller.append_point([1.0, 0.0, 1.0])
+        # points placed on the scan: only those curves are projected back onto it
+        controller.append_point([0.0, 0.0, 1.0], snapped=True)
+        controller.append_point([1.0, 0.0, 1.0], snapped=True)
         mesh = self._mesh()
 
         first = controller.display_state(

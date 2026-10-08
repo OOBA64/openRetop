@@ -106,6 +106,7 @@ class VTKViewportWidget(QFrame):
             # decide which Qt gestures are allowed to reach it.
             assert vtkInteractorStyleTrackballCamera is not None
             interactor_style = vtkInteractorStyleTrackballCamera()
+            disable_vtk_key_bindings(interactor_style)
             interactor.SetInteractorStyle(interactor_style)
         except (AttributeError, ImportError, RuntimeError, TypeError, ValueError) as exc:
             _LOG.exception("VTK viewport construction failed")
@@ -267,6 +268,19 @@ class VTKViewportWidget(QFrame):
 
 def _qt_offscreen() -> bool:
     return os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen"
+
+
+def disable_vtk_key_bindings(interactor_style: object) -> None:
+    """Switch off VTK's built-in single-letter keys.
+
+    Unhandled keys would otherwise reach them: "r" resets the camera (pressing Rotate when
+    it was unavailable zoomed the view out), "w"/"s" switch every actor to wireframe or
+    surface, "e"/"q" close the window, "3" turns on stereo, "f" flies to a point, "p" picks.
+    A style with its own CharEvent observer skips its default handler, so an empty observer
+    is enough; the application's keys come from Qt actions and its key filter.
+    """
+
+    interactor_style.AddObserver("CharEvent", lambda *_: None)  # type: ignore[attr-defined]
 
 
 def _vtk_class_name(value: object | None) -> str | None:

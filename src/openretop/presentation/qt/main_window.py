@@ -448,6 +448,13 @@ class OpenRetopV3Window(ApplicationShell):
                 self.tool_modes.cancel()
         if action_id in _SECTION_TOOL_ACTIONS:
             self._enter_section_tool()
+        if action_id in {"transform.move", "transform.rotate"}:
+            plane = self._section_tool_plane()
+            if plane is not None and self.composition.state.selected_item not in {"model", "section_plane"}:
+                # The Section tool promises "G moves and R rotates the plane": act on its
+                # active plane even when nothing is selected (R used to fall through to VTK,
+                # which reset the camera).
+                self.composition.selection_controller.select_nodes((section_plane_node_id(plane.id),))
         if action_id in {"transform.move", "transform.rotate"} and not (payload and "mouse_start" in payload):
             # Start from where the pointer is now (as the original app did), not from (0, 0).
             payload = {**(payload or {}), "mouse_start": self.viewport.last_pointer_position}
@@ -865,6 +872,14 @@ class OpenRetopV3Window(ApplicationShell):
 
         return self.composition.state.mesh_object is not None and (self._section_tool or self._section_planes_selected())
 
+    def _section_tool_plane(self) -> object | None:
+        """The plane G/R act on while the Section tool is engaged and nothing else is selected."""
+
+        state = self.composition.state
+        if not self._section_tool or state.mesh_object is None:
+            return None
+        return get_active_plane(state.section_collection)
+
     def _enter_section_tool(self) -> None:
         if not self._section_tool:
             self._section_tool = True
@@ -1232,7 +1247,7 @@ class OpenRetopV3Window(ApplicationShell):
             has_region=state.region_collection.active_region is not None,
             has_loft_feature=state.loft_feature_collection.active_feature_id is not None,
             has_source_curves=bool(active_surface and active_surface.source_curve_ids),
-            can_transform=state.selected_item in {"model", "section_plane"},
+            can_transform=state.selected_item in {"model", "section_plane"} or self._section_tool_plane() is not None,
             transform_active=self.composition.transform_controller.active,
             manual_curve_active=manual.active,
             manual_curve_idle=not manual.active,

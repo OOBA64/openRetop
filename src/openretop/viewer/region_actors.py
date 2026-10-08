@@ -11,6 +11,8 @@ from openretop.viewer.vtk_actor_utils import polydata_actor, update_actor_polyda
 def create_region_actor(item: RegionRenderItem):
     points, faces = _region_geometry(item)
     actor = polydata_actor(points, faces, cell_kind="polys")
+    # the region is a copy of scan triangles: pull it in front of the scan it covers
+    actor.GetMapper().SetRelativeCoincidentTopologyPolygonOffsetParameters(-1.0, -4.0)
     actor.SetUserMatrix(vtk_matrix(item.transform))
     return actor
 

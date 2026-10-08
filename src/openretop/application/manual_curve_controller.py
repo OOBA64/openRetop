@@ -1295,7 +1295,7 @@ class ManualCurveController:
             fitted: np.ndarray | None = None
             if len(session.control_points) >= 2:
                 fitted = sample_hybrid_manual_curve(session.to_control_data_v2())
-                if session.keep_curve_on_mesh and projection_mesh is not None:
+                if session.keep_curve_on_mesh and session.snapped_point_count > 0 and projection_mesh is not None:
                     fitted = project_curve_points_to_mesh(
                         fitted,
                         projection_mesh,
@@ -1435,6 +1435,8 @@ class ManualCurveController:
     ) -> None:
         if not bool(curve.metadata.get("keep_curve_on_mesh", False)):
             return
+        if not bool(curve.metadata.get("snap_to_mesh", True)):
+            return  # drawn on a work plane, not on the scan: leave it where it was drawn
         if projection_mesh is None:
             return
         projection = project_curve_points_to_mesh(

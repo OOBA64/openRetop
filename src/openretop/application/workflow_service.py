@@ -384,7 +384,10 @@ class WorkflowService:
                 plane_label="world XY plane" if plane is None else plane.name,
                 source_section_plane_id=None if plane is None else plane.id,
                 snap_to_mesh=bool(payload.get("snap_to_mesh", False)),
-                keep_curve_on_mesh=bool(payload.get("keep_curve_on_mesh", False)),
+                # A curve drawn on a scan follows its surface (a spline through the clicked
+                # points alone cuts through the inside of a curved scan); turn it off with
+                # the "keep on mesh" option. Curves drawn off the scan are never projected.
+                keep_curve_on_mesh=bool(payload.get("keep_curve_on_mesh", self.state.mesh_object is not None)),
             )
             return _manual_result(result)
         if action == "manual_curve.edit":
