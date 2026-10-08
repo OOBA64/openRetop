@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 PRIMITIVE_KINDS = ("plane", "sphere", "cylinder", "cone", "torus")
-MAX_FIT_POINTS = 12_000  # the refinement uses a random subset; final errors use every point
+MAX_FIT_POINTS = 3_000  # the refinement uses a random subset (error ~ noise / sqrt(N): 0.0004 mm at 0.02 mm noise); final errors use every point
+FINAL_FIT_POINTS = 20_000
 CLASSIFY_POINTS = 3_000
 MIN_INLIER_FRACTION = 0.9  # a shape that leaves more than 10% of the region unexplained does not fit it
 _RNG_SEED = 12345
@@ -121,6 +122,41 @@ def classify_region(points: object, normals: object | None, *, tolerance: float)
     return "freeform", None, fits
 
 
+def primitive_distance(fit: PrimitiveFit, points: object) -> np.ndarray:
+    """Signed distance from each point to the fitted surface (mm)."""
+
+    xyz = np.asarray(points, dtype=float).reshape(-1, 3)
+    return _DISTANCES[fit.kind](fit.params, xyz)
+
+
+def primitive_normal(fit: PrimitiveFit, points: object) -> np.ndarray:
+    """Unit surface normal of the fitted primitive at the foot of each point (sign arbitrary)."""
+
+    xyz = np.asarray(points, dtype=float).reshape(-1, 3)
+    p = fit.params
+    if fit.kind == "plane":
+        return np.tile(np.asarray(p["normal"], dtype=float), (len(xyz), 1))
+    if fit.kind == "sphere":
+        return _unit_rows(xyz - np.asarray(p["center"]))
+    if fit.kind == "cylinder":
+        axis = np.asarray(p["axis"])
+        offset = xyz - np.asarray(p["point"])
+        return _unit_rows(offset - np.outer(offset @ axis, axis))
+    if fit.kind == "cone":
+        axis = np.asarray(p["axis"])
+        half = math.radians(float(p["half_angle_degrees"]))  # type: ignore[arg-type]
+        offset = xyz - np.asarray(p["apex"])
+        radial = _unit_rows(offset - np.outer(offset @ axis, axis))
+        return _unit_rows(radial * math.cos(half) - axis * math.sin(half))
+    if fit.kind == "torus":
+        axis = np.asarray(p["axis"])
+        offset = xyz - np.asarray(p["center"])
+        radial = _unit_rows(offset - np.outer(offset @ axis, axis))
+        spine = np.asarray(p["center"]) + radial * float(p["major_radius"])  # type: ignore[arg-type]
+        return _unit_rows(xyz - spine)
+    raise ValueError(f"no normal for {fit.kind}")
+
+
 # -- the robust loop -------------------------------------------------------------------
 
 
@@ -162,6 +198,18 @@ def _robust(kind, points, normals, min_points, initial_and_refine, distance, out
             break
         inliers = next_inliers
     assert params is not None
+    # one last refinement from the converged answer on many more inliers: an axis is pinned
+    # by the length of the face and the point count, so short cylinders need the extra points
+    final_index = np.nonzero(inliers)[0]
+    if len(final_index) > MAX_FIT_POINTS:
+        if len(final_index) > FINAL_FIT_POINTS:
+            final_index = rng.choice(final_index, size=FINAL_FIT_POINTS, replace=False)
+        try:
+            refined = initial_and_refine(xyz[final_index], None if nrm is None else nrm[final_index], params)
+        except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+            refined = None
+        if refined is not None:
+            params = refined
     residual = np.abs(distance(params, xyz))
     used = residual[inliers]
     return PrimitiveFit(
@@ -175,11 +223,23 @@ def _robust(kind, points, normals, min_points, initial_and_refine, distance, out
     )
 
 
-def _least_squares(fun, x0):
+def _least_squares(fun, x0, jac=None):
     from scipy.optimize import least_squares
 
-    result = least_squares(fun, x0, method="lm", x_scale="jac", max_nfev=200 * (len(x0) + 1))
+    # Analytic Jacobians: a finite-difference Jacobian costs one residual evaluation per
+    # parameter and dominated segmentation time. A fit that has not converged in this many
+    # evaluations is not this shape (e.g. a torus tried on freeform): give up quickly.
+    result = least_squares(fun, x0, jac="2-point" if jac is None else jac, method="lm", x_scale="jac", max_nfev=40 * (len(x0) + 1))
     return result.x
+
+
+def _axis_derivatives(theta: float, phi: float) -> tuple[np.ndarray, np.ndarray]:
+    """d(axis)/d(theta) and d(axis)/d(phi) for the spherical-angle axis parameterisation."""
+
+    return (
+        np.array([math.cos(theta) * math.cos(phi), math.cos(theta) * math.sin(phi), -math.sin(theta)]),
+        np.array([-math.sin(theta) * math.sin(phi), math.sin(theta) * math.cos(phi), 0.0]),
+    )
 
 
 # -- geometry helpers ------------------------------------------------------------------
@@ -260,7 +320,12 @@ def _sphere_from(points, _normals, previous):
         radius = math.sqrt(max(float(solution[3] + center @ center), 1e-12))
     else:
         center, radius = np.asarray(previous["center"]), float(previous["radius"])
-    x = _least_squares(lambda v: np.linalg.norm(points - v[:3], axis=1) - v[3], np.r_[center, radius])
+    def sphere_jacobian(v):
+        offset = points - v[:3]
+        length = np.maximum(np.linalg.norm(offset, axis=1, keepdims=True), 1e-15)
+        return np.column_stack([-offset / length, -np.ones(len(points))])
+
+    x = _least_squares(lambda v: np.linalg.norm(points - v[:3], axis=1) - v[3], np.r_[center, radius], sphere_jacobian)
     if not np.all(np.isfinite(x)) or x[3] <= 0:
         return None
     return {"center": x[:3], "radius": float(abs(x[3]))}
@@ -307,7 +372,17 @@ def _cylinder_from(points, normals, previous):
         radial = offset - np.outer(offset @ axis_now, axis_now)
         return np.linalg.norm(radial, axis=1) - x[4]
 
-    x = _least_squares(residual, np.array([theta0, phi0, 0.0, 0.0, radius]))
+    def jacobian(x):
+        axis_now = _angles_to_axis(x[0], x[1])
+        d_theta, d_phi = _axis_derivatives(x[0], x[1])
+        offset = points - (base + u0 * x[2] + v0 * x[3])
+        height = offset @ axis_now
+        radial = offset - np.outer(height, axis_now)
+        direction = radial / np.maximum(np.linalg.norm(radial, axis=1, keepdims=True), 1e-15)
+        d_axis = -height[:, None] * direction  # d(rho)/d(axis)
+        return np.column_stack([d_axis @ d_theta, d_axis @ d_phi, -(direction @ u0), -(direction @ v0), -np.ones(len(points))])
+
+    x = _least_squares(residual, np.array([theta0, phi0, 0.0, 0.0, radius]), jacobian)
     axis_fit = _angles_to_axis(x[0], x[1])
     origin_fit = base + u0 * x[2] + v0 * x[3]
     if not np.all(np.isfinite(x)) or x[4] <= 0:
@@ -355,7 +430,21 @@ def _cone_from(points, normals, previous):
         radial = np.linalg.norm(offset - np.outer(height, axis_now), axis=1)
         return radial * math.cos(x[5]) - height * math.sin(x[5])
 
-    x = _least_squares(residual, np.r_[apex, theta0, phi0, half_angle])
+    def jacobian(x):
+        axis_now = _angles_to_axis(x[3], x[4])
+        d_theta, d_phi = _axis_derivatives(x[3], x[4])
+        cos_half, sin_half = math.cos(x[5]), math.sin(x[5])
+        offset = points - x[:3]
+        height = offset @ axis_now
+        radial = offset - np.outer(height, axis_now)
+        rho = np.maximum(np.linalg.norm(radial, axis=1), 1e-15)
+        direction = radial / rho[:, None]
+        d_apex = -(cos_half * direction - sin_half * axis_now)
+        d_axis = cos_half * (-height[:, None] * direction) - sin_half * offset
+        d_half = -rho * sin_half - height * cos_half
+        return np.column_stack([d_apex, d_axis @ d_theta, d_axis @ d_phi, d_half])
+
+    x = _least_squares(residual, np.r_[apex, theta0, phi0, half_angle], jacobian)
     if not np.all(np.isfinite(x)):
         return None
     half = float(x[5])
@@ -413,7 +502,21 @@ def _torus_from(points, normals, previous):
         radial = np.linalg.norm(offset - np.outer(height, axis_now), axis=1)
         return np.hypot(radial - x[5], height) - x[6]
 
-    x = _least_squares(residual, np.r_[center, theta0, phi0, major, minor])
+    def jacobian(x):
+        axis_now = _angles_to_axis(x[3], x[4])
+        d_theta, d_phi = _axis_derivatives(x[3], x[4])
+        offset = points - x[:3]
+        height = offset @ axis_now
+        radial = offset - np.outer(height, axis_now)
+        rho = np.maximum(np.linalg.norm(radial, axis=1), 1e-15)
+        direction = radial / rho[:, None]
+        tube = np.maximum(np.hypot(rho - x[5], height), 1e-15)
+        along_rho, along_height = (rho - x[5]) / tube, height / tube
+        d_center = -(along_rho[:, None] * direction + along_height[:, None] * axis_now)
+        d_axis = along_rho[:, None] * (-height[:, None] * direction) + along_height[:, None] * offset
+        return np.column_stack([d_center, d_axis @ d_theta, d_axis @ d_phi, -along_rho, -np.ones(len(points))])
+
+    x = _least_squares(residual, np.r_[center, theta0, phi0, major, minor], jacobian)
     if not np.all(np.isfinite(x)) or x[5] <= 0 or x[6] <= 0:
         return None
     return {"center": x[:3], "axis": _canonical_axis(_angles_to_axis(x[3], x[4])), "major_radius": float(x[5]), "minor_radius": float(x[6])}
@@ -442,10 +545,21 @@ def _torus_distance(params, points):
     return np.hypot(radial - params["major_radius"], height) - params["minor_radius"]
 
 
+_DISTANCES = {
+    "plane": _plane_distance,
+    "sphere": _sphere_distance,
+    "cylinder": _cylinder_distance,
+    "cone": _cone_distance,
+    "torus": _torus_distance,
+}
+
+
 __all__ = (
     "PRIMITIVE_KINDS",
     "PrimitiveFit",
     "classify_region",
+    "primitive_distance",
+    "primitive_normal",
     "fit_cone",
     "fit_cylinder",
     "fit_plane",

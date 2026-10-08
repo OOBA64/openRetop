@@ -208,21 +208,50 @@ def scan_from_part(
     hole_radius: float = 2.5,
     seed: int = 0,
     tessellation_tolerance: float = 0.005,
+    mesher: str = "isotropic",
 ) -> ScanMesh:
     """A scan-like mesh of ``part``: dense, noisy along the normals, with a few holes.
 
     ``edge_length`` is the scanner's point spacing (mm), ``noise_sigma`` the standard
     deviation of the normal noise (mm). Deterministic for a given ``seed``.
+
+    ``mesher``:
+    - ``"isotropic"`` (default) gives evenly sized triangles like a structured-light scan:
+      the part's signed distance field is sampled at the scanner spacing and contoured.
+      Sharp edges come out slightly rounded, as in a real scan.
+    - ``"subdivide"`` splits the CAD tessellation, which leaves long sliver triangles, like a
+      decimated or CAD-exported mesh. Use it as a robustness variant.
     """
 
     import trimesh
 
-    vertices, triangles, labels = _tessellate_by_face(part.shape, tessellation_tolerance)
-    vertices, triangles, labels = _refine(vertices, triangles, labels, edge_length)
+    # OpenCASCADE keeps a face's triangulation on the shape and reuses it in later calls, so
+    # always mesh a fresh copy: the same seed must give the same scan however often it is asked
+    shape = part.shape.copy()  # type: ignore[attr-defined]
+    vertices, triangles, labels = _tessellate_by_face(shape, tessellation_tolerance)
+    if mesher == "isotropic":
+        from vtkmodules.vtkCommonCore import vtkSMPTools
+
+        # VTK's sampling, ray casting and contouring run on several threads, which changes
+        # results at the last bit from run to run; one thread makes a seed reproducible
+        backend = vtkSMPTools.GetBackend()
+        vtkSMPTools.SetBackend("Sequential")
+        try:
+            vertices, triangles, labels = _isotropic(shape, vertices, triangles, labels, edge_length, tessellation_tolerance)
+        finally:
+            vtkSMPTools.SetBackend(backend)
+    elif mesher == "subdivide":
+        vertices, triangles, labels = _refine(vertices, triangles, labels, edge_length)
+    else:
+        raise ValueError(f"Unknown mesher: {mesher}")
     mesh = trimesh.Trimesh(vertices=vertices, faces=triangles, process=False)
     mesh.merge_vertices(digits_vertex=6)  # one surface: neighbouring faces share their edge points
     vertices = np.asarray(mesh.vertices, dtype=float)
     triangles = np.asarray(mesh.faces, dtype=np.int64)
+    if mesher == "isotropic":
+        triangles, labels = _drop_degenerate(vertices, triangles, labels)
+        # the contouring runs multi-threaded, so its output order varies from run to run
+        vertices, triangles, labels = _canonical_order(vertices, triangles, labels)
 
     rng = np.random.default_rng(seed)
     clean_vertices = vertices.copy()
@@ -278,6 +307,144 @@ def _refine(vertices: np.ndarray, triangles: np.ndarray, labels: np.ndarray, edg
     return np.asarray(refined_vertices, dtype=float), np.asarray(refined_triangles, dtype=np.int64), labels[np.asarray(index)]
 
 
+def _isotropic(
+    shape: object,
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    labels: np.ndarray,
+    spacing: float,
+    tolerance: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Contour the signed distance field of the exact surface at the scanner spacing.
+
+    The distance field uses one tessellation of the whole solid (faces share their edge
+    points, so it is watertight and the inside/outside sign is right everywhere); each
+    contour triangle then takes the label of the nearest face of the per-face tessellation.
+    """
+
+    import trimesh
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+    from vtkmodules.vtkCommonDataModel import vtkImageData
+    from vtkmodules.vtkFiltersCore import vtkFlyingEdges3D, vtkImplicitPolyDataDistance
+    from vtkmodules.vtkImagingHybrid import vtkSampleFunction
+
+    from openretop.mesh.spatial_index import MeshSpatialIndex
+    from openretop.mesh.triangle_mesh import TriangleMeshData
+    from openretop.viewer.vtk_actor_utils import polydata
+
+    # The signed distance needs one consistent outward winding; OCC's per-face tessellation
+    # does not promise that (reversed faces), so weld and re-orient first.
+    whole_points, whole_faces = shape.tessellate(min(tolerance, 0.001), 0.05)  # type: ignore[attr-defined]
+    exact = trimesh.Trimesh(
+        vertices=np.array([point.toTuple() for point in whole_points], dtype=float),
+        faces=np.array(whole_faces, dtype=np.int64),
+        process=False,
+    )
+    exact.merge_vertices(digits_vertex=6)
+    trimesh.repair.fix_normals(exact, multibody=False)
+    surface = polydata(np.asarray(exact.vertices), np.asarray(exact.faces), cell_kind="polys")
+    distance = vtkImplicitPolyDataDistance()
+    distance.SetInput(surface)
+    lower = vertices.min(axis=0) - 3.0 * spacing
+    upper = vertices.max(axis=0) + 3.0 * spacing
+    # a grid spacing of ~0.75 x the wanted edge length gives contour edges of about that length
+    step = 0.75 * float(spacing)
+    dims = np.maximum(np.ceil((upper - lower) / step).astype(int) + 1, 2)
+    sampler = vtkSampleFunction()
+    sampler.SetImplicitFunction(distance)
+    sampler.SetModelBounds(lower[0], lower[0] + (dims[0] - 1) * step, lower[1], lower[1] + (dims[1] - 1) * step, lower[2], lower[2] + (dims[2] - 1) * step)
+    sampler.SetSampleDimensions(int(dims[0]), int(dims[1]), int(dims[2]))
+    sampler.ComputeNormalsOff()
+    sampler.Update()
+    image = vtkImageData()
+    image.DeepCopy(sampler.GetOutput())
+    # VTK takes the sign from the nearest triangle's normal, which flips just outside a convex
+    # edge where a wall leans (found on the lofted casting). Keep the distance, but decide
+    # inside/outside with a ray-cast containment test.
+    _apply_robust_sign(image, surface)
+    contour = vtkFlyingEdges3D()
+    contour.SetInputData(image)
+    contour.SetValue(0, 0.0)
+    contour.ComputeNormalsOff()
+    contour.ComputeGradientsOff()
+    contour.Update()
+    output = contour.GetOutput()
+    new_vertices = vtk_to_numpy(output.GetPoints().GetData()).astype(float)
+    new_triangles = vtk_to_numpy(output.GetPolys().GetConnectivityArray()).reshape(-1, 3).astype(np.int64)
+    # Contouring interpolates linearly between grid samples, which leaves a systematic error of
+    # about spacing^2 * curvature / 8 (0.018 mm on a R4 hole at 0.75 mm spacing, as large as the
+    # noise) and rounds sharp edges. A scanner measures the surface itself: put every vertex
+    # back on the exact surface.
+    exact_index = MeshSpatialIndex.from_mesh(TriangleMeshData(vertices=np.asarray(exact.vertices), triangles=np.asarray(exact.faces)))
+    new_vertices = np.asarray(exact_index.query_closest_points(new_vertices).closest_points, dtype=float)
+    # the reference face under each new triangle
+    index = MeshSpatialIndex.from_mesh(TriangleMeshData(vertices=vertices, triangles=triangles))
+    nearest = index.query_closest_points(new_vertices[new_triangles].mean(axis=1))
+    new_labels = labels[np.asarray(nearest.triangle_indices, dtype=np.int64)]
+    return new_vertices, new_triangles, new_labels
+
+
+def _apply_robust_sign(image: object, surface: object) -> None:
+    from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkPolyData
+    from vtkmodules.vtkFiltersModeling import vtkSelectEnclosedPoints
+
+    scalars = image.GetPointData().GetScalars()  # type: ignore[attr-defined]
+    values = np.abs(vtk_to_numpy(scalars).astype(float))
+    dims = image.GetDimensions()  # type: ignore[attr-defined]
+    origin = np.asarray(image.GetOrigin())  # type: ignore[attr-defined]
+    spacing = np.asarray(image.GetSpacing())  # type: ignore[attr-defined]
+    k, j, i = np.meshgrid(np.arange(dims[2]), np.arange(dims[1]), np.arange(dims[0]), indexing="ij")
+    coords = origin + np.c_[i.ravel(), j.ravel(), k.ravel()] * spacing  # VTK point order: x fastest
+    # every grid point: VTK's nearest-normal sign can be wrong several mm out from a leaning edge
+    near = np.ones(len(values), dtype=bool)
+    points = vtkPoints()
+    points.SetData(numpy_to_vtk(np.ascontiguousarray(coords[near]), deep=True))
+    cloud = vtkPolyData()
+    cloud.SetPoints(points)
+    from vtkmodules.vtkCommonCore import vtkMath
+
+    enclosed = vtkSelectEnclosedPoints()
+    enclosed.SetInputData(cloud)
+    enclosed.SetSurfaceData(surface)
+    enclosed.CheckSurfaceOff()
+    enclosed.SetTolerance(1e-6)
+    vtkMath.RandomSeed(12345)  # the containment test casts random rays
+    enclosed.Update()
+    inside_near = vtk_to_numpy(enclosed.GetOutput().GetPointData().GetArray("SelectedPoints")).astype(bool)
+    signs = np.sign(vtk_to_numpy(scalars).astype(float))
+    signs[signs == 0] = 1.0
+    signs[near] = np.where(inside_near, -1.0, 1.0)
+    signed = numpy_to_vtk(values * signs, deep=True)
+    signed.SetName(scalars.GetName() or "distance")
+    image.GetPointData().SetScalars(signed)  # type: ignore[attr-defined]
+
+
+def _canonical_order(vertices: np.ndarray, triangles: np.ndarray, labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vertices sorted by position and triangles by their sorted corners: a run-independent order."""
+
+    rounded = np.round(vertices, 9)
+    vertex_order = np.lexsort((rounded[:, 2], rounded[:, 1], rounded[:, 0]))
+    rank = np.empty(len(vertices), dtype=np.int64)
+    rank[vertex_order] = np.arange(len(vertices))
+    triangles = rank[triangles]
+    # rotate each triangle to start at its smallest index (keeps the winding)
+    start = np.argmin(triangles, axis=1)
+    rows = np.arange(len(triangles))[:, None]
+    triangles = triangles[rows, (start[:, None] + np.arange(3)) % 3]
+    triangle_order = np.lexsort((triangles[:, 2], triangles[:, 1], triangles[:, 0]))
+    return vertices[vertex_order], triangles[triangle_order], labels[triangle_order]
+
+
+def _drop_degenerate(vertices: np.ndarray, triangles: np.ndarray, labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    corners = vertices[triangles]
+    area = 0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]), axis=1)
+    distinct = (triangles[:, 0] != triangles[:, 1]) & (triangles[:, 1] != triangles[:, 2]) & (triangles[:, 0] != triangles[:, 2])
+    keep = distinct & (area > 1e-12)
+    return triangles[keep], labels[keep]
+
+
 def _vertex_normals(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     corners = vertices[triangles]
     face_normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])  # area weighted
@@ -294,7 +461,9 @@ def distance_to_reference(points: np.ndarray, part: ReferencePart, *, tolerance:
     from openretop.mesh.spatial_index import MeshSpatialIndex
     from openretop.mesh.triangle_mesh import TriangleMeshData
 
-    vertices, triangles, _labels = _tessellate_by_face(part.shape, tolerance)
+    surface_points, surface_faces = part.shape.copy().tessellate(tolerance, 0.05)  # type: ignore[attr-defined]
+    vertices = np.array([point.toTuple() for point in surface_points], dtype=float)
+    triangles = np.array(surface_faces, dtype=np.int64)
     index = MeshSpatialIndex.from_mesh(TriangleMeshData(vertices=vertices, triangles=triangles))
     result = index.query_closest_points(np.asarray(points, dtype=float).reshape(-1, 3))
     return np.asarray(result.distances, dtype=float)

@@ -10,9 +10,13 @@ from openretop.fitting.primitives import (
     fit_primitive,
     fit_sphere,
     fit_torus,
+    primitive_distance,
+    primitive_normal,
 )
 
 __all__ = (
+    "primitive_distance",
+    "primitive_normal",
     "PRIMITIVE_KINDS",
     "PrimitiveFit",
     "classify_region",

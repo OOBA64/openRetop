@@ -80,7 +80,9 @@ class ScanSimulatorTests(unittest.TestCase):
         radial = np.minimum.reduce(
             [np.abs(np.hypot(centroids[:, 0] - c["point"][0], centroids[:, 1] - c["point"][1]) - c["radius"]) for c in part.truth["cylinders"]]
         )
-        self.assertLess(float(np.percentile(radial, 99)), 0.15)
+        # triangles that straddle an edge have their centroid off both faces; the rest sit on it
+        self.assertLess(float(np.median(radial)), 0.05)
+        self.assertLess(float(np.percentile(radial, 90)), 0.1)
 
     def test_holes_are_punched_and_the_mesh_stays_a_single_surface(self) -> None:
         part = make_part("housing")
@@ -94,7 +96,20 @@ class ScanSimulatorTests(unittest.TestCase):
         scan = scan_from_part(make_part("shaft"), edge_length=1.0, noise_sigma=0.0, holes=0)
         corners = scan.vertices[scan.triangles]
         edges = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2)
-        self.assertLessEqual(float(edges.max()), 1.0 + 1e-6)
+        self.assertAlmostEqual(float(np.median(edges)), 0.75, delta=0.1)
+        self.assertLessEqual(float(edges.max()), 1.5)
+        sliver = scan_from_part(make_part("shaft"), edge_length=1.0, noise_sigma=0.0, holes=0, mesher="subdivide")
+        corners = sliver.vertices[sliver.triangles]
+        self.assertLessEqual(float(np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2).max()), 1.0 + 1e-6)
+
+    def test_the_default_scan_has_even_triangles_and_lies_on_the_part(self) -> None:
+        part = make_part("knob")
+        scan = scan_from_part(part, noise_sigma=0.0, holes=0, **FAST)
+        corners = scan.vertices[scan.triangles]
+        edges = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2)
+        aspect = edges.max(axis=1) / np.maximum(edges.min(axis=1), 1e-12)
+        self.assertLess(float(np.median(aspect)), 2.0)  # like a structured-light scan, not slivers
+        self.assertLess(float(distance_to_reference(scan.vertices, part).max()), 1e-3)
 
 
 def _boundary_edge_count(triangles: np.ndarray) -> int:

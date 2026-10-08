@@ -37,7 +37,7 @@ task is tracked here.
 |---|---|---|---|
 | RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
-| RE-03 | M1 | todo | Automatic segmentation into classified regions |
+| RE-03 | M1 | done | Automatic segmentation into classified regions (`openretop.segmentation`: fit-guided region growing with a saturation test; 95-97% of triangles correct on B1-B5, every true face found, 1.5-3 s prismatic / ~8 s freeform; freeform areas still yield some small primitive regions, RE-04 edits them) |
 | RE-04 | M1 | todo | Region editing: brush, grow/shrink, merge/split, many regions |
 | RE-05 | M1 | done | Primitive fitting: plane, sphere, cylinder, cone, torus (`openretop.fitting`; at 0.02 mm noise: B1 radii within 0.004 mm, axes within 0.02 deg, cone half-angle within 0.02 deg; sphere cap / quarter torus within 0.004 mm; simplest-first classification ~0.2 s; never raises) |
 | RE-06 | M1 | todo | Constraints and snapping for primitives |
