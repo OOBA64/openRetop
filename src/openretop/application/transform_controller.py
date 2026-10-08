@@ -109,6 +109,7 @@ class TransformController(ControllerBase):
         self._modal_object_before: ObjectTransformSnapshot | None = None
         self._modal_section_before: SectionWorkflowSnapshot | None = None
         self._typed = ""  # a value typed during the grab (Blender style); overrides the mouse
+        self._transformed_mesh_cache: tuple[object, bytes, TriangleMeshData] | None = None
 
     @property
     def last_readout(self) -> str | None:
@@ -648,8 +649,21 @@ class TransformController(ControllerBase):
                 vertices=np.zeros((0, 3), dtype=float),
                 triangles=np.zeros((0, 3), dtype=int),
             )
-        mesh = mesh_object.source_mesh.copy()
-        mesh.transform(self.current_object_matrix())
+        # Cached: the curve tool asks for it on every mouse move, and copying and transforming
+        # a large scan each time cost ~60 ms per move. The arrays are read-only, so a caller
+        # that tried to modify the shared mesh would fail loudly instead of corrupting it.
+        source = mesh_object.source_mesh
+        matrix = self.current_object_matrix()
+        cached = self._transformed_mesh_cache
+        if cached is not None and cached[0] is source and cached[1] == matrix.tobytes():
+            return cached[2]
+        mesh = source.copy()
+        if not np.allclose(matrix, np.identity(4), atol=0.0, rtol=0.0):
+            mesh.transform(matrix)
+        for array in (mesh.vertices, mesh.triangles, mesh.vertex_normals, mesh.triangle_normals):
+            if array is not None:
+                array.setflags(write=False)
+        self._transformed_mesh_cache = (source, matrix.tobytes(), mesh)
         return mesh
 
     def _change_origin(

@@ -78,24 +78,66 @@ StructuredPickResult = (
 )
 
 
+_INDEXED_TYPES = frozenset({"mesh", "surface", "region"})  # triangle actors worth a spatial index
+
+
 class PickingService:
     """Own VTK picker configuration and actor-to-scene identity mapping."""
 
     def __init__(self, renderer: object) -> None:
         self.renderer = renderer
         self._actor_objects: dict[int, tuple[str, str]] = {}
+        # Surface actors and a spatial index per actor: without one, vtkCellPicker tests every
+        # triangle (20 ms per pick on a 180k-triangle scan, on every mouse move of a tool).
+        self._surface_actors: dict[int, object] = {}
+        self._locators: dict[int, tuple[tuple[str, int], object]] = {}
+        self.locator_build_count = 0
 
     def register_actor(self, actor: object, *, object_id: str, object_type: str) -> None:
         self._actor_objects[id(actor)] = (str(object_id), str(object_type))
+        if object_type in _INDEXED_TYPES:
+            self._surface_actors[id(actor)] = actor
 
     def unregister_actor(self, actor: object) -> None:
         self._actor_objects.pop(id(actor), None)
+        self._surface_actors.pop(id(actor), None)
+        self._locators.pop(id(actor), None)
+
+    def _picker(self) -> object:
+        picker = vtkCellPicker()
+        picker.SetTolerance(0.0025)
+        for key, actor in self._surface_actors.items():
+            locator = self._locator(key, actor)
+            if locator is not None:
+                picker.AddLocator(locator)
+        return picker
+
+    def _locator(self, key: int, actor: object) -> object | None:
+        """The actor's cell locator, rebuilt only when its geometry changed."""
+
+        try:
+            data = actor.GetMapper().GetInput()  # type: ignore[attr-defined]
+        except (AttributeError, RuntimeError):
+            return None
+        if data is None or data.GetNumberOfCells() == 0:
+            return None
+        signature = (data.GetAddressAsString("vtkObject"), int(data.GetMTime()))
+        cached = self._locators.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        from vtkmodules.vtkCommonDataModel import vtkStaticCellLocator
+
+        locator = vtkStaticCellLocator()
+        locator.SetDataSet(data)
+        locator.BuildLocator()
+        self._locators[key] = (signature, locator)
+        self.locator_build_count += 1
+        return locator
 
     def pick_scene_object(self, x_position: int, y_position: int) -> SceneObjectPickResult:
         if vtkCellPicker is None:
             return SceneObjectPickResult(hit=False)
-        picker = vtkCellPicker()
-        picker.SetTolerance(0.0025)
+        picker = self._picker()
         if not picker.Pick(float(x_position), float(y_position), 0.0, self.renderer):
             return SceneObjectPickResult(hit=False)
         actor = picker.GetActor()
@@ -115,8 +157,7 @@ class PickingService:
 
         if vtkCellPicker is None:
             return MeshPickResult(hit=False)
-        picker = vtkCellPicker()
-        picker.SetTolerance(0.0025)
+        picker = self._picker()
         if not picker.Pick(float(x_position), float(y_position), 0.0, self.renderer):
             return MeshPickResult(hit=False)
         identity = self._actor_objects.get(id(picker.GetActor()))

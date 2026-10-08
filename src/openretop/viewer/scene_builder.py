@@ -54,6 +54,26 @@ class SceneBuildOptions:
     region_opacity: float = 0.34
 
 
+_last_mesh_revision: tuple[object, object, int] | None = None
+
+
+def _mesh_revision(vertices: object, triangles: object) -> int:
+    """The scan's geometry revision, hashed once per vertex/triangle array.
+
+    Hashing a large scan cost ~10 ms on every snapshot (every mouse move of a tool). The
+    mesh code replaces these arrays rather than editing them in place (translate and
+    restore assign new arrays), so the same array objects mean the same geometry.
+    """
+
+    global _last_mesh_revision
+    cached = _last_mesh_revision
+    if cached is not None and cached[0] is vertices and cached[1] is triangles:
+        return cached[2]
+    revision = geometry_revision(vertices, triangles)
+    _last_mesh_revision = (vertices, triangles, revision)
+    return revision
+
+
 class SceneBuilder:
     """Translate application state and prepared geometry into a snapshot.
 
@@ -176,10 +196,7 @@ class SceneBuilder:
             minimum = tuple(float(value) for value in np.asarray(local_minimum, dtype=float).reshape(3))
             maximum = tuple(float(value) for value in np.asarray(local_maximum, dtype=float).reshape(3))
             local_bounds = (minimum, maximum)
-        revision = geometry_revision(
-            getattr(mesh, "vertices", None),
-            getattr(mesh, "triangles", None),
-        )
+        revision = _mesh_revision(getattr(mesh, "vertices", None), getattr(mesh, "triangles", None))
         colors = options.display_colors
         return (
             MeshRenderItem(

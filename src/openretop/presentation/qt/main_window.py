@@ -793,7 +793,12 @@ class OpenRetopV3Window(ApplicationShell):
             if result.project_dirty:
                 self.set_project_dirty(True)
             if result.needs_viewport_refresh or result.changed:
-                self.refresh()
+                # Hovering and dragging a point only change the 3D preview: re-render the
+                # scene, and rebuild the panels only when a point is added, removed or chosen.
+                if route.action in {"preview", "move_point", "clear_preview"}:
+                    self._render_scene()
+                else:
+                    self.refresh()
         elif route.action not in {"none", "finish_drag"}:
             self.refresh()
 
