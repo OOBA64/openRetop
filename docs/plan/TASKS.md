@@ -35,7 +35,7 @@ task is tracked here.
 
 | ID | Milestone | Status | Task |
 |---|---|---|---|
-| RE-01 | M1 | todo | Benchmark harness: CadQuery reference parts to noisy scan meshes |
+| RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | todo | Automatic segmentation into classified regions |
 | RE-04 | M1 | todo | Region editing: brush, grow/shrink, merge/split, many regions |
