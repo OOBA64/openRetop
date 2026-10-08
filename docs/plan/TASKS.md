@@ -39,7 +39,7 @@ task is tracked here.
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | todo | Automatic segmentation into classified regions |
 | RE-04 | M1 | todo | Region editing: brush, grow/shrink, merge/split, many regions |
-| RE-05 | M1 | todo | Primitive fitting: plane, sphere, cylinder, cone, torus |
+| RE-05 | M1 | done | Primitive fitting: plane, sphere, cylinder, cone, torus (`openretop.fitting`; at 0.02 mm noise: B1 radii within 0.004 mm, axes within 0.02 deg, cone half-angle within 0.02 deg; sphere cap / quarter torus within 0.004 mm; simplest-first classification ~0.2 s; never raises) |
 | RE-06 | M1 | todo | Constraints and snapping for primitives |
 | RE-07 | M1 | todo | Feature tree v1 (editable, rebuilt, saved) |
 | RE-08 | M1 | todo | Primitives to a closed solid |
