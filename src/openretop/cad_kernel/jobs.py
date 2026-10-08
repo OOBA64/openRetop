@@ -182,6 +182,35 @@ def _plain_params(params: dict[str, Any]) -> dict[str, Any]:
     return plain
 
 
+def patch_from_curves(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    boundaries: list[np.ndarray],
+    *,
+    tolerance: float = 0.05,
+    smoothness: float = 0.25,
+) -> dict[str, Any]:
+    """A face inside a loop of curves on the scan: a freeform surface fitted to the scan
+    there (net chosen to meet ``tolerance``), cut to the curves."""
+
+    from openretop.fitting.bspline_surface import auto_fit_bspline_surface
+
+    fit = auto_fit_bspline_surface(points, triangles, tolerance=tolerance, smoothness=smoothness, expand=0.15)
+    if not fit.success:
+        raise ValueError(fit.reason or "the scan inside the curves could not be fitted")
+    face = S.trimmed_bspline_face(fit, [np.asarray(line, dtype=float) for line in boundaries])
+    distances = fit.distances(points)
+    return surface_result(
+        face,
+        kind="patch",
+        rms=float(np.sqrt(np.mean(distances**2))),
+        max_error=float(np.max(distances)),
+        control_u=fit.control_counts[0],
+        control_v=fit.control_counts[1],
+        parameterization=fit.parameterization,
+    )
+
+
 def loft(curves: list[np.ndarray], *, ruled: bool = False) -> dict[str, Any]:
     return surface_result(S.loft_surface([np.asarray(curve, dtype=float) for curve in curves], ruled=ruled), kind="loft")
 
@@ -328,6 +357,7 @@ def selftest_crash() -> None:  # pragma: no cover - kills the worker process
 JOBS = frozenset(
     {
         "fit_surface",
+        "patch_from_curves",
         "loft",
         "fill",
         "extend",

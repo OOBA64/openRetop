@@ -41,7 +41,7 @@ SURFACE_TYPES = (
     ("torus", "Torus"),
 )
 SELECTION_MODES = (("smart", "Smart"), ("brush", "Brush"), ("erase", "Erase"))
-PAGES = ("fit_surface", "loft", "fill", "extend", "trim", "compare")
+PAGES = ("sketch", "fit_surface", "loft", "fill", "extend", "trim", "compare")
 
 
 @dataclass
@@ -116,6 +116,7 @@ class SurfacingPanel(QWidget):
         layout.addStretch(1)
         self._page_index: dict[str, int] = {}
         for name, builder in (
+            ("sketch", self._build_sketch),
             ("fit_surface", self._build_fit),
             ("loft", self._build_loft),
             ("fill", self._build_fill),
@@ -152,6 +153,7 @@ class SurfacingPanel(QWidget):
         blockers = [QSignalBlocker(widget) for widget in self._inputs()]
         try:
             self._show_fit(session, facts)
+            self._show_sketch(facts.extra, facts.busy)
             self.loft_info.setText(
                 f"{facts.selected_curves} curve(s) selected." if facts.selected_curves else "No curves selected."
             )
@@ -214,8 +216,29 @@ class SurfacingPanel(QWidget):
         self.fit_button.setEnabled(has_selection and not facts.busy)
         self.create_button.setEnabled(has_selection and not facts.busy)
 
+    def _show_sketch(self, extra: dict[str, Any], busy: bool) -> None:
+        if not extra:
+            return
+        drawing = int(extra.get("drawing", 0))
+        selected = int(extra.get("selected_curves", 0))
+        lines = []
+        if drawing:
+            lines.append(f"Drawing: {drawing} point(s). Enter finishes, C closes, Backspace removes the last point.")
+        lines.append(f"{extra.get('curves', 0)} curve(s) in the sketch.")
+        if selected:
+            lines.append(f"Selected: {extra.get('selected_names', '')}")
+        self.sketch_info.setText("\n".join(lines))
+        self.sketch_finish.setEnabled(drawing >= 2)
+        self.sketch_close.setEnabled(drawing >= 3)
+        self.sketch_undo.setEnabled(drawing >= 1)
+        self.sketch_delete.setEnabled(selected > 0 and not busy)
+        self.sketch_loft.setEnabled(selected >= 2 and not busy)
+        self.sketch_face.setEnabled(bool(extra.get("loop")) and not busy)
+        self.sketch_fit.setChecked(bool(extra.get("fit_to_scan", True)))
+
     def _inputs(self) -> list[QWidget]:
         return [
+            self.sketch_fit,
             self.angle,
             self.connected,
             self.brush,
@@ -347,6 +370,49 @@ class SurfacingPanel(QWidget):
         layout.addLayout(row)
         self.fit_result = _hint()
         layout.addWidget(self.fit_result)
+
+    def _build_sketch(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(
+            _hint(
+                "Click points on the scan: the curve follows the surface through them. Click an existing "
+                "point to connect to it (that finishes the curve), or the curve's first point to close it. "
+                "Drag a point to move it; drag anywhere else to rotate the view."
+            )
+        )
+        row = QHBoxLayout()
+        self.sketch_finish = _button("Finish")
+        self.sketch_finish.setToolTip("Finish the curve being drawn as an open curve (Enter).")
+        self.sketch_finish.clicked.connect(lambda: self._emit("model.sketch_finish"))
+        self.sketch_close = _button("Close")
+        self.sketch_close.setToolTip("Close the curve being drawn into a loop (C).")
+        self.sketch_close.clicked.connect(lambda: self._emit("model.sketch_close"))
+        self.sketch_undo = _button("Undo Point")
+        self.sketch_undo.setToolTip("Remove the last point placed (Backspace).")
+        self.sketch_undo.clicked.connect(lambda: self._emit("model.sketch_undo_point"))
+        for button in (self.sketch_finish, self.sketch_close, self.sketch_undo):
+            row.addWidget(button)
+        layout.addLayout(row)
+        self.sketch_info = _hint()
+        layout.addWidget(self.sketch_info)
+        layout.addWidget(_section("Make surfaces"))
+        layout.addWidget(_hint("Select curves (click them; Ctrl+click adds), then:"))
+        self.sketch_face = _button("Face From Curves", primary=True)
+        self.sketch_face.setToolTip("A face inside the selected closed curve, or curves whose ends meet in a loop.")
+        self.sketch_face.clicked.connect(lambda: self._emit("model.sketch_face"))
+        layout.addWidget(self.sketch_face)
+        self.sketch_fit = QCheckBox("Fit the face to the scan inside the curves")
+        self.sketch_fit.setToolTip("Off: a smooth fill of the boundary that ignores the scan inside it.")
+        self.sketch_fit.toggled.connect(lambda value: self._emit("model.configure", {"face_fit_to_scan": bool(value)}))
+        layout.addWidget(self.sketch_fit)
+        row = QHBoxLayout()
+        self.sketch_loft = _button("Loft")
+        self.sketch_loft.setToolTip("A surface through the selected curves (two or more, in order).")
+        self.sketch_loft.clicked.connect(lambda: self._emit("model.sketch_loft"))
+        self.sketch_delete = _button("Delete Curves")
+        self.sketch_delete.clicked.connect(lambda: self._emit("model.sketch_delete"))
+        row.addWidget(self.sketch_loft)
+        row.addWidget(self.sketch_delete)
+        layout.addLayout(row)
 
     def _build_loft(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_hint("Select two or more curves (Ctrl+click in the tree or the scene), in order. Draw curves on the scan with Draw Curve."))

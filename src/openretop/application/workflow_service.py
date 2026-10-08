@@ -639,6 +639,9 @@ class WorkflowService:
             if shown.undo_payload is not None and shown.changed:
                 self.undo.push(shown.undo_payload)
             return None  # and the scene's own Show All
+        curve_ids = tuple(self.state.model.selected_curve_ids)
+        if curve_ids and not model_ids and not selection_ids and action == "scene.delete_selected":
+            return modeling.sketch_delete(curve_ids)
         if not model_ids:
             return None
         if action == "scene.rename_selected":
@@ -670,6 +673,7 @@ class WorkflowService:
     def _dispatch_model(self, action: str, payload: dict[str, object]) -> CommandResult:
         modeling = self.modeling
         starts = {
+            "model.sketch": "sketch",
             "model.fit_surface": "fit_surface",
             "model.loft": "loft",
             "model.fill": "fill",
@@ -681,6 +685,19 @@ class WorkflowService:
             return modeling.start(starts[action])
         if action == "model.finish":
             return modeling.finish()
+        if action == "model.sketch_finish":
+            return modeling.sketch_finish()
+        if action == "model.sketch_close":
+            return modeling.sketch_finish(close=True)
+        if action == "model.sketch_undo_point":
+            return modeling.sketch_undo_point()
+        if action == "model.sketch_delete":
+            return modeling.sketch_delete()
+        if action == "model.sketch_loft":
+            return modeling.sketch_loft()
+        if action == "model.sketch_face":
+            fit = payload.get("fit_to_scan")
+            return modeling.sketch_face(fit_to_scan=None if fit is None else bool(fit))
         if action == "model.configure":
             return modeling.configure(**{str(key): value for key, value in payload.items()})
         if action == "model.select_clear":

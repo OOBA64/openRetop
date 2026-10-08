@@ -445,6 +445,9 @@ _DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
         "section.clear_all": "Remove every section result and its curves.",
         "manual_curve.create": "Draw a curve by clicking points on the scan. Enter finishes, Esc cancels.",
         "manual_curve.edit": "Edit the points of the selected hand-drawn curve.",
+        "model.sketch": "Draw curves on the scan: click points, Enter finishes, click the first point to close, snap to points to connect curves. Drag a point to move it.",
+        "model.sketch_face": "A face inside the selected closed curve, or loop of connected curves, fitted to the scan inside it.",
+        "model.sketch_loft": "A surface through the selected sketch curves (two or more).",
         "model.fit_surface": "Fit a surface to an area of the scan: select it (click or brush), choose the type (auto, freeform, plane, cylinder, ...), Fit, Create.",
         "model.loft": "A surface through two or more selected curves (e.g. curves drawn on the scan).",
         "model.fill": "Fill a gap bounded by curves and surface edges; edges can join smoothly (tangent).",
@@ -692,6 +695,13 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
 
     # Surfacing toolset (milestone S): each opens a tool panel; the panel's buttons are the
     # payload actions below it.
+    _workflow_action("model.sketch", "3D Sketch", "Surfacing", "start_sketch", enabled_when=_MESH),
+    _workflow_action("model.sketch_finish", "Finish Curve", "Surfacing", "sketch_finish", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.sketch_close", "Close Curve", "Surfacing", "sketch_close", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.sketch_undo_point", "Remove Last Point", "Surfacing", "sketch_undo_point", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.sketch_delete", "Delete Sketch Curves", "Surfacing", "sketch_delete", enabled_when=(ActionCondition.NOT_BUSY,)),
+    _workflow_action("model.sketch_loft", "Loft Sketch Curves", "Surfacing", "sketch_loft", enabled_when=(ActionCondition.NOT_BUSY,)),
+    _workflow_action("model.sketch_face", "Face From Curves", "Surfacing", "sketch_face", enabled_when=(ActionCondition.NOT_BUSY,)),
     _workflow_action("model.fit_surface", "Fit Surface", "Surfacing", "start_fit_surface", enabled_when=_MESH),
     _workflow_action("model.loft", "Loft", "Surfacing", "start_loft", enabled_when=_NOT_BUSY),
     _workflow_action("model.fill", "Fill Surface", "Surfacing", "start_fill", enabled_when=_NOT_BUSY),

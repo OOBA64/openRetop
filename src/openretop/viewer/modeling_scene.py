@@ -21,6 +21,8 @@ DROPPED_PIECE_COLOR = (0.55, 0.57, 0.62)
 EDGE_COLOR = (0.10, 0.11, 0.13)
 SELECTED_EDGE_COLOR = (1.00, 0.85, 0.25)
 CHAIN_EDGE_COLOR = (0.95, 0.30, 0.85)
+SKETCH_CURVE_COLOR = (0.85, 0.40, 0.98)  # 3D Sketch curves: violet, unlike surfaces and the selection
+SELECTED_SKETCH_COLOR = (1.00, 0.85, 0.25)
 
 # deviation colour scale (signed distance / tolerance)
 _IN_TOLERANCE = np.array([0.30, 0.78, 0.40])
@@ -65,6 +67,7 @@ class ModelingSceneInput:
     deviation: np.ndarray | None = field(default=None, compare=False)  # signed, per display vertex
     deviation_tolerance: float = 0.05
     chain_edges: Sequence[tuple[str, int]] = ()  # (entity id, edge) picked for a fill boundary
+    sketch_curves: Sequence[tuple[str, np.ndarray, bool]] = ()  # (curve id, polyline, selected)
 
 
 def modeling_items(
@@ -117,6 +120,18 @@ def modeling_items(
                         style=DisplayStyleSnapshot(color=CHAIN_EDGE_COLOR, line_width=4.0),
                     )
                 )
+    for curve_id, polyline, selected in modeling.sketch_curves:
+        edges.append(
+            ModelEdgesRenderItem(
+                id=f"sketch-curve:{curve_id}",
+                revision=hash(("sketch", curve_id, id(polyline), len(polyline))),
+                polylines=(polyline,),
+                style=DisplayStyleSnapshot(
+                    color=SELECTED_SKETCH_COLOR if selected else SKETCH_CURVE_COLOR, line_width=3.5 if selected else 2.5
+                ),
+                selection_keys=(f"sketch:{curve_id}",),
+            )
+        )
     preview = modeling.preview
     if preview is not None:
         faces.append(

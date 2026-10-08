@@ -387,7 +387,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         # the ExModel-style surfacing tools, in the order a part is modelled: their own row
         surfacing = (
             ("model.fit_surface", "fit_surface", "Fit Surface", False),
-            ("manual_curve.create", "curve", "3D Sketch", False),
+            ("model.sketch", "curve", "3D Sketch", False),
             ("model.loft", "loft", "Loft", False),
             ("model.fill", "fill", "Fill", False),
             ("model.extend", "extend", "Extend", False),
@@ -742,7 +742,15 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             return
         if not isinstance(pick, SceneObjectPickResult):
             pick = self.viewport.pick_scene_object(x_position, y_position)
-        picked_model = model_id_from_node(_node_id_for_pick(pick) or "") if isinstance(pick, SceneObjectPickResult) and pick.hit else None
+        picked_node = (_node_id_for_pick(pick) or "") if isinstance(pick, SceneObjectPickResult) and pick.hit else ""
+        if picked_node.startswith("sketch:"):
+            self.composition.selection_controller.select_nodes(())
+            self.composition.modeling_controller.select_entities(())
+            result = self.composition.modeling_controller.sketch_select_curves((picked_node.split(":", 1)[1],))
+            self.set_status_message(result.status)
+            self.refresh()
+            return
+        picked_model = model_id_from_node(picked_node) if picked_node else None
         if picked_model is not None:
             self.composition.selection_controller.select_nodes(())
             result = self.composition.modeling_controller.select_entities((picked_model,))
@@ -760,10 +768,12 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             self._leave_section_tool()
             or self.composition.selection_controller.snapshot().ids
             or self.composition.state.model.selected_ids
+            or self.composition.state.model.selected_curve_ids
         ):
             # A plain click on empty space deselects, as in every other CAD viewport.
             self.composition.selection_controller.select_nodes(())
             self.composition.modeling_controller.select_entities(())
+            self.composition.modeling_controller.sketch_select_curves(())
             self.set_status_message("Selection cleared")
             self.refresh()
 
@@ -2028,6 +2038,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         return tuple(previews)
 
     def _tool_preview(self) -> ToolPreviewState:
+        sketch_preview = self._surfacing_tool_preview()
+        if sketch_preview is not None:
+            return sketch_preview
         controller = self.composition.manual_curve_controller
         session = controller.session
         if session.active:
@@ -2108,6 +2121,8 @@ def _model_node_for_actor(object_id: str) -> str | None:
     """'model-face:<id>' / 'model-edges:<id>' actors belong to model entity <id>."""
 
     kind, _sep, entity_id = str(object_id).partition(":")
+    if kind == "sketch-curve" and entity_id:
+        return f"sketch:{entity_id}"
     return model_node_id(entity_id) if kind in ("model-face", "model-edges") and entity_id else None
 
 

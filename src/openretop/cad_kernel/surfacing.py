@@ -69,6 +69,94 @@ def bspline_face(fit: BSplineSurfaceFit) -> object:
     return BRepBuilderAPI_MakeFace(surface, 1e-6).Face()
 
 
+def trimmed_bspline_face(fit: BSplineSurfaceFit, boundaries: list[np.ndarray]) -> object:
+    """The fitted surface cut to a closed chain of curves drawn on the scan.
+
+    Each curve is mapped onto the surface (foot-point parameters) and becomes an edge lying
+    on it; consecutive edges share their corner vertex, so the wire closes exactly. The
+    curves are on the scan and the surface fits the scan, so they differ by about the scan
+    noise: two patches built on a shared curve meet within it and sew together.
+    """
+
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeVertex,
+        BRepBuilderAPI_MakeWire,
+    )
+    from OCP.BRepLib import BRepLib
+    from OCP.ShapeFix import ShapeFix_Face
+
+    surface = BRep_Tool.Surface_s(bspline_face(fit))
+    lines = [np.asarray(line, dtype=float).reshape(-1, 3) for line in boundaries]
+    uv_lines = [np.column_stack(fit.closest_parameters(line)) for line in lines]
+    count = len(uv_lines)
+    corners = []  # the corner between line i and line i+1, in (u, v)
+    for index in range(count):
+        following = uv_lines[(index + 1) % count]
+        corners.append(0.5 * (uv_lines[index][-1] + following[0]))
+    vertices = [BRepBuilderAPI_MakeVertex(surface.Value(float(u), float(v))).Vertex() for u, v in corners]
+    wire = BRepBuilderAPI_MakeWire()
+    for index, uv in enumerate(uv_lines):
+        uv = uv.copy()
+        uv[0] = corners[index - 1]
+        uv[-1] = corners[index]
+        curve2d = _uv_curve(uv, closed=count == 1)
+        start, end = vertices[index - 1], vertices[index]
+        edge = BRepBuilderAPI_MakeEdge(curve2d, surface, start, end)
+        if not edge.IsDone():
+            raise ValueError("a boundary curve could not be made into an edge")
+        wire.Add(edge.Edge())
+    if not wire.IsDone():
+        raise ValueError("the boundary curves do not close a loop on the surface")
+    face_maker = BRepBuilderAPI_MakeFace(surface, wire.Wire(), True)
+    if not face_maker.IsDone():
+        raise ValueError("the surface could not be cut to the boundary")
+    face = face_maker.Face()
+    BRepLib.BuildCurves3d_s(face)
+    fixer = ShapeFix_Face(face)
+    fixer.FixOrientation()
+    fixer.Perform()
+    return fixer.Face()
+
+
+def _uv_curve(uv: np.ndarray, *, closed: bool) -> object:
+    """A smooth 2D B-spline through a curve's (u, v) on the surface, ends exact.
+
+    Approximation, not interpolation: the foot-point parameters carry the scan's noise, and
+    an exact interpolant through them wiggled up to 0.46 mm off the curve between samples.
+    """
+
+    from OCP.Geom2dAPI import Geom2dAPI_PointsToBSpline
+    from OCP.GeomAbs import GeomAbs_C2
+    from OCP.gp import gp_Pnt2d
+    from OCP.TColgp import TColgp_Array1OfPnt2d
+
+    samples = _resample(uv, max(16, min(200, len(uv))))
+    if closed:
+        samples[-1] = samples[0]
+    scale = float(np.linalg.norm(samples.max(axis=0) - samples.min(axis=0))) or 1.0
+    points = TColgp_Array1OfPnt2d(1, len(samples))
+    for position, (u, v) in enumerate(samples, start=1):
+        points.SetValue(position, gp_Pnt2d(float(u), float(v)))
+    approximation = Geom2dAPI_PointsToBSpline(points, 3, 8, GeomAbs_C2, 2e-4 * scale)
+    if not approximation.IsDone():
+        raise ValueError("a boundary curve could not be laid on the surface")
+    return approximation.Curve()
+
+
+def _resample(polyline: np.ndarray, count: int) -> np.ndarray:
+    """``count`` points evenly spaced along a polyline (any dimension), ends kept."""
+
+    steps = np.linalg.norm(np.diff(polyline, axis=0), axis=1)
+    length = np.r_[0.0, np.cumsum(steps)]
+    if length[-1] <= 0:
+        return polyline[[0, -1]]
+    targets = np.linspace(0.0, length[-1], max(count, 2))
+    return np.column_stack([np.interp(targets, length, polyline[:, axis]) for axis in range(polyline.shape[1])])
+
+
 def primitive_patch(fit: PrimitiveFit, points: object, expand: float = 0.15) -> object:
     """A primitive face sized to the selected points plus a margin (Fit Surface, exact types)."""
 

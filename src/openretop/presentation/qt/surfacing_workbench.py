@@ -25,7 +25,7 @@ from workbench_ui import FieldDefinition, SceneNode
 NODE_MODEL = "model_surfaces"  # the scene tree group of model surfaces and bodies (NODE_MESH is "model")
 
 SURFACING_ACTIONS = frozenset(
-    {"model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
+    {"model.sketch", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
 )
 # kernel work that can take seconds: run off the UI thread
 SURFACING_HEAVY_ACTIONS = frozenset(
@@ -38,9 +38,14 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.trim_compute",
         "model.trim_apply",
         "model.compare_apply",
+        "model.sketch_loft",
+        "model.sketch_face",
     }
 )
+NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
+SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
+    "sketch": "Click points on the scan; click a point to connect, the first point to close. Enter finishes, Backspace undoes a point, drag a point to move it.",
     "fit_surface": "Click a smooth area of the scan (Smart) or drag over it (Brush; Alt+drag rotates). Then Fit and Create.",
     "loft": "Select two or more curves, in order, then Loft.",
     "fill": "Click surface edges and curves around the gap, in order; then Fill.",
@@ -66,6 +71,9 @@ class SurfacingWorkbenchMixin:
         self.surfacing_panel.editing_done.connect(self._focus_viewport)
         layout.insertWidget(0, self.surfacing_panel)
         self._brush_active = False
+        setter = getattr(self.viewport, "set_left_press_claim", None)
+        if setter is not None:
+            setter(self._surfacing_press_claim)
 
     def _focus_viewport(self) -> None:
         interactor = getattr(self.viewport, "interactor", None)
@@ -75,6 +83,13 @@ class SurfacingWorkbenchMixin:
     @property
     def modeling(self) -> Any:
         return self.composition.modeling_controller
+
+    def _apply_model_result(self, action_id: str, result: CommandResult) -> None:
+        """A controller call made outside the action dispatcher: record its undo too."""
+
+        if result.success and result.undo_payload is not None and result.changed:
+            self.composition.undo.push(result.undo_payload)
+        self._consume_result(action_id, result)  # type: ignore[attr-defined]
 
     def _on_surfacing_action(self, action_id: str, payload: dict[str, Any]) -> None:
         if action_id == "model.configure":
@@ -98,6 +113,8 @@ class SurfacingWorkbenchMixin:
     def _surfacing_key(self, key: int) -> bool:
         if not self.modeling.active:
             return False
+        if self.modeling.tool == "sketch" and self._sketch_key(key):
+            return True
         if key == Qt.Key.Key_Escape:
             self._dispatch_application_action("model.finish")  # type: ignore[attr-defined]
             return True
@@ -115,8 +132,59 @@ class SurfacingWorkbenchMixin:
                 return True
         return False
 
+    def _sketch_key(self, key: int) -> bool:
+        session = self.modeling.session
+        drawing = bool(session.sketch_points)
+        if key == Qt.Key.Key_Escape and drawing:
+            self.modeling.sketch_cancel()
+            self.set_status_message("Curve cancelled (Esc again closes 3D Sketch)")  # type: ignore[attr-defined]
+            self.refresh()  # type: ignore[attr-defined]
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if drawing:
+                self._apply_model_result("model.sketch_finish", self.modeling.sketch_finish())
+            return True
+        if key == Qt.Key.Key_Backspace:
+            self._apply_model_result("model.sketch_undo_point", self.modeling.sketch_undo_point())
+            return True
+        if key == Qt.Key.Key_C and drawing:
+            self._apply_model_result("model.sketch_close", self.modeling.sketch_finish(close=True))
+            return True
+        return False
+
+    def _surfacing_press_claim(self, x_position: int, y_position: int) -> bool:
+        """Only the 3D Sketch is choosy: it takes a press on one of its points (to drag it);
+        anywhere else the drag rotates the view and a click still places a point."""
+
+        session = self.modeling.session
+        if session is None or session.tool != "sketch":
+            return True
+        node = self._sketch_node_at(x_position, y_position)
+        session.drag_node = node
+        self._dragging = node is not None
+        self._drag_moved = False
+        return node is not None
+
+    def _sketch_node_at(self, x_position: int, y_position: int) -> str | None:
+        nodes = self.composition.state.model.sketch.nodes
+        if not nodes:
+            return None
+        ids = list(nodes)
+        positions = np.asarray([nodes[node] for node in ids], dtype=float)
+        try:
+            projected = np.asarray(self.viewport.project_points(positions), dtype=float).reshape(len(positions), -1)
+        except Exception:  # viewport not ready
+            return None
+        distance = np.hypot(projected[:, 0] - x_position, projected[:, 1] - y_position)
+        # points behind the camera project nowhere useful
+        distance[~np.isfinite(distance)] = np.inf
+        best = int(np.argmin(distance))
+        return ids[best] if distance[best] <= SNAP_PIXELS else None
+
     def _surfacing_capture_owner(self) -> str | None:
         session = self.modeling.session
+        if session is not None and session.tool == "sketch":
+            return "sketch"
         if session is not None and session.tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             return "modeling_brush"
         return None
@@ -130,6 +198,9 @@ class SurfacingWorkbenchMixin:
         if session is None:
             return False
         tool = session.tool
+        if tool == "sketch":
+            self._sketch_pointer(event_name, x_position, y_position)
+            return True
         if tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             if event_name == "left_press":
                 self._brush_active = True
@@ -162,6 +233,57 @@ class SurfacingWorkbenchMixin:
         if tool in ("extend", "compare", "loft"):
             return False  # ordinary selection picks
         return True
+
+    def _sketch_pointer(self, event_name: str, x_position: int, y_position: int) -> None:
+        session = self.modeling.session
+        if event_name == "left_press":
+            return  # a claimed press is on a point: the drag follows
+        if event_name == "motion":
+            hit = self.viewport.pick_mesh(x_position, y_position)
+            if session.drag_node is not None and self._dragging:
+                if hit.hit:
+                    self._drag_moved = True
+                    self.modeling.sketch_move_node(session.drag_node, hit.position)
+            else:
+                node = self._sketch_node_at(x_position, y_position)
+                self.modeling.sketch_hover(hit.position if hit.hit else None, node)
+            self._render_scene()  # type: ignore[attr-defined]  # the 3D view only: keeps it fluid
+            return
+        if event_name == "leave":
+            self.modeling.sketch_hover(None)
+            self._render_scene()  # type: ignore[attr-defined]
+            return
+        if event_name != "left_release":
+            return
+        if session.drag_node is not None and self._dragging and self._drag_moved:
+            node, session.drag_node = session.drag_node, None
+            self._dragging = self._drag_moved = False
+            hit = self.viewport.pick_mesh(x_position, y_position)
+            position = hit.position if hit.hit else self.composition.state.model.sketch.nodes.get(node)
+            self._apply_model_result("model.sketch_move", self.modeling.sketch_move_node(node, position, final=True))
+            return
+        session.drag_node = None
+        self._dragging = self._drag_moved = False
+        node = self._sketch_node_at(x_position, y_position)
+        if node is not None:
+            self._apply_model_result("model.sketch_click", self.modeling.sketch_click(None, node))
+            return
+        if not session.sketch_points:
+            # not drawing: a click on a sketch curve selects it (Ctrl adds)
+            scene_pick = self.viewport.pick_scene_object(x_position, y_position)
+            object_id = str(scene_pick.object_id or "")
+            if scene_pick.hit and object_id.startswith("sketch-curve:"):
+                from PySide6.QtWidgets import QApplication
+
+                add = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
+                result = self.modeling.sketch_select_curves((object_id.split(":", 1)[1],), add=add)
+                self._consume_result("model.sketch_select", result)  # type: ignore[attr-defined]
+                return
+        hit = self.viewport.pick_mesh(x_position, y_position)
+        self._apply_model_result("model.sketch_click", self.modeling.sketch_click(hit.position if hit.hit else None))
+
+    _dragging = False  # a press landed on a sketch point
+    _drag_moved = False  # ... and the pointer moved before release (else it was a click)
 
     def _fill_pick(self, scene_pick: SceneObjectPickResult, x_position: int, y_position: int) -> None:
         if not scene_pick.hit:
@@ -206,7 +328,13 @@ class SurfacingWorkbenchMixin:
         chain: tuple[tuple[str, int], ...] = ()
         if session is not None and session.tool == "fill":
             chain = tuple((side["entity"], side["edge"]) for side in session.fill_chain if "entity" in side)
+        model = self.composition.state.model
+        selected_curves = set(model.selected_curve_ids)
+        sketch_curves = tuple(
+            (curve.id, curve.polyline, curve.id in selected_curves) for curve in model.sketch.curves if curve.visible
+        )
         return ModelingSceneInput(
+            sketch_curves=sketch_curves,
             entities=tuple(self.composition.state.model.entities),
             selected_ids=frozenset(self.composition.state.model.selected_ids),
             selection_mask=None if selection is None else selection.mask,
@@ -274,18 +402,76 @@ class SurfacingWorkbenchMixin:
             deviation_text=deviation_text,
             has_deviation=deviation is not None,
             busy=bool(self._executor.busy),  # type: ignore[attr-defined]
+            extra=self._sketch_facts(session),
         )
         self.surfacing_panel.show_session(session, facts)
         return True
 
+    def _sketch_facts(self, session: Any) -> dict[str, Any]:
+        model = self.composition.state.model
+        selected = [model.sketch.curve(value) for value in model.selected_curve_ids]
+        selected = [curve for curve in selected if curve is not None]
+        from openretop.modeling.sketch import boundary_loop
+
+        loop = boundary_loop(model.sketch, [curve.id for curve in selected]) is not None
+        return {
+            "drawing": len(session.sketch_points),
+            "curves": len(model.sketch.curves),
+            "selected_curves": len(selected),
+            "selected_names": ", ".join(curve.name for curve in selected),
+            "loop": loop,
+            "fit_to_scan": bool(session.face_fit_to_scan),
+        }
+
     # -- scene tree ----------------------------------------------------------------------------
+
+    def _surfacing_tool_preview(self) -> Any:
+        """The 3D Sketch's points and live curve, drawn by the tool-preview overlay."""
+
+        from openretop.viewer.scene_types import ToolPreviewState, geometry_revision
+
+        session = self.modeling.session
+        if session is None or session.tool != "sketch":
+            return None
+        sketch = self.composition.state.model.sketch
+        ids = list(sketch.nodes)
+        nodes = np.asarray([sketch.nodes[node] for node in ids], dtype=float).reshape(-1, 3)
+        drawing = np.asarray([position for _node, position in session.sketch_points], dtype=float).reshape(-1, 3)
+        line = session.sketch_line if session.sketch_line is not None else np.zeros((0, 3))
+        highlighted = ids.index(session.hover_node) if session.hover_node in ids else None
+        hover = None if session.hover is None or session.hover_node is not None else (float(session.hover[0]), float(session.hover[1]), float(session.hover[2]))
+        return ToolPreviewState(
+            revision=geometry_revision(drawing, line, nodes, hover is not None),
+            active=True,
+            control_points=drawing,
+            fitted_points=line,
+            preview_point=hover,
+            preview_valid=hover is not None and not len(drawing),
+            node_points=nodes,
+            highlighted_node_index=highlighted,
+        )
 
     def _surfacing_nodes(self) -> list[SceneNode]:
         model = self.composition.state.model
-        if not model.entities:
-            return []
         group = {"checkable": False, "selectable": False, "renameable": False}
-        nodes = [SceneNode(NODE_MODEL, "Model", "group", "scene", metadata={"context_actions": ("model.trim", "model.compare", "file.export_model")}, **group)]
+        sketch_nodes: list[SceneNode] = []
+        if model.sketch.curves:
+            sketch_nodes.append(SceneNode(NODE_SKETCH, "3D Sketch", "group", "scene", metadata={"context_actions": ("model.sketch", "model.sketch_face", "model.sketch_loft")}, **group))
+            sketch_nodes.extend(
+                SceneNode(
+                    f"sketch:{curve.id}",
+                    f"{curve.name} ({'closed' if curve.closed else 'open'})",
+                    "curve",
+                    NODE_SKETCH,
+                    curve.visible,
+                    renameable=False,
+                    metadata={"context_actions": ("model.sketch_face", "model.sketch_loft", "model.sketch_delete")},
+                )
+                for curve in model.sketch.curves
+            )
+        if not model.entities:
+            return sketch_nodes
+        nodes = sketch_nodes + [SceneNode(NODE_MODEL, "Model", "group", "scene", metadata={"context_actions": ("model.trim", "model.compare", "file.export_model")}, **group)]
         actions = ("view.frame_selected", "model.extend", "model.delete_selected", "file.export_model")
         for entity in model.entities:
             nodes.append(
@@ -304,11 +490,20 @@ class SurfacingWorkbenchMixin:
         """Take the model rows out of a tree selection (they belong to the model); return the rest."""
 
         model_ids = tuple(value for value in (model_id_from_node(node) for node in ids) if value is not None)
-        others = tuple(node for node in ids if model_id_from_node(node) is None)
+        curve_ids = tuple(node.split(":", 1)[1] for node in ids if str(node).startswith("sketch:"))
+        others = tuple(node for node in ids if model_id_from_node(node) is None and not str(node).startswith("sketch:"))
         self.modeling.select_entities(model_ids)
+        self.modeling.sketch_select_curves(curve_ids)
         return others
 
     def _surfacing_tree_visibility(self, node_id: str, visible: bool) -> bool:
+        if str(node_id).startswith("sketch:"):
+            curve = self.composition.state.model.sketch.curve(node_id.split(":", 1)[1])
+            if curve is not None:
+                curve.visible = bool(visible)
+                self.composition.state.model.revision += 1
+                self.refresh()  # type: ignore[attr-defined]
+            return True
         entity_id = model_id_from_node(node_id)
         if entity_id is None:
             return False
@@ -329,7 +524,8 @@ class SurfacingWorkbenchMixin:
         return True
 
     def _surfacing_selected_nodes(self) -> tuple[str, ...]:
-        return tuple(model_node_id(value) for value in self.composition.state.model.selected_ids)
+        model = self.composition.state.model
+        return tuple(model_node_id(value) for value in model.selected_ids) + tuple(f"sketch:{value}" for value in model.selected_curve_ids)
 
     def _surfacing_inspector_fields(self, node_id: str) -> tuple[FieldDefinition, ...] | None:
         entity_id = model_id_from_node(node_id)

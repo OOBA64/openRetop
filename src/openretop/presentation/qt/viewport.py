@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Callable, Mapping
 
 import numpy as np
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
@@ -97,6 +97,8 @@ class QtSceneViewport(VTKViewportWidget):
         self.measurement_overlay = MeasurementOverlay(self.renderer)
         self._pointer_gesture = PointerGestureState()
         self._left_capture_owner: str | None = None
+        # optional: does the owning tool want this press (x, y)? If not, it navigates
+        self._left_press_claim: Callable[[int, int], bool] | None = None
         self._last_pointer_release_was_click = True
         self._pointer_event_count = 0
         self._last_pointer: tuple[int, int] | None = None  # Qt widget coordinates (y down)
@@ -159,6 +161,15 @@ class QtSceneViewport(VTKViewportWidget):
     @property
     def left_capture_owner(self) -> str | None:
         return self._left_capture_owner
+
+    def set_left_press_claim(self, claim: Callable[[int, int], bool] | None) -> None:
+        """Let the tool owning left input decline a press, so that drag orbits the view.
+
+        The 3D Sketch claims a press only on one of its points (to drag it); a press anywhere
+        else rotates the view as usual, and a click there still reaches the tool.
+        """
+
+        self._left_press_claim = claim
 
     def set_left_capture_owner(self, owner: str | None) -> None:
         """Set application tool ownership for future unmodified-left gestures."""
@@ -419,6 +430,8 @@ class QtSceneViewport(VTKViewportWidget):
                 return False
             point = event.position()
             tool_owner = self._left_capture_owner
+            if tool_owner is not None and self._left_press_claim is not None and not self._left_press_claim(x_position, y_position):
+                tool_owner = None  # declined: a drag orbits; a click still comes through as a pick
             self._pointer_gesture.press(
                 point.x(),
                 point.y(),

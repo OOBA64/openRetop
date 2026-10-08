@@ -398,8 +398,14 @@ class ToolPreviewState:
     preview_valid: bool = False
     preview_snaps_closed: bool = False
     preview_snaps_to_mesh: bool = False
+    # 3D Sketch: every point of the curve network, and the one under the pointer or selected
+    node_points: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=float), compare=False, repr=False
+    )
+    highlighted_node_index: int | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "node_points", _points(self.node_points))
         object.__setattr__(self, "control_points", _points(self.control_points))
         object.__setattr__(self, "fitted_points", _points(self.fitted_points))
         object.__setattr__(self, "point_types", tuple(str(value) for value in self.point_types))

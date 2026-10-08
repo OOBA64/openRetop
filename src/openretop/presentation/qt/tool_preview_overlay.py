@@ -92,6 +92,7 @@ class ToolPreviewOverlay:
             preview.selected_control_point_index,
             preview.point_types,
             preview.preview_point if preview.preview_valid else None,
+            preview.highlighted_node_index,
             tuple(sorted((name, str(colors.get(name))) for name in DEFAULT_COLORS)),
         )
         if key == self._key:
@@ -150,6 +151,15 @@ class ToolPreviewOverlay:
             positions.append(np.asarray(preview.preview_point, dtype=float))
             radii.append(PREVIEW_RADIUS_PX)
             rgbs.append(color("preview_point_color"))  # type: ignore[operator]
+        nodes = np.asarray(preview.node_points, dtype=float).reshape(-1, 3)
+        for index, node in enumerate(nodes):
+            positions.append(node)
+            if index == preview.highlighted_node_index:
+                radii.append(SELECTED_RADIUS_PX)
+                rgbs.append(color("selected_point_color"))  # type: ignore[operator]
+            else:
+                radii.append(POINT_RADIUS_PX - 1.0)
+                rgbs.append(color("smooth_point_color"))  # type: ignore[operator]
         self._positions = np.asarray(positions, dtype=float).reshape(-1, 3)
         self._pixel_radii = np.asarray(radii, dtype=float)
 

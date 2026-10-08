@@ -29,8 +29,9 @@ from openretop.modeling import (
     entity_from_result,
     selected_patch,
 )
+from openretop.modeling.sketch import MeshProjector, boundary_loop, curve_on_mesh, loop_polylines, region_inside
 
-TOOLS = ("fit_surface", "loft", "fill", "extend", "trim", "compare")
+TOOLS = ("sketch", "fit_surface", "loft", "fill", "extend", "trim", "compare")
 TOOL_TITLES = {
     "fit_surface": "Fit Surface",
     "loft": "Loft",
@@ -38,6 +39,7 @@ TOOL_TITLES = {
     "extend": "Extend Surface",
     "trim": "Trim Surfaces",
     "compare": "Compare",
+    "sketch": "3D Sketch",
 }
 SELECTION_MODES = ("smart", "brush", "erase")
 MAX_KERNEL_SCAN_POINTS = 200_000  # scan points sent for trimming (a dense scan is subsampled)
@@ -70,6 +72,15 @@ class ToolSession:
     trim_sources: tuple[str, ...] = ()
     trim_pieces: list[dict[str, Any]] | None = None
     sew_tolerance: float = 0.05
+    # 3D Sketch: the curve being drawn (existing point id or None for a new point, position),
+    # the pointer's spot on the scan and the live line through them
+    sketch_points: list[tuple[str | None, np.ndarray]] = field(default_factory=list)
+    hover: np.ndarray | None = None
+    hover_node: str | None = None
+    sketch_line: np.ndarray | None = None
+    drag_node: str | None = None
+    drag_before: Any = None
+    face_fit_to_scan: bool = True
 
 
 @dataclass
@@ -106,6 +117,8 @@ class ModelingController(ControllerBase):
         self.deviation: Deviation | None = None
         self._selection: ScanSelection | None = None
         self._mapping: tuple[tuple[object, object], SourceMapping] | None = None
+        self._projector: tuple[tuple[object, object], MeshProjector] | None = None
+        self._placed_line: tuple[bytes, np.ndarray] | None = None  # 3D Sketch preview cache
 
     def discard_stale(self) -> None:
         """After undo/redo: drop tool state that may refer to surfaces that are gone."""
@@ -116,6 +129,10 @@ class ModelingController(ControllerBase):
         if session is not None:
             session.preview = None
             session.trim_pieces = None
+            session.sketch_points = [(node, position) for node, position in session.sketch_points if node is None or node in model.sketch.nodes]
+            session.sketch_line = None
+            session.drag_node = None
+            session.drag_before = None
             if session.tool == "trim":
                 session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
             session.fill_chain = [side for side in session.fill_chain if "curve" in side or model.get(side["entity"]) is not None]
@@ -129,6 +146,7 @@ class ModelingController(ControllerBase):
         self.deviation = None
         self._selection = None
         self._mapping = None
+        self._projector = None
 
     # -- tool sessions -----------------------------------------------------------------------
 
@@ -143,7 +161,7 @@ class ModelingController(ControllerBase):
     def start(self, tool: str) -> CommandResult:
         if tool not in TOOLS:
             return CommandResult.failure(f"Unknown tool: {tool}")
-        if tool in ("fit_surface", "trim", "compare") and self.state.mesh_object is None:
+        if tool in ("sketch", "fit_surface", "trim", "compare") and self.state.mesh_object is None:
             return CommandResult.failure("Open a scan first (File > Open Model).")
         previous = self.session
         self.session = ToolSession(tool)
@@ -163,6 +181,7 @@ class ModelingController(ControllerBase):
             "extend": "Select a surface, set the distance, then Extend.",
             "trim": "Trim splits the surfaces by each other and keeps what lies on the scan.",
             "compare": "Compare colours the scan by its distance to the model.",
+            "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it.",
         }
         return CommandResult.ok(status=f"{TOOL_TITLES[tool]}: {hints[tool]}", changed=True, metadata={"tool": tool})
 
@@ -630,6 +649,228 @@ class ModelingController(ControllerBase):
         if info["faces_back"] != info["faces"]:
             warnings = (f"The file reads back with {info['faces_back']} faces instead of {info['faces']}.",)
         return CommandResult.ok(status=f"Exported {len(targets)} item(s), {info['faces']} faces, to {path}", warnings=warnings)
+
+    # -- 3D Sketch -------------------------------------------------------------------------------
+
+    def sketch_projector(self) -> MeshProjector | None:
+        """The full-resolution scan in world coordinates, for laying curves on it."""
+
+        mesh_object = self.state.mesh_object
+        if mesh_object is None:
+            return None
+        source = self.transform.transformed_source_mesh()
+        key = (source.vertices, source.triangles)
+        cached = self._projector
+        if cached is not None and cached[0][0] is key[0] and cached[0][1] is key[1]:
+            return cached[1]
+        projector = MeshProjector(np.asarray(source.vertices), np.asarray(source.triangles))
+        self._projector = (key, projector)
+        return projector
+
+    def sketch_click(self, world_point: object | None, node_id: str | None = None) -> CommandResult:
+        """Place the next point (or snap to an existing one: that connects and finishes)."""
+
+        session = self._session_for("sketch")
+        if isinstance(session, CommandResult):
+            return session
+        sketch = self.state.model.sketch
+        drawing = session.sketch_points
+        if node_id is not None and node_id in sketch.nodes:
+            position = sketch.nodes[node_id]
+            if len(drawing) >= 3 and drawing[0][0] == node_id:
+                return self.sketch_finish(close=True)  # back to the first point: a closed curve
+            if drawing and drawing[0][0] == node_id:
+                return CommandResult.ok(status="A closed curve needs at least three points.")
+            drawing.append((node_id, position.copy()))
+            if len(drawing) >= 2:
+                return self.sketch_finish()  # joined another curve at its point: connected, done
+            session.sketch_line = self._sketch_preview_line(session)
+            return CommandResult.ok(status="Curve started at an existing point.", changed=True)
+        if world_point is None:
+            return CommandResult.ok(status="Click on the scan to place a point.")
+        projector = self.sketch_projector()
+        if projector is None:
+            return CommandResult.failure("Open a scan first.")
+        snapped, _triangle = projector.project(np.asarray(world_point, dtype=float).reshape(1, 3))
+        if drawing and np.linalg.norm(snapped[0] - drawing[-1][1]) < 0.25 * projector.spacing:
+            return CommandResult.ok(status="That point is already placed.")
+        drawing.append((None, snapped[0]))
+        session.sketch_line = self._sketch_preview_line(session)
+        return CommandResult.ok(
+            status=f"{len(drawing)} point(s). Enter finishes; click the first point to close; Backspace removes the last.",
+            changed=True,
+        )
+
+    def sketch_hover(self, world_point: object | None, node_id: str | None = None) -> None:
+        session = self.session
+        if session is None or session.tool != "sketch":
+            return
+        session.hover_node = node_id
+        if node_id is not None:
+            session.hover = self.state.model.sketch.nodes.get(node_id)
+        elif world_point is None:
+            session.hover = None
+        else:
+            session.hover = np.asarray(world_point, dtype=float).reshape(3)
+        session.sketch_line = self._sketch_preview_line(session)
+
+    def _sketch_preview_line(self, session: ToolSession) -> np.ndarray | None:
+        """The live curve: the placed points' curve (kept between mouse moves) plus a span
+        from the last point to the pointer, so a move costs one span, not the whole curve."""
+
+        projector = self.sketch_projector()
+        placed = np.asarray([position for _node, position in session.sketch_points], dtype=float).reshape(-1, 3)
+        if projector is None or not len(placed):
+            return None
+        key = placed.tobytes()
+        if self._placed_line is None or self._placed_line[0] != key:
+            line = curve_on_mesh(placed, projector, smoothing=0) if len(placed) >= 2 else placed.copy()
+            self._placed_line = (key, line)
+        line = self._placed_line[1]
+        if session.hover is None:
+            return line if len(line) >= 2 else None
+        span = curve_on_mesh(np.vstack([placed[-1], session.hover]), projector, smoothing=0)
+        return np.vstack([line, span[1:]])
+
+    def sketch_finish(self, *, close: bool = False) -> CommandResult:
+        session = self._session_for("sketch")
+        if isinstance(session, CommandResult):
+            return session
+        drawing = session.sketch_points
+        needed = 3 if close else 2
+        if len(drawing) < needed:
+            kind = "closed curve" if close else "curve"
+            return CommandResult.failure(f"A {kind} needs at least {needed} points.")
+        projector = self.sketch_projector()
+        if projector is None:
+            return CommandResult.failure("Open a scan first.")
+        before = self.state.model.snapshot()
+        sketch = self.state.model.sketch
+        nodes = [node if node is not None else sketch.new_node(position) for node, position in drawing]
+        if close and nodes[-1] == nodes[0]:
+            nodes = nodes[:-1]
+        curve = sketch.add_curve(nodes, projector, closed=close)
+        session.sketch_points = []
+        session.sketch_line = None
+        self.state.model.selected_curve_ids = [curve.id]
+        self.state.model.revision += 1
+        kind = "closed curve" if close else "curve"
+        return self._changed("Sketch Curve", before, f"{curve.name}: {kind} through {len(nodes)} points")
+
+    def sketch_undo_point(self) -> CommandResult:
+        session = self.session
+        if session is None or session.tool != "sketch" or not session.sketch_points:
+            return CommandResult.ok(status="No point to remove.")
+        session.sketch_points.pop()
+        session.sketch_line = self._sketch_preview_line(session)
+        return CommandResult.ok(status=f"{len(session.sketch_points)} point(s)", changed=True)
+
+    def sketch_cancel(self) -> bool:
+        """Drop the curve being drawn; False when there was none."""
+
+        session = self.session
+        if session is None or session.tool != "sketch" or not session.sketch_points:
+            return False
+        session.sketch_points = []
+        session.sketch_line = None
+        return True
+
+    def sketch_move_node(self, node_id: str, world_point: object, *, final: bool = False) -> CommandResult:
+        """Drag a point along the scan; every curve through it follows (one undo step)."""
+
+        session = self._session_for("sketch")
+        if isinstance(session, CommandResult):
+            return session
+        sketch = self.state.model.sketch
+        projector = self.sketch_projector()
+        if projector is None or node_id not in sketch.nodes:
+            return CommandResult.failure("No such point.")
+        if session.drag_before is None:
+            session.drag_before = self.state.model.snapshot()
+        sketch.move_node(node_id, world_point, projector)
+        self.state.model.revision += 1
+        if not final:
+            return CommandResult.ok(changed=True)
+        before, session.drag_before = session.drag_before, None
+        return self._changed("Move Sketch Point", before, "Point moved")
+
+    def sketch_select_curves(self, curve_ids: tuple[str, ...], *, add: bool = False) -> CommandResult:
+        sketch = self.state.model.sketch
+        valid = [value for value in curve_ids if sketch.curve(value) is not None]
+        if add:
+            current = list(self.state.model.selected_curve_ids)
+            for value in valid:
+                if value in current:
+                    current.remove(value)
+                else:
+                    current.append(value)
+            valid = current
+        self.state.model.selected_curve_ids = valid
+        self.state.model.revision += 1
+        return CommandResult.ok(status=f"{len(valid)} sketch curve(s) selected" if valid else "No sketch curve selected", changed=True)
+
+    def sketch_delete(self, curve_ids: tuple[str, ...] | None = None) -> CommandResult:
+        ids = curve_ids if curve_ids is not None else tuple(self.state.model.selected_curve_ids)
+        if not ids:
+            return CommandResult.failure("Select sketch curves to delete.")
+        before = self.state.model.snapshot()
+        removed = self.state.model.sketch.remove_curves(ids)
+        if not removed:
+            return CommandResult.failure("Nothing to delete.")
+        gone = set(ids)
+        self.state.model.selected_curve_ids = [value for value in self.state.model.selected_curve_ids if value not in gone]
+        self.state.model.revision += 1
+        return self._changed("Delete Sketch Curves", before, f"Deleted {removed} sketch curve(s)")
+
+    def sketch_loft(self, curve_ids: tuple[str, ...] | None = None) -> CommandResult:
+        ids = curve_ids if curve_ids is not None else tuple(self.state.model.selected_curve_ids)
+        curves = [curve for curve in (self.state.model.sketch.curve(value) for value in ids) if curve is not None]
+        if len(curves) < 2:
+            return CommandResult.failure("Select two or more sketch curves to loft between (Ctrl+click them).")
+        if any(curve.closed for curve in curves) and not all(curve.closed for curve in curves):
+            return CommandResult.failure("Loft between curves that are all open or all closed.")
+        reply = self.worker.call("loft", [curve.polyline for curve in curves])
+        if not reply.ok:
+            return _kernel_failure("Loft failed", reply)
+        entity = entity_from_result(self.state.model, reply.value, tool="loft", params={"sketch_curves": [curve.id for curve in curves]})
+        return self._add_entities([entity], name="Loft")
+
+    def sketch_face(self, curve_ids: tuple[str, ...] | None = None, *, fit_to_scan: bool | None = None) -> CommandResult:
+        """A face inside a closed curve or a loop of curves, fitted to the scan inside it."""
+
+        ids = list(curve_ids if curve_ids is not None else self.state.model.selected_curve_ids)
+        sketch = self.state.model.sketch
+        chain = boundary_loop(sketch, ids)
+        if chain is None:
+            return CommandResult.failure(
+                "Select one closed curve, or curves whose ends meet in a loop (draw them by snapping to existing end points)."
+            )
+        boundaries = loop_polylines(chain)
+        session = self.session
+        on_scan = fit_to_scan if fit_to_scan is not None else (session.face_fit_to_scan if session is not None else True)
+        projector = self.sketch_projector()
+        reply = None
+        if on_scan and projector is not None:
+            inside = region_inside(projector, np.vstack(boundaries), grow=3)
+            if int(np.count_nonzero(inside)) >= 30:
+                points, triangles, _used = selected_patch(projector.vertices, projector.triangles, np.nonzero(inside)[0])
+                options = session.fit if session is not None else FitOptions()
+                reply = self.worker.call(
+                    "patch_from_curves", points, triangles, boundaries, tolerance=options.tolerance, smoothness=options.smoothness
+                )
+                if not reply.ok:
+                    return _kernel_failure("Face failed", reply)
+        if reply is None:
+            reply = self.worker.call("fill", [{"points": line, "continuity": "contact"} for line in boundaries])
+            if not reply.ok:
+                return _kernel_failure("Face failed", reply)
+        entity = entity_from_result(
+            self.state.model,
+            reply.value,
+            tool="sketch_face",
+            params={"sketch_curves": [curve.id for curve, _reverse in chain], "fit_to_scan": on_scan},
+        )
+        return self._add_entities([entity], name="Face From Curves")
 
     def shutdown(self) -> None:
         self.worker.shutdown()

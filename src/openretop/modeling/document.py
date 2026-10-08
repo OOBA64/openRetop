@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from openretop.modeling.sketch import Sketch
+
 # distinct, mid-saturation colours that read on the grey scan and on each other
 PALETTE: tuple[tuple[float, float, float], ...] = (
     (0.36, 0.62, 0.95),
@@ -38,6 +40,7 @@ KIND_LABELS = {
     "fill": "Fill",
     "extend": "Extended",
     "piece": "Trimmed",
+    "patch": "Patch",
     "shell": "Shell",
     "solid": "Solid",
 }
@@ -74,6 +77,9 @@ class ModelDocument:
     selected_ids: list[str] = field(default_factory=list)
     counter: int = 0
     revision: int = 0
+    # the 3D Sketch: points on the scan and the curves through them
+    sketch: Sketch = field(default_factory=Sketch)
+    selected_curve_ids: list[str] = field(default_factory=list)
 
     def get(self, entity_id: str) -> ModelEntity | None:
         return next((entity for entity in self.entities if entity.id == entity_id), None)
@@ -120,21 +126,24 @@ class ModelDocument:
         self.revision += 1
         return True
 
-    def snapshot(self) -> tuple[list[ModelEntity], list[str], int]:
+    def snapshot(self) -> tuple[list[ModelEntity], list[str], int, Sketch]:
         """For undo: entities are replaced rather than edited, so a list copy is enough
-        (visibility is the one field changed in place, so the entities are copied shallowly)."""
+        (visibility is the one field changed in place, so the entities are copied shallowly).
+        The sketch is small and edited in place: it is copied whole."""
 
         from copy import copy
 
-        return [copy(entity) for entity in self.entities], list(self.selected_ids), self.counter
+        return [copy(entity) for entity in self.entities], list(self.selected_ids), self.counter, self.sketch.copy()
 
-    def restore(self, snapshot: tuple[list[ModelEntity], list[str], int]) -> None:
+    def restore(self, snapshot: tuple[list[ModelEntity], list[str], int, Sketch]) -> None:
         from copy import copy
 
-        entities, selected, counter = snapshot
+        entities, selected, counter, sketch = snapshot
         self.entities = [copy(entity) for entity in entities]
         self.selected_ids = list(selected)
         self.counter = max(self.counter, counter)
+        self.sketch = sketch.copy()
+        self.selected_curve_ids = [value for value in self.selected_curve_ids if self.sketch.curve(value) is not None]
         self.revision += 1
 
 
