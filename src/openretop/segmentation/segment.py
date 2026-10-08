@@ -37,6 +37,9 @@ class Segment:
     kind: str  # plane, cylinder, sphere, cone, torus or freeform
     triangles: np.ndarray
     fit: PrimitiveFit | None
+    area: float = 0.0
+    width: float = 0.0  # area / length: how wide the region is across its long direction
+    edge_band: bool = False  # a strip a couple of triangles wide along a sharp edge, not a face
 
     @property
     def triangle_count(self) -> int:
@@ -153,10 +156,16 @@ def segment_mesh(
             progress(float(np.mean(labels != UNASSIGNED)))
 
     regions, labels = _merge_regions(regions, labels, centroids, normals, offsets, neighbours, tol)
-    segments = [
-        Segment(index, kind, np.sort(region), _vertex_fit(kind, region, fit, xyz, tri, vertex_normals, tol))
-        for index, (kind, region, fit) in enumerate(regions)
-    ]
+    corner_edges = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=2)
+    spacing = float(np.median(corner_edges)) if len(corner_edges) else 0.0
+    triangle_areas = 0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]), axis=1)
+    segments = []
+    for index, (kind, region, fit) in enumerate(regions):
+        final_kind, final_fit = _vertex_fit(kind, region, fit, xyz, tri, vertex_normals, tol)
+        area, width = _area_and_width(region, centroids, triangle_areas)
+        segments.append(
+            Segment(index, final_kind, np.sort(region), final_fit, area=area, width=width, edge_band=_is_edge_band(final_kind, final_fit, width, spacing))
+        )
     for component in _components(labels == UNASSIGNED, offsets, neighbours):
         if len(component) >= max(min_region_triangles * 4, 100):
             labels[component] = len(segments)
@@ -261,6 +270,32 @@ def _seed_patch(seed, labels, centroids, normals, offsets, neighbours, radius, m
 
 
 SATURATION_RATIO = 1.3  # growth when the tolerance is doubled: a bounded face barely grows
+BAND_ROWS = 1.2  # ...or gains at most about one row of triangles along its boundary
+
+
+_SIMPLER = {"cylinder": ("plane",), "sphere": ("plane",), "cone": ("plane", "cylinder"), "torus": ("plane", "cylinder", "sphere"), "plane": ()}
+
+
+def _simplest_for(kind, region, fit, centroids, normals, tol):
+    for simpler in _SIMPLER[kind]:
+        candidate = fit_primitive(simpler, centroids[region], normals[region], outlier_tolerance=tol)
+        if candidate.success and candidate.rms <= tol and candidate.inlier_fraction >= 0.9:
+            return simpler, region, candidate
+    return kind, region, fit
+
+
+def _boundary_count(region: np.ndarray, labels: np.ndarray, offsets: np.ndarray, neighbours: np.ndarray) -> int:
+    """Triangles of the region that have a neighbour outside it (its perimeter, in triangles)."""
+
+    inside = np.zeros(len(labels), dtype=bool)
+    inside[region] = True
+    starts, ends = offsets[region], offsets[region + 1]
+    lengths = ends - starts
+    index = np.repeat(starts - np.concatenate([[0], np.cumsum(lengths)[:-1]]), lengths) + np.arange(int(lengths.sum()))
+    owners = np.repeat(region, lengths)
+    outside = ~inside[neighbours[index]]
+    open_edges = lengths < 3  # a triangle on the scan's own border also bounds the region
+    return int(len(np.unique(owners[outside])) + np.sum(open_edges))
 
 
 def _grow_best(patch, labels, centroids, normals, offsets, neighbours, tol, cos_angle):
@@ -281,6 +316,7 @@ def _grow_best(patch, labels, centroids, normals, offsets, neighbours, tol, cos_
         xyz, nrm = xyz[pick], nrm[pick]
     loose_cos = math.cos(min(math.acos(cos_angle) * 1.5, math.pi / 2))
     explored = patch
+    weak: tuple[str, np.ndarray, PrimitiveFit] | None = None
     for kind in ("plane", "cylinder", "sphere", "cone", "torus"):
         fit = fit_primitive(kind, xyz, nrm)
         if not fit.success or fit.rms > tol or fit.inlier_fraction < 0.9:
@@ -289,11 +325,21 @@ def _grow_best(patch, labels, centroids, normals, offsets, neighbours, tol, cos_
         if len(region) < 3:
             continue
         loose, _loose_fit = _grow(region, grown_fit, kind, labels, centroids, normals, offsets, neighbours, 2.0 * tol, loose_cos, refit=False)
+        added = len(loose) - len(region)
         if len(loose) <= SATURATION_RATIO * len(region):
-            return (kind, region, grown_fit), explored
+            # clearly bounded by real edges. Occam: a huge sphere hugging a flat ring passes
+            # too, so a simpler primitive that explains the same region wins
+            return _simplest_for(kind, region, grown_fit, centroids, normals, tol), explored
+        # A narrow face (a 2 mm groove wall) gains a large share of its area from the one row
+        # of triangles along its edges, so it is judged per unit of boundary instead. That is a
+        # weak pass: a thin strip of a fillet passes it as a plane too, so a later primitive
+        # that passes outright (the fillet's cylinder) wins over it.
+        if added <= BAND_ROWS * _boundary_count(region, labels, offsets, neighbours):
+            if weak is None or len(region) > len(weak[1]):
+                weak = (kind, region, grown_fit)
         if len(region) > len(explored):
             explored = region
-    return None, explored
+    return weak, explored
 
 
 def _grow(patch, fit, kind, labels, centroids, normals, offsets, neighbours, tol, cos_angle, *, refit=True):
@@ -337,16 +383,79 @@ def _grow(patch, fit, kind, labels, centroids, normals, offsets, neighbours, tol
 
 
 def _vertex_fit(kind, region, fit, vertices, triangles, vertex_normals, tol):
-    """The region's final fit, on its vertices.
+    """The region's final (kind, fit), on its vertices.
 
     Growing works on triangle centroids, but a centroid lies on the chord, slightly inside
     a curved surface (a R4 hole fitted 3.97 at 1.5 mm spacing). The vertices lie on the
     surface, so the reported primitive is refitted to them.
+
+    A cylinder or cone that covers only a sliver of its arc is nearly flat. A 2.8 mm chamfer
+    strip fitted as an R11 cylinder, almost tangent to its neighbours, crashed the CAD kernel.
+    If a plane explains such a region within tolerance, it is a plane.
     """
 
     ids = np.unique(triangles[region])
-    refit = fit_primitive(kind, vertices[ids], vertex_normals[ids], outlier_tolerance=tol)
-    return refit if refit.success else fit
+    points, normals = vertices[ids], vertex_normals[ids]
+    if kind in ("cylinder", "cone") and _arc_span_degrees(kind, fit, points) < FLAT_ARC_DEGREES:
+        plane = fit_primitive("plane", points, normals, outlier_tolerance=tol)
+        # edge bevels make up much of a narrow strip, so only three quarters need to fit
+        if plane.success and plane.rms <= tol and plane.inlier_fraction >= 0.75:
+            return "plane", plane
+    refit = fit_primitive(kind, points, normals, outlier_tolerance=tol)
+    return kind, (refit if refit.success else fit)
+
+
+FLAT_ARC_DEGREES = 25.0
+
+
+def _is_edge_band(kind: str, fit: PrimitiveFit, width: float, spacing: float) -> bool:
+    """A strip of triangles along a sharp edge, not a face of the part.
+
+    A scanned sharp edge comes out as a rounded band whose radius is about the scanner's point
+    spacing: a "fillet" the scanner itself made. Real faces can be just as narrow (a 2 mm
+    groove wall measured narrower than an edge band), so width alone cannot tell them apart;
+    the radius can. Anything less than one point spacing wide is a band too.
+    """
+
+    if spacing <= 0.0:
+        return False
+    if width < 1.0 * spacing:
+        return True
+    params = fit.params if fit is not None else {}
+    radius = params.get("radius", params.get("minor_radius"))
+    if kind in ("cylinder", "sphere", "torus") and radius is not None:
+        return float(radius) < 2.0 * spacing and width < 3.0 * spacing  # type: ignore[arg-type]
+    return False
+
+
+def _area_and_width(region: np.ndarray, centroids: np.ndarray, areas: np.ndarray) -> tuple[float, float]:
+    area = float(areas[region].sum())
+    points = centroids[region]
+    if len(points) < 3:
+        return area, 0.0
+    centred = points - points.mean(axis=0)
+    _u, _s, vt = np.linalg.svd(centred, full_matrices=False)
+    along = centred @ vt[0]
+    length = float(along.max() - along.min())
+    return area, (area / length if length > 1e-12 else 0.0)
+
+
+def _arc_span_degrees(kind: str, fit: PrimitiveFit, points: np.ndarray) -> float:
+    """How much of the way around its axis a cylinder or cone region reaches (degrees)."""
+
+    axis = np.asarray(fit.params["axis"], dtype=float)
+    origin = np.asarray(fit.params["point" if kind == "cylinder" else "apex"], dtype=float)
+    offset = points - origin
+    radial = offset - np.outer(offset @ axis, axis)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(axis, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    angles = np.sort(np.arctan2(radial @ v, radial @ u))
+    if len(angles) < 2:
+        return 0.0
+    gaps = np.diff(np.r_[angles, angles[0] + 2.0 * math.pi])
+    return math.degrees(2.0 * math.pi - float(gaps.max()))
 
 
 def _merge_regions(regions, labels, centroids, normals, offsets, neighbours, tol):

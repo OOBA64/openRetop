@@ -42,7 +42,7 @@ task is tracked here.
 | RE-05 | M1 | done | Primitive fitting: plane, sphere, cylinder, cone, torus (`openretop.fitting`; at 0.02 mm noise: B1 radii within 0.004 mm, axes within 0.02 deg, cone half-angle within 0.02 deg; sphere cap / quarter torus within 0.004 mm; simplest-first classification ~0.2 s; never raises) |
 | RE-06 | M1 | todo | Constraints and snapping for primitives |
 | RE-07 | M1 | todo | Feature tree v1 (editable, rebuilt, saved) |
-| RE-08 | M1 | todo | Primitives to a closed solid |
+| RE-08 | M1 | doing | Primitives to a closed solid (v1 done: `cad_kernel.primitive_solid`, MakerVolume cells classified by the scan; B1 volume within 0.03%, B2 0.05%, B3 0.4% from automatic segmentation; todo: worker-process isolation, tori, speed) |
 | RE-09 | M1 | todo | Deviation colour map and report |
 | RE-10 | M1 | todo | STEP solid / IGES surface export, verified by re-import |
 | RE-11..16 | M2 | todo | Sketch on section, auto-fit lines/arcs, constraints, extrude/revolve, fillets |

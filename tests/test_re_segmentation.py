@@ -78,7 +78,8 @@ class BenchmarkSegmentationTests(unittest.TestCase):
 
     def test_region_fits_reproduce_the_cad(self) -> None:
         part, _scan, result, _seconds = self.results["bracket"]
-        radii = sorted(round(s.fit.params["radius"], 2) for s in result.segments if s.kind == "cylinder" and s.triangle_count > 300)
+        # the R4 hole is only ~480 triangles at this spacing and a simulated scan hole may split it
+        radii = sorted(round(s.fit.params["radius"], 2) for s in result.segments if s.kind == "cylinder" and s.triangle_count > 200)
         for truth in (4.0, 5.0, 12.0):
             self.assertTrue(any(abs(radius - truth) < 0.02 for radius in radii), (truth, radii))
 

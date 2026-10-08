@@ -250,6 +250,8 @@ def scan_from_part(
     triangles = np.asarray(mesh.faces, dtype=np.int64)
     if mesher == "isotropic":
         triangles, labels = _drop_degenerate(vertices, triangles, labels)
+        if _signed_volume(vertices, triangles) < 0.0:  # scanners deliver outward-facing triangles
+            triangles = triangles[:, ::-1].copy()
         # the contouring runs multi-threaded, so its output order varies from run to run
         vertices, triangles, labels = _canonical_order(vertices, triangles, labels)
 
@@ -419,6 +421,11 @@ def _apply_robust_sign(image: object, surface: object) -> None:
     signed = numpy_to_vtk(values * signs, deep=True)
     signed.SetName(scalars.GetName() or "distance")
     image.GetPointData().SetScalars(signed)  # type: ignore[attr-defined]
+
+
+def _signed_volume(vertices: np.ndarray, triangles: np.ndarray) -> float:
+    corners = vertices[triangles]
+    return float(np.einsum("ij,ij->i", corners[:, 0], np.cross(corners[:, 1], corners[:, 2])).sum() / 6.0)
 
 
 def _canonical_order(vertices: np.ndarray, triangles: np.ndarray, labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
