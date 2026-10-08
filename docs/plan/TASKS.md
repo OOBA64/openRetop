@@ -40,7 +40,7 @@ reference video in RE_PLAN section 2a) comes first.
 |---|---|---|---|
 | S-01 | S | done | Fit Surface kernel (`fitting.bspline_surface`: plane/conformal parameterization, smoothed least squares stiffened where no data reaches, parameter correction, expand, auto net; exact types via `fitting.primitives`): B4 grip sector within 0.02 mm RMS of the CAD (16 x 16 net), 0.1-0.3 s |
 | S-02 | S | done | Surfacing kernel (`cad_kernel.surfacing`): loft, fill (G0/G1, on scan), extend (G1), split-all + keep pieces on the scan, sew to shell/solid, signed deviation; B1 trims and sews into a valid solid within 0.02% volume |
-| S-03 | S | todo | Kernel worker process with timeout (crash/hang isolation) |
+| S-03 | S | done | Kernel worker process (`cad_kernel.worker` + plain-data jobs in `cad_kernel.jobs`): a crash or a hang (timeout) returns a failure and the next job starts a fresh worker |
 | S-04 | S | todo | Model document: surfaces and bodies with their build inputs, tree, viewport, project save |
 | S-05 | S | todo | Scan area selection: smart select, brush add/erase, connected, clear |
 | S-06 | S | todo | Fit Surface tool panel (types, U/V, smoothness, expand, preview, create) |
