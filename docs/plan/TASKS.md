@@ -33,8 +33,22 @@ extrude/revolve, freeform B-spline patches, trim and sew into a solid, deviation
 Full plan, benchmarks and acceptance criteria: [RE_PLAN.md](RE_PLAN.md). Status of each RE
 task is tracked here.
 
+Since 2026-10-08 milestone **S** (the ExModel surfacing toolset in the app, from the
+reference video in RE_PLAN section 2a) comes first.
+
 | ID | Milestone | Status | Task |
 |---|---|---|---|
+| S-01 | S | done | Fit Surface kernel (`fitting.bspline_surface`: plane/conformal parameterization, smoothed least squares stiffened where no data reaches, parameter correction, expand, auto net; exact types via `fitting.primitives`): B4 grip sector within 0.02 mm RMS of the CAD (16 x 16 net), 0.1-0.3 s |
+| S-02 | S | done | Surfacing kernel (`cad_kernel.surfacing`): loft, fill (G0/G1, on scan), extend (G1), split-all + keep pieces on the scan, sew to shell/solid, signed deviation; B1 trims and sews into a valid solid within 0.02% volume |
+| S-03 | S | todo | Kernel worker process with timeout (crash/hang isolation) |
+| S-04 | S | todo | Model document: surfaces and bodies with their build inputs, tree, viewport, project save |
+| S-05 | S | todo | Scan area selection: smart select, brush add/erase, connected, clear |
+| S-06 | S | todo | Fit Surface tool panel (types, U/V, smoothness, expand, preview, create) |
+| S-07 | S | todo | 3D Sketch curves on the scan + Loft tool |
+| S-08 | S | todo | Fill Surface tool (chain of curves/edges, Contact/Smooth, on scan) |
+| S-09 | S | todo | Extend and Trim tools (auto trim, click to keep/drop, sew, solid) |
+| S-10 | S | todo | Compare: deviation colour map, legend, statistics |
+| S-11 | S | todo | Export model to STEP/IGES, verified by re-import |
 | RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | done | Automatic segmentation into classified regions (`openretop.segmentation`: fit-guided region growing with a saturation test; 95-97% of triangles correct on B1-B5, every true face found, 1.5-3 s prismatic / ~8 s freeform; freeform areas still yield some small primitive regions, RE-04 edits them) |

@@ -56,6 +56,32 @@ Three ways to model, because real parts mix them:
   with a control-net density you set and a live deviation map. Adjacent patches meet with
   tangency (G1). This covers castings, ergonomic and styled shapes.
 
+## 2a. Reference workflow: ExModel on a car fender (video reviewed 2026-10-08)
+
+The owner pointed at a one-minute ExModel Pro demo (3DWonders, "Transform a car fender scan
+into a CAD model") as the target. What it does, step by step:
+
+1. **3D Sketch** on the mesh: splines drawn on the scan ("pick points through mesh", snap on,
+   mesh shown offset so the curves stay visible), along the wheel-arch flange edges.
+2. **Loft** between two sketch curves gives the flange strip.
+3. **Fit Surface**: brush or smart-select an area of the scan (angle tolerance, "select all
+   connected"), choose the type (freeform, plane, cylinder, cone, sphere, torus, ...), set U x V
+   control points, method, smoothness and "expand by", Fit, then Create. The result is an
+   untrimmed patch larger than the selection.
+4. More sketch curves along the character lines; **Extend** surfaces past their edges.
+5. **Fill Surface** inside a closed chain of edges and curves, each side Contact (G0) or Smooth
+   (G1), optionally pulled onto the scan ("on scan data").
+6. **Trim**: automatic trimming of all the surfaces against each other, with a tolerance and an
+   "overlap with reference mesh" setting; pieces shown in different colours; click to keep or
+   drop ("single surface" / "multiple surfaces"); OK sews them.
+7. **Compare**: deviation colour map of the scan against the surfaces.
+8. Export (IGES/STEP).
+
+Lessons for us: the core of the product is a small set of *surface* tools that each produce a
+real OCC face, plus mutual trimming. Every tool is a panel with a few parameters and an
+immediate preview. The patches are deliberately oversized and trimmed at the end. This is
+milestone **S** below, which now comes before the rest of M1.
+
 ## 3. How we will know it works: round-trip benchmarks
 
 Every milestone is measured against known CAD, not against "looks right". A benchmark suite
@@ -78,6 +104,24 @@ benchmark is an automated test with numeric acceptance (for example "cylinder di
 | B5 casting | multi-patch freeform with primitives | patch network, trim, deviation report |
 
 ## 4. Milestones
+
+### S - The surfacing toolset in the app (first, since 2026-10-08)
+The ExModel workflow of section 2a, usable from the UI. Kernel first, then each tool as a
+panel with preview, in the order the video uses them.
+
+| ID | Task | Acceptance |
+|---|---|---|
+| S-01 | Fit Surface kernel: freeform B-spline fit to a scan area (plane or conformal parameterization, smoothing, expand, parameter correction) and the exact types (plane, cylinder, cone, sphere, torus) as faces | B4 grip sector: within 0.02 mm RMS of the CAD with a 16 x 16 net; the expand margin stays near the natural continuation; under 1 s. |
+| S-02 | Surfacing kernel: loft, fill (G0/G1 sides, on scan data), extend (G1), split everything by everything and keep the pieces on the scan, sew into a shell or solid, signed deviation | B1 trims and sews into one valid solid within 0.2% volume; fill on a known surface within 0.01 mm; fill tangent to a smooth neighbour within 1 degree. |
+| S-03 | Kernel worker: every kernel operation runs in a separate process with a timeout; a crash or hang returns a failure and the app carries on | A deliberately crashing and a hanging operation each report an error; the next operation succeeds. |
+| S-04 | Model document: the surfaces and bodies made by the tools, each with the inputs and parameters that built it, shown in the tree and viewport, saved in the project | Reopening a project shows the same surfaces; undo/redo per tool. |
+| S-05 | Scan area selection: smart select (grow by angle), brush add/erase, select connected, clear; highlighted on the scan | Brush follows the pointer on a 1M-triangle scan without lag. |
+| S-06 | Fit Surface tool: panel with the selection tools, type buttons, U/V, smoothness, expand, Fit (preview with deviation), Create | On B4, a user fits the grip patch in under a minute. |
+| S-07 | 3D Sketch and Loft: the curve tool draws B-spline curves on the scan; Loft between two or more curves | Fender-style flange strip from two curves. |
+| S-08 | Fill Surface tool: pick a closed chain of curves and surface edges, Contact/Smooth per side, on scan data | Fills a four-sided gap between fitted patches with G1 sides. |
+| S-09 | Extend and Trim tools: extend by a distance; automatic trimming (tolerance, overlap), click pieces to keep or drop, OK sews; a closed result becomes a solid | B1 from fitted patches to a solid entirely in the UI. |
+| S-10 | Compare: deviation colour map of the scan against the model, legend and statistics | Updates in about a second on a 1M-triangle scan. |
+| S-11 | Export the model: STEP (solids and surfaces) and IGES (surfaces), checked by re-import | Re-import gives the same faces and volume. |
 
 ### M1 - Machined parts from primitives (B1)
 The first thing that produces a real, exportable solid.
