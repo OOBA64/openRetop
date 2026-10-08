@@ -117,8 +117,8 @@ from workbench_ui import (
     SceneTreeWidget,
     ToolbarItem,
     ToolbarSchema,
-    ToolInstructionBar,
 )
+from workbench_ui.icons import themed_icon
 from workbench_ui.shell import action_tooltip
 
 _LOG = logging.getLogger(__name__)
@@ -139,6 +139,22 @@ HEAVY_ACTIONS = frozenset(
     }
 )
 
+
+# Scene tree row icons, by node kind.
+_TREE_KIND_ICONS = {
+    "root": "project",
+    "mesh": "mesh",
+    "group": "folder",
+    "curve_group": "folder",
+    "section_plane": "section_plane",
+    "section_result": "section_cut",
+    "curve": "curve",
+    "surface": "surface",
+    "brep_surface": "solid",
+    "region": "region",
+    NODE_LOFT_FEATURE: "feature",
+    NODE_FOUR_BOUNDARY_FEATURE: "feature",
+}
 
 PROPERTIES_MIN_WIDTH = 280  # px: fits the Next-steps buttons and the X/Y/Z boxes without clipping
 
@@ -225,6 +241,13 @@ class OpenRetopV3Window(ApplicationShell):
         self._last_project_warnings: tuple[str, ...] = ()
 
         self.scene_tree = SceneTreeWidget(self._scene_model, self)
+        tree_icon_color = self.theme_manager.color("text_muted")
+        self.scene_tree.set_kind_icons(
+            {
+                kind: themed_icon(icon, tree_icon_color, self.theme_manager.color("text_faint"), size=16)
+                for kind, icon in _TREE_KIND_ICONS.items()
+            }
+        )
         self.scene_tree.selection_changed.connect(self._on_tree_selection)
         self.scene_tree.visibility_changed.connect(
             self._on_tree_visibility,
@@ -251,7 +274,9 @@ class OpenRetopV3Window(ApplicationShell):
         self.palette.action_triggered.connect(self._dispatch_framework_action)
         self._palette_dialog = CommandPaletteDialog(self._framework_actions, self)
         self._palette_dialog.action_triggered.connect(self._run_palette_action)
-        self.instructions = ToolInstructionBar(self.tool_modes, self)
+        # The active tool's instructions float at the bottom of the viewport (not a second
+        # copy in the status bar, which already shows the latest message).
+        self.tool_modes.subscribe(self._on_tool_mode_changed)
         self._diagnostics = QLabel("", self)
         self._diagnostics.setWordWrap(True)
         self.add_panel(PanelDescriptor("scene", "Scene", area="left"), self.scene_tree)
@@ -280,7 +305,6 @@ class OpenRetopV3Window(ApplicationShell):
         diagnostics_layout.addWidget(self._diagnostics)
         self.add_panel(PanelDescriptor("diagnostics", "Diagnostics", area="bottom", visible=False), diagnostics)
         self.set_workspace(self.viewport)
-        self.statusBar().addPermanentWidget(self.instructions)
         self._update_window_title()
         # This refresh builds UI models and submits the initial snapshot.  The
         # viewport retains it until VTKViewportWidget emits ready after show().
@@ -915,7 +939,8 @@ class OpenRetopV3Window(ApplicationShell):
             "scene.delete_selected",
         )
         nodes: list[SceneNode] = [
-            SceneNode("scene", "Scene", kind="root", checkable=False, selectable=False, renameable=False, metadata={"context_actions": ("scene.show_all", "view.frame_all")})
+            # the root row names the project (the dock title already says "Scene")
+            SceneNode("scene", self._project_display_name(), kind="root", checkable=False, selectable=False, renameable=False, metadata={"context_actions": ("scene.show_all", "view.frame_all")})
         ]
         if state.mesh_object is not None:
             nodes.append(SceneNode(NODE_MESH, state.mesh_object.name, "mesh", "scene", state.mesh_object.visible, metadata={"context_actions": common}))
@@ -1727,6 +1752,17 @@ class OpenRetopV3Window(ApplicationShell):
     def set_project_dirty(self, value: bool = True) -> None:
         self.project_dirty = bool(value)
         self._update_window_title()
+
+    def _on_tool_mode_changed(self, state: object) -> None:
+        instructions = str(getattr(state, "instructions", "") or "")
+        active = getattr(state, "phase", "inactive") not in {"inactive", "finished"}
+        viewport = getattr(self, "viewport", None)
+        if viewport is not None:
+            viewport.set_tool_hint(instructions if active else "")
+
+    def _project_display_name(self) -> str:
+        path = getattr(self, "current_project_path", None)
+        return path.stem if path is not None else "Untitled project"
 
     def _update_window_title(self) -> None:
         if self.current_project_path is None and not self.project_dirty:

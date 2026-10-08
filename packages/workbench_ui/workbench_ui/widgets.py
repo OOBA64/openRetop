@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -48,8 +48,11 @@ class SceneTreeWidget(QWidget):
     def __init__(self, model: SceneTreeModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.model = model
+        self.kind_icons: dict[str, QIcon] = {}  # node kind -> icon shown before its label
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(["Scene"])
+        self.tree.setHeaderHidden(True)  # the dock title already says what this is
+        self.tree.setIconSize(QSize(16, 16))
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
@@ -58,7 +61,12 @@ class SceneTreeWidget(QWidget):
         self.tree.viewport().installEventFilter(self)
         self._checkbox_interaction = False
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(self.tree)
+        self.refresh()
+
+    def set_kind_icons(self, icons: dict[str, QIcon]) -> None:
+        self.kind_icons = dict(icons)
         self.refresh()
 
     def refresh(self) -> None:
@@ -68,6 +76,9 @@ class SceneTreeWidget(QWidget):
         items: dict[str, QTreeWidgetItem] = {}
         for node in self.model.nodes.values():
             item = QTreeWidgetItem([node.label])
+            icon = self.kind_icons.get(node.kind)
+            if icon is not None:
+                item.setIcon(0, icon)
             item.setData(0, Qt.UserRole, node.id)
             item.setData(0, Qt.UserRole + 1, node.label)
             flags = item.flags()

@@ -16,7 +16,7 @@ from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
-from openretop.presentation.qt.overlay_layers import attach_overlay_renderer, render_window_renderers
+from openretop.presentation.qt.overlay_layers import ImageOverlay
 from openretop.presentation.qt.view_cube import (
     CUBE_MARGIN,
     CUBE_WIDGET_SIZE,
@@ -65,72 +65,6 @@ def normalized_cube_viewport(
     return (x0, max(y0, 0.0), min(x1, 1.0), min(y1, 1.0))
 
 
-class _CubeImageOverlay:
-    """A transparent renderer in its own layer showing one RGBA image 1:1."""
-
-    def __init__(self, render_window: object, main_renderer: object) -> None:
-        from vtkmodules.vtkCommonDataModel import vtkImageData
-        from vtkmodules.vtkRenderingCore import vtkImageActor, vtkRenderer
-
-        self.render_window = render_window
-        self.image = vtkImageData()
-        self.actor = vtkImageActor()
-        self.actor.SetInputData(self.image)
-        self.actor.InterpolateOn()  # harmless when pixel-aligned, smooth if the scale is fractional
-        self.actor.PickableOff()
-        self.actor.DragableOff()
-        self.renderer = vtkRenderer()
-        self.renderer.SetDraw(False)
-        self.renderer.AddViewProp(self.actor)
-        self.renderer.GetActiveCamera().ParallelProjectionOn()
-        attach_overlay_renderer(render_window, main_renderer, self.renderer)
-        self._size = (0, 0)
-
-    def set_viewport(self, viewport: tuple[float, float, float, float]) -> None:
-        self.renderer.SetViewport(*viewport)
-
-    def set_image(self, rgba: object, width: int, height: int) -> None:
-        """``rgba`` is a (height, width, 4) uint8 array, top row first."""
-
-        import numpy as np
-        from vtkmodules import vtkCommonCore
-        from vtkmodules.util.numpy_support import numpy_to_vtk
-
-        flipped = np.ascontiguousarray(np.asarray(rgba, dtype=np.uint8)[::-1])  # VTK rows start at the bottom
-        scalars = numpy_to_vtk(flipped.reshape(-1, 4), deep=True, array_type=vtkCommonCore.VTK_UNSIGNED_CHAR)
-        scalars.SetName("rgba")
-        self.image.SetDimensions(width, height, 1)
-        self.image.GetPointData().SetScalars(scalars)
-        self.image.Modified()
-        if self._size != (width, height):
-            self._size = (width, height)
-            camera = self.renderer.GetActiveCamera()
-            # Image pixel i is centred on world coordinate i, so the visible range must be
-            # [-0.5, size - 0.5]; centring on size / 2 would put every display pixel on the
-            # boundary between two image pixels and make glyph rows round unevenly.
-            centre_x, centre_y = (width - 1) / 2.0, (height - 1) / 2.0
-            camera.SetFocalPoint(centre_x, centre_y, 0.0)
-            camera.SetPosition(centre_x, centre_y, 10.0 * max(width, height))
-            camera.SetViewUp(0.0, 1.0, 0.0)
-            camera.SetParallelScale(height / 2.0)
-            camera.SetClippingRange(1.0, 100.0 * max(width, height))
-
-    def set_draw(self, draw: bool) -> None:
-        self.renderer.SetDraw(bool(draw))
-
-    def attached(self) -> bool:
-        return any(renderer is self.renderer for renderer in render_window_renderers(self.render_window))
-
-    def close(self) -> None:
-        try:
-            self.renderer.SetDraw(False)
-            if not bool(self.render_window.GetNeverRendered()):
-                self.renderer.ReleaseGraphicsResources(self.render_window)
-            self.render_window.RemoveRenderer(self.renderer)
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            pass
-
-
 class ViewportNavigationCluster(QObject):
     """Top-right view cube and axis balls that follow the main camera.
 
@@ -161,7 +95,7 @@ class ViewportNavigationCluster(QObject):
         # Never shown: it paints the image and answers hit tests.
         self.widget = ViewCubeWidget()
         self.widget.action_requested.connect(self.action_requested)
-        self._overlay: _CubeImageOverlay | None = None
+        self._overlay: ImageOverlay | None = None
         self._cube_visible = False
         self._axes_visible = False
         self._closed = False
@@ -243,7 +177,7 @@ class ViewportNavigationCluster(QObject):
     def _create_overlay(self) -> None:
         if self.render_window is None or self.main_renderer is None or self._overlay is not None:
             return
-        self._overlay = _CubeImageOverlay(self.render_window, self.main_renderer)
+        self._overlay = ImageOverlay(self.render_window, self.main_renderer)
         self._apply_visibility()
 
     def set_visibility(self, *, gizmo: bool, controls: bool) -> None:

@@ -48,15 +48,29 @@ class StatusBarTests(unittest.TestCase):
         self.assertIn("triangles", info)
         self.assertIn("1,280", info)  # icosphere(subdivisions=3) has 1280 triangles
 
-    def test_tool_hint_strip_is_hidden_when_idle_and_follows_the_active_tool(self) -> None:
+    def test_tool_hint_is_on_the_canvas_only_while_a_tool_is_active(self) -> None:
         window = self._window()
         self._load(window)
-        self.assertTrue(window.instructions.isHidden())
+        hint = window.viewport.tool_hint
+        self.assertEqual(hint.text, "")
         window._dispatch_application_action("region.start")
-        self.assertFalse(window.instructions.isHidden())
-        self.assertIn("grow a region", window.instructions.label.text())
+        self.assertIn("grow a region", hint.text)
+        self.assertTrue(hint.visible)
+        # never a second copy of the same sentence in the status bar
+        self.assertNotIn(hint.text, window._info_label.text())
         window._dispatch_application_action("region.finish")
-        self.assertTrue(window.instructions.isHidden())
+        self.assertEqual(hint.text, "")
+        self.assertFalse(hint.visible)
+
+    def test_the_hint_pill_is_centred_at_the_bottom_and_never_wider_than_the_view(self) -> None:
+        from openretop.presentation.qt.tool_hint_overlay import paint_hint
+
+        image = paint_hint("Click two points on the scan to measure. Esc cancels a point, then finishes.", 1.0, 400.0)
+        self.assertLessEqual(image.width(), 400)
+        self.assertGreater(image.height(), 20)  # wrapped onto more than one line rather than clipped
+        wide = paint_hint("Short hint", 2.0, 1000.0)
+        narrow = paint_hint("Short hint", 1.0, 1000.0)
+        self.assertEqual(wide.width(), narrow.width() * 2)  # sharp on high-DPI screens
 
 
 if __name__ == "__main__":

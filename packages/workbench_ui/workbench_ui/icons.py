@@ -60,6 +60,20 @@ ICONS: dict[str, str] = {
         '<path d="M3 16 16 3l5 5L8 21z"/>'
         '<path d="m7 12 2 2M10 9l2 2M13 6l2 2"/>'
     ),
+    # scene tree kinds
+    "project": '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5" opacity="0.6"/>',
+    "mesh": (
+        '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/>'
+        '<path d="m4 7.5 8 4.5 8-4.5M12 12v9" opacity="0.6"/>'
+    ),
+    "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" opacity="0.8"/>',
+    "surface": '<path d="M4 17c3-1 4-9 8-9s5 8 8 9"/><path d="M4 17h16" opacity="0.5"/>',
+    "solid": (
+        '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/>'
+        '<path d="m4 7.5 8 4.5 8-4.5" />'
+        '<path d="M12 12v9"/>'
+    ),
+    "feature": '<path d="M5 19c2-7 5-11 14-14"/><path d="M5 13c3 0 5 1 6 6" opacity="0.6"/>',
 }
 
 

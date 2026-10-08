@@ -15,6 +15,7 @@ from openretop.presentation.qt.adaptive_grid import AdaptiveGrid
 from openretop.presentation.qt.measurement_overlay import MeasurementOverlay
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
 from openretop.presentation.qt.selection_overlay import SelectionBoxOverlay
+from openretop.presentation.qt.tool_hint_overlay import ToolHintOverlay
 from openretop.presentation.qt.transform_overlays import (
     TransformOverlayController,
     TransformOverlayDiagnosticState,
@@ -108,6 +109,7 @@ class QtSceneViewport(VTKViewportWidget):
             request_render=self._render_navigation,
         )
         self.view_controls = self.navigation_cluster
+        self.tool_hint = ToolHintOverlay(self.render_window, self.renderer, device_pixel_ratio=self.devicePixelRatioF)
         if self.interactor is not None:
             self.interactor.installEventFilter(self)
             self._qt_filter_installed = True
@@ -257,6 +259,15 @@ class QtSceneViewport(VTKViewportWidget):
         height = 0 if self.interactor is None else int(self.interactor.height())
         return (int(x_position), max(height - int(y_position) - 1, 0))
 
+    def set_tool_hint(self, text: str) -> None:
+        """Show the active tool's instructions on the canvas ('' hides them)."""
+
+        if text == self.tool_hint.text:
+            return
+        self.tool_hint.set_text(text)
+        if self.is_ready:
+            self._render_navigation()
+
     def set_measurements(self, measurements: object, pending: object, units: str) -> None:
         """Show the measure tool's lines, points and distance labels over the scene."""
 
@@ -339,6 +350,7 @@ class QtSceneViewport(VTKViewportWidget):
         self.measurement_overlay.close()
         self.grid.close()
         self.navigation_cluster.close()
+        self.tool_hint.close()
         self._pointer_gesture.cancel()
         super().closeEvent(event)
 
@@ -642,6 +654,7 @@ class QtSceneViewport(VTKViewportWidget):
             ("transform_axes", self._transform_axes_actor),
             ("rotation_ring", self._rotation_ring_actor),
             ("transform_guide", self.transform_overlays.guide_actor),
+            ("tool_hint", self.tool_hint.actor),
             ("selection_box", self.selection_box.actor),
             ("view_cube", self.navigation_cluster.overlay_actor),
         ):
@@ -819,6 +832,8 @@ def _semantic_category(role: str) -> str:
         "view_cube": "view_cube",
         "measurement": "measurement",
         "selection_box": "selection_overlay",
+        "transform_guide": "transform_axes",
+        "tool_hint": "tool_hint",
     }.get(prefix, "unidentified")
 
 

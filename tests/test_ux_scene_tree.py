@@ -32,8 +32,27 @@ class SceneTreeContentTests(unittest.TestCase):
         window = self._window()
         names = labels(window)
         self.assertEqual(len(names), 2, names)
-        self.assertEqual(names[0], "Scene")
+        self.assertEqual(names[0], "Untitled project")  # the root names the project; the dock says "Scene"
         self.assertIn("Open a scan", names[1])
+
+    def test_rows_have_kind_icons_and_no_redundant_header(self) -> None:
+        window = self._window()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ball.stl"
+            trimesh.creation.icosphere(subdivisions=2, radius=10).export(path)
+            self.assertTrue(window.open_model_path(path, units="mm"))
+        tree = window.scene_tree.tree
+        self.assertTrue(tree.isHeaderHidden())
+        root = tree.topLevelItem(0)
+        self.assertFalse(root.icon(0).isNull())
+        scan_row = root.child(0)
+        self.assertEqual(scan_row.text(0), "ball.stl")
+        self.assertFalse(scan_row.icon(0).isNull())
+
+    def test_the_root_row_follows_the_saved_project_name(self) -> None:
+        window = self._window()
+        window.current_project_path = Path("C:/work/bracket_scan.openretop")
+        self.assertEqual(labels(window)[0], "bracket_scan")
 
     def test_groups_appear_only_when_they_hold_something(self) -> None:
         window = self._window()
