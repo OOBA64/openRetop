@@ -26,6 +26,29 @@ Conventions
 
 ---
 
+## Track RE - reverse engineering (TOP PRIORITY since 2026-10-07)
+
+Scan to CAD-ready solid, QuickSurface / ExModel style: segment, fit primitives, sketch and
+extrude/revolve, freeform B-spline patches, trim and sew into a solid, deviation check, STEP.
+Full plan, benchmarks and acceptance criteria: [RE_PLAN.md](RE_PLAN.md). Status of each RE
+task is tracked here.
+
+| ID | Milestone | Status | Task |
+|---|---|---|---|
+| RE-01 | M1 | todo | Benchmark harness: CadQuery reference parts to noisy scan meshes |
+| RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
+| RE-03 | M1 | todo | Automatic segmentation into classified regions |
+| RE-04 | M1 | todo | Region editing: brush, grow/shrink, merge/split, many regions |
+| RE-05 | M1 | todo | Primitive fitting: plane, sphere, cylinder, cone, torus |
+| RE-06 | M1 | todo | Constraints and snapping for primitives |
+| RE-07 | M1 | todo | Feature tree v1 (editable, rebuilt, saved) |
+| RE-08 | M1 | todo | Primitives to a closed solid |
+| RE-09 | M1 | todo | Deviation colour map and report |
+| RE-10 | M1 | todo | STEP solid / IGES surface export, verified by re-import |
+| RE-11..16 | M2 | todo | Sketch on section, auto-fit lines/arcs, constraints, extrude/revolve, fillets |
+| RE-17..21 | M3 | todo | Freeform B-spline patches, G1 networks, trim/sew, re-home existing tools |
+| RE-22..26 | M4 | todo | Alignment, mesh prep, workflow stepper, auto-model, performance budget |
+
 ## Track U - UX foundations
 
 Principles and findings: [UX_AUDIT.md](UX_AUDIT.md).
