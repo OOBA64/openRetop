@@ -63,8 +63,14 @@ class SurfacingWorkbenchMixin:
         self.surfacing_panel = SurfacingPanel(self)  # type: ignore[arg-type]
         self.surfacing_panel.setVisible(False)
         self.surfacing_panel.action_requested.connect(self._on_surfacing_action)
+        self.surfacing_panel.editing_done.connect(self._focus_viewport)
         layout.insertWidget(0, self.surfacing_panel)
         self._brush_active = False
+
+    def _focus_viewport(self) -> None:
+        interactor = getattr(self.viewport, "interactor", None)
+        if interactor is not None:
+            interactor.setFocus()
 
     @property
     def modeling(self) -> Any:

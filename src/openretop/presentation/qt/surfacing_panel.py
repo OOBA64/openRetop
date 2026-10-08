@@ -89,6 +89,7 @@ def _button(text: str, *, primary: bool = False) -> QPushButton:
 
 class SurfacingPanel(QWidget):
     action_requested = Signal(str, object)
+    editing_done = Signal()  # Enter in a number field: give the keyboard back to the 3D view
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -129,6 +130,17 @@ class SurfacingPanel(QWidget):
             builder(page_layout)
             page_layout.addStretch(1)  # pack each page to the top (the stack is as tall as the tallest)
             self._page_index[name] = self.pages.addWidget(page)
+        self._keep_hotkeys_working()
+
+    def _keep_hotkeys_working(self) -> None:
+        """Buttons, boxes and sliders never take the keyboard, so Ctrl+Z, Delete, H, M ...
+        still reach the window after clicking them; number fields hand it back on Enter."""
+
+        for widget in self.findChildren(QWidget):
+            if isinstance(widget, (QPushButton, QToolButton, QCheckBox, QSlider, QListWidget)):
+                widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            elif isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+                widget.lineEdit().returnPressed.connect(self.editing_done.emit)
 
     # -- painting ------------------------------------------------------------------------------
 

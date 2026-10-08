@@ -107,6 +107,21 @@ class ModelingController(ControllerBase):
         self._selection: ScanSelection | None = None
         self._mapping: tuple[tuple[object, object], SourceMapping] | None = None
 
+    def discard_stale(self) -> None:
+        """After undo/redo: drop tool state that may refer to surfaces that are gone."""
+
+        session = self.session
+        model = self.state.model
+        model.selected_ids = [value for value in model.selected_ids if model.get(value) is not None]
+        if session is not None:
+            session.preview = None
+            session.trim_pieces = None
+            if session.tool == "trim":
+                session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
+            session.fill_chain = [side for side in session.fill_chain if "curve" in side or model.get(side["entity"]) is not None]
+        if self.deviation is not None and any(model.get(value) is None for value in self.deviation.entity_ids):
+            self.deviation = None
+
     def reset(self) -> None:
         """A new project: no tool, no selection, no deviation map."""
 
@@ -292,9 +307,32 @@ class ModelingController(ControllerBase):
         entity = entity_from_result(self.state.model, result, tool="fit_surface", params=params)
         outcome = self._add_entities([entity], name=f"Fit {entity.label}")
         session.preview = None
-        if selection is not None:
-            selection.clear()
-        return outcome
+        if selection is None:
+            return outcome
+        mask = selection.mask.copy()
+        selection.clear()
+        payload = outcome.undo_payload
+        if payload is None:
+            return outcome
+
+        def undo() -> None:  # the surface goes, and the area it was fitted to comes back
+            payload.undo()
+            current = self.selection()
+            if current is not None and len(current.mask) == len(mask):
+                current.set_mask(mask)
+
+        def redo() -> None:
+            payload.redo()
+            current = self.selection()
+            if current is not None:
+                current.clear()
+
+        return CommandResult.ok(
+            status=outcome.status,
+            changed=True,
+            dirty=True,
+            undo_payload=CallbackUndoPayload(payload.name, undo_action=undo, redo_action=redo),
+        )
 
     # -- Loft ----------------------------------------------------------------------------------
 
@@ -537,6 +575,38 @@ class ModelingController(ControllerBase):
         if not self.state.model.set_visible(entity_id, visible):
             return CommandResult.ok()
         return self._changed("Show" if visible else "Hide", before, "Shown" if visible else "Hidden")
+
+    def set_visibility(self, entity_ids: tuple[str, ...], visible: bool | None, *, isolate: bool = False) -> CommandResult:
+        """Show, hide or toggle (``visible`` None) the given items in one undo step.
+
+        ``isolate`` shows them and hides every other model item (Shift+H).
+        """
+
+        model = self.state.model
+        targets = [entity for entity in (model.get(value) for value in entity_ids) if entity is not None]
+        if not targets:
+            return CommandResult.failure("Select model items first.")
+        before = model.snapshot()
+        wanted = {entity.id for entity in targets}
+        changed = 0
+        for entity in model.entities:
+            if entity.id in wanted:
+                value = (not entity.visible) if visible is None else (True if isolate else visible)
+            elif isolate:
+                value = False
+            else:
+                continue
+            changed += int(model.set_visible(entity.id, value))
+        if not changed:
+            return CommandResult.ok(status="Nothing to change")
+        name = "Isolate" if isolate else ("Toggle Visibility" if visible is None else ("Show" if visible else "Hide"))
+        return self._changed(name, before, f"{name}: {len(targets)} model item(s)")
+
+    def show_all(self) -> CommandResult:
+        hidden = tuple(entity.id for entity in self.state.model.entities if not entity.visible)
+        if not hidden:
+            return CommandResult.ok(status="Everything in the model is shown")
+        return self.set_visibility(hidden, True)
 
     def rename(self, entity_id: str, name: str) -> CommandResult:
         entity = self.state.model.get(entity_id)

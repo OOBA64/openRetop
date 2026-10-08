@@ -365,6 +365,31 @@ QTreeView, QTreeWidget, QListView, QListWidget {{
     selection-background-color: {t["accent_soft"]};
     selection-color: {t["text"]};
 }}
+QTableView, QTableWidget {{
+    background-color: {t["panel"]};
+    color: {t["text"]};
+    gridline-color: {t["border"]};
+    border: 1px solid {t["border"]};
+    border-radius: {SMALL_RADIUS}px;
+    outline: none;
+    selection-background-color: {t["accent_soft"]};
+    selection-color: {t["text"]};
+}}
+QTableView::item {{
+    padding: 3px 6px;
+    color: {t["text"]};
+}}
+QTableView::item:hover {{
+    background-color: {t["hover"]};
+}}
+QTableView::item:selected {{
+    background-color: {t["accent_soft"]};
+    color: {t["text"]};
+}}
+QTableCornerButton::section {{
+    background-color: {t["panel"]};
+    border: none;
+}}
 QTreeView::item {{
     padding: 4px 4px;
 }}

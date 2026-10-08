@@ -136,16 +136,22 @@ class WorkflowService:
         selection_ids = self.selection.snapshot().ids
         if action == "edit.undo":
             command = self.undo.undo()
+            self.modeling.discard_stale()
             return CommandResult.ok(
                 status=f"Undid {command.name}" if command else "Nothing to undo",
                 changed=command is not None,
             )
         if action == "edit.redo":
             command = self.undo.redo()
+            self.modeling.discard_stale()
             return CommandResult.ok(
                 status=f"Redid {command.name}" if command else "Nothing to redo",
                 changed=command is not None,
             )
+
+        model_result = self._dispatch_scene_on_model(action, payload, selection_ids)
+        if model_result is not None:
+            return model_result
 
         if action == "scene.select_model":
             return self.selection.select_model()
@@ -615,6 +621,51 @@ class WorkflowService:
                 mesh=self._transformed_mesh(), mesh_revision=self._mesh_revision()
             )
         return CommandResult.failure(f"No surface adapter is registered for {action}.")
+
+    def _dispatch_scene_on_model(
+        self, action: str, payload: dict[str, object], selection_ids: tuple[str, ...]
+    ) -> CommandResult | None:
+        """Scene commands (Delete, H, Shift+H, Alt+H, F2) on selected model surfaces.
+
+        Model items have their own selection, so these used to do nothing while a surface was
+        selected. When scene objects are selected too, both are acted on (two undo steps).
+        Returns None when the command is not about the model.
+        """
+
+        model_ids = tuple(self.state.model.selected_ids)
+        modeling = self.modeling
+        if action == "scene.show_all":
+            shown = modeling.show_all()
+            if shown.undo_payload is not None and shown.changed:
+                self.undo.push(shown.undo_payload)
+            return None  # and the scene's own Show All
+        if not model_ids:
+            return None
+        if action == "scene.rename_selected":
+            if selection_ids or len(model_ids) != 1:
+                return None
+            return modeling.rename(model_ids[0], str(payload.get("name", "")))
+        operations = {
+            "scene.delete_selected": lambda: modeling.delete(model_ids),
+            "scene.hide_selected": lambda: modeling.set_visibility(model_ids, False),
+            "scene.show_selected": lambda: modeling.set_visibility(model_ids, True),
+            "scene.toggle_visibility": lambda: modeling.set_visibility(model_ids, None),
+            "scene.isolate_selected": lambda: modeling.set_visibility(model_ids, True, isolate=True),
+        }
+        operation = operations.get(action)
+        if operation is None:
+            return None
+        result = operation()
+        if selection_ids and action != "scene.isolate_selected":
+            kept = [value for value in self.state.model.selected_ids if self.state.model.get(value) is not None]
+            self.state.model.selected_ids = []  # the model part is done; now the scene objects
+            try:
+                other = self._dispatch(action, payload)
+            finally:
+                self.state.model.selected_ids = kept
+            if other.success and other.undo_payload is not None and other.changed:
+                self.undo.push(other.undo_payload)
+        return result
 
     def _dispatch_model(self, action: str, payload: dict[str, object]) -> CommandResult:
         modeling = self.modeling

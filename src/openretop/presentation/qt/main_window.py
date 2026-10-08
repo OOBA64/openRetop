@@ -34,7 +34,7 @@ from openretop.application.controller_support import (
     is_repaired_curve,
 )
 from openretop.application.guidance import build_guidance
-from openretop.application.keybindings import shortcut_overrides
+from openretop.application.keybindings import shortcut_conflicts, shortcut_overrides
 from openretop.application.results import CommandResult
 from openretop.application.scene_ids import (
     NODE_BREP_SURFACES,
@@ -81,7 +81,7 @@ from openretop.mesh.display_proxy import normalize_proxy_quality
 from openretop.presentation.qt.adaptive_grid import format_spacing
 from openretop.presentation.qt.background import InlineExecutor, TaskExecutor, ThreadedExecutor
 from openretop.presentation.qt.next_steps import NextStepsPanel
-from openretop.presentation.qt.preferences_dialog import PreferencesDialog
+from openretop.presentation.qt.preferences_dialog import CommandShortcut, PreferencesDialog
 from openretop.presentation.qt.surfacing_workbench import SURFACING_HEAVY_ACTIONS, SurfacingWorkbenchMixin
 from openretop.presentation.qt.transform_overlays import transformed_object_origin
 from openretop.presentation.qt.viewport import QtSceneViewport
@@ -340,7 +340,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
                     label,
                     category=category,
                     description=description,
-                    shortcut=shortcut,
+                    shortcut=shortcut_overrides.get(action_id, shortcut),
                     dispatch=lambda payload, action_id=action_id: self._dispatch_framework_action(action_id, payload),
                 )
             )
@@ -357,7 +357,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         return registry
 
     def _shortcut_overrides(self) -> dict[str, str]:
-        return shortcut_overrides(self.composition.settings.keybinds)
+        return shortcut_overrides(self.composition.settings.keybinds, self.composition.settings.future)
 
     def _menu_schemas(self) -> tuple[MenuSchema, ...]:
         result: list[MenuSchema] = []
@@ -493,7 +493,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             )
         if action_id == "scene.rename_selected" and not payload:
             selection = self.composition.selection_controller.snapshot()
-            if len(selection.ids) != 1:
+            if len(selection.ids) + len(self.composition.state.model.selected_ids) != 1:
                 self.set_status_message("Select one object to rename.")
                 return False
             name, accepted = QInputDialog.getText(self, "Rename", "Name")
@@ -1292,11 +1292,11 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         active_surface = self._active_surface_record()
         context = ActionContext(
             has_scene_objects=bool(self.composition.visibility_controller.all_node_ids()),
-            has_scene_selection=selection.has_selection,
+            has_scene_selection=selection.has_selection or bool(state.model.selected_ids),
             can_undo=self.composition.undo.can_undo,
             can_redo=self.composition.undo.can_redo,
             mesh_loaded=state.mesh_object is not None,
-            selection_count=len(selection.ids),
+            selection_count=len(selection.ids) + len(state.model.selected_ids),
             has_section_plane=bool(state.section_collection.planes),
             has_section_result=bool(state.section_collection.results),
             has_curves=bool(state.curve_collection.curves),
@@ -1782,18 +1782,27 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self.set_status_message(f"Exported STEP: {path}")
         return True
 
+    def _default_shortcuts(self) -> dict[str, str]:
+        defaults = {definition.id: definition.shortcut or "" for definition in self._application_actions.definitions}
+        defaults.update({action_id: shortcut or "" for action_id, _label, _category, shortcut, _text in _FILE_ACTIONS})
+        return defaults
+
     def show_preferences(self) -> bool:
-        dialog = PreferencesDialog(self.composition.settings, self)
+        defaults = self._default_shortcuts()
+        commands = tuple(
+            CommandShortcut(definition.id, definition.label, definition.category, defaults.get(definition.id, ""))
+            for definition in self._framework_actions.definitions
+            if not definition.id.startswith("file.recent.")
+        )
+        dialog = PreferencesDialog(self.composition.settings, self, commands=commands)
         if not dialog.exec():
             return False
         candidate = dialog.settings
-        shortcuts = shortcut_overrides(candidate.keybinds)
-        owners: dict[str, list[str]] = {}
-        for action_id, shortcut in shortcuts.items():
-            owners.setdefault(shortcut.casefold(), []).append(action_id)
-        conflicts = [values for values in owners.values() if len(values) > 1]
+        # every command's key as the saved settings define it (defaults + the user's changes)
+        choices = {**defaults, **shortcut_overrides(candidate.keybinds, candidate.future)}
+        conflicts = shortcut_conflicts(choices)
         if conflicts:
-            labels = ", ".join(" / ".join(values) for values in conflicts)
+            labels = ", ".join(f"{key}: {' / '.join(ids)}" for key, ids in conflicts.items())
             self._report_error("Preferences invalid", f"Duplicate keybindings: {labels}")
             return False
         result = self.composition.settings_repository.write(candidate)
@@ -1802,8 +1811,8 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             return False
         self.composition.settings = candidate
         self.composition.workflow.settings = candidate
-        for action_id, shortcut in shortcuts.items():
-            self._framework_actions.update(action_id, shortcut=shortcut)
+        for action_id, shortcut in choices.items():
+            self._framework_actions.update(action_id, shortcut=shortcut or None)
         self.resize(candidate.ui.window_width, candidate.ui.window_height)
         self.set_status_message("Preferences saved")
         self.refresh()

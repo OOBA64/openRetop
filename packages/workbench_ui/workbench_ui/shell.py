@@ -96,8 +96,8 @@ class ApplicationShell(QMainWindow):
         action.setVisible(definition.visible)
         action.setCheckable(definition.checkable)
         action.setChecked(definition.checked)
-        if definition.shortcut:
-            action.setShortcut(QKeySequence(definition.shortcut))
+        # always set: a shortcut cleared in Preferences must come off the action too
+        action.setShortcut(QKeySequence(definition.shortcut or ""))
 
     def _build_menus(self, schemas: tuple[MenuSchema, ...]) -> None:
         for schema in schemas:
