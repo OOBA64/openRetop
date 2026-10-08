@@ -69,6 +69,7 @@ class ArchitectureBaselineTests(unittest.TestCase):
             "curve_controller.py",
             "manual_curve_controller.py",
             "measure_controller.py",
+            "modeling_controller.py",
             "region_controller.py",
             "scene_controller.py",
             "section_controller.py",

@@ -23,6 +23,7 @@ from openretop.application.scene_ids import (
     surface_node_id,
 )
 from openretop.sections.section_state import plane_normal, plane_origin
+from openretop.viewer.modeling_scene import ModelingSceneInput, modeling_items
 from openretop.viewer.scene_types import (
     CameraRequest,
     CurveRenderItem,
@@ -94,6 +95,7 @@ class SceneBuilder:
         surface_source_curve_ids: Sequence[str] = (),
         object_origin: object | None = None,
         active_transform_angle_delta: float | None = None,
+        modeling: ModelingSceneInput | None = None,
     ) -> SceneSnapshot:
         build_options = options or SceneBuildOptions()
         mesh_object = getattr(state, "mesh_object", None)
@@ -129,6 +131,9 @@ class SceneBuilder:
         section_results = () if build_options.hide_expensive_overlays else self._section_result_items(
             state
         )
+        model_faces, model_edges, scan_overlays = (
+            ((), (), ()) if modeling is None else modeling_items(modeling, mesh_object)
+        )
         preview = tool_preview or ToolPreviewState()
         selection = SelectionRenderState(
             selected_ids=frozenset(self._selected_ids(state)),
@@ -146,6 +151,9 @@ class SceneBuilder:
             tuple((item.id, item.revision, item.visible) for item in regions),
             tuple((item.id, item.revision, item.visible) for item in section_planes),
             tuple((item.id, item.revision, item.visible) for item in section_results),
+            tuple((item.id, item.revision, item.visible, item.style) for item in model_faces),
+            tuple((item.id, item.revision, item.visible, item.style) for item in model_edges),
+            tuple((item.id, item.revision, item.visible) for item in scan_overlays),
             preview.revision,
         )
         return SceneSnapshot(
@@ -156,6 +164,9 @@ class SceneBuilder:
             regions=regions,
             section_planes=section_planes,
             section_results=section_results,
+            model_faces=model_faces,
+            model_edges=model_edges,
+            scan_overlays=scan_overlays,
             tool_preview=preview,
             selection=selection,
             display={

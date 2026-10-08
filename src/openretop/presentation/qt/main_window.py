@@ -82,6 +82,7 @@ from openretop.presentation.qt.adaptive_grid import format_spacing
 from openretop.presentation.qt.background import InlineExecutor, TaskExecutor, ThreadedExecutor
 from openretop.presentation.qt.next_steps import NextStepsPanel
 from openretop.presentation.qt.preferences_dialog import PreferencesDialog
+from openretop.presentation.qt.surfacing_workbench import SURFACING_HEAVY_ACTIONS, SurfacingWorkbenchMixin
 from openretop.presentation.qt.transform_overlays import transformed_object_origin
 from openretop.presentation.qt.viewport import QtSceneViewport
 from openretop.project.project_session import restore_project_state
@@ -96,6 +97,7 @@ from openretop.surfaces.surface_preview import (
     build_surface_preview,
 )
 from openretop.surfaces.surface_state import SurfacePatch
+from openretop.viewer.modeling_scene import model_id_from_node, model_node_id
 from openretop.viewer.picking_service import MeshPickResult, PickingService, SceneObjectPickResult
 from openretop.viewer.scene_builder import SceneBuildOptions
 from openretop.viewer.scene_synchronizer import ActorUpdateDiagnostics
@@ -136,6 +138,7 @@ HEAVY_ACTIONS = frozenset(
         "surface.rebuild_brep",
         "surface.rebuild_loft",
         "surface.rebuild_four_boundary",
+        *SURFACING_HEAVY_ACTIONS,
     }
 )
 
@@ -154,6 +157,8 @@ _TREE_KIND_ICONS = {
     "region": "region",
     NODE_LOFT_FEATURE: "feature",
     NODE_FOUR_BOUNDARY_FEATURE: "feature",
+    "model_surface": "surface",
+    "model_body": "solid",
 }
 
 PROPERTIES_MIN_WIDTH = 280  # px: fits the Next-steps buttons and the X/Y/Z boxes without clipping
@@ -196,6 +201,7 @@ _FILE_ACTIONS = (
     ("file.save_project", "Save Project", "File", "Ctrl+S", "Save the project (the scan itself is referenced, not copied)."),
     ("file.save_project_as", "Save Project As", "File", "Ctrl+Shift+S", "Save the project under a new name."),
     ("file.export_step", "Export STEP", "File", None, "Write the selected, built BREP surface to a STEP file in the model's units."),
+    ("file.export_model", "Export Model...", "File", "Ctrl+E", "Write the model's surfaces and bodies (selected, or all visible) to STEP or IGES."),
     ("view.command_palette", "Command Palette...", "View", "Ctrl+K", "Search every command by name; unavailable ones show what they need."),
     ("file.set_units", "Set Model Units...", "Edit", None, "Change the length unit the model coordinates are labelled with (does not rescale)."),
     ("file.preferences", "Preferences", "Edit", "Ctrl+,", "Display, import and keyboard settings."),
@@ -204,7 +210,7 @@ _FILE_ACTIONS = (
 )
 
 
-class OpenRetopV3Window(ApplicationShell):
+class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
     """Qt shell backed only by V3 controllers, services, and scene snapshots."""
 
     def __init__(
@@ -288,6 +294,7 @@ class OpenRetopV3Window(ApplicationShell):
         properties_layout.setContentsMargins(0, 0, 0, 0)
         properties_layout.addWidget(self.next_steps)
         properties_layout.addWidget(self.inspector)
+        self._init_surfacing(properties_layout)
         # Scrolls instead of growing: a tall panel must never stretch the main window.
         properties_scroll = QScrollArea(self)
         properties_scroll.setObjectName("properties_scroll")
@@ -374,9 +381,19 @@ class OpenRetopV3Window(ApplicationShell):
             ("transform.rotate", "rotate", "Rotate", False),
             ("section.add_plane", "section_plane", "Section Plane", True),
             ("section.compute", "section_cut", "Cut Section", False),
-            ("manual_curve.create", "curve", "Draw Curve", False),
             ("region.start", "region", "Region", False),
             ("measure.distance", "measure", "Measure", False),
+        )
+        # the ExModel-style surfacing tools, in the order a part is modelled: their own row
+        surfacing = (
+            ("model.fit_surface", "fit_surface", "Fit Surface", False),
+            ("manual_curve.create", "curve", "3D Sketch", False),
+            ("model.loft", "loft", "Loft", False),
+            ("model.fill", "fill", "Fill", False),
+            ("model.extend", "extend", "Extend", False),
+            ("model.trim", "trim", "Trim", True),
+            ("model.compare", "compare", "Compare", False),
+            ("file.export_model", "save", "Export", True),
         )
         return (
             ToolbarSchema(
@@ -385,6 +402,14 @@ class OpenRetopV3Window(ApplicationShell):
                     ToolbarItem(action_id, icon=icon, label=label, separator_before=group)
                     for action_id, icon, label, group in items
                 ),
+            ),
+            ToolbarSchema(
+                "Surfacing",
+                tuple(
+                    ToolbarItem(action_id, icon=icon, label=label, separator_before=group)
+                    for action_id, icon, label, group in surfacing
+                ),
+                break_before=True,
             ),
         )
 
@@ -407,6 +432,8 @@ class OpenRetopV3Window(ApplicationShell):
             return self.save_project(as_dialog=True)
         if action_id == "file.export_step":
             return self.export_step()
+        if action_id == "file.export_model":
+            return self.export_model()
         if action_id == "view.command_palette":
             return self.show_command_palette()
         if action_id == "file.set_units":
@@ -483,7 +510,7 @@ class OpenRetopV3Window(ApplicationShell):
         if action_id == "view.frame_all" or action_id == "view.reset":
             self._camera_request = CameraRequest.frame_all()
         elif action_id == "view.frame_selected" or action_id == "view.frame_region":
-            ids = self.composition.selection_controller.snapshot().ids
+            ids = tuple(self.composition.selection_controller.snapshot().ids) + self._surfacing_selected_nodes()
             self._camera_request = CameraRequest.frame_selected(ids)
         elif action_id == "view.frame_source_curves":
             result = self._command_result("scene.select_source_curves")
@@ -547,6 +574,7 @@ class OpenRetopV3Window(ApplicationShell):
     def _sync_tool_mode(self, action_id: str, result: CommandResult) -> None:
         if not result.success:
             return
+        self._surfacing_tool_mode(action_id, result)
         if action_id in {"manual_curve.create", "manual_curve.edit", "region.start"}:
             self._section_tool = False
         if action_id in {"manual_curve.create", "manual_curve.edit"}:
@@ -575,7 +603,7 @@ class OpenRetopV3Window(ApplicationShell):
             self.tool_modes.cancel()
 
     def _on_tree_selection(self, selection: object) -> None:
-        ids = tuple(getattr(selection, "ids", ()))
+        ids = self._surfacing_tree_selection(tuple(getattr(selection, "ids", ())))
         feature_ids = [value for value in ids if _is_feature_node(value)]
         ordinary_ids = [value for value in ids if not _is_feature_node(value)]
         self._section_tool = any(
@@ -605,6 +633,8 @@ class OpenRetopV3Window(ApplicationShell):
                 self.composition.selection_controller.select_surface(feature.preview_surface_id)
 
     def _on_tree_visibility(self, node_id: str, visible: bool) -> None:
+        if self._surfacing_tree_visibility(node_id, visible):
+            return
         # Checkbox state is an explicit command target, not an implicit
         # selection change.  WorkflowService records at most one undo payload.
         result = self._command_result(
@@ -614,12 +644,14 @@ class OpenRetopV3Window(ApplicationShell):
         self._consume_result("tree.visibility", result)
 
     def _on_tree_rename(self, node_id: str, name: str) -> None:
+        if self._surfacing_tree_rename(node_id, name):
+            return
         self.composition.selection_controller.select_nodes((node_id,))
         result = self._command_result("scene.rename_selected", {"name": name})
         self._consume_result("scene.rename_selected", replace_dirty(result))
 
     def _on_tree_context_action(self, action_id: str, context: object) -> None:
-        ids = tuple(getattr(context, "ids", ()))
+        ids = self._surfacing_tree_selection(tuple(getattr(context, "ids", ())))
         feature_ids = tuple(value for value in ids if _is_feature_node(value))
         if feature_ids:
             self._activate_feature(feature_ids[0])
@@ -667,6 +699,9 @@ class OpenRetopV3Window(ApplicationShell):
                 )
             return
 
+        if self._surfacing_pointer(event_name, x_position, y_position, pick):
+            return
+
         manual = self.composition.manual_curve_controller
         if manual.session.active:
             if not isinstance(pick, MeshPickResult):
@@ -707,6 +742,13 @@ class OpenRetopV3Window(ApplicationShell):
             return
         if not isinstance(pick, SceneObjectPickResult):
             pick = self.viewport.pick_scene_object(x_position, y_position)
+        picked_model = model_id_from_node(_node_id_for_pick(pick) or "") if isinstance(pick, SceneObjectPickResult) and pick.hit else None
+        if picked_model is not None:
+            self.composition.selection_controller.select_nodes(())
+            result = self.composition.modeling_controller.select_entities((picked_model,))
+            self.set_status_message(result.status)
+            self.refresh()
+            return
         if isinstance(pick, SceneObjectPickResult) and pick.hit:
             node_id = _node_id_for_pick(pick)
             if node_id is not None:
@@ -714,9 +756,14 @@ class OpenRetopV3Window(ApplicationShell):
                 result = self.composition.selection_controller.select_nodes((node_id,))
                 self.set_status_message(result.status or "Selection changed")
                 self.refresh()
-        elif self._leave_section_tool() or self.composition.selection_controller.snapshot().ids:
+        elif (
+            self._leave_section_tool()
+            or self.composition.selection_controller.snapshot().ids
+            or self.composition.state.model.selected_ids
+        ):
             # A plain click on empty space deselects, as in every other CAD viewport.
             self.composition.selection_controller.select_nodes(())
+            self.composition.modeling_controller.select_entities(())
             self.set_status_message("Selection cleared")
             self.refresh()
 
@@ -908,6 +955,8 @@ class OpenRetopV3Window(ApplicationShell):
         if self._is_typed_value_key(key, text):
             self._type_transform_value(key, text)
             return True
+        if not self.composition.transform_controller.active and self._surfacing_key(key):
+            return True
         if key in {Qt.Key_Return, Qt.Key_Enter}:
             manual = self.composition.manual_curve_controller.session
             if manual.active:
@@ -965,6 +1014,7 @@ class OpenRetopV3Window(ApplicationShell):
         if state.mesh_object is not None:
             nodes.append(SceneNode(NODE_MESH, state.mesh_object.name, "mesh", "scene", state.mesh_object.visible, metadata={"context_actions": common}))
         group_defaults = {"checkable": False, "selectable": False, "renameable": False}
+        nodes.extend(self._surfacing_nodes())
         if state.mesh_object is None and not _has_scene_content(state):
             nodes.append(
                 SceneNode(
@@ -1065,7 +1115,7 @@ class OpenRetopV3Window(ApplicationShell):
         current = self._scene_model.selected_ids
         if any(_is_feature_node(value) for value in current):
             return
-        wanted = tuple(self.composition.selection_controller.snapshot().ids)
+        wanted = tuple(self.composition.selection_controller.snapshot().ids) + self._surfacing_selected_nodes()
         if wanted != current:
             self._scene_model.select(wanted)
 
@@ -1091,6 +1141,7 @@ class OpenRetopV3Window(ApplicationShell):
         self._render_scene()
         self._sync_action_state()
         self._refresh_next_steps()
+        self._refresh_surfacing_panel()
 
     def _render_scene(self) -> None:
         """Rebuild the scene snapshot and render it, leaving the side panels alone.
@@ -1128,6 +1179,7 @@ class OpenRetopV3Window(ApplicationShell):
             surface_source_curve_ids=source_ids,
             object_origin=_active_transform_origin(self.composition.state),
             active_transform_angle_delta=self.composition.transform_controller.angle_delta,
+            modeling=self._modeling_scene_input(),
         )
         measure = self.composition.measure_controller
         self.viewport.set_measurements(measure.measurements, measure.pending, self.composition.state.units)
@@ -1140,6 +1192,11 @@ class OpenRetopV3Window(ApplicationShell):
         """Nothing selected: show the Model & Next steps panel; otherwise the inspector."""
 
         state = self.composition.state
+        if self.composition.modeling_controller.active:
+            # a surfacing tool's panel replaces both (painted by _refresh_surfacing_panel)
+            self.next_steps.setVisible(False)
+            self.inspector.setVisible(False)
+            return
         has_selection = bool(self._scene_model.selected_ids)
         # hide the outgoing panel first: both visible at once, even briefly, grew the window
         outgoing, incoming = (self.next_steps, self.inspector) if has_selection else (self.inspector, self.next_steps)
@@ -1198,7 +1255,7 @@ class OpenRetopV3Window(ApplicationShell):
             return "manual_curve"
         if self.composition.region_controller.session.active:
             return "region"
-        return None
+        return self._surfacing_capture_owner()
 
     def _on_scene_synchronized(self, diagnostics: ActorUpdateDiagnostics) -> None:
         warning_text = "\n".join(self._last_project_warnings)
@@ -1267,6 +1324,9 @@ class OpenRetopV3Window(ApplicationShell):
             selected_region_boundary_curve=bool(selected_curve and is_region_boundary_curve(selected_curve)),
             cad_available=self.composition.cad.capabilities.available,
             has_runtime_brep=bool(self.composition.brep_controller.runtime_objects),
+            model_count=len(state.model.entities),
+            selected_model_count=len(state.model.selected_ids),
+            model_tool_active=self.composition.modeling_controller.active,
             busy=self._executor.busy,
         )
         for app_action in self._application_actions.definitions:
@@ -1289,6 +1349,9 @@ class OpenRetopV3Window(ApplicationShell):
                 FieldDefinition("selection", "Selection", "No selection", "readonly", read_only=True),
                 FieldDefinition("cad", "CAD backend", self.composition.cad.capabilities.backend_name, "readonly", read_only=True, group="Diagnostics"),
             )
+        model_fields = self._surfacing_inspector_fields(node_id)
+        if model_fields is not None:
+            return model_fields
         if node_id == NODE_MESH and state.mesh_object is not None:
             mesh = state.mesh_object
             return (
@@ -1765,6 +1828,7 @@ class OpenRetopV3Window(ApplicationShell):
         self.composition.manual_curve_controller.cancel()
         self.composition.region_controller.session.exit()
         self.composition.brep_controller.runtime_objects.clear()
+        self.composition.modeling_controller.reset()
         self.composition.mesh_query_service.invalidate()
         self._surface_preview_cache.clear()
         self._last_project_warnings = ()
@@ -1825,6 +1889,7 @@ class OpenRetopV3Window(ApplicationShell):
         # the native Win32 surface is still valid so VTK observers, overlay
         # resources, and the QVTK interactor are released deterministically.
         self.viewport.close()
+        self.composition.modeling_controller.shutdown()
         event.accept()
 
     def _progress(self, event: ProgressEvent) -> None:
@@ -2023,14 +2088,24 @@ def _node_id_for_pick(pick: SceneObjectPickResult) -> str | None:
         "region": region_node_id,
         "section_plane": section_plane_node_id,
         "section_result": section_result_node_id,
+        "model_face": _model_node_for_actor,
+        "model_edges": _model_node_for_actor,
     }
     convert = converters.get(str(pick.object_type))
     return None if convert is None else convert(object_id)
 
 
+def _model_node_for_actor(object_id: str) -> str | None:
+    """'model-face:<id>' / 'model-edges:<id>' actors belong to model entity <id>."""
+
+    kind, _sep, entity_id = str(object_id).partition(":")
+    return model_node_id(entity_id) if kind in ("model-face", "model-edges") and entity_id else None
+
+
 def _has_scene_content(state: AppState) -> bool:
     return bool(
-        state.section_collection.results
+        state.model.entities
+        or state.section_collection.results
         or state.curve_collection.curves
         or state.surface_collection.surfaces
         or state.brep_surface_collection.surfaces

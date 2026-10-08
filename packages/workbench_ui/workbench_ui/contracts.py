@@ -127,6 +127,7 @@ class ToolbarItem:
 class ToolbarSchema:
     title: str
     items: tuple[ToolbarItem, ...]
+    break_before: bool = False  # start a new toolbar row
 
 
 @dataclass(frozen=True)

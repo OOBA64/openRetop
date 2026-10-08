@@ -16,7 +16,9 @@ support); it gives the same replies but no isolation.
 
 from __future__ import annotations
 
-import multiprocessing
+import os
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -43,6 +45,16 @@ def _run_job(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     if job is None or name.startswith("_") or name not in jobs.JOBS:
         raise ValueError(f"unknown kernel job: {name}")
     return job(*args, **kwargs)
+
+
+def _child_main() -> None:  # pragma: no cover - runs in the worker process
+    """Connect back to the parent (address and key from the environment) and serve jobs."""
+
+    from multiprocessing.connection import Client
+
+    address = os.environ["OPENRETOP_KERNEL_ADDRESS"]
+    key = bytes.fromhex(os.environ["OPENRETOP_KERNEL_KEY"])
+    _serve(Client(address, authkey=key))
 
 
 def _serve(connection: Any) -> None:  # pragma: no cover - runs in the child process
@@ -86,10 +98,6 @@ class KernelWorker:
         with self._lock:
             self._stop()
 
-    @property
-    def alive(self) -> bool:
-        return self._process is not None and self._process.is_alive()
-
     # -- internals ---------------------------------------------------------------------------
 
     def _call_process(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], timeout: float, started: float) -> KernelReply:
@@ -119,16 +127,51 @@ class KernelWorker:
         return KernelReply(False, error=reply[1] or "the CAD kernel reported an error", seconds=seconds)
 
     def _ensure_started(self) -> None:
-        if self._process is not None and self._process.is_alive():
+        if self._process is not None and self._process.poll() is None:
             return
         self._stop()
-        context = multiprocessing.get_context("spawn")
-        parent, child = context.Pipe()
-        process = context.Process(target=_serve, args=(child,), name="openretop-kernel", daemon=True)
-        process.start()
-        child.close()
-        self._process, self._connection = process, parent
+        # An independent interpreter, not multiprocessing's "spawn": spawn re-imports the
+        # parent's __main__ in the child, which fails (or relaunches the app) whenever the
+        # app was started from a script without a __main__ guard.
+        from multiprocessing.connection import Listener
+
+        key = os.urandom(16)
+        listener = Listener(authkey=key)
+        environment = dict(os.environ)
+        environment["OPENRETOP_KERNEL_ADDRESS"] = str(listener.address)
+        environment["OPENRETOP_KERNEL_KEY"] = key.hex()
+        # the child finds openretop the way this process did (a source checkout, or installed)
+        environment["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path and os.path.isdir(path))
+        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process = subprocess.Popen(
+            [sys.executable, "-c", "from openretop.cad_kernel.worker import _child_main; _child_main()"],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            creationflags=creation,
+        )
+        accepted: list[Any] = []
+
+        def accept() -> None:
+            try:
+                accepted.append(listener.accept())
+            except OSError:
+                pass
+
+        waiter = threading.Thread(target=accept, daemon=True)
+        waiter.start()
+        deadline = time.monotonic() + 60.0
+        while waiter.is_alive() and process.poll() is None and time.monotonic() < deadline:
+            waiter.join(0.05)
+        listener.close()
+        if not accepted:
+            process.kill()
+            raise OSError("the CAD kernel worker could not be started")
+        self._process, self._connection = process, accepted[0]
         self.restarts += 1
+
+    @property
+    def alive(self) -> bool:
+        return self._process is not None and self._process.poll() is None
 
     def _stop(self) -> None:
         process, connection = self._process, self._connection
@@ -139,9 +182,12 @@ class KernelWorker:
             except OSError:
                 pass
         if process is not None:
-            if process.is_alive():
+            if process.poll() is None:
                 process.kill()
-            process.join(timeout=5)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 __all__ = ("DEFAULT_TIMEOUT", "KernelReply", "KernelWorker")

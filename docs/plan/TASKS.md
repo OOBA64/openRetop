@@ -41,14 +41,14 @@ reference video in RE_PLAN section 2a) comes first.
 | S-01 | S | done | Fit Surface kernel (`fitting.bspline_surface`: plane/conformal parameterization, smoothed least squares stiffened where no data reaches, parameter correction, expand, auto net; exact types via `fitting.primitives`): B4 grip sector within 0.02 mm RMS of the CAD (16 x 16 net), 0.1-0.3 s |
 | S-02 | S | done | Surfacing kernel (`cad_kernel.surfacing`): loft, fill (G0/G1, on scan), extend (G1), split-all + keep pieces on the scan, sew to shell/solid, signed deviation; B1 trims and sews into a valid solid within 0.02% volume |
 | S-03 | S | done | Kernel worker process (`cad_kernel.worker` + plain-data jobs in `cad_kernel.jobs`): a crash or a hang (timeout) returns a failure and the next job starts a fresh worker |
-| S-04 | S | todo | Model document: surfaces and bodies with their build inputs, tree, viewport, project save |
-| S-05 | S | todo | Scan area selection: smart select, brush add/erase, connected, clear |
-| S-06 | S | todo | Fit Surface tool panel (types, U/V, smoothness, expand, preview, create) |
-| S-07 | S | todo | 3D Sketch curves on the scan + Loft tool |
-| S-08 | S | todo | Fill Surface tool (chain of curves/edges, Contact/Smooth, on scan) |
-| S-09 | S | todo | Extend and Trim tools (auto trim, click to keep/drop, sew, solid) |
-| S-10 | S | todo | Compare: deviation colour map, legend, statistics |
-| S-11 | S | todo | Export model to STEP/IGES, verified by re-import |
+| S-04 | S | doing | Model document (`modeling.document`): surfaces and bodies with their BREP, display mesh, edges, build inputs and fit stats; Model group in the tree (show/hide, rename, select, delete), coloured in the viewport, inspector stats, undo/redo per tool. Todo: saved in the project file |
+| S-05 | S | done | Scan area selection (`modeling.scan_selection`): Smart (grow until neighbours turn more than the angle), Brush and Erase (drag; left button owned by the tool, Alt+drag rotates), whole connected piece, Clear, Invert; orange overlay; picks go through fitted surfaces to the scan |
+| S-06 | S | done | Fit Surface panel: selection tools, type (Auto, Freeform, Plane, Cylinder, Cone, Sphere, Torus), U x V (Auto), smoothness, expand, tolerance, Fit preview with deviation, Create (Enter) |
+| S-07 | S | doing | 3D Sketch (the curve tool, on the Surfacing toolbar) + Loft panel (two or more selected curves, ruled option). Todo: B-spline curve editing on the scan |
+| S-08 | S | doing | Fill panel: click curves and surface edges around a gap (highlighted), Contact/Smooth per side, follow the scan; tested from curves. Todo: verify edge picking with a live session |
+| S-09 | S | done | Extend (by a distance, G1) and Trim (automatic: split all, keep pieces on the scan with tolerance/overlap; click pieces to keep/drop; Apply sews; closed = solid). B1 in the real window: one valid solid, volume 0.012% from the CAD. Todo: trim open borders to the scan outline |
+| S-10 | S | done | Compare: deviation colour map on the scan (green within +/- tolerance, yellow-red above, cyan-blue below, legend), RMS/max/% within; surfaces show as edges while the map is up. B1: RMS 0.020 mm, 98.7% within 0.05 mm |
+| S-11 | S | done | Export Model (File, Ctrl+E, Surfacing toolbar): STEP or IGES of the selected or visible model, read back to check the face count |
 | RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | done | Automatic segmentation into classified regions (`openretop.segmentation`: fit-guided region growing with a saturation test; 95-97% of triangles correct on B1-B5, every true face found, 1.5-3 s prismatic / ~8 s freeform; freeform areas still yield some small primitive regions, RE-04 edits them) |

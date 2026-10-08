@@ -78,7 +78,7 @@ StructuredPickResult = (
 )
 
 
-_INDEXED_TYPES = frozenset({"mesh", "surface", "region"})  # triangle actors worth a spatial index
+_INDEXED_TYPES = frozenset({"mesh", "surface", "region", "model_face"})  # triangle actors worth a spatial index
 
 
 class PickingService:
@@ -158,6 +158,12 @@ class PickingService:
         if vtkCellPicker is None:
             return MeshPickResult(hit=False)
         picker = self._picker()
+        # only the scan: a fitted surface lying on it (within its noise) must not take the pick
+        picker.InitializePickList()
+        for key, actor in self._surface_actors.items():
+            if self._actor_objects.get(key, ("", ""))[1] == "mesh":
+                picker.AddPickList(actor)
+        picker.PickFromListOn()
         if not picker.Pick(float(x_position), float(y_position), 0.0, self.renderer):
             return MeshPickResult(hit=False)
         identity = self._actor_objects.get(id(picker.GetActor()))

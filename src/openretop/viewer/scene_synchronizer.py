@@ -136,6 +136,9 @@ def _snapshot_items(snapshot: SceneSnapshot):
         ("region", snapshot.regions),
         ("section_plane", snapshot.section_planes),
         ("section_result", snapshot.section_results),
+        ("model_face", snapshot.model_faces),
+        ("model_edges", snapshot.model_edges),
+        ("scan_overlay", snapshot.scan_overlays),
     )
     for category, items in collections:
         for item in items:

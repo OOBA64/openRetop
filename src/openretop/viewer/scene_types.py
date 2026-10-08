@@ -310,6 +310,74 @@ class SectionResultRenderItem:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelFaceRenderItem:
+    """A surface or body of the model (or a tool's preview of one), already tessellated.
+
+    ``role`` is "surface", "body", "preview", "piece_keep" or "piece_drop" (trim pieces).
+    """
+
+    id: str
+    revision: int
+    vertices: np.ndarray = field(compare=False, repr=False)
+    triangles: np.ndarray = field(compare=False, repr=False)
+    visible: bool = True
+    selected: bool = False
+    role: str = "surface"
+    style: DisplayStyleSnapshot = field(default_factory=DisplayStyleSnapshot)
+    selection_keys: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "vertices", _points(self.vertices))
+        object.__setattr__(self, "triangles", np.asarray(self.triangles, dtype=np.int64).reshape((-1, 3)))
+
+    @property
+    def world_bounds(self) -> Bounds3 | None:
+        return finite_bounds(self.vertices)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelEdgesRenderItem:
+    """The edges of a model surface as polylines (boundaries, trim lines)."""
+
+    id: str
+    revision: int
+    polylines: tuple[np.ndarray, ...] = field(compare=False, repr=False)
+    visible: bool = True
+    style: DisplayStyleSnapshot = field(default_factory=DisplayStyleSnapshot)
+    selection_keys: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "polylines", tuple(_points(line) for line in self.polylines if len(line) >= 2))
+
+    @property
+    def world_bounds(self) -> Bounds3 | None:
+        return merge_bounds(finite_bounds(line) for line in self.polylines)
+
+
+@dataclass(frozen=True, slots=True)
+class ScanOverlayRenderItem:
+    """Scan triangles drawn over the scan: the selected area (``triangle_mask``) or the
+    deviation map (``vertex_colors``, one RGB byte triple per vertex)."""
+
+    id: str
+    revision: int
+    vertices: np.ndarray = field(compare=False, repr=False)  # object (local) coordinates
+    triangles: np.ndarray = field(compare=False, repr=False)
+    triangle_mask: np.ndarray | None = field(default=None, compare=False, repr=False)
+    vertex_colors: np.ndarray | None = field(default=None, compare=False, repr=False)
+    transform: np.ndarray = field(
+        default_factory=lambda: np.identity(4, dtype=float), compare=False, repr=False
+    )
+    visible: bool = True
+    style: DisplayStyleSnapshot = field(default_factory=DisplayStyleSnapshot)
+    selection_keys: tuple[str, ...] = ()
+
+    @property
+    def world_bounds(self) -> Bounds3 | None:
+        return None  # the scan it covers already accounts for the bounds
+
+
+@dataclass(frozen=True, slots=True)
 class ToolPreviewState:
     revision: int = 0
     active: bool = False
@@ -420,6 +488,9 @@ class SceneSnapshot:
     regions: tuple[RegionRenderItem, ...] = ()
     section_planes: tuple[SectionPlaneRenderItem, ...] = ()
     section_results: tuple[SectionResultRenderItem, ...] = ()
+    model_faces: tuple[ModelFaceRenderItem, ...] = ()
+    model_edges: tuple[ModelEdgesRenderItem, ...] = ()
+    scan_overlays: tuple[ScanOverlayRenderItem, ...] = ()
     tool_preview: ToolPreviewState = field(default_factory=ToolPreviewState)
     selection: SelectionRenderState = field(default_factory=SelectionRenderState)
     display: Mapping[str, object] = field(default_factory=dict, compare=False)
@@ -443,6 +514,9 @@ class SceneSnapshot:
             *self.regions,
             *self.section_planes,
             *self.section_results,
+            *self.model_faces,
+            *self.model_edges,
+            *self.scan_overlays,
         )
 
     def visible_bounds(self) -> Bounds3 | None:
@@ -507,7 +581,10 @@ __all__ = (
     "CurveRenderItem",
     "DisplayStyleSnapshot",
     "MeshRenderItem",
+    "ModelEdgesRenderItem",
+    "ModelFaceRenderItem",
     "RegionRenderItem",
+    "ScanOverlayRenderItem",
     "SceneSnapshot",
     "SectionPlaneRenderItem",
     "SectionResultRenderItem",

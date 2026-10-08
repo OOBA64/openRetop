@@ -414,9 +414,17 @@ def mark_pieces_on_scan(
 
 
 def _scan_spacing(tree: Any, vertices: np.ndarray) -> float:
+    """Typical distance between neighbouring scan vertices.
+
+    Coincident vertices (an STL stores every triangle's corners separately) are skipped:
+    counting them made the spacing zero, and then nothing counted as lying on the scan.
+    """
+
     sample = vertices[:: max(1, len(vertices) // 2000)]
-    distance, _index = tree.query(sample, k=2)
-    return float(np.median(distance[:, 1]))
+    distance, _index = tree.query(sample, k=8)
+    apart = np.where(distance > 1e-9, distance, np.inf).min(axis=1)
+    apart = apart[np.isfinite(apart)]
+    return float(np.median(apart)) if len(apart) else 0.0
 
 
 def scan_distance(points: np.ndarray, tree: Any, vertices: np.ndarray, normals: np.ndarray, spacing: float) -> np.ndarray:
@@ -557,10 +565,10 @@ def _transformed(points: np.ndarray, transform: Any) -> np.ndarray:
 def signed_distances(shape: Any, points: object, *, deflection: float | None = None) -> np.ndarray:
     """Distance from each point to the shape (positive on the side its face normals point to)."""
 
-    from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+    from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
     from vtkmodules.vtkFiltersCore import vtkImplicitPolyDataDistance
-
-    from openretop.viewer.vtk_actor_utils import polydata as make_polydata
 
     if deflection is None:  # the chord error stays well under scan noise
         deflection = max(shape_size(shape) * 1e-4, 0.005)
@@ -568,7 +576,14 @@ def signed_distances(shape: Any, points: object, *, deflection: float | None = N
     query = np.ascontiguousarray(np.asarray(points, dtype=float).reshape(-1, 3))
     if len(mesh.triangles) == 0 or len(query) == 0:
         return np.full(len(query), np.inf)
-    polydata = make_polydata(mesh.vertices, mesh.triangles, cell_kind="polys")
+    polydata = vtkPolyData()
+    vtk_points = vtkPoints()
+    vtk_points.SetData(numpy_to_vtk(np.ascontiguousarray(mesh.vertices), deep=True))
+    polydata.SetPoints(vtk_points)
+    cells = vtkCellArray()
+    offsets = np.arange(0, 3 * len(mesh.triangles) + 1, 3, dtype=np.int64)
+    cells.SetData(numpy_to_vtkIdTypeArray(offsets, deep=True), numpy_to_vtkIdTypeArray(mesh.triangles.astype(np.int64).ravel(), deep=True))
+    polydata.SetPolys(cells)
     distance = vtkImplicitPolyDataDistance()
     distance.SetInput(polydata)
     values = numpy_to_vtk(np.zeros(len(query)), deep=True)

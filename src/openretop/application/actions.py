@@ -60,6 +60,9 @@ class ActionCondition(str, Enum):
     SELECTED_REGION_BOUNDARY_CURVE = "selected_region_boundary_curve"
     CAD_AVAILABLE = "cad_available"
     HAS_RUNTIME_BREP = "has_runtime_brep"
+    HAS_MODEL = "has_model"
+    HAS_MODEL_SELECTION = "has_model_selection"
+    MODEL_TOOL_ACTIVE = "model_tool_active"
 
 
 # What to tell a user when a command is unavailable because ``condition`` is unmet.
@@ -107,6 +110,9 @@ CONDITION_REQUIREMENTS: Mapping[ActionCondition, str] = MappingProxyType(
         ActionCondition.SELECTED_REGION_BOUNDARY_CURVE: "a region boundary curve selected",
         ActionCondition.CAD_AVAILABLE: "the CAD kernel (CadQuery) to be installed",
         ActionCondition.HAS_RUNTIME_BREP: "a built BREP (rebuild it first)",
+        ActionCondition.HAS_MODEL: "a surface in the model (Surfacing > Fit Surface)",
+        ActionCondition.HAS_MODEL_SELECTION: "a selected model surface",
+        ActionCondition.MODEL_TOOL_ACTIVE: "a surfacing tool open",
     }
 )
 
@@ -149,6 +155,9 @@ class ActionContext:
     selected_region_boundary_curve: bool = False
     cad_available: bool = False
     has_runtime_brep: bool = False
+    model_count: int = 0
+    selected_model_count: int = 0
+    model_tool_active: bool = False
 
     def satisfies(self, condition: ActionCondition) -> bool:
         if condition is ActionCondition.ALWAYS:
@@ -235,6 +244,12 @@ class ActionContext:
             return self.cad_available
         if condition is ActionCondition.HAS_RUNTIME_BREP:
             return self.has_runtime_brep
+        if condition is ActionCondition.HAS_MODEL:
+            return self.model_count > 0
+        if condition is ActionCondition.HAS_MODEL_SELECTION:
+            return self.selected_model_count > 0
+        if condition is ActionCondition.MODEL_TOOL_ACTIVE:
+            return self.model_tool_active
         raise ValueError(f"Unsupported action condition: {condition!r}")
 
 
@@ -430,6 +445,14 @@ _DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
         "section.clear_all": "Remove every section result and its curves.",
         "manual_curve.create": "Draw a curve by clicking points on the scan. Enter finishes, Esc cancels.",
         "manual_curve.edit": "Edit the points of the selected hand-drawn curve.",
+        "model.fit_surface": "Fit a surface to an area of the scan: select it (click or brush), choose the type (auto, freeform, plane, cylinder, ...), Fit, Create.",
+        "model.loft": "A surface through two or more selected curves (e.g. curves drawn on the scan).",
+        "model.fill": "Fill a gap bounded by curves and surface edges; edges can join smoothly (tangent).",
+        "model.extend": "Grow the selected surfaces past their edges, so they can be trimmed against neighbours.",
+        "model.trim": "Split the surfaces by each other, keep the pieces lying on the scan, and sew them (into a solid when closed).",
+        "model.compare": "Colour the scan by its distance to the model surfaces.",
+        "model.delete_selected": "Delete the selected model surfaces and bodies.",
+        "model.finish": "Close the surfacing tool.",
         "region.start": "Click a smooth area of the scan to select it; the threshold controls how far it spreads.",
         "measure.distance": "Click two points on the scan to measure the distance between them in the project's units.",
         "measure.model_size": "Show the scan's overall size (X x Y x Z and diagonal) to check it against the real part.",
@@ -666,6 +689,31 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("measure.model_size", "Show Model Size", "Inspect", "show_model_size", enabled_when=_MESH),
     _workflow_action("measure.clear", "Clear Measurements", "Inspect", "clear_measurements", enabled_when=(ActionCondition.HAS_MEASUREMENTS,)),
     _workflow_action("measure.finish", "Done Measuring", "Inspect", "finish_measure_mode", enabled_when=(ActionCondition.MEASURE_TOOL_ACTIVE,), visible_when=(ActionCondition.MEASURE_TOOL_ACTIVE,)),
+
+    # Surfacing toolset (milestone S): each opens a tool panel; the panel's buttons are the
+    # payload actions below it.
+    _workflow_action("model.fit_surface", "Fit Surface", "Surfacing", "start_fit_surface", enabled_when=_MESH),
+    _workflow_action("model.loft", "Loft", "Surfacing", "start_loft", enabled_when=_NOT_BUSY),
+    _workflow_action("model.fill", "Fill Surface", "Surfacing", "start_fill", enabled_when=_NOT_BUSY),
+    _workflow_action("model.extend", "Extend Surface", "Surfacing", "start_extend", enabled_when=(ActionCondition.HAS_MODEL, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.trim", "Trim Surfaces", "Surfacing", "start_trim", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_MODEL, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.compare", "Compare", "Surfacing", "start_compare", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_MODEL, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.delete_selected", "Delete Model Items", "Surfacing", "delete_model_items", enabled_when=(ActionCondition.HAS_MODEL_SELECTION, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.finish", "Close Surfacing Tool", "Surfacing", "finish_model_tool", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.configure", "Surfacing Options", "Surfacing", "configure_model_tool", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
+    _workflow_action("model.select_clear", "Clear Scan Selection", "Surfacing", "clear_scan_selection", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.select_invert", "Invert Scan Selection", "Surfacing", "invert_scan_selection", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.fit_preview", "Fit", "Surfacing", "fit_surface_preview", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.fit_create", "Create Fitted Surface", "Surfacing", "fit_surface_create", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.loft_apply", "Loft Selected Curves", "Surfacing", "loft_selected_curves", enabled_when=(ActionCondition.AT_LEAST_TWO_CURVES, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.fill_apply", "Fill", "Surfacing", "fill_boundary", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.fill_clear", "Clear Fill Boundary", "Surfacing", "clear_fill_boundary", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.fill_continuity", "Set Fill Side Continuity", "Surfacing", "set_fill_continuity", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
+    _workflow_action("model.extend_apply", "Extend Selected Surfaces", "Surfacing", "extend_selected_surfaces", enabled_when=(ActionCondition.HAS_MODEL_SELECTION, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.trim_compute", "Automatic Trim", "Surfacing", "trim_compute", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.trim_apply", "Apply Trim", "Surfacing", "trim_apply", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.compare_apply", "Compute Deviation", "Surfacing", "compare_model", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_MODEL, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.compare_clear", "Clear Deviation Map", "Surfacing", "clear_deviation", enabled_when=_ALWAYS),
 
     # Region selection and derived-boundary workflows.
     _workflow_action("region.start", "Region Select", "Regions", "start_region_select_mode", enabled_when=_MESH),

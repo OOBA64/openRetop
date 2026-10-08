@@ -15,6 +15,7 @@ import numpy as np
 
 from openretop.cad_kernel import surfacing as S
 
+AUTO_MIN_INLIERS = 0.75
 SURFACE_KINDS = ("auto", "freeform", "plane", "cylinder", "cone", "sphere", "torus")
 
 
@@ -106,7 +107,7 @@ def fit_surface(
     falls back to freeform. ``control_u``/``control_v`` 0 means "auto net" for freeform.
     """
 
-    from openretop.fitting import classify_region, fit_primitive
+    from openretop.fitting import fit_primitive
     from openretop.fitting.bspline_surface import auto_fit_bspline_surface, fit_bspline_surface
 
     points = np.asarray(points, dtype=float).reshape(-1, 3)
@@ -116,8 +117,7 @@ def fit_surface(
         raise ValueError("select a larger area of the scan first")
     chosen = kind
     if kind == "auto":
-        found, _fit, _tried = classify_region(points, normals, tolerance=tolerance)
-        chosen = found if found in ("plane", "cylinder", "cone", "sphere", "torus") else "freeform"
+        chosen = auto_surface_kind(points, normals, tolerance)
     if chosen == "freeform":
         if control_u > 0 and control_v > 0:
             fit = fit_bspline_surface(
@@ -150,6 +150,22 @@ def fit_surface(
         point_distances=distances.astype(np.float32),
         **info,
     )
+
+
+def auto_surface_kind(points: np.ndarray, normals: np.ndarray | None, tolerance: float) -> str:
+    """The simplest exact type that fits within ``tolerance`` (RMS of its inliers), else freeform.
+
+    A hand-made selection often catches a few triangles of the neighbours, so a primitive
+    explaining three quarters of it is enough (the fit drops the outliers). Very narrow faces
+    (a 2 mm chamfer on a 0.8 mm scan) are mostly scanner-rounded edge and may come out as
+    freeform: choose the type explicitly for those. (A median-based spread was tried and
+    misread two chamfers as torus and freeform.)
+    """
+
+    from openretop.fitting import classify_region
+
+    found, _fit, _tried = classify_region(points, normals, tolerance=tolerance, min_inliers=AUTO_MIN_INLIERS)
+    return found if found in ("plane", "cylinder", "cone", "sphere", "torus") else "freeform"
 
 
 def _primitive_distances(fit: Any, points: np.ndarray) -> np.ndarray:

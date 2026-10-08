@@ -17,6 +17,7 @@ from openretop.geometry.curves import CurveFitResult
 from openretop.geometry.sections import SectionResult
 from openretop.mesh.display_proxy import DEFAULT_PROXY_QUALITY
 from openretop.mesh.triangle_mesh import TriangleMeshData
+from openretop.modeling.document import ModelDocument
 from openretop.regions.region_state import RegionCollection
 from openretop.sections.section_state import (
     SectionCollection,
@@ -137,6 +138,8 @@ class AppState:
     units: str = "mm"
     units_assumed: bool = False
     measure: MeasureState = field(default_factory=MeasureState)
+    # Surfaces and bodies made by the surfacing tools (milestone S).
+    model: ModelDocument = field(default_factory=ModelDocument)
 
     def clear_selection(self) -> None:
         self.selected_item = None

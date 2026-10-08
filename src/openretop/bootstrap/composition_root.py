@@ -14,6 +14,7 @@ from openretop.application.dependencies import ApplicationDependencies
 from openretop.application.events import EventPublisher
 from openretop.application.manual_curve_controller import ManualCurveController
 from openretop.application.measure_controller import MeasureController
+from openretop.application.modeling_controller import ModelingController
 from openretop.application.region_controller import RegionController
 from openretop.application.scene_controller import SceneController
 from openretop.application.section_controller import SectionController
@@ -25,6 +26,7 @@ from openretop.application.transform_controller import TransformController
 from openretop.application.undo import UndoStack
 from openretop.application.visibility_controller import VisibilityController
 from openretop.application.workflow_service import WorkflowService
+from openretop.cad_kernel.worker import KernelWorker
 from openretop.infrastructure.cad_adapter import PublicCadAdapter
 from openretop.infrastructure.io_services import (
     DisplayProxyService,
@@ -68,6 +70,7 @@ class ApplicationComposition:
     curve_controller: CurveController
     region_controller: RegionController
     measure_controller: MeasureController
+    modeling_controller: ModelingController
     surface_controller: SurfaceController
     brep_controller: BrepController
     analysis_controller: AnalysisController
@@ -80,6 +83,7 @@ def create_application(
     project_repository: ProjectRepository | None = None,
     settings_repository: SettingsRepository | None = None,
     cad_adapter: PublicCadAdapter | None = None,
+    kernel_worker: KernelWorker | None = None,
 ) -> ApplicationComposition:
     """Build one isolated application graph for a process or a test."""
 
@@ -127,6 +131,7 @@ def create_application(
         mesh_query_service=mesh_query,
         transformed_mesh_provider=transform_controller.transformed_source_mesh,
     )
+    modeling_controller = ModelingController(state, transform=transform_controller, worker=kernel_worker, events=events)
 
     workflow = WorkflowService(
         state=state,
@@ -141,6 +146,7 @@ def create_application(
         manual_curve=manual_curve_controller,
         region=region_controller,
         measure=measure_controller,
+        modeling=modeling_controller,
         surface=surface_controller,
         brep=brep_controller,
         analysis=analysis_controller,
@@ -180,6 +186,7 @@ def create_application(
         curve_controller=curve_controller,
         region_controller=region_controller,
         measure_controller=measure_controller,
+        modeling_controller=modeling_controller,
         surface_controller=surface_controller,
         brep_controller=brep_controller,
         analysis_controller=analysis_controller,

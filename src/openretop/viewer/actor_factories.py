@@ -9,6 +9,14 @@ from openretop.viewer.curve_actors import (
     update_section_result_actor,
 )
 from openretop.viewer.mesh_actors import create_mesh_actor, update_mesh_actor
+from openretop.viewer.model_actors import (
+    create_model_edges_actor,
+    create_model_face_actor,
+    create_scan_overlay_actor,
+    update_model_edges_actor,
+    update_model_face_actor,
+    update_scan_overlay_actor,
+)
 from openretop.viewer.picking_service import PickingService
 from openretop.viewer.region_actors import create_region_actor, update_region_actor
 from openretop.viewer.section_actors import create_section_plane_actor, update_section_plane_actor
@@ -88,6 +96,9 @@ def _factory(category: str):
         "region": create_region_actor,
         "section_plane": create_section_plane_actor,
         "section_result": create_section_result_actor,
+        "model_face": create_model_face_actor,
+        "model_edges": create_model_edges_actor,
+        "scan_overlay": create_scan_overlay_actor,
     }
     try:
         return factories[category]
@@ -103,6 +114,9 @@ def _updater(category: str):
         "region": update_region_actor,
         "section_plane": update_section_plane_actor,
         "section_result": update_section_result_actor,
+        "model_face": update_model_face_actor,
+        "model_edges": update_model_edges_actor,
+        "scan_overlay": update_scan_overlay_actor,
     }
     try:
         return updaters[category]

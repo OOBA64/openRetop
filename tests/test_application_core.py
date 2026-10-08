@@ -174,6 +174,7 @@ class ApplicationActionTests(unittest.TestCase):
                 "Scene",
                 "Sections",
                 "Surfaces",
+                "Surfacing",
                 "Transform",
                 "View",
             },
@@ -188,6 +189,7 @@ class ApplicationActionTests(unittest.TestCase):
                 "curve",
                 "manual_curve",
                 "measure",
+                "model",
                 "region",
                 "scene",
                 "section",
@@ -270,6 +272,9 @@ class ApplicationActionTests(unittest.TestCase):
             ),
             ActionCondition.CAD_AVAILABLE: ActionContext(cad_available=True),
             ActionCondition.HAS_RUNTIME_BREP: ActionContext(has_runtime_brep=True),
+            ActionCondition.HAS_MODEL: ActionContext(model_count=1),
+            ActionCondition.HAS_MODEL_SELECTION: ActionContext(selected_model_count=1),
+            ActionCondition.MODEL_TOOL_ACTIVE: ActionContext(model_tool_active=True),
         }
         self.assertEqual(set(true_contexts), set(ActionCondition))
         for condition, context in true_contexts.items():

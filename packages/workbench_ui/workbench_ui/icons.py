@@ -61,6 +61,36 @@ ICONS: dict[str, str] = {
         '<path d="m7 12 2 2M10 9l2 2M13 6l2 2"/>'
     ),
     # scene tree kinds
+    # surfacing tools: a patch laid over scan points
+    "fit_surface": (
+        '<path d="M3 15c3-4 6-6 9-6s6 2 9 6l-4 5H7z"/>'
+        '<path d="M6 7.5h.01M10 5h.01M14 5h.01M18 7.5h.01" stroke-width="2.4"/>'
+    ),
+    # a surface swept between two section curves
+    "loft": (
+        '<path d="M4 7c3-2 6 2 9 0s5-2 7-1"/><path d="M4 18c3-2 6 2 9 0s5-2 7-1"/>'
+        '<path d="M4 7v11M20 6v11M12 7.3v11" opacity="0.5"/>'
+    ),
+    # a gap closed inside a boundary
+    "fill": (
+        '<path d="M4 8c4-3 12-3 16 0l-1 9c-4 3-10 3-14 0z"/>'
+        '<path d="M8 10.5c2.5 1.2 5.5 1.2 8 0M8 14c2.5 1.2 5.5 1.2 8 0" opacity="0.55"/>'
+    ),
+    # an edge pushed outwards
+    "extend": (
+        '<path d="M3 16c2-4 5-6 9-6"/><path d="M12 10c3 0 5 1 7 3" stroke-dasharray="2 2.2"/>'
+        '<path d="m16 9 3 4-4.5 1"/>'
+    ),
+    # two crossing surfaces with the cut-off part dashed
+    "trim": (
+        '<path d="M4 18 14 6"/><path d="M4 9h9"/><path d="M13 9h7" stroke-dasharray="2 2.2"/>'
+        '<path d="M14 6l4-5" stroke-dasharray="2 2.2" opacity="0.6"/>'
+    ),
+    # a colour map: a surface with deviation bands
+    "compare": (
+        '<path d="M3 17c3-3 6-9 9-9s6 6 9 9"/>'
+        '<path d="M6.5 13.5v4M9.5 10v7.5M14.5 10v7.5M17.5 13.5v4" opacity="0.55"/>'
+    ),
     "project": '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5" opacity="0.6"/>',
     "mesh": (
         '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/>'

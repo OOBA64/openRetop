@@ -97,7 +97,13 @@ def fit_torus(points: object, normals: object | None = None, *, outlier_toleranc
     return _robust("torus", points, normals, 8, _torus_from, _torus_distance, outlier_tolerance)
 
 
-def classify_region(points: object, normals: object | None, *, tolerance: float) -> tuple[str, PrimitiveFit | None, dict[str, PrimitiveFit]]:
+def classify_region(
+    points: object,
+    normals: object | None,
+    *,
+    tolerance: float,
+    min_inliers: float = MIN_INLIER_FRACTION,
+) -> tuple[str, PrimitiveFit | None, dict[str, PrimitiveFit]]:
     """The simplest primitive that fits within ``tolerance`` (RMS), or 'freeform'.
 
     Tries plane, then cylinder, sphere, cone and torus on a subsample and stops at the first
@@ -117,7 +123,7 @@ def classify_region(points: object, normals: object | None, *, tolerance: float)
     for kind in ("plane", "cylinder", "sphere", "cone", "torus"):
         fit = fit_primitive(kind, xyz, nrm)
         fits[kind] = fit
-        if fit.success and fit.rms <= tolerance and fit.inlier_fraction >= MIN_INLIER_FRACTION:
+        if fit.success and fit.rms <= tolerance and fit.inlier_fraction >= min_inliers:
             return kind, fit, fits
     return "freeform", None, fits
 

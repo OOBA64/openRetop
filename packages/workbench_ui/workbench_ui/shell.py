@@ -132,6 +132,8 @@ class ApplicationShell(QMainWindow):
                 if item.icon:
                     self._toolbar_icons[item.action_id] = item.icon
                 toolbar.addAction(action)
+            if schema.break_before:
+                self.addToolBarBreak()
             self.addToolBar(toolbar)
         self._paint_toolbar_icons()
 

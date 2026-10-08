@@ -20,6 +20,7 @@ from openretop.application.controller_support import CallbackUndoPayload
 from openretop.application.curve_controller import CurveController
 from openretop.application.manual_curve_controller import ManualCurveActionResult, ManualCurveController
 from openretop.application.measure_controller import MeasureController
+from openretop.application.modeling_controller import ModelingController
 from openretop.application.region_controller import RegionController
 from openretop.application.results import CommandResult, ViewportRequest, ViewportRequestKind
 from openretop.application.scene_controller import SceneController
@@ -88,6 +89,7 @@ class WorkflowService:
         manual_curve: ManualCurveController,
         region: RegionController,
         measure: MeasureController,
+        modeling: ModelingController,
         surface: SurfaceController,
         brep: BrepController,
         analysis: AnalysisController,
@@ -104,6 +106,7 @@ class WorkflowService:
         self.manual_curve = manual_curve
         self.region = region
         self.measure = measure
+        self.modeling = modeling
         self.surface = surface
         self.brep = brep
         self.analysis = analysis
@@ -251,6 +254,9 @@ class WorkflowService:
             return self.transform.center_geometry_on_origin()
         if action == "transform.reset":
             return self.transform.reset_object_transform()
+
+        if action.startswith("model."):
+            return self._dispatch_model(action, payload)
 
         if action == "measure.distance":
             return self.measure.start()
@@ -609,6 +615,55 @@ class WorkflowService:
                 mesh=self._transformed_mesh(), mesh_revision=self._mesh_revision()
             )
         return CommandResult.failure(f"No surface adapter is registered for {action}.")
+
+    def _dispatch_model(self, action: str, payload: dict[str, object]) -> CommandResult:
+        modeling = self.modeling
+        starts = {
+            "model.fit_surface": "fit_surface",
+            "model.loft": "loft",
+            "model.fill": "fill",
+            "model.extend": "extend",
+            "model.trim": "trim",
+            "model.compare": "compare",
+        }
+        if action in starts:
+            return modeling.start(starts[action])
+        if action == "model.finish":
+            return modeling.finish()
+        if action == "model.configure":
+            return modeling.configure(**{str(key): value for key, value in payload.items()})
+        if action == "model.select_clear":
+            return modeling.clear_selection()
+        if action == "model.select_invert":
+            return modeling.invert_selection()
+        if action == "model.fit_preview":
+            return modeling.fit_preview()
+        if action == "model.fit_create":
+            return modeling.create_from_preview()
+        if action == "model.loft_apply":
+            curve_ids = payload.get("curve_ids")
+            ids = None if curve_ids is None else tuple(str(value) for value in curve_ids)  # type: ignore[attr-defined]
+            return modeling.loft(ids, ruled=bool(payload.get("ruled", False)))
+        if action == "model.fill_apply":
+            return modeling.fill_apply()
+        if action == "model.fill_clear":
+            return modeling.fill_clear()
+        if action == "model.fill_continuity":
+            return modeling.fill_set_continuity(int(payload.get("index", -1)), str(payload.get("continuity", "")))  # type: ignore[call-overload]
+        if action == "model.extend_apply":
+            distance = payload.get("distance")
+            return modeling.extend(None, None if distance is None else float(distance))  # type: ignore[arg-type]
+        if action == "model.trim_compute":
+            return modeling.trim_compute()
+        if action == "model.trim_apply":
+            return modeling.trim_apply(sew=bool(payload.get("sew", True)))
+        if action == "model.compare_apply":
+            return modeling.compare()
+        if action == "model.compare_clear":
+            return modeling.clear_deviation()
+        if action == "model.delete_selected":
+            return modeling.delete()
+        return CommandResult.failure(f"Unknown surfacing action: {action}")
 
     def _toggle_setting(self, field_name: str, label: str) -> CommandResult:
         value = not bool(getattr(self.settings.display, field_name))
