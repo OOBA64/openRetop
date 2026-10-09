@@ -12,6 +12,7 @@ up with the scan as shown and export where they appear.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -105,6 +106,9 @@ class ToolSession:
     section_loops: list[np.ndarray] = field(default_factory=list)  # world polylines
     section_closed: list[bool] = field(default_factory=list)
     section_profiles: list[Profile2D] | None = None
+    section_selected: tuple[str, int, int] | None = None  # ("vertex" or "segment", loop, index)
+    section_drag_before: Any = None
+    section_editing: str = ""  # the sketch entity being edited: Create replaces it
     # Extrude: the sketch, the body to add to / cut from, depths along the sketch's normal
     # (front ahead of the plane, back behind it), draft in degrees; with ``extrude_auto`` the
     # depths come from the scan and each hole keeps its own (a pocket stays a pocket)
@@ -170,7 +174,6 @@ class ModelingController(ControllerBase):
             session.sketch_line = None
             session.drag_node = None
             session.drag_before = None
-            session.section_profiles = None
             if session.selected_node not in model.sketch.nodes:
                 session.selected_node = None
             if session.tool == "trim":
@@ -271,7 +274,7 @@ class ModelingController(ControllerBase):
                 setattr(session.fit, key[4:], type(getattr(session.fit, key[4:]))(value))
             elif hasattr(session, key) and key not in (
                 "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles",
-                "extrude_holes", "selected_node",
+                "extrude_holes", "selected_node", "section_selected", "section_drag_before", "section_editing",
             ):
                 current = getattr(session, key)
                 setattr(session, key, type(current)(value) if current is not None else value)
@@ -488,6 +491,7 @@ class ModelingController(ControllerBase):
             session.section_closed = [bool(poly.is_closed) for poly in usable]
             session.section_key = key
             session.section_profiles = None
+            session.section_selected = None
         count = len(session.section_loops)
         where = f"{session.section_plane} at {session.section_offset:.3f} {self.state.units}"
         if count == 0:
@@ -508,6 +512,7 @@ class ModelingController(ControllerBase):
         sharp = session.section_sharp if session.section_sharp > 0 else None
         profiles = [fit_profile(outline, tolerance=tolerance, sharp_radius=sharp) for outline in self._section_outlines()]
         session.section_profiles = profiles
+        session.section_selected = None
         lines = sum(1 for profile in profiles for segment in profile.segments if segment.kind == "line")
         arcs = sum(1 for profile in profiles for segment in profile.segments if segment.kind == "arc")
         worst = max(profile.deviation for profile in profiles)
@@ -599,9 +604,206 @@ class ModelingController(ControllerBase):
             "loops": loops,
             "tolerance": self.section_tolerance_in_use(),
         }
-        entity = entity_from_result(self.state.model, reply.value, tool="section", params=params)
+        model = self.state.model
+        replaced = model.get(session.section_editing) if session.section_editing else None
+        entity = entity_from_result(model, reply.value, tool="section", params=params, name=None if replaced is None else replaced.name)
         session.section_profiles = None  # created: the next Fit starts afresh
-        return self._add_entities([entity], name="Section Sketch")
+        session.section_selected = None
+        session.section_editing = ""
+        if replaced is None:
+            return self._add_entities([entity], name="Section Sketch")
+        before = model.snapshot()
+        position = model.entities.index(replaced)
+        model.remove(replaced.id)
+        model.add(entity)
+        model.entities.remove(entity)
+        model.entities.insert(position, entity)  # in the tree where it was
+        model.selected_ids = [entity.id]
+        return self._changed("Edit Sketch", before, f"Updated {entity.name}")
+
+    # -- editing the profile by hand -------------------------------------------------------------
+
+    def section_edit_entity(self, entity_id: str | None = None) -> CommandResult:
+        """Open a sketch made earlier for editing (Create then replaces it)."""
+
+        model = self.state.model
+        ids = [entity_id] if entity_id else list(model.selected_ids)
+        candidates = [model.get(value) for value in ids]
+        entity = next((item for item in candidates if item is not None and item.kind == "profile"), None)
+        if entity is None:
+            return CommandResult.failure("Select a sketch (in the tree) to edit.")
+        started = self.start("section")
+        if not started.success:
+            return started
+        session = self.session
+        assert session is not None
+        params = entity.params
+        session.section_plane = str(params.get("plane", "XY"))
+        session.section_offset = float(params.get("offset", 0.0))
+        session.section_tolerance = float(params.get("tolerance", 0.0))
+        self.section_cut()
+        session.section_profiles = [Profile2D.from_dict(loop) for loop in params.get("loops", [])]
+        session.section_editing = entity.id
+        for index in range(len(session.section_profiles)):
+            self._remeasure(index)
+        return CommandResult.ok(status=f"Editing {entity.name}: drag its corners, pick a segment to change it; Create updates it.", changed=True)
+
+    def _section_plane_point(self, world_point: object) -> np.ndarray:
+        frame = self.section_frame()
+        assert frame is not None
+        u, v, origin = (np.asarray(frame[name]) for name in ("u", "v", "origin"))
+        local = np.asarray(world_point, dtype=float).reshape(3) - origin
+        return np.array([float(local @ u), float(local @ v)])
+
+    def section_vertices_world(self) -> list[tuple[int, int, np.ndarray]]:
+        """Every corner of the fitted profile: (loop, vertex, world position)."""
+
+        from openretop.modeling import profile_edit
+
+        session = self.session
+        frame = self.section_frame()
+        if session is None or session.section_profiles is None or frame is None:
+            return []
+        from openretop.cad_kernel.profiles import PlaneFrame
+
+        plane = PlaneFrame.from_dict(frame)
+        result = []
+        for loop, profile in enumerate(session.section_profiles):
+            if not profile.segments:
+                continue
+            for index, position in enumerate(plane.to_world(profile_edit.vertices(profile))):
+                result.append((loop, index, position))
+        return result
+
+    def section_segments_world(self) -> list[tuple[int, int, np.ndarray]]:
+        """Every segment of the fitted profile as a world polyline: (loop, segment, line)."""
+
+        session = self.session
+        frame = self.section_frame()
+        if session is None or session.section_profiles is None or frame is None:
+            return []
+        from openretop.cad_kernel.profiles import PlaneFrame
+
+        plane = PlaneFrame.from_dict(frame)
+        return [
+            (loop, index, plane.to_world(segment.sample(24)))
+            for loop, profile in enumerate(session.section_profiles)
+            for index, segment in enumerate(profile.segments)
+        ]
+
+    def section_select(self, kind: str | None, loop: int = 0, index: int = 0) -> CommandResult:
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        if kind is None or session.section_profiles is None:
+            session.section_selected = None
+            return CommandResult.ok(status="Nothing selected", changed=True)
+        session.section_selected = (kind, int(loop), int(index))
+        from openretop.modeling import profile_edit
+
+        if kind == "segment":
+            segment = session.section_profiles[loop].segments[index]
+            return CommandResult.ok(status=f"{profile_edit.describe(segment)}. Right-click for changes.", changed=True)
+        return CommandResult.ok(status="Corner selected: drag it in the sketch plane; right-click to round or sharpen it.", changed=True)
+
+    def section_move_vertex(self, loop: int, index: int, world_point: object, *, final: bool = False) -> CommandResult:
+        """Drag a corner (``world_point`` on the sketch plane); one undo step per drag."""
+
+        from openretop.modeling import profile_edit
+
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        if session.section_profiles is None:
+            return CommandResult.failure("Fit a profile first.")
+        if session.section_drag_before is None:
+            session.section_drag_before = copy.deepcopy(session.section_profiles)
+        profile_edit.move_vertex(session.section_profiles[loop], index, self._section_plane_point(world_point))
+        self._remeasure(loop)
+        if not final:
+            return CommandResult.ok(changed=True)
+        before, session.section_drag_before = session.section_drag_before, None
+        return self._profile_changed("Move Sketch Corner", before, "Corner moved")
+
+    def section_edit(self, operation: str, value: float | None = None) -> CommandResult:
+        """An edit of the selected corner or segment: radius, sharp, fillet, axis, delete, close."""
+
+        from openretop.modeling import profile_edit
+
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        if session.section_profiles is None or session.section_selected is None:
+            return CommandResult.failure("Pick a corner or a segment of the profile first.")
+        kind, loop, index = session.section_selected
+        profile = session.section_profiles[loop]
+        before = copy.deepcopy(session.section_profiles)
+        try:
+            if operation == "radius":
+                if kind != "segment":
+                    raise ValueError("pick the arc to change")
+                profile_edit.set_arc_radius(profile, index, float(value or 0.0))
+                status = f"Radius {float(value or 0.0):g}"
+            elif operation == "sharp":
+                if kind != "segment":
+                    raise ValueError("pick the arc to take out")
+                profile_edit.make_sharp(profile, index)
+                session.section_selected = None
+                status = "Sharp corner"
+            elif operation == "fillet":
+                if kind != "vertex":
+                    raise ValueError("pick the corner to round")
+                arc = profile_edit.add_fillet(profile, index, float(value or 0.0))
+                session.section_selected = ("segment", loop, arc)
+                status = f"Rounded with R{float(value or 0.0):g}"
+            elif operation == "axis":
+                if kind != "segment":
+                    raise ValueError("pick the line to straighten")
+                status = f"Line made {profile_edit.make_axis_line(profile, index)}"
+            elif operation == "delete":
+                if kind != "segment":
+                    raise ValueError("pick the segment to delete")
+                profile_edit.delete_segment(profile, index)
+                session.section_selected = None
+                status = "Segment deleted: its neighbours meet"
+            elif operation == "close":
+                status = profile_edit.close_profile(profile).capitalize()
+                session.section_selected = None
+            else:
+                raise ValueError(f"unknown edit: {operation}")
+        except (ValueError, IndexError) as error:
+            session.section_profiles = before
+            return CommandResult.failure(str(error).capitalize())
+        self._remeasure(loop)
+        return self._profile_changed("Edit Sketch Profile", before, f"{status}; deviation max {profile.deviation:.3f} {self.state.units}")
+
+    def _remeasure(self, loop: int) -> None:
+        """The profile's deviation from its section loop, after an edit."""
+
+        session = self.session
+        if session is None or session.section_profiles is None:
+            return
+        outlines = self._section_outlines()
+        profile = session.section_profiles[loop]
+        if loop < len(outlines) and profile.segments:
+            distances = profile.distances(outlines[loop])
+            profile.deviation = float(np.max(distances))
+            profile.rms = float(np.sqrt(np.mean(distances**2)))
+
+    def _profile_changed(self, name: str, before: list[Profile2D], status: str) -> CommandResult:
+        """An undo step for an edit of the profile in the tool (not yet part of the model)."""
+
+        session = self.session
+        assert session is not None
+        after = copy.deepcopy(session.section_profiles) or []
+
+        def restore(profiles: list[Profile2D]) -> None:
+            if self.session is not None and self.session.tool == "section":
+                self.session.section_profiles = copy.deepcopy(profiles)
+                self.session.section_selected = None
+
+        payload = CallbackUndoPayload(name, undo_action=lambda: restore(before), redo_action=lambda: restore(after))
+        return CommandResult.ok(status=status, changed=True, undo_payload=payload)
 
     # -- Extrude -------------------------------------------------------------------------------
 

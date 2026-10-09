@@ -74,7 +74,8 @@ class ModelingSceneInput:
     section_lines: Sequence[np.ndarray] = field(default=(), compare=False)
     profile_lines: Sequence[np.ndarray] = field(default=(), compare=False)
     section_plane: np.ndarray | None = field(default=None, compare=False)
-    creases: np.ndarray | None = field(default=None, compare=False)  # per display vertex, 0..1: "Show body lines"
+    creases: np.ndarray | None = field(default=None, compare=False)
+    profile_highlight: np.ndarray | None = field(default=None, compare=False)  # the picked segment  # per display vertex, 0..1: "Show body lines"
 
 
 def modeling_items(
@@ -149,6 +150,7 @@ def modeling_items(
         ("section-plane", () if modeling.section_plane is None else (modeling.section_plane,), PLANE_COLOR, 1.0),
         ("section-scan", modeling.section_lines, SECTION_COLOR, 1.5),
         ("section-profile", modeling.profile_lines, SKETCH_CURVE_COLOR, 3.0),
+        ("section-picked", () if modeling.profile_highlight is None else (modeling.profile_highlight,), SELECTED_SKETCH_COLOR, 5.0),
     ):
         if len(lines):
             edges.append(

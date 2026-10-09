@@ -418,6 +418,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         )
         solid = (  # sketches on planes made into solids
             ("model.section_sketch", "section_sketch", "Section Sketch", False),
+            ("model.section_edit", "section_sketch", "Edit Sketch", False),
             ("model.extrude", "extrude", "Extrude", False),
             ("model.compare", "compare", "Compare", True),
             ("file.export_model", "save", "Export", False),

@@ -317,6 +317,21 @@ class QtSceneViewport(VTKViewportWidget):
         snapshot = self.last_snapshot or self._pending_snapshot
         return None if snapshot is None else snapshot.visible_bounds()
 
+    def pointer_ray(self, x_position: int, y_position: int) -> tuple[np.ndarray, np.ndarray] | None:
+        """The line of sight under a display position (VTK coordinates): origin, unit direction."""
+
+        if not self.is_ready or self.renderer is None:
+            return None
+        near = self._display_to_world(x_position, y_position, 0.0)
+        far = self._display_to_world(x_position, y_position, 1.0)
+        if near is None or far is None:
+            return None
+        direction = far - near
+        length = float(np.linalg.norm(direction))
+        if length <= 1e-12:
+            return None
+        return near, direction / length
+
     def project_points(self, world_points: object) -> np.ndarray:
         if not self.is_ready or self.renderer is None:
             return np.zeros((0, 2), dtype=float)

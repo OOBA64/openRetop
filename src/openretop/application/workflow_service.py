@@ -729,6 +729,12 @@ class WorkflowService:
             return modeling.extrude_preview()
         if action == "model.extrude_apply":
             return modeling.extrude_apply()
+        if action == "model.section_edit":
+            entity = payload.get("entity")
+            return modeling.section_edit_entity(None if entity is None else str(entity))
+        if action == "model.section_profile_edit":
+            value = payload.get("value")
+            return modeling.section_edit(str(payload.get("operation", "")), None if value is None else float(value))  # type: ignore[arg-type]
         if action == "model.section_fit":
             return modeling.section_fit()
         if action == "model.section_create":

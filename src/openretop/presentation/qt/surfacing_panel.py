@@ -271,6 +271,17 @@ class SurfacingPanel(QWidget):
         loops = int(extra.get("loops", 0))
         self.section_fit.setEnabled(loops > 0 and not facts.busy)
         self.section_create.setEnabled(loops > 0 and not facts.busy)
+        picked = extra.get("picked") or {}
+        self.section_selection.setText(
+            str(picked.get("text") or "Click a corner (drag to move it) or a segment of the violet profile.")
+        )
+        if picked.get("radius"):
+            self.section_radius.setValue(float(picked["radius"]))
+        allowed = set(picked.get("allowed", ()))
+        if extra.get("open_profile"):
+            allowed.add("close")
+        for operation, edit_button in self.section_edit_buttons.items():
+            edit_button.setEnabled(operation in allowed and not facts.busy)
 
     def _show_extrude(self, session: Any, facts: PanelFacts) -> None:
         if session.tool != "extrude":
@@ -291,6 +302,7 @@ class SurfacingPanel(QWidget):
 
     def _inputs(self) -> list[QWidget]:
         return [
+            self.section_radius,
             self.sketch_feature,
             self.sketch_smoothness,
             self.sketch_creases,
@@ -552,7 +564,7 @@ class SurfacingPanel(QWidget):
         self.section_offset.valueChanged.connect(lambda value: self._emit("model.section_plane", {"offset": value}))
         form.addRow("Offset", self.section_offset)
         layout.addLayout(form)
-        layout.addWidget(_hint("Click the scan to move the plane through that point."))
+        layout.addWidget(_hint("Click the scan to move the plane through that point (Ctrl+click once a profile is fitted, so edits are not lost)."))
         layout.addWidget(_section("Fit"))
         form = QFormLayout()
         self.section_tolerance = QDoubleSpinBox()
@@ -589,6 +601,48 @@ class SurfacingPanel(QWidget):
         layout.addLayout(row)
         self.section_info = _hint()
         layout.addWidget(self.section_info)
+        layout.addWidget(_section("Edit the profile"))
+        self.section_selection = _hint("Click a corner (drag to move it) or a segment of the violet profile.")
+        layout.addWidget(self.section_selection)
+        form = QFormLayout()
+        self.section_radius = QDoubleSpinBox()
+        self.section_radius.setRange(0.001, 1e5)
+        self.section_radius.setDecimals(3)
+        self.section_radius.setSingleStep(0.5)
+        self.section_radius.setToolTip("The picked arc's radius (Enter applies), or the radius a picked corner is rounded with.")
+        self.section_radius.lineEdit().returnPressed.connect(self._apply_section_radius)
+        form.addRow("Radius", self.section_radius)
+        layout.addLayout(form)
+        grid = QGridLayout()
+        self.section_edit_buttons: dict[str, QPushButton] = {}
+        for position, (operation, text, tip) in enumerate(
+            (
+                ("radius", "Set Radius", "Give the picked arc the radius above (a fillet stays tangent to its lines)."),
+                ("fillet", "Round Corner", "Round the picked sharp corner with the radius above."),
+                ("sharp", "Sharp Corner", "Take out the picked arc: the lines either side meet."),
+                ("axis", "Horizontal / Vertical", "Make the picked line exactly horizontal or vertical."),
+                ("delete", "Delete Segment", "Take out the picked segment: its neighbours run on until they meet."),
+                ("close", "Close Profile", "Close an open profile (a section broken by a wide hole in the scan)."),
+            )
+        ):
+            edit_button = _button(text)
+            edit_button.setToolTip(tip)
+            edit_button.clicked.connect(lambda _checked=False, operation=operation: self._section_edit(operation))
+            grid.addWidget(edit_button, position // 2, position % 2)
+            self.section_edit_buttons[operation] = edit_button
+        layout.addLayout(grid)
+
+    def _section_edit(self, operation: str) -> None:
+        payload: dict[str, Any] = {"operation": operation}
+        if operation in ("radius", "fillet"):
+            payload["value"] = self.section_radius.value()
+        self._emit("model.section_profile_edit", payload)
+
+    def _apply_section_radius(self) -> None:
+        if self.section_edit_buttons["radius"].isEnabled():
+            self._section_edit("radius")
+        elif self.section_edit_buttons["fillet"].isEnabled():
+            self._section_edit("fillet")
 
     def _build_extrude(self, layout: QVBoxLayout) -> None:
         self.extrude_info = _hint()

@@ -712,6 +712,8 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("model.sketch_face", "Face From Curves", "Surfacing", "sketch_face", enabled_when=(ActionCondition.NOT_BUSY,)),
     _workflow_action("model.section_sketch", "Section Sketch", "Surfacing", "start_section_sketch", enabled_when=_MESH),
     _workflow_action("model.section_plane", "Set Sketch Plane", "Surfacing", "set_section_plane", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
+    _workflow_action("model.section_edit", "Edit Sketch", "Surfacing", "section_edit_entity", enabled_when=(ActionCondition.HAS_MODEL_SELECTION, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.section_profile_edit", "Edit Sketch Profile", "Surfacing", "section_profile_edit", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
     _workflow_action("model.section_fit", "Fit Profile", "Surfacing", "fit_section_profile", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.section_create", "Create Sketch", "Surfacing", "create_section_sketch", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.extrude", "Extrude", "Surfacing", "start_extrude", enabled_when=(ActionCondition.HAS_MODEL, ActionCondition.NOT_BUSY)),

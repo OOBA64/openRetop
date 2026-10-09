@@ -47,6 +47,7 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.extrude",
         "model.extrude_preview",
         "model.extrude_apply",
+        "model.section_edit",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
@@ -54,7 +55,7 @@ SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means tha
 TOOL_HINTS = {
     "sketch": "Click points on the scan; Enter finishes. Click a point to select / drag it, double-click a curve to add a point, right-click for more.",
     "extrude": "The depth comes from the scan; adjust ahead / behind / draft, pick New, Add or Cut, then Create (Enter).",
-    "section": "Click the scan to move the sketch plane there; Fit Profile, then Create (Enter).",
+    "section": "Click the scan to move the sketch plane there; Fit Profile. Then drag corners, click a segment to change it (Ctrl+click moves the plane); Create (Enter).",
     "fit_surface": "Click a smooth area of the scan (Smart) or drag over it (Brush; Alt+drag rotates). Then Fit and Create.",
     "loft": "Select two or more curves, in order, then Loft.",
     "fill": "Click surface edges and curves around the gap, in order; then Fill.",
@@ -131,6 +132,15 @@ class SurfacingWorkbenchMixin:
         if key == Qt.Key.Key_Escape:
             self._dispatch_application_action("model.finish")  # type: ignore[attr-defined]
             return True
+        session = self.modeling.session
+        if (
+            self.modeling.tool == "section"
+            and key == Qt.Key.Key_Delete
+            and session.section_selected is not None
+            and session.section_selected[0] == "segment"
+        ):
+            self._dispatch_application_action("model.section_profile_edit", {"operation": "delete"})  # type: ignore[attr-defined]
+            return True
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             primary = {
                 "fit_surface": "model.fit_create",
@@ -188,10 +198,15 @@ class SurfacingWorkbenchMixin:
         return False
 
     def _surfacing_press_claim(self, x_position: int, y_position: int) -> bool:
-        """Only the 3D Sketch is choosy: it takes a press on one of its points (to drag it);
-        anywhere else the drag rotates the view and a click still places a point."""
+        """The 3D Sketch and the Section Sketch are choosy: they take a press on one of their
+        points (to drag it); anywhere else the drag rotates the view and a click still picks."""
 
         session = self.modeling.session
+        if session is not None and session.tool == "section":
+            corner = self._section_vertex_at(x_position, y_position)
+            self._section_drag = corner
+            self._drag_moved = False
+            return corner is not None
         if session is None or session.tool != "sketch":
             return True
         node = self._sketch_node_at(x_position, y_position)
@@ -220,6 +235,8 @@ class SurfacingWorkbenchMixin:
         session = self.modeling.session
         if session is not None and session.tool == "sketch":
             return "sketch"
+        if session is not None and session.tool == "section" and session.section_profiles is not None:
+            return "section"
         if session is not None and session.tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             return "modeling_brush"
         return None
@@ -257,6 +274,9 @@ class SurfacingWorkbenchMixin:
                 self._brush_active = False
                 self.refresh()  # type: ignore[attr-defined]
             return True
+        if tool == "section":
+            self._section_pointer(event_name, x_position, y_position, pick)
+            return True
         if event_name != "left_release" or not self.viewport.last_pointer_release_was_click:
             return True  # drags orbit the view; nothing else to do
         if tool == "fit_surface":
@@ -265,9 +285,7 @@ class SurfacingWorkbenchMixin:
             self._consume_result("model.pointer", result)  # type: ignore[attr-defined]
             return True
         if tool == "section":
-            hit = pick if isinstance(pick, MeshPickResult) else self.viewport.pick_mesh(x_position, y_position)
-            if hit.hit:
-                self._consume_result("model.pointer", self.modeling.section_place(hit.position))  # type: ignore[attr-defined]
+            self._section_pointer(event_name, x_position, y_position, pick)
             return True
         scene_pick = pick if isinstance(pick, SceneObjectPickResult) else self.viewport.pick_scene_object(x_position, y_position)
         if tool == "trim":
@@ -425,6 +443,178 @@ class SurfacingWorkbenchMixin:
         hit = self.viewport.pick_mesh(x_position, y_position)
         self._apply_model_result("model.sketch_click", self.modeling.sketch_click(hit.position if hit.hit else None))
 
+    _section_drag: tuple[int, int] | None = None
+
+    def _section_vertex_at(self, x_position: int, y_position: int) -> tuple[int, int] | None:
+        corners = self.modeling.section_vertices_world()
+        if not corners:
+            return None
+        positions = np.asarray([position for _loop, _index, position in corners], dtype=float)
+        try:
+            projected = np.asarray(self.viewport.project_points(positions), dtype=float).reshape(len(positions), -1)
+        except Exception:  # viewport not ready
+            return None
+        distance = np.hypot(projected[:, 0] - x_position, projected[:, 1] - y_position)
+        distance[~np.isfinite(distance)] = np.inf
+        best = int(np.argmin(distance))
+        return (corners[best][0], corners[best][1]) if distance[best] <= SNAP_PIXELS else None
+
+    def _section_segment_at(self, x_position: int, y_position: int) -> tuple[int, int] | None:
+        pointer = np.array([x_position, y_position], dtype=float)
+        best: tuple[float, tuple[int, int] | None] = (SNAP_PIXELS + 1.0, None)
+        for loop, index, line in self.modeling.section_segments_world():
+            try:
+                projected = np.asarray(self.viewport.project_points(line), dtype=float).reshape(len(line), -1)[:, :2]
+            except Exception:
+                return None
+            a, b = projected[:-1], projected[1:]
+            span = b - a
+            t = np.clip(np.einsum("ij,ij->i", pointer - a, span) / np.maximum(np.einsum("ij,ij->i", span, span), 1e-12), 0.0, 1.0)
+            distance = np.linalg.norm(a + span * t[:, None] - pointer, axis=1)
+            distance[~np.isfinite(distance)] = np.inf
+            if float(distance.min()) < best[0]:
+                best = (float(distance.min()), (loop, index))
+        return best[1]
+
+    def _section_plane_hit(self, x_position: int, y_position: int) -> np.ndarray | None:
+        """Where the line of sight under the pointer meets the sketch plane."""
+
+        frame = self.modeling.section_frame()
+        ray = getattr(self.viewport, "pointer_ray", lambda x, y: None)(x_position, y_position)
+        if frame is None or ray is None:
+            return None
+        origin, direction = ray
+        normal = np.cross(np.asarray(frame["u"]), np.asarray(frame["v"]))
+        facing = float(direction @ normal)
+        if abs(facing) < 1e-9:
+            return None
+        return origin + direction * (float((np.asarray(frame["origin"]) - origin) @ normal) / facing)
+
+    def _section_pointer(self, event_name: str, x_position: int, y_position: int, pick: object) -> None:
+        session = self.modeling.session
+        if event_name == "right_click":
+            self._section_menu(x_position, y_position)
+            return
+        if event_name == "motion" and self._section_drag is not None:
+            point = self._section_plane_hit(x_position, y_position)
+            if point is not None:
+                self._drag_moved = True
+                loop, index = self._section_drag
+                self.modeling.section_move_vertex(loop, index, point)
+                self._render_scene()  # type: ignore[attr-defined]
+            return
+        if event_name != "left_release":
+            return
+        if self._section_drag is not None:
+            loop, index = self._section_drag
+            self._section_drag = None
+            if self._drag_moved:
+                self._drag_moved = False
+                point = self._section_plane_hit(x_position, y_position)
+                if point is not None:
+                    self._apply_model_result("model.section_drag", self.modeling.section_move_vertex(loop, index, point, final=True))
+                return
+            self._consume_result("model.section_select", self.modeling.section_select("vertex", loop, index))  # type: ignore[attr-defined]
+            return
+        if not self.viewport.last_pointer_release_was_click:
+            return  # drags orbit the view
+        from PySide6.QtWidgets import QApplication
+
+        control = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
+        if session.section_profiles is not None and not control:
+            segment = self._section_segment_at(x_position, y_position)
+            result = self.modeling.section_select("segment", *segment) if segment is not None else self.modeling.section_select(None)
+            self._consume_result("model.section_select", result)  # type: ignore[attr-defined]
+            return
+        # no profile yet (or Ctrl+click): move the plane through the point clicked on the scan
+        hit = pick if isinstance(pick, MeshPickResult) else self.viewport.pick_mesh(x_position, y_position)
+        if hit.hit:
+            self._consume_result("model.pointer", self.modeling.section_place(hit.position))  # type: ignore[attr-defined]
+
+    def _section_menu(self, x_position: int, y_position: int) -> None:
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+
+        session = self.modeling.session
+        if session.section_profiles is None:
+            return
+        corner = self._section_vertex_at(x_position, y_position)
+        segment = None if corner is not None else self._section_segment_at(x_position, y_position)
+        if corner is not None:
+            self.modeling.section_select("vertex", *corner)
+        elif segment is not None:
+            self.modeling.section_select("segment", *segment)
+        facts = self._section_picked(session)
+        menu = QMenu(self)  # type: ignore[call-overload]
+        labels = {
+            "radius": "Set Radius...",
+            "fillet": "Round Corner...",
+            "sharp": "Sharp Corner",
+            "axis": "Make Horizontal / Vertical",
+            "delete": "Delete Segment",
+        }
+        for operation in ("radius", "fillet", "sharp", "axis", "delete"):
+            if operation in facts.get("allowed", ()):
+                menu.addAction(labels[operation], lambda operation=operation: self._section_menu_edit(operation))
+        if any(not profile.closed for profile in session.section_profiles):
+            menu.addAction("Close Profile", lambda: self._dispatch_application_action("model.section_profile_edit", {"operation": "close"}))  # type: ignore[attr-defined]
+        self.refresh()  # type: ignore[attr-defined]
+        if not menu.isEmpty():
+            self._sketch_last_menu = menu
+            menu.popup(QCursor.pos())
+
+    def _section_menu_edit(self, operation: str) -> None:
+        if operation in ("radius", "fillet"):
+            from PySide6.QtWidgets import QInputDialog
+
+            facts = self._section_picked(self.modeling.session)
+            value, accepted = QInputDialog.getDouble(
+                self, "Radius", "Radius:", float(facts.get("radius") or 1.0), 0.001, 1e5, 3  # type: ignore[arg-type]
+            )
+            if not accepted:
+                return
+            self._dispatch_application_action("model.section_profile_edit", {"operation": operation, "value": value})  # type: ignore[attr-defined]
+            return
+        self._dispatch_application_action("model.section_profile_edit", {"operation": operation})  # type: ignore[attr-defined]
+
+    def _section_picked(self, session: Any) -> dict[str, Any]:
+        """What is picked on the profile, and the edits that apply to it."""
+
+        from openretop.modeling import profile_edit
+
+        if session is None or session.section_profiles is None or session.section_selected is None:
+            return {}
+        kind, loop, index = session.section_selected
+        profiles = session.section_profiles
+        if loop >= len(profiles) or not profiles[loop].segments:
+            return {}
+        profile = profiles[loop]
+        count = len(profile.segments)
+        if kind == "segment":
+            if index >= count:
+                return {}
+            segment = profile.segments[index]
+            allowed = ["delete"]
+            if segment.kind == "arc":
+                allowed.append("radius")
+                neighbours = [profile.segments[(index + step) % count] for step in (-1, 1)]
+                if (profile.closed or 0 < index < count - 1) and all(item.kind == "line" for item in neighbours):
+                    allowed.append("sharp")
+            else:
+                allowed.append("axis")
+            return {
+                "text": f"Loop {loop + 1}, segment {index + 1}: {profile_edit.describe(segment)}",
+                "radius": segment.radius if segment.kind == "arc" else None,
+                "allowed": allowed,
+            }
+        before = (index - 1) % count if profile.closed else index - 1
+        after = index % count if profile.closed else index
+        corner = 0 <= before < count and 0 <= after < count and profile.segments[before].kind == profile.segments[after].kind == "line"
+        return {
+            "text": f"Loop {loop + 1}, corner {index + 1}: drag it to move it" + ("; it can be rounded" if corner else ""),
+            "allowed": ["fillet"] if corner else [],
+        }
+
     _dragging = False  # a press landed on a sketch point
     _drag_moved = False  # ... and the pointer moved before release (else it was a click)
 
@@ -477,10 +667,15 @@ class SurfacingWorkbenchMixin:
             (curve.id, curve.polyline, curve.id in selected_curves) for curve in model.sketch.curves if curve.visible
         )
         section = session is not None and session.tool == "section"
+        highlight = None
+        if section and session.section_selected is not None and session.section_selected[0] == "segment":
+            _kind, loop, index = session.section_selected
+            highlight = next((line for item_loop, item, line in modeling.section_segments_world() if (item_loop, item) == (loop, index)), None)
         creases = None
         if session is not None and session.tool == "sketch" and session.show_creases:
             creases = modeling.sketch_crease_strength()
         return ModelingSceneInput(
+            profile_highlight=highlight,
             creases=creases,
             section_lines=tuple(session.section_loops) if section else (),
             profile_lines=tuple(modeling.section_profile_lines()) if section else (),
@@ -621,7 +816,15 @@ class SurfacingWorkbenchMixin:
                     f"{kinds.count('arc')} arcs{arcs}; max {profile.deviation:.3f} {units}"
                 )
             text = "\n".join(lines)
-        return {"loops": loops, "section_text": text + tolerance}
+        editing = self.composition.state.model.get(session.section_editing) if session.section_editing else None
+        if editing is not None:
+            text = f"Editing {editing.name}: Create updates it.\n" + text
+        return {
+            "loops": loops,
+            "section_text": text + tolerance,
+            "picked": self._section_picked(session),
+            "open_profile": any(not profile.closed for profile in session.section_profiles or ()),
+        }
 
     # -- scene tree ----------------------------------------------------------------------------
 
@@ -633,6 +836,18 @@ class SurfacingWorkbenchMixin:
         session = self.modeling.session
         if session is not None and session.tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             return self._brush_ring_preview(session)
+        if session is not None and session.tool == "section":
+            corners = self.modeling.section_vertices_world()
+            if not corners:
+                return None
+            points = np.asarray([position for _loop, _index, position in corners], dtype=float)
+            picked = session.section_selected
+            highlighted = next(
+                (number for number, (loop, index, _p) in enumerate(corners) if picked == ("vertex", loop, index)), None
+            )
+            return ToolPreviewState(
+                revision=geometry_revision(points, highlighted is not None), active=True, node_points=points, highlighted_node_index=highlighted
+            )
         if session is None or session.tool != "sketch":
             return None
         sketch = self.composition.state.model.sketch
@@ -698,6 +913,7 @@ class SurfacingWorkbenchMixin:
             return sketch_nodes
         nodes = sketch_nodes + [SceneNode(NODE_MODEL, "Model", "group", "scene", metadata={"context_actions": ("model.trim", "model.compare", "file.export_model")}, **group)]
         actions = ("view.frame_selected", "model.extend", "model.delete_selected", "file.export_model")
+        sketch_actions = ("model.section_edit", "model.extrude", "view.frame_selected", "model.delete_selected")
         for entity in model.entities:
             nodes.append(
                 SceneNode(
@@ -706,7 +922,7 @@ class SurfacingWorkbenchMixin:
                     "model_body" if entity.is_body else "model_surface",
                     NODE_MODEL,
                     entity.visible,
-                    metadata={"context_actions": actions},
+                    metadata={"context_actions": sketch_actions if entity.kind == "profile" else actions},
                 )
             )
         return nodes
