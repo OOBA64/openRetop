@@ -50,7 +50,7 @@ reference video in RE_PLAN section 2a) comes first.
 | S-10 | S | done | Compare: deviation colour map on the scan (green within +/- tolerance, yellow-red above, cyan-blue below, legend), RMS/max/% within; surfaces show as edges while the map is up. B1: RMS 0.020 mm, 98.7% within 0.05 mm |
 | S-11 | S | done | Export Model (File, Ctrl+E, Surfacing toolbar): STEP or IGES of the selected or visible model, read back to check the face count |
 | S-12 | S | done | Save model surfaces, bodies and the 3D Sketch in the project file (`modeling.persistence`: a `model` key with compressed BREP, display mesh, edges and sketch; older versions carry it through untouched) |
-| S-13 | S | todo | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii |
+| S-13 | S | doing | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii (auto line/arc profile fit done: `modeling/profile2d.py`) |
 | S-14 | S | todo | Extrude / revolve sketch profiles to solids (depth handles, draft, add/cut), live deviation |
 | S-15 | S | todo | Fillet / chamfer solid edges with Auto radius from the scan, live deviation |
 | S-16 | S | todo | Primitive patches auto-sized, with drag handles to resize |
