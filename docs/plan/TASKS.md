@@ -50,11 +50,17 @@ reference video in RE_PLAN section 2a) comes first.
 | S-10 | S | done | Compare: deviation colour map on the scan (green within +/- tolerance, yellow-red above, cyan-blue below, legend), RMS/max/% within; surfaces show as edges while the map is up. B1: RMS 0.020 mm, 98.7% within 0.05 mm |
 | S-11 | S | done | Export Model (File, Ctrl+E, Surfacing toolbar): STEP or IGES of the selected or visible model, read back to check the face count |
 | S-12 | S | done | Save model surfaces, bodies and the 3D Sketch in the project file (`modeling.persistence`: a `model` key with compressed BREP, display mesh, edges and sketch; older versions carry it through untouched) |
-| S-13 | S | doing | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii. Done: auto line/arc profile (`modeling/profile2d.py`), Section Sketch tool (world planes + offset, click to place, auto tolerance, exact wire/face). Next: S-14 extrude; later brush-to-fit single primitives, splines, face/offset planes, endpoint drag |
+| S-13 | S | doing | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii. Done: auto line/arc profile (`modeling/profile2d.py`), Section Sketch tool (world planes + offset, click to place, auto tolerance, exact wire/face), hand editing (U-03). Later: brush-to-fit single primitives, splines, face/offset planes |
 | S-14 | S | doing | Extrude / revolve sketch profiles to solids (depth handles, draft, add/cut), live deviation |
 | S-15 | S | todo | Fillet / chamfer solid edges with Auto radius from the scan, live deviation |
 | S-16 | S | todo | Primitive patches auto-sized, with drag handles to resize |
 | S-17 | S | todo | Live deviation analysis in every tool panel |
+| U-01 | U | done | (User feedback on a real 794k-triangle bumper scan: curves froze the app ~10 s per click, did not follow body lines, could not be edited.) 3D Sketch curves run along the surface (`modeling.surface_paths`: shortest path in a capsule, 30-100 ms), relaxed coarse to fine, smooth through points; Follow body lines (crease map, crest-centred: 1.3 mm off a fender shoulder line from two clicks vs 15 mm plain); Show body lines; edit points/curves (insert, delete, split, open/close, reverse, smoothness), right-click menu; brush ring with [ ] |
+| U-02 | U | done | Workspaces: Scan, Surface Modeling, Solid Modeling (tabs; each its own toolbar; tools switch to their workspace; remembered) |
+| U-03 | U | done | Section Sketch profiles edited by hand (drag corners, radius, sharp/round corner, H/V, delete segment, close profile; undo in the tool; deviation re-measured); Edit Sketch reopens a created sketch |
+| U-04 | U | todo | Retire or fold the older Curve tool (Create menu) into 3D Sketch: two curve systems confuse |
+| U-05 | U | todo | Scan workspace: cleanup tools (remove pieces, fill holes, decimate) and alignment to world axes from picked faces |
+| U-06 | U | todo | Drag handles in the 3D view for extrude depth and patch size (S-16), not only number fields |
 | RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | done | Automatic segmentation into classified regions (`openretop.segmentation`: fit-guided region growing with a saturation test; 95-97% of triangles correct on B1-B5, every true face found, 1.5-3 s prismatic / ~8 s freeform; freeform areas still yield some small primitive regions, RE-04 edits them) |
