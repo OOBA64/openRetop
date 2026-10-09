@@ -78,6 +78,8 @@ from openretop.curves.manual_curve import is_manual_curve_like, parse_manual_cur
 from openretop.geometry.units import UNIT_CODES, get_unit
 from openretop.infrastructure.io_services import ProgressEvent
 from openretop.mesh.display_proxy import normalize_proxy_quality
+from openretop.modeling.persistence import PROJECT_KEY as MODEL_PROJECT_KEY
+from openretop.modeling.persistence import model_from_dict, model_to_dict
 from openretop.presentation.qt.adaptive_grid import format_spacing
 from openretop.presentation.qt.background import InlineExecutor, TaskExecutor, ThreadedExecutor
 from openretop.presentation.qt.next_steps import NextStepsPanel
@@ -1598,6 +1600,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
 
     def _finish_open_project(self, path: Path, result: object, mesh_warning: str | None) -> None:
         restored = restore_project_state(self.composition.state, result.project, settings=self.composition.settings)
+        self.composition.modeling_controller.reset()
+        model, model_warnings = model_from_dict(result.project.metadata.get(MODEL_PROJECT_KEY))
+        self.composition.state.model = model
         if restored.selected_scene_ids:
             self.composition.selection_controller.select_nodes(
                 restored.selected_scene_ids,
@@ -1610,6 +1615,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self.set_project_dirty(False)
         warnings = [message.message for message in result.warnings]
         warnings.extend(restored.warnings)
+        warnings.extend(model_warnings)
         if mesh_warning:
             warnings.append(mesh_warning)
         self._last_project_warnings = tuple(warnings)
@@ -1761,6 +1767,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             units=state.units,
             units_assumed=state.units_assumed,
         )
+        model = model_to_dict(state.model)  # surfaces, bodies and the 3D Sketch (S-12)
+        if model is not None:
+            project.metadata[MODEL_PROJECT_KEY] = model
         project.name = path.stem
         result = self.composition.project_files.save_project(project, path, progress=self._progress)
         self._close_progress()

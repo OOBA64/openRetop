@@ -109,10 +109,13 @@ class BracketInTheAppTests(unittest.TestCase):
     def _seed_of(self, face: int) -> int:
         """The triangle of a true face farthest inside it (where a user would click)."""
 
-        triangles = np.nonzero(self.scan.face_labels == face)[0]
-        centers = self.scan.vertices[self.scan.triangles[triangles]].mean(axis=1)
-        middle = centers.mean(axis=0)
-        return int(triangles[np.argmin(np.linalg.norm(centers - middle, axis=1))])
+        from scipy.spatial import cKDTree
+
+        centers = self.scan.vertices[self.scan.triangles].mean(axis=1)
+        inside = self.scan.face_labels == face
+        # the middle of a ring (the boss top) is its hole: click farthest from every other face
+        distance, _index = cKDTree(centers[~inside]).query(centers[inside])
+        return int(np.nonzero(inside)[0][int(np.argmax(distance))])
 
     def test_fit_a_face_create_undo_redo(self) -> None:
         self._dispatch("model.fit_surface")
@@ -139,15 +142,19 @@ class BracketInTheAppTests(unittest.TestCase):
         self._dispatch("model.configure", {"fit_expand": 0.3})
         made = 0
         for face in range(len(self.part.face_types)):
+            narrow = int(np.sum(self.scan.face_labels == face)) < 300
             self.modeling.select_at(self._seed_of(face))
-            if self.modeling.selection().count < 40:
-                # a narrow face (a chamfer): brush along it, as a user would
+            if narrow or self.modeling.selection().count < 40:
+                # a narrow face (a chamfer), or a click that landed on an edge: brush along
+                # it and, for the chamfers, choose Plane, as the walkthrough tells a user to
                 self.modeling.clear_selection()
                 self._dispatch("model.configure", {"selection_mode": "brush", "brush_radius": 0.3})
                 triangles = np.nonzero(self.scan.face_labels == face)[0]
                 for center in self.scan.vertices[self.scan.triangles[triangles]].mean(axis=1):
                     self.modeling.brush_at(center)
                 self._dispatch("model.configure", {"selection_mode": "smart"})
+            kind = "plane" if narrow and self.part.face_types[face] == "PLANE" else "auto"
+            self._dispatch("model.configure", {"fit_kind": kind})
             created = self.workflow.dispatch("model.fit_create", {})
             self.assertTrue(created.success, created.errors)
             made += 1

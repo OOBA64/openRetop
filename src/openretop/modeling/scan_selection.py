@@ -26,6 +26,7 @@ class ScanSelection:
         self._adjacency: tuple[np.ndarray, np.ndarray] | None = None
         self._centroids: np.ndarray | None = None
         self._normals: np.ndarray | None = None
+        self._raw_normals: np.ndarray | None = None
         self._tree: Any = None
         self.revision = 0
 
@@ -72,6 +73,7 @@ class ScanSelection:
             return 0
         offsets, neighbours = self._adjacency_arrays()
         normals = self._smooth_normals()
+        raw = self._face_normals()
         limit = np.cos(np.radians(max(float(angle_degrees), 0.0)))
         reached = np.zeros(len(self.triangles), dtype=bool)
         reached[seed] = True
@@ -85,8 +87,11 @@ class ScanSelection:
             fresh = ~reached[candidate]
             origin, candidate = origin[fresh], candidate[fresh]
             if not connected:
+                # smoothed normals ride over a scan's noise; raw ones keep a coarse CAD mesh
+                # flat (there every triangle touches an edge and its smoothed normal leans)
                 smooth = np.einsum("ij,ij->i", normals[origin], normals[candidate]) >= limit
-                candidate = candidate[smooth]
+                flat = np.einsum("ij,ij->i", raw[origin], raw[candidate]) >= limit
+                candidate = candidate[smooth | flat]
             candidate = np.unique(candidate)
             reached[candidate] = True
             frontier = candidate
@@ -133,6 +138,13 @@ class ScanSelection:
 
             self._tree = cKDTree(self.centroids())
         return self._tree
+
+    def _face_normals(self) -> np.ndarray:
+        if self._raw_normals is None:
+            corners = self.vertices[self.triangles]
+            face = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+            self._raw_normals = face / np.maximum(np.linalg.norm(face, axis=1, keepdims=True), 1e-15)
+        return self._raw_normals
 
     def _smooth_normals(self) -> np.ndarray:
         """Triangle normals averaged from their vertices: steady on a noisy scan."""

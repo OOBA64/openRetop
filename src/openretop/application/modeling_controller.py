@@ -119,6 +119,7 @@ class ModelingController(ControllerBase):
         self._mapping: tuple[tuple[object, object], SourceMapping] | None = None
         self._projector: tuple[tuple[object, object], MeshProjector] | None = None
         self._placed_line: tuple[bytes, np.ndarray] | None = None  # 3D Sketch preview cache
+        self._normals_cache: tuple[object, np.ndarray] | None = None
 
     def discard_stale(self) -> None:
         """After undo/redo: drop tool state that may refer to surfaces that are gone."""
@@ -147,6 +148,7 @@ class ModelingController(ControllerBase):
         self._selection = None
         self._mapping = None
         self._projector = None
+        self._normals_cache = None
 
     # -- tool sessions -----------------------------------------------------------------------
 
@@ -938,20 +940,32 @@ class ModelingController(ControllerBase):
         chosen = mapping.source_triangles_for(mask)
         source = self.transform.transformed_source_mesh()
         points, triangles, used = selected_patch(np.asarray(source.vertices), np.asarray(source.triangles), chosen)
+        return points, triangles, self._scan_normals()[used]
+
+    def _scan_normals(self) -> np.ndarray:
+        """Vertex normals of the (world-space) scan: the file's, or computed once.
+
+        A cylinder or cone fit starts from them; without normals its first guess on a
+        partial arc can miss badly (an R12 boss came out as freeform at 0.67 mm RMS).
+        """
+
+        source = self.transform.transformed_source_mesh()
         normals = getattr(source, "vertex_normals", None)
         if normals is not None and len(normals) == len(source.vertices):
-            return points, triangles, np.asarray(normals)[used]
-        return points, triangles, None
+            return np.asarray(normals, dtype=float)
+        cached = self._normals_cache
+        if cached is not None and cached[0] is source.vertices:
+            return cached[1]
+        from openretop.modeling.scan_selection import vertex_normals
+
+        computed = vertex_normals(np.asarray(source.vertices, dtype=float), np.asarray(source.triangles, dtype=np.int64))
+        self._normals_cache = (source.vertices, computed)
+        return computed
 
     def _world_scan_points(self, limit: int) -> tuple[np.ndarray, np.ndarray]:
         source = self.transform.transformed_source_mesh()
         vertices = np.asarray(source.vertices, dtype=float)
-        normals = getattr(source, "vertex_normals", None)
-        if normals is None or len(normals) != len(vertices):
-            from openretop.modeling.scan_selection import vertex_normals
-
-            normals = vertex_normals(vertices, np.asarray(source.triangles, dtype=np.int64))
-        normals = np.asarray(normals, dtype=float)
+        normals = self._scan_normals()
         if len(vertices) > limit:
             pick = np.random.default_rng(0).choice(len(vertices), limit, replace=False)
             vertices, normals = vertices[pick], normals[pick]
