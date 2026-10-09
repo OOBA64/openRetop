@@ -131,8 +131,8 @@ _LOG = logging.getLogger(__name__)
 # the stages of the work, each with its own tools (the toolbar row under the tabs)
 WORKSPACES = (
     WorkspaceDescriptor("scan", "Scan", "Prepare the scan: align it, cut sections, select regions, measure."),
-    WorkspaceDescriptor("surface", "Surface Modeling", "Curves on the scan and surfaces fitted to it: organic shapes."),
-    WorkspaceDescriptor("solid", "Solid Modeling", "Sketches on planes through the scan, extruded into solids."),
+    WorkspaceDescriptor("surface", "Surface", "Curves on the scan and surfaces fitted to it: organic shapes."),
+    WorkspaceDescriptor("solid", "Solid", "Sketches on planes through the scan, extruded into solids."),
 )
 DEFAULT_WORKSPACE = "surface"
 

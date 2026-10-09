@@ -118,7 +118,7 @@ class WorkspaceTests(unittest.TestCase):
     def test_the_tabs_switch_the_tools(self) -> None:
         window = self._window()
         tabs = window.workspace_tabs
-        self.assertEqual([tabs.tabText(index) for index in range(tabs.count())], ["Scan", "Surface Modeling", "Solid Modeling"])
+        self.assertEqual([tabs.tabText(index) for index in range(tabs.count())], ["Scan", "Surface", "Solid"])
         self.assertEqual(window.active_workspace, "surface")
         self.assertEqual(self.visible(window), ["toolbar_Surface_Modeling"])
         self.assertTrue(window.findChild(QToolBar, "toolbar_Main").isVisibleTo(window))  # common: always
