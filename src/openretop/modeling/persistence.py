@@ -101,6 +101,8 @@ def model_to_dict(document: ModelDocument) -> dict[str, Any] | None:
                     "nodes": list(curve.nodes),
                     "closed": bool(curve.closed),
                     "visible": bool(curve.visible),
+                    "smoothness": float(curve.smoothness),
+                    "feature": bool(curve.feature),
                     "polyline": _pack_arrays(points=np.asarray(curve.polyline, dtype=np.float64)),
                 }
                 for curve in sketch.curves
@@ -161,6 +163,8 @@ def model_from_dict(data: object) -> tuple[ModelDocument, list[str]]:
                     closed=bool(item.get("closed", False)),
                     polyline=_unpack_arrays(item["polyline"])["points"].astype(float),
                     visible=bool(item.get("visible", True)),
+                    smoothness=float(item.get("smoothness", 0.5)),
+                    feature=bool(item.get("feature", False)),
                 )
             )
         sketch.counter = int(sketch_data.get("counter", len(sketch.nodes) + len(sketch.curves)))

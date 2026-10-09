@@ -695,6 +695,25 @@ class WorkflowService:
             return modeling.sketch_undo_point()
         if action == "model.sketch_delete":
             return modeling.sketch_delete()
+        if action == "model.sketch_delete_point":
+            return modeling.sketch_delete_point(None if payload.get("node") is None else str(payload["node"]))
+        if action == "model.sketch_insert_point":
+            return modeling.sketch_insert_point(str(payload.get("curve", "")), payload.get("position"))
+        if action == "model.sketch_split":
+            return modeling.sketch_split(None if payload.get("node") is None else str(payload["node"]))
+        if action == "model.sketch_toggle_closed":
+            curves = payload.get("curves")
+            return modeling.sketch_toggle_closed(None if curves is None else tuple(str(value) for value in curves))  # type: ignore[attr-defined]
+        if action == "model.sketch_reverse":
+            curves = payload.get("curves")
+            return modeling.sketch_reverse(None if curves is None else tuple(str(value) for value in curves))  # type: ignore[attr-defined]
+        if action == "model.sketch_options":
+            smoothness = payload.get("smoothness")
+            feature = payload.get("feature")
+            return modeling.sketch_options(
+                smoothness=None if smoothness is None else float(smoothness),  # type: ignore[arg-type]
+                feature=None if feature is None else bool(feature),
+            )
         if action == "model.sketch_loft":
             return modeling.sketch_loft()
         if action == "model.sketch_face":

@@ -40,6 +40,8 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.compare_apply",
         "model.sketch_loft",
         "model.sketch_face",
+        "model.sketch",
+        "model.sketch_options",
         "model.section_fit",
         "model.section_create",
         "model.extrude",
@@ -50,7 +52,7 @@ SURFACING_HEAVY_ACTIONS = frozenset(
 NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
-    "sketch": "Click points on the scan; click a point to connect, the first point to close. Enter finishes, Backspace undoes a point, drag a point to move it.",
+    "sketch": "Click points on the scan; Enter finishes. Click a point to select / drag it, double-click a curve to add a point, right-click for more.",
     "extrude": "The depth comes from the scan; adjust ahead / behind / draft, pick New, Add or Cut, then Create (Enter).",
     "section": "Click the scan to move the sketch plane there; Fit Profile, then Create (Enter).",
     "fit_surface": "Click a smooth area of the scan (Smart) or drag over it (Brush; Alt+drag rotates). Then Fit and Create.",
@@ -124,6 +126,8 @@ class SurfacingWorkbenchMixin:
             return False
         if self.modeling.tool == "sketch" and self._sketch_key(key):
             return True
+        if self._brush_key(key):
+            return True
         if key == Qt.Key.Key_Escape:
             self._dispatch_application_action("model.finish")  # type: ignore[attr-defined]
             return True
@@ -143,6 +147,23 @@ class SurfacingWorkbenchMixin:
                 return True
         return False
 
+    def _brush_key(self, key: int) -> bool:
+        """[ and ] shrink and grow the brush."""
+
+        session = self.modeling.session
+        if session is None or session.tool != "fit_surface" or session.selection_mode not in ("brush", "erase"):
+            return False
+        if key == Qt.Key.Key_BracketLeft:
+            factor = 0.8
+        elif key == Qt.Key.Key_BracketRight:
+            factor = 1.25
+        else:
+            return False
+        self.modeling.configure(brush_radius=max(1e-4, float(session.brush_radius) * factor))
+        self.set_status_message(f"Brush radius {session.brush_radius:.3g} {self.composition.state.units}")  # type: ignore[attr-defined]
+        self.refresh()  # type: ignore[attr-defined]
+        return True
+
     def _sketch_key(self, key: int) -> bool:
         session = self.modeling.session
         drawing = bool(session.sketch_points)
@@ -155,11 +176,14 @@ class SurfacingWorkbenchMixin:
             if drawing:
                 self._apply_model_result("model.sketch_finish", self.modeling.sketch_finish())
             return True
-        if key == Qt.Key.Key_Backspace:
+        if key == Qt.Key.Key_Backspace and drawing:
             self._apply_model_result("model.sketch_undo_point", self.modeling.sketch_undo_point())
             return True
         if key == Qt.Key.Key_C and drawing:
             self._apply_model_result("model.sketch_close", self.modeling.sketch_finish(close=True))
+            return True
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and not drawing and session.selected_node is not None:
+            self._dispatch_application_action("model.sketch_delete_point")  # type: ignore[attr-defined]
             return True
         return False
 
@@ -213,6 +237,14 @@ class SurfacingWorkbenchMixin:
             self._sketch_pointer(event_name, x_position, y_position)
             return True
         if tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
+            if event_name in ("motion", "left_press"):  # the ring showing the brush follows the pointer
+                hover = self.viewport.pick_mesh(x_position, y_position)
+                self._brush_center = np.asarray(hover.position, dtype=float) if hover.hit else None
+                if not self._brush_active:
+                    self._render_scene()  # type: ignore[attr-defined]
+            if event_name == "leave":
+                self._brush_center = None
+                self._render_scene()  # type: ignore[attr-defined]
             if event_name == "left_press":
                 self._brush_active = True
             if event_name in ("left_press", "motion") and self._brush_active:
@@ -250,8 +282,96 @@ class SurfacingWorkbenchMixin:
             return False  # ordinary selection picks
         return True
 
+    def _sketch_curve_at(self, x_position: int, y_position: int) -> tuple[str | None, object]:
+        """The sketch curve passing within a few pixels of the pointer (and the point of it
+        nearest there), measured on screen: a 2-pixel line is hard to hit with a pick ray."""
+
+        best: tuple[float, str | None, object] = (SNAP_PIXELS + 1.0, None, None)
+        for curve in self.composition.state.model.sketch.curves:
+            line = np.asarray(curve.polyline, dtype=float)
+            if not curve.visible or len(line) < 2:
+                continue
+            try:
+                projected = np.asarray(self.viewport.project_points(line), dtype=float).reshape(len(line), -1)
+            except Exception:  # viewport not ready
+                return None, None
+            a, b = projected[:-1, :2], projected[1:, :2]
+            pointer = np.array([x_position, y_position], dtype=float)
+            span = b - a
+            t = np.clip(np.einsum("ij,ij->i", pointer - a, span) / np.maximum(np.einsum("ij,ij->i", span, span), 1e-12), 0.0, 1.0)
+            distance = np.linalg.norm(a + span * t[:, None] - pointer, axis=1)
+            distance[~np.isfinite(distance)] = np.inf
+            index = int(np.argmin(distance))
+            if distance[index] < best[0]:
+                best = (float(distance[index]), curve.id, line[index] + (line[index + 1] - line[index]) * t[index])
+        return best[1], best[2]
+
+    def _sketch_menu(self, x_position: int, y_position: int) -> None:
+        """Right click: what can be done to the point or curve under the pointer."""
+
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+
+        session = self.modeling.session
+        model = self.composition.state.model
+        node = self._sketch_node_at(x_position, y_position)
+        curve_id, position = (None, None) if node is not None else self._sketch_curve_at(x_position, y_position)
+        menu = QMenu(self)  # type: ignore[call-overload]
+        if node is not None:
+            self.modeling.sketch_select_node(node)
+            menu.addAction("Delete Point", lambda: self._dispatch_application_action("model.sketch_delete_point", {"node": node}))  # type: ignore[attr-defined]
+            menu.addAction("Split Curve Here", lambda: self._dispatch_application_action("model.sketch_split", {"node": node}))  # type: ignore[attr-defined]
+            menu.addAction("Start a Curve Here", lambda: self._apply_model_result("model.sketch_click", self.modeling.sketch_click(None, node)))
+            curves = tuple(curve.id for curve in model.sketch.curves if node in curve.nodes)
+        elif curve_id is not None:
+            self.modeling.sketch_select_curves((curve_id,))
+            if position is not None:
+                point = np.asarray(position, dtype=float).reshape(3).tolist()
+                menu.addAction("Add Point Here", lambda: self._dispatch_application_action("model.sketch_insert_point", {"curve": curve_id, "position": point}))  # type: ignore[attr-defined]
+            curves = (curve_id,)
+        else:
+            if session.sketch_points:
+                menu.addAction("Finish Curve", lambda: self._apply_model_result("model.sketch_finish", self.modeling.sketch_finish()))
+                if len(session.sketch_points) >= 3:
+                    menu.addAction("Close Curve", lambda: self._apply_model_result("model.sketch_close", self.modeling.sketch_finish(close=True)))
+                menu.addAction("Remove Last Point", lambda: self._apply_model_result("model.sketch_undo_point", self.modeling.sketch_undo_point()))
+            curves = ()
+        if curves:
+            menu.addSeparator()
+            menu.addAction("Open / Close Curve", lambda: self._dispatch_application_action("model.sketch_toggle_closed", {"curves": list(curves)}))  # type: ignore[attr-defined]
+            menu.addAction("Reverse Curve", lambda: self._dispatch_application_action("model.sketch_reverse", {"curves": list(curves)}))  # type: ignore[attr-defined]
+            following = all(getattr(model.sketch.curve(value), "feature", False) for value in curves)
+            toggle = menu.addAction("Follow Body Lines")
+            toggle.setCheckable(True)
+            toggle.setChecked(following)
+            toggle.triggered.connect(
+                lambda checked: (
+                    self.modeling.sketch_select_curves(curves),
+                    self._dispatch_application_action("model.sketch_options", {"feature": bool(checked)}),  # type: ignore[attr-defined]
+                )
+            )
+            menu.addAction("Delete Curve", lambda: (self.modeling.sketch_select_curves(curves), self._dispatch_application_action("model.sketch_delete")))  # type: ignore[attr-defined]
+        self.refresh()  # type: ignore[attr-defined]
+        if not menu.isEmpty():
+            self._sketch_last_menu = menu  # for tests
+            menu.popup(QCursor.pos())
+
+    _sketch_last_menu: Any = None
+
     def _sketch_pointer(self, event_name: str, x_position: int, y_position: int) -> None:
         session = self.modeling.session
+        if event_name == "right_click":
+            self._sketch_menu(x_position, y_position)
+            return
+        if event_name == "double_click":
+            if session.sketch_points:  # the first click placed the point: finish there
+                self._apply_model_result("model.sketch_finish", self.modeling.sketch_finish())
+                return
+            curve_id, position = self._sketch_curve_at(x_position, y_position)
+            if curve_id is not None and position is not None:
+                point = np.asarray(position, dtype=float).reshape(3).tolist()
+                self._dispatch_application_action("model.sketch_insert_point", {"curve": curve_id, "position": point})  # type: ignore[attr-defined]
+            return
         if event_name == "left_press":
             return  # a claimed press is on a point: the drag follows
         if event_name == "motion":
@@ -282,17 +402,24 @@ class SurfacingWorkbenchMixin:
         self._dragging = self._drag_moved = False
         node = self._sketch_node_at(x_position, y_position)
         if node is not None:
-            self._apply_model_result("model.sketch_click", self.modeling.sketch_click(None, node))
+            from PySide6.QtWidgets import QApplication
+
+            control = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
+            if session.sketch_points or control:  # connect to it / start a curve from it
+                self._apply_model_result("model.sketch_click", self.modeling.sketch_click(None, node))
+            else:  # select it for editing
+                self._consume_result("model.sketch_select", self.modeling.sketch_select_node(node))  # type: ignore[attr-defined]
             return
+        if session.selected_node is not None and not session.sketch_points:
+            session.selected_node = None
         if not session.sketch_points:
             # not drawing: a click on a sketch curve selects it (Ctrl adds)
-            scene_pick = self.viewport.pick_scene_object(x_position, y_position)
-            object_id = str(scene_pick.object_id or "")
-            if scene_pick.hit and object_id.startswith("sketch-curve:"):
+            curve_id, _position = self._sketch_curve_at(x_position, y_position)
+            if curve_id is not None:
                 from PySide6.QtWidgets import QApplication
 
                 add = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
-                result = self.modeling.sketch_select_curves((object_id.split(":", 1)[1],), add=add)
+                result = self.modeling.sketch_select_curves((curve_id,), add=add)
                 self._consume_result("model.sketch_select", result)  # type: ignore[attr-defined]
                 return
         hit = self.viewport.pick_mesh(x_position, y_position)
@@ -350,7 +477,11 @@ class SurfacingWorkbenchMixin:
             (curve.id, curve.polyline, curve.id in selected_curves) for curve in model.sketch.curves if curve.visible
         )
         section = session is not None and session.tool == "section"
+        creases = None
+        if session is not None and session.tool == "sketch" and session.show_creases:
+            creases = modeling.sketch_crease_strength()
         return ModelingSceneInput(
+            creases=creases,
             section_lines=tuple(session.section_loops) if section else (),
             profile_lines=tuple(modeling.section_profile_lines()) if section else (),
             section_plane=modeling.section_plane_outline() if section else None,
@@ -445,6 +576,10 @@ class SurfacingWorkbenchMixin:
             "selected_names": ", ".join(curve.name for curve in selected),
             "loop": loop,
             "fit_to_scan": bool(session.face_fit_to_scan),
+            "selected_node": session.selected_node,
+            "feature": all(curve.feature for curve in selected) if selected else bool(session.sketch_feature),
+            "smoothness": float(np.mean([curve.smoothness for curve in selected])) if selected else float(session.sketch_smoothness),
+            "show_creases": bool(session.show_creases),
         }
 
     def _extrude_facts(self, session: Any) -> dict[str, Any]:
@@ -496,6 +631,8 @@ class SurfacingWorkbenchMixin:
         from openretop.viewer.scene_types import ToolPreviewState, geometry_revision
 
         session = self.modeling.session
+        if session is not None and session.tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
+            return self._brush_ring_preview(session)
         if session is None or session.tool != "sketch":
             return None
         sketch = self.composition.state.model.sketch
@@ -504,6 +641,8 @@ class SurfacingWorkbenchMixin:
         drawing = np.asarray([position for _node, position in session.sketch_points], dtype=float).reshape(-1, 3)
         line = session.sketch_line if session.sketch_line is not None else np.zeros((0, 3))
         highlighted = ids.index(session.hover_node) if session.hover_node in ids else None
+        if highlighted is None and session.selected_node in ids:
+            highlighted = ids.index(session.selected_node)
         hover = None if session.hover is None or session.hover_node is not None else (float(session.hover[0]), float(session.hover[1]), float(session.hover[2]))
         return ToolPreviewState(
             revision=geometry_revision(drawing, line, nodes, hover is not None),
@@ -515,6 +654,27 @@ class SurfacingWorkbenchMixin:
             node_points=nodes,
             highlighted_node_index=highlighted,
         )
+
+    _brush_center: np.ndarray | None = None
+
+    def _brush_ring_preview(self, session: Any) -> Any:
+        """A ring the size of the brush around the point under the pointer, facing the view."""
+
+        from openretop.viewer.scene_types import ToolPreviewState, geometry_revision
+
+        center = self._brush_center
+        if center is None:
+            return None
+        view = self._view_direction()
+        view = np.array([0.0, 0.0, 1.0]) if view is None else view
+        helper = np.array([1.0, 0.0, 0.0]) if abs(view[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u = np.cross(view, helper)
+        u /= np.linalg.norm(u)
+        v = np.cross(view, u)
+        angle = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+        radius = float(session.brush_radius)
+        ring = center + radius * (np.cos(angle)[:, None] * u + np.sin(angle)[:, None] * v)
+        return ToolPreviewState(revision=geometry_revision(ring), active=True, fitted_points=ring, closed=True)
 
     def _surfacing_nodes(self) -> list[SceneNode]:
         model = self.composition.state.model

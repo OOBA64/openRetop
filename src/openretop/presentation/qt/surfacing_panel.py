@@ -241,6 +241,19 @@ class SurfacingPanel(QWidget):
         self.sketch_loft.setEnabled(selected >= 2 and not busy)
         self.sketch_face.setEnabled(bool(extra.get("loop")) and not busy)
         self.sketch_fit.setChecked(bool(extra.get("fit_to_scan", True)))
+        point = bool(extra.get("selected_node"))
+        self.sketch_delete_point.setEnabled(point and not busy)
+        self.sketch_split.setEnabled(point and not busy)
+        editable = (selected > 0 or point) and not busy
+        self.sketch_toggle_closed.setEnabled(editable)
+        self.sketch_reverse.setEnabled(editable)
+        self.sketch_feature.setChecked(bool(extra.get("feature", False)))
+        if not self.sketch_smoothness.isSliderDown():
+            self.sketch_smoothness.setValue(int(round(100 * float(extra.get("smoothness", 0.6)))))
+        self.sketch_creases.setChecked(bool(extra.get("show_creases", False)))
+        self.sketch_options_hint.setText(
+            "These apply to the selected curve(s) and to new ones." if selected else "These apply to the curves you draw next."
+        )
 
     def _show_section(self, session: Any, facts: PanelFacts) -> None:
         if session.tool != "section":
@@ -278,6 +291,9 @@ class SurfacingPanel(QWidget):
 
     def _inputs(self) -> list[QWidget]:
         return [
+            self.sketch_feature,
+            self.sketch_smoothness,
+            self.sketch_creases,
             self.extrude_front,
             self.extrude_back,
             self.extrude_draft,
@@ -421,11 +437,41 @@ class SurfacingPanel(QWidget):
     def _build_sketch(self, layout: QVBoxLayout) -> None:
         layout.addWidget(
             _hint(
-                "Click points on the scan: the curve follows the surface through them. Click an existing "
-                "point to connect to it (that finishes the curve), or the curve's first point to close it. "
-                "Drag a point to move it; drag anywhere else to rotate the view."
+                "Click points on the scan: the curve runs along the surface through them. While drawing, click a "
+                "point to connect (that finishes), or the first point to close. Ctrl+click a point to start a "
+                "curve from it. Click a point to select it, drag to move it; double-click a curve to add a point; "
+                "right-click for more."
             )
         )
+        form = QFormLayout()
+        self.sketch_feature = QCheckBox("Follow body lines (creases)")
+        self.sketch_feature.setToolTip(
+            "Between its points the curve rides along the scan's creases: two clicks at the ends of a body line trace it."
+        )
+        self.sketch_feature.toggled.connect(lambda value: self._emit("model.sketch_options", {"feature": bool(value)}))
+        form.addRow(self.sketch_feature)
+        smooth_row = QHBoxLayout()
+        self.sketch_smoothness = QSlider(Qt.Orientation.Horizontal)
+        self.sketch_smoothness.setRange(0, 100)
+        self.sketch_smoothness.setToolTip("Low: hugs the scan's surface detail. High: a fair, even curve.")
+        self.sketch_smoothness.sliderReleased.connect(
+            lambda: self._emit("model.sketch_options", {"smoothness": self.sketch_smoothness.value() / 100.0})
+        )
+        self.sketch_smoothness_label = QLabel()
+        self.sketch_smoothness.valueChanged.connect(lambda value: self.sketch_smoothness_label.setText(f"{value}%"))
+        smooth_row.addWidget(self.sketch_smoothness, 1)
+        smooth_row.addWidget(self.sketch_smoothness_label)
+        smooth = QWidget()
+        smooth.setLayout(smooth_row)
+        smooth_row.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Smoothness", smooth)
+        self.sketch_creases = QCheckBox("Show body lines on the scan")
+        self.sketch_creases.setToolTip("Colour the scan red along its creases, to see the lines to trace.")
+        self.sketch_creases.toggled.connect(lambda value: self._emit("model.configure", {"show_creases": bool(value)}))
+        form.addRow(self.sketch_creases)
+        layout.addLayout(form)
+        self.sketch_options_hint = _hint()
+        layout.addWidget(self.sketch_options_hint)
         row = QHBoxLayout()
         self.sketch_finish = _button("Finish")
         self.sketch_finish.setToolTip("Finish the curve being drawn as an open curve (Enter).")
@@ -441,6 +487,27 @@ class SurfacingPanel(QWidget):
         layout.addLayout(row)
         self.sketch_info = _hint()
         layout.addWidget(self.sketch_info)
+        layout.addWidget(_section("Edit"))
+        row = QHBoxLayout()
+        self.sketch_delete_point = _button("Delete Point")
+        self.sketch_delete_point.setToolTip("Remove the selected point; its curves pass the neighbours instead (Delete).")
+        self.sketch_delete_point.clicked.connect(lambda: self._emit("model.sketch_delete_point"))
+        self.sketch_split = _button("Split Here")
+        self.sketch_split.setToolTip("Cut the curve at the selected point (a closed curve opens there).")
+        self.sketch_split.clicked.connect(lambda: self._emit("model.sketch_split"))
+        row.addWidget(self.sketch_delete_point)
+        row.addWidget(self.sketch_split)
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self.sketch_toggle_closed = _button("Open / Close")
+        self.sketch_toggle_closed.setToolTip("Close the selected curve into a loop, or open a closed one.")
+        self.sketch_toggle_closed.clicked.connect(lambda: self._emit("model.sketch_toggle_closed"))
+        self.sketch_reverse = _button("Reverse")
+        self.sketch_reverse.setToolTip("Run the selected curve the other way (matters for lofts).")
+        self.sketch_reverse.clicked.connect(lambda: self._emit("model.sketch_reverse"))
+        row.addWidget(self.sketch_toggle_closed)
+        row.addWidget(self.sketch_reverse)
+        layout.addLayout(row)
         layout.addWidget(_section("Make surfaces"))
         layout.addWidget(_hint("Select curves (click them; Ctrl+click adds), then:"))
         self.sketch_face = _button("Face From Curves", primary=True)

@@ -101,6 +101,7 @@ class QtSceneViewport(VTKViewportWidget):
         self._left_press_claim: Callable[[int, int], bool] | None = None
         self._last_pointer_release_was_click = True
         self._pointer_event_count = 0
+        self._right_press: tuple[float, float] | None = None
         self._last_pointer: tuple[int, int] | None = None  # Qt widget coordinates (y down)
         self._pick_count = 0
         self._qt_filter_installed = False
@@ -424,6 +425,21 @@ class QtSceneViewport(VTKViewportWidget):
             return super().eventFilter(watched, event)
         event_type = event.type()
         x_position, y_position = self._vtk_pointer_position(event)
+        if event_type == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton and self._left_capture_owner is not None:
+            self._emit_pointer("double_click", x_position, y_position)
+            event.accept()
+            return True
+        if event.button() == Qt.RightButton and self._left_capture_owner is not None:
+            # a right click (no drag: a drag zooms the view) opens the tool's menu
+            point = event.position()
+            if event_type == QEvent.MouseButtonPress:
+                self._right_press = (point.x(), point.y())
+            elif event_type == QEvent.MouseButtonRelease and self._right_press is not None:
+                moved = abs(point.x() - self._right_press[0]) + abs(point.y() - self._right_press[1])
+                self._right_press = None
+                if moved <= 4:
+                    self._emit_pointer("right_click", x_position, y_position)
+            return False
         if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
             if event.modifiers() & (Qt.ShiftModifier | Qt.AltModifier):
                 self._pointer_gesture.cancel()

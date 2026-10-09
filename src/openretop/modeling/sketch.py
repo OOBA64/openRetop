@@ -1,10 +1,12 @@
 """3D Sketch on the scan: points clicked on the mesh, curves through them lying on the surface.
 
 The ExModel way of modelling organic parts: click points on the scan; each curve passes
-through its points and is pulled onto the scan between them, so it never floats above the
-surface or overshoots past its ends. Curves share points (snapping to a point reuses it), so
-they join into a network: two or more open curves loft into a surface, a closed curve or a
-loop of curves becomes a face fitted to the scan inside it.
+through its points and runs along the scan between them (a path over the surface, smoothed),
+so it never floats above the surface, cuts across a gap or overshoots past its ends. Curves
+share points (snapping to a point reuses it), so they join into a network: two or more open
+curves loft into a surface, a closed curve or a loop of curves becomes a face fitted to the
+scan inside it. Every curve stays editable: its points move, come and go, it splits, opens,
+closes, reverses; its smoothness and whether it follows the scan's creases are its own.
 
 Pure NumPy/SciPy; the mesh is given as arrays (world coordinates).
 """
@@ -35,6 +37,15 @@ class MeshProjector:
         self.spacing = float(np.median(edges)) if len(edges) else 1.0
         normals = np.cross(self._b - self._a, self._c - self._a)
         self.triangle_normals = normals / np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-15)
+        self._graph: object | None = None
+
+    @property
+    def graph(self):  # -> SurfaceGraph (built once, about 2 s on an 800k-triangle scan)
+        if self._graph is None:
+            from openretop.modeling.surface_paths import SurfaceGraph
+
+            self._graph = SurfaceGraph(self.vertices, self.triangles)
+        return self._graph
 
     def project(self, points: object, candidates: int = 12) -> tuple[np.ndarray, np.ndarray]:
         """(closest points, their triangles) for each point."""
@@ -218,45 +229,227 @@ def _centripetal_segment(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.
     return (t2 - u) / (t2 - t1) * b1 + (u - t1) / (t2 - t1) * b2
 
 
-def curve_on_mesh(points: object, projector: MeshProjector, *, closed: bool = False, smoothing: int = 1) -> np.ndarray:
+def curve_on_mesh(
+    points: object,
+    projector: MeshProjector,
+    *,
+    closed: bool = False,
+    smoothness: float = 0.5,
+    feature: bool = False,
+    smoothing: int | None = None,
+) -> np.ndarray:
     """A polyline through ``points`` that lies on the scan.
 
-    The curve through the points (centripetal Catmull-Rom) is sampled about every half
-    triangle; each sample is moved onto the scan along the surface normal, blended between
-    its span's two points. That keeps the line on the face it is drawn on even where the
-    straight run between two points dips deep inside the part. Light smoothing (the points
-    held) then takes the scan's noise out of the line. The line passes exactly through the
-    (projected) points, so curves that share a point meet there, and it ends at its end
-    points: nothing extends past them.
+    Each span runs along the surface (the shortest path over the scan between its two
+    points, or with ``feature`` the path along the scan's creases), resampled evenly and
+    smoothed (``smoothness`` 0 to 1) while it is kept on the scan. Across interior points the
+    curve bends smoothly the way a spline through the points does (not in ``feature`` mode:
+    there the crease decides). It passes exactly through the points, so curves sharing a
+    point meet there, and ends at its end points. A span whose points are on separate pieces
+    of the scan (or across a gap no path goes round) is bridged straight.
+
+    ``smoothing`` 0 (the live preview while drawing) means: as little smoothing as reads well.
     """
 
+    if smoothing is not None and smoothing <= 0:
+        smoothness = min(smoothness, 0.15)
     control, _triangles = projector.project(points)
-    if len(control) < 2:
+    count = len(control)
+    if count < 2:
         return control
-    normals = projector.normals_at(control)
-    line, held = catmull_rom(control, closed=closed, samples_per_unit=2.0 / max(projector.spacing, 1e-9))
-    directions = np.empty_like(line)
-    bounds = list(held) + ([len(line) - 1] if held[-1] != len(line) - 1 else [])
-    radius = 2.0 * projector.spacing
-    for span, (start, end) in enumerate(zip(bounds[:-1], bounds[1:], strict=True)):
-        # no "fix" for normals more than 90 degrees apart: a face can turn that much between
-        # two points (flipping one sent the middle of such a curve to the wrong side)
-        n0, n1 = normals[span % len(normals)], normals[(span + 1) % len(normals)]
-        t = np.linspace(0.0, 1.0, end - start + 1)[:, None]
-        blend = n0 * (1 - t) + n1 * t
-        directions[start : end + 1] = blend / np.maximum(np.linalg.norm(blend, axis=1, keepdims=True), 1e-15)
-        chord = float(np.linalg.norm(line[end] - line[start]))
-        radius = max(radius, 0.5 * chord + 2.0 * projector.spacing)
-    line = projector.project_along(line, directions, radius)
-    line[held] = control
-    for _round in range(max(0, smoothing)):
-        smoothed = line.copy()
-        smoothed[1:-1] = 0.5 * line[1:-1] + 0.25 * (line[:-2] + line[2:])
-        line = projector.project_along(smoothed, directions, 3.0 * projector.spacing)
-        line[held] = control
-    if closed:
-        line[-1] = control[0]
+    graph = projector.graph
+    step = 0.75 * projector.spacing
+    spans = count if closed else count - 1
+    pieces: list[np.ndarray] = []
+    bridged: list[bool] = []
+    for span in range(spans):
+        start, end = control[span], control[(span + 1) % count]
+        chord = float(np.linalg.norm(end - start))
+        path = graph.path(start, end, feature=1.0 if feature else 0.0)
+        length = float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1))) if path is not None else np.inf
+        gap = path is None or length > 2.5 * chord + 20.0 * projector.spacing  # the way round is no way
+        segment = _even(np.vstack([start, end]) if gap else path, step)
+        if feature and not gap:
+            # the crease shapes the curve: centred on it, only the zigzag smoothed out, centred again
+            segment = _onto_crest(segment, projector)
+            segment = _smoothed(segment, projector, smoothness, on_scan=True, feature=True)
+            segment = _onto_crest(segment, projector, rounds=2)
+            for _round in range(int(round(2 + 14 * float(np.clip(smoothness, 0.0, 1.0))))):  # evened out, as asked
+                segment[1:-1] = 0.5 * segment[1:-1] + 0.25 * (segment[:-2] + segment[2:])
+        else:
+            segment = _smoothed(segment, projector, smoothness, on_scan=not gap)
+        pieces.append(segment)
+        bridged.append(gap)
+    if not feature and count >= 3:
+        pieces = _bend_through_points(control, pieces, closed=closed)
+    line, held = _joined(pieces, closed=closed)
+    line = _ease_through_points(line, held, closed=closed)
+    on_scan = np.concatenate([np.full(len(piece) - 1, not gap) for piece, gap in zip(pieces, bridged, strict=True)] + [[True]])
+    projected, _triangles = projector.project(line)
+    near = np.linalg.norm(projected - line, axis=1) <= 3.0 * projector.spacing
+    line = np.where((on_scan | near)[:, None], projected, line)
+    line[held] = control if not closed else np.vstack([control, control[:1]])
     return line
+
+
+def _even(path: np.ndarray, step: float) -> np.ndarray:
+    """The polyline resampled every ``step`` (ends kept)."""
+
+    lengths = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))]
+    total = float(lengths[-1])
+    count = max(2, int(np.ceil(total / max(step, 1e-12))) + 1)
+    at = np.linspace(0.0, total, count)
+    return np.c_[np.interp(at, lengths, path[:, 0]), np.interp(at, lengths, path[:, 1]), np.interp(at, lengths, path[:, 2])]
+
+
+def _onto_crest(segment: np.ndarray, projector: MeshProjector, rounds: int = 4) -> np.ndarray:
+    """Centre a span on its crease: a crease reads a few triangles wide, and the path along
+    it cuts the inside of each bend within that band (1 mm off the crest on a test ridge).
+    Each sample moves to the crease-weighted middle of the scan around it (the strongest bend
+    dominates), a few rounds, then back onto the scan; the ends stay."""
+
+    graph = projector.graph
+    strength = graph.crease
+    radius = 3.0 * projector.spacing
+    line = segment.copy()
+    for _round in range(rounds):
+        neighbourhoods = graph.tree.query_ball_point(line[1:-1], radius)
+        for row, members in enumerate(neighbourhoods, start=1):
+            if not members:
+                continue
+            weight = strength[members] ** 4
+            total = float(weight.sum())
+            if total > 1e-12:
+                line[row] = weight @ graph.vertices[members] / total
+        line[1:-1] = projector.project(line[1:-1])[0]
+    return line
+
+
+def _smoothed(segment: np.ndarray, projector: MeshProjector, smoothness: float, *, on_scan: bool, feature: bool = False) -> np.ndarray:
+    """Relax a span (its ends held) and keep it on the scan.
+
+    A path over the scan's edges zigzags, in long runs along the triangles' directions as
+    well as by single triangles (a fender curve wobbled every 10-30 mm). Relaxing coarse to
+    fine takes both out: a few points along the span are pulled straight and put back on the
+    scan, round after round, then finer; the result is the smooth, straightest line over the
+    scan between the ends. ``smoothness`` sets how far the curve goes towards it; a curve
+    following a crease (``feature``) only loses its zigzag: relaxing pulled it 1 mm off the
+    crest of a test ridge.
+    """
+
+    if len(segment) < 3 or not on_scan:
+        return segment
+    strength = 0.0 if feature else float(np.clip(smoothness, 0.0, 1.0))
+    fine = segment
+    total = float(np.sum(np.linalg.norm(np.diff(fine, axis=0), axis=1)))
+    fine_step = total / max(len(fine) - 1, 1)
+    relaxed = fine
+    for divisions in (6, 24, 96) if strength > 0.0 else ():
+        step = total / divisions
+        if step < 3.0 * fine_step:
+            break
+        coarse = _even(relaxed, step)
+        for _round in range(30):
+            coarse[1:-1] = 0.5 * coarse[1:-1] + 0.25 * (coarse[:-2] + coarse[2:])
+            coarse[1:-1] = projector.project(coarse[1:-1])[0]
+        relaxed = _even(coarse, fine_step)
+    relaxed = _matched(relaxed, len(fine))
+    line = fine * (1.0 - strength) + relaxed * strength
+    for round_number in range(8):  # the last zigzag of single triangles
+        line[1:-1] = 0.5 * line[1:-1] + 0.25 * (line[:-2] + line[2:])
+        if round_number % 4 == 3:
+            line[1:-1] = projector.project(line[1:-1])[0]
+    return line
+
+
+def _matched(line: np.ndarray, count: int) -> np.ndarray:
+    """The polyline resampled to ``count`` evenly spaced points."""
+
+    lengths = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(line, axis=0), axis=1))]
+    at = np.linspace(0.0, float(lengths[-1]), count)
+    return np.c_[np.interp(at, lengths, line[:, 0]), np.interp(at, lengths, line[:, 1]), np.interp(at, lengths, line[:, 2])]
+
+
+def _bend_through_points(control: np.ndarray, pieces: list[np.ndarray], *, closed: bool) -> list[np.ndarray]:
+    """Add to each span how a spline through all the points bows away from the straight run
+    between the span's points: the surface paths meet at a point with a kink, the spline
+    passes through it smoothly. The offsets are small and lie mostly along the surface."""
+
+    count = len(control)
+    bent = []
+    for span, piece in enumerate(pieces):
+        lengths = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(piece, axis=0), axis=1))]
+        t = lengths / max(float(lengths[-1]), 1e-12)
+        indices = [(span + offset) % count if closed else min(max(span + offset, 0), count - 1) for offset in (-1, 0, 1, 2)]
+        p0, p1, p2, p3 = (control[index] for index in indices)
+        if not closed and span == 0:
+            p0 = 2 * p1 - p2
+        if not closed and span == len(pieces) - 1:
+            p3 = 2 * p2 - p1
+        spline = _centripetal_segment(p0, p1, p2, p3, t)
+        straight = p1 + (p2 - p1) * t[:, None]
+        bent.append(piece + (spline - straight))
+    return bent
+
+
+def _ease_through_points(line: np.ndarray, held: np.ndarray, *, closed: bool) -> np.ndarray:
+    """No corner at an interior point: the spans either side arrive along their own paths
+    over the scan, in different directions (69 degrees on a fender). Near each point the
+    samples are eased onto the point's mean direction (in and out), fading out over a quarter
+    of the shorter span either side; the caller puts them back on the scan."""
+
+    eased = line.copy()
+    lengths = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(line, axis=0), axis=1))]
+    total = float(lengths[-1])
+    interior = list(held[1:-1]) + ([int(held[0])] if closed else [])
+    for index in interior:
+        index = int(index)
+        position = list(held).index(index)
+        before_start = int(held[position - 1]) if position > 0 else int(held[-2])
+        after_end = int(held[position + 1]) if position + 1 < len(held) else int(held[1])
+        here = lengths[index] if index < len(line) - 1 or not closed else 0.0
+        span_in = (lengths[index] - lengths[before_start]) if index > 0 else (total - lengths[before_start])
+        span_out = lengths[after_end] - here
+        reach = 0.25 * max(min(span_in, span_out), 1e-9)
+        signed = _signed_arc(lengths, index, total, closed)
+        window = np.nonzero(np.abs(signed) <= reach)[0]
+        if len(window) < 3:
+            continue
+        incoming = line[index] - line[window[signed[window] < 0]].mean(axis=0) if np.any(signed[window] < 0) else None
+        outgoing = line[window[signed[window] > 0]].mean(axis=0) - line[index] if np.any(signed[window] > 0) else None
+        if incoming is None or outgoing is None:
+            continue
+        direction = _unit(_unit(incoming) + _unit(outgoing))
+        weight = (1.0 - np.abs(signed[window]) / reach) ** 2
+        target = line[index] + signed[window][:, None] * direction
+        eased[window] = line[window] * (1.0 - weight[:, None]) + target * weight[:, None]
+    return eased
+
+
+def _signed_arc(lengths: np.ndarray, index: int, total: float, closed: bool) -> np.ndarray:
+    """Arc length of every sample from sample ``index`` (negative before it; wrapping on a loop)."""
+
+    signed = lengths - lengths[index]
+    if closed and total > 0:
+        signed = (signed + 0.5 * total) % total - 0.5 * total
+    return signed
+
+
+def _unit(vector: np.ndarray) -> np.ndarray:
+    return vector / max(float(np.linalg.norm(vector)), 1e-15)
+
+
+def _joined(pieces: list[np.ndarray], *, closed: bool) -> tuple[np.ndarray, np.ndarray]:
+    """One polyline from the spans, and where each point (span start) sits in it."""
+
+    held, rows, offset = [], [], 0
+    for piece in pieces:
+        held.append(offset)
+        rows.append(piece[:-1])
+        offset += len(piece) - 1
+    rows.append(pieces[-1][-1:])
+    held.append(offset)
+    return np.vstack(rows), np.asarray(held, dtype=np.int64)
 
 
 # -- the sketch -------------------------------------------------------------------------------
@@ -270,6 +463,8 @@ class SketchCurve:
     closed: bool = False
     polyline: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     visible: bool = True
+    smoothness: float = 0.5  # 0: hugs the path over the scan's triangles, 1: evened out
+    feature: bool = False  # follows the scan's creases (body lines) between its points
 
 
 @dataclass
@@ -290,11 +485,20 @@ class Sketch:
     def curve(self, curve_id: str) -> SketchCurve | None:
         return next((curve for curve in self.curves if curve.id == curve_id), None)
 
-    def add_curve(self, nodes: list[str], projector: MeshProjector, *, closed: bool = False, name: str | None = None) -> SketchCurve:
+    def add_curve(
+        self,
+        nodes: list[str],
+        projector: MeshProjector,
+        *,
+        closed: bool = False,
+        name: str | None = None,
+        smoothness: float = 0.5,
+        feature: bool = False,
+    ) -> SketchCurve:
         if len(nodes) < 2:
             raise ValueError("a curve needs at least two points")
         self.counter += 1
-        curve = SketchCurve(f"c{self.counter}", name or self.next_name(), list(nodes), closed)
+        curve = SketchCurve(f"c{self.counter}", name or self.next_name(), list(nodes), closed, smoothness=smoothness, feature=feature)
         self.rebuild(curve, projector)
         self.curves.append(curve)
         return curve
@@ -308,7 +512,87 @@ class Sketch:
 
     def rebuild(self, curve: SketchCurve, projector: MeshProjector) -> None:
         points = np.array([self.nodes[node] for node in curve.nodes])
-        curve.polyline = curve_on_mesh(points, projector, closed=curve.closed)
+        curve.polyline = curve_on_mesh(points, projector, closed=curve.closed, smoothness=curve.smoothness, feature=curve.feature)
+
+    # -- editing ---------------------------------------------------------------------------
+
+    def span_at(self, curve: SketchCurve, position: object) -> int:
+        """The span (between point k and k+1) passing nearest ``position``."""
+
+        line = curve.polyline
+        target = np.asarray(position, dtype=float).reshape(3)
+        nearest = int(np.argmin(np.linalg.norm(line - target, axis=1)))
+        # where each point sits on the line, in order
+        held = [int(np.argmin(np.linalg.norm(line - self.nodes[node], axis=1))) for node in curve.nodes]
+        if curve.closed:
+            held.append(len(line) - 1)
+        for span in range(len(held) - 1):
+            if held[span] <= nearest <= held[span + 1]:
+                return span
+        return len(held) - 2
+
+    def insert_node(self, curve_id: str, position: object, projector: MeshProjector) -> str:
+        """A new point on the curve where it passes ``position`` (between the points either side)."""
+
+        curve = self.curve(curve_id)
+        if curve is None:
+            raise ValueError("no such curve")
+        snapped, _triangle = projector.project(np.asarray(position, dtype=float).reshape(1, 3))
+        span = self.span_at(curve, snapped[0])
+        node = self.new_node(snapped[0])
+        curve.nodes.insert(span + 1, node)
+        self.rebuild(curve, projector)
+        return node
+
+    def split_curve(self, curve_id: str, node_id: str, projector: MeshProjector) -> list[str]:
+        """Cut the curve at one of its points: an open curve into two sharing the point, a
+        closed one opened there."""
+
+        curve = self.curve(curve_id)
+        if curve is None or node_id not in curve.nodes:
+            raise ValueError("the point is not on that curve")
+        index = curve.nodes.index(node_id)
+        if curve.closed:
+            curve.nodes = curve.nodes[index:] + curve.nodes[: index + 1]
+            curve.closed = False
+            self.rebuild(curve, projector)
+            return [curve.id]
+        if index in (0, len(curve.nodes) - 1):
+            raise ValueError("that is an end of the curve already")
+        tail = curve.nodes[index:]
+        curve.nodes = curve.nodes[: index + 1]
+        self.rebuild(curve, projector)
+        other = self.add_curve(tail, projector, smoothness=curve.smoothness, feature=curve.feature)
+        position = self.curves.index(curve)
+        self.curves.remove(other)
+        self.curves.insert(position + 1, other)
+        return [curve.id, other.id]
+
+    def set_closed(self, curve_id: str, closed: bool, projector: MeshProjector) -> None:
+        curve = self.curve(curve_id)
+        if curve is None:
+            raise ValueError("no such curve")
+        if closed and len(curve.nodes) < 3:
+            raise ValueError("a closed curve needs at least three points")
+        curve.closed = bool(closed)
+        self.rebuild(curve, projector)
+
+    def reverse(self, curve_id: str) -> None:
+        curve = self.curve(curve_id)
+        if curve is None:
+            raise ValueError("no such curve")
+        curve.nodes.reverse()
+        curve.polyline = curve.polyline[::-1].copy()
+
+    def set_options(self, curve_id: str, projector: MeshProjector, *, smoothness: float | None = None, feature: bool | None = None) -> None:
+        curve = self.curve(curve_id)
+        if curve is None:
+            raise ValueError("no such curve")
+        if smoothness is not None:
+            curve.smoothness = float(np.clip(smoothness, 0.0, 1.0))
+        if feature is not None:
+            curve.feature = bool(feature)
+        self.rebuild(curve, projector)
 
     def move_node(self, node_id: str, position: object, projector: MeshProjector) -> list[str]:
         """Move a point (projected onto the scan); every curve through it follows."""

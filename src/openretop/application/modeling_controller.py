@@ -91,6 +91,10 @@ class ToolSession:
     drag_node: str | None = None
     drag_before: Any = None
     face_fit_to_scan: bool = True
+    sketch_smoothness: float = 0.6  # for new curves (and the one being drawn)
+    sketch_feature: bool = False  # new curves follow the scan's creases (body lines)
+    selected_node: str | None = None  # a sketch point picked for editing
+    show_creases: bool = False  # colour the scan by its creases (body lines)
     # Section Sketch: the plane (a world plane and its offset), fit options, and what was
     # cut and fitted for the plane as it was (``section_key``)
     section_plane: str = "XY"
@@ -151,6 +155,7 @@ class ModelingController(ControllerBase):
         self._projector: tuple[tuple[object, object], MeshProjector] | None = None
         self._placed_line: tuple[bytes, np.ndarray] | None = None  # 3D Sketch preview cache
         self._normals_cache: tuple[object, np.ndarray] | None = None
+        self._crease_cache: tuple[object, np.ndarray] | None = None
 
     def discard_stale(self) -> None:
         """After undo/redo: drop tool state that may refer to surfaces that are gone."""
@@ -166,6 +171,8 @@ class ModelingController(ControllerBase):
             session.drag_node = None
             session.drag_before = None
             session.section_profiles = None
+            if session.selected_node not in model.sketch.nodes:
+                session.selected_node = None
             if session.tool == "trim":
                 session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
             session.fill_chain = [side for side in session.fill_chain if "curve" in side or model.get(side["entity"]) is not None]
@@ -208,6 +215,13 @@ class ModelingController(ControllerBase):
             self.session.brush_radius = self._default_brush_radius()
         if tool == "trim":
             self.session.trim_sources = tuple(entity.id for entity in self.state.model.visible() if not entity.is_body)
+        if tool == "sketch":
+            if previous is not None and previous.tool == "sketch":
+                self.session.sketch_smoothness, self.session.sketch_feature = previous.sketch_smoothness, previous.sketch_feature
+                self.session.show_creases = previous.show_creases
+            projector = self.sketch_projector()
+            if projector is not None:
+                projector.graph  # noqa: B018  # built now (in the background), not on the first click
         if tool == "section":
             if previous is not None and previous.tool == "section":
                 self.session.section_plane, self.session.section_offset = previous.section_plane, previous.section_offset
@@ -234,7 +248,7 @@ class ModelingController(ControllerBase):
             "extend": "Select a surface, set the distance, then Extend.",
             "trim": "Trim splits the surfaces by each other and keeps what lies on the scan.",
             "compare": "Compare colours the scan by its distance to the model.",
-            "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it.",
+            "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it. Click a point to edit it; double-click a curve to add a point.",
             "section": "Pick a plane (click the scan to move it there), then Fit Profile and Create.",
             "extrude": "Extrude the sketch: the depth comes from the scan; adjust it, choose new / add / cut, then Create.",
         }
@@ -257,7 +271,7 @@ class ModelingController(ControllerBase):
                 setattr(session.fit, key[4:], type(getattr(session.fit, key[4:]))(value))
             elif hasattr(session, key) and key not in (
                 "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles",
-                "extrude_holes",
+                "extrude_holes", "selected_node",
             ):
                 current = getattr(session, key)
                 setattr(session, key, type(current)(value) if current is not None else value)
@@ -1108,14 +1122,18 @@ class ModelingController(ControllerBase):
         placed = np.asarray([position for _node, position in session.sketch_points], dtype=float).reshape(-1, 3)
         if projector is None or not len(placed):
             return None
-        key = placed.tobytes()
+        key = placed.tobytes() + repr((session.sketch_smoothness, session.sketch_feature)).encode()
         if self._placed_line is None or self._placed_line[0] != key:
-            line = curve_on_mesh(placed, projector, smoothing=0) if len(placed) >= 2 else placed.copy()
+            line = (
+                curve_on_mesh(placed, projector, smoothness=session.sketch_smoothness, feature=session.sketch_feature)
+                if len(placed) >= 2
+                else placed.copy()
+            )
             self._placed_line = (key, line)
         line = self._placed_line[1]
         if session.hover is None:
             return line if len(line) >= 2 else None
-        span = curve_on_mesh(np.vstack([placed[-1], session.hover]), projector, smoothing=0)
+        span = curve_on_mesh(np.vstack([placed[-1], session.hover]), projector, smoothing=0, feature=session.sketch_feature)
         return np.vstack([line, span[1:]])
 
     def sketch_finish(self, *, close: bool = False) -> CommandResult:
@@ -1135,7 +1153,7 @@ class ModelingController(ControllerBase):
         nodes = [node if node is not None else sketch.new_node(position) for node, position in drawing]
         if close and nodes[-1] == nodes[0]:
             nodes = nodes[:-1]
-        curve = sketch.add_curve(nodes, projector, closed=close)
+        curve = sketch.add_curve(nodes, projector, closed=close, smoothness=session.sketch_smoothness, feature=session.sketch_feature)
         session.sketch_points = []
         session.sketch_line = None
         self.state.model.selected_curve_ids = [curve.id]
@@ -1179,6 +1197,172 @@ class ModelingController(ControllerBase):
             return CommandResult.ok(changed=True)
         before, session.drag_before = session.drag_before, None
         return self._changed("Move Sketch Point", before, "Point moved")
+
+    # -- editing curves and points ---------------------------------------------------------
+
+    def sketch_select_node(self, node_id: str | None) -> CommandResult:
+        session = self._session_for("sketch")
+        if isinstance(session, CommandResult):
+            return session
+        sketch = self.state.model.sketch
+        session.selected_node = node_id if node_id in sketch.nodes else None
+        if session.selected_node is None:
+            return CommandResult.ok(status="No point selected", changed=True)
+        curves = [curve.name for curve in sketch.curves if session.selected_node in curve.nodes]
+        return CommandResult.ok(
+            status=f"Point on {', '.join(curves) or 'no curve'}: drag to move, Delete removes it, right-click for more (split here ...).",
+            changed=True,
+        )
+
+    def _sketch_edit(self, name: str, change: Any) -> CommandResult:
+        """Run an edit of the sketch as one undo step (``change`` returns the status)."""
+
+        projector = self.sketch_projector()
+        if projector is None:
+            return CommandResult.failure("Open a scan first.")
+        before = self.state.model.snapshot()
+        try:
+            status = change(self.state.model.sketch, projector)
+        except ValueError as error:
+            return CommandResult.failure(str(error))
+        self.state.model.revision += 1
+        return self._changed(name, before, status)
+
+    def sketch_insert_point(self, curve_id: str, world_point: object) -> CommandResult:
+        """A new point on a curve where it passes ``world_point``: drag it to reshape the curve."""
+
+        def change(sketch: Any, projector: MeshProjector) -> str:
+            node = sketch.insert_node(curve_id, world_point, projector)
+            if self.session is not None:
+                self.session.selected_node = node
+            return "Point added: drag it to reshape the curve"
+
+        return self._sketch_edit("Add Sketch Point", change)
+
+    def sketch_delete_point(self, node_id: str | None = None) -> CommandResult:
+        session = self.session
+        node = node_id or (session.selected_node if session is not None else None)
+        if node is None or node not in self.state.model.sketch.nodes:
+            return CommandResult.failure("Select a point first (click it).")
+
+        def change(sketch: Any, projector: MeshProjector) -> str:
+            touched = sketch.remove_node(node, projector)
+            if session is not None:
+                session.selected_node = None
+            known = {curve.id for curve in sketch.curves}
+            self.state.model.selected_curve_ids = [value for value in self.state.model.selected_curve_ids if value in known]
+            return f"Point removed ({touched} curve(s) changed)"
+
+        return self._sketch_edit("Delete Sketch Point", change)
+
+    def sketch_split(self, node_id: str | None = None, curve_id: str | None = None) -> CommandResult:
+        """Cut the curve(s) through a point there: an open curve in two, a closed one opened."""
+
+        session = self.session
+        node = node_id or (session.selected_node if session is not None else None)
+        sketch = self.state.model.sketch
+        if node is None or node not in sketch.nodes:
+            return CommandResult.failure("Select a point on the curve to split at.")
+        targets = [curve.id for curve in sketch.curves if node in curve.nodes and (curve_id is None or curve.id == curve_id)]
+        if not targets:
+            return CommandResult.failure("That point is not on a curve.")
+
+        def change(sketch: Any, projector: MeshProjector) -> str:
+            made = []
+            for target in targets:
+                curve = sketch.curve(target)
+                if curve is not None and (curve.closed or node not in (curve.nodes[0], curve.nodes[-1])):
+                    made.extend(sketch.split_curve(target, node, projector))
+            if not made:
+                raise ValueError("That point is already the end of the curve.")
+            self.state.model.selected_curve_ids = list(dict.fromkeys(made))
+            return f"Split at the point: {len(set(made))} curve(s)"
+
+        return self._sketch_edit("Split Sketch Curve", change)
+
+    def _curves_to_edit(self, curve_ids: tuple[str, ...] | None) -> list[str]:
+        if curve_ids:
+            return list(curve_ids)
+        model = self.state.model
+        if model.selected_curve_ids:
+            return list(model.selected_curve_ids)
+        session = self.session
+        if session is not None and session.selected_node is not None:
+            return [curve.id for curve in model.sketch.curves if session.selected_node in curve.nodes]
+        return []
+
+    def sketch_toggle_closed(self, curve_ids: tuple[str, ...] | None = None) -> CommandResult:
+        ids = self._curves_to_edit(curve_ids)
+        if not ids:
+            return CommandResult.failure("Select a curve first (click it).")
+
+        def change(sketch: Any, projector: MeshProjector) -> str:
+            for value in ids:
+                curve = sketch.curve(value)
+                if curve is not None:
+                    sketch.set_closed(value, not curve.closed, projector)
+            states = {sketch.curve(value).closed for value in ids if sketch.curve(value) is not None}
+            return "Curve closed" if states == {True} else ("Curve opened" if states == {False} else "Curves opened / closed")
+
+        return self._sketch_edit("Open / Close Sketch Curve", change)
+
+    def sketch_reverse(self, curve_ids: tuple[str, ...] | None = None) -> CommandResult:
+        ids = self._curves_to_edit(curve_ids)
+        if not ids:
+            return CommandResult.failure("Select a curve first (click it).")
+
+        def change(sketch: Any, projector: MeshProjector) -> str:
+            for value in ids:
+                sketch.reverse(value)
+            return f"Reversed {len(ids)} curve(s)"
+
+        return self._sketch_edit("Reverse Sketch Curve", change)
+
+    def sketch_options(self, *, smoothness: float | None = None, feature: bool | None = None) -> CommandResult:
+        """Smoothness / crease following: for the selected curves (rebuilt, one undo step) and
+        for the curves drawn from now on."""
+
+        session = self._session_for("sketch")
+        if isinstance(session, CommandResult):
+            return session
+        if smoothness is not None:
+            session.sketch_smoothness = float(np.clip(smoothness, 0.0, 1.0))
+        if feature is not None:
+            session.sketch_feature = bool(feature)
+        self._placed_line = None
+        if session.sketch_points:
+            session.sketch_line = self._sketch_preview_line(session)
+        ids = list(self.state.model.selected_curve_ids)
+        if not ids:
+            how = "follow body lines" if session.sketch_feature else "run along the surface"
+            return CommandResult.ok(status=f"New curves {how}, smoothness {session.sketch_smoothness:.2f}", changed=True)
+
+        def change(sketch: Any, projector: MeshProjector) -> str:
+            for value in ids:
+                sketch.set_options(value, projector, smoothness=smoothness, feature=feature)
+            return f"Updated {len(ids)} curve(s)"
+
+        return self._sketch_edit("Sketch Curve Options", change)
+
+    def sketch_crease_strength(self) -> np.ndarray | None:
+        """Per display-mesh vertex, the scan's crease strength (0 to 1), for "Show body lines"."""
+
+        mesh_object = self.state.mesh_object
+        projector = self.sketch_projector()
+        if mesh_object is None or projector is None:
+            return None
+        display = mesh_object.display_mesh
+        key = (id(display.vertices), id(projector))
+        cached = self._crease_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        graph = projector.graph
+        local = np.asarray(display.vertices, dtype=float)
+        world = _apply(self.transform.current_object_matrix(), local)
+        _distance, nearest = graph.tree.query(world)
+        strength = graph.crease[nearest]
+        self._crease_cache = (key, strength)
+        return strength
 
     def sketch_select_curves(self, curve_ids: tuple[str, ...], *, add: bool = False) -> CommandResult:
         sketch = self.state.model.sketch

@@ -74,6 +74,7 @@ class ModelingSceneInput:
     section_lines: Sequence[np.ndarray] = field(default=(), compare=False)
     profile_lines: Sequence[np.ndarray] = field(default=(), compare=False)
     section_plane: np.ndarray | None = field(default=None, compare=False)
+    creases: np.ndarray | None = field(default=None, compare=False)  # per display vertex, 0..1: "Show body lines"
 
 
 def modeling_items(
@@ -216,6 +217,17 @@ def modeling_items(
                     style=DisplayStyleSnapshot(color=SELECTION_COLOR, opacity=0.85),
                 )
             )
+        if modeling.creases is not None and len(modeling.creases) == len(mesh.vertices):
+            overlays.append(
+                ScanOverlayRenderItem(
+                    id="scan-creases",
+                    revision=hash(("creases", id(modeling.creases))),
+                    vertices=mesh.vertices,
+                    triangles=mesh.triangles,
+                    vertex_colors=crease_colors(modeling.creases),
+                    transform=transform,
+                )
+            )
         if modeling.deviation is not None and len(modeling.deviation) == len(mesh.vertices):
             overlays.append(
                 ScanOverlayRenderItem(
@@ -230,6 +242,14 @@ def modeling_items(
     return tuple(faces), tuple(edges), tuple(overlays)
 
 
+def crease_colors(strength: object) -> np.ndarray:
+    """RGB bytes: the scan's grey, turning red along its creases (body lines)."""
+
+    values = np.clip(np.asarray(strength, dtype=float).ravel(), 0.0, 1.0)[:, None]
+    base, line = np.array([0.72, 0.74, 0.78]), np.array([0.98, 0.22, 0.16])
+    return np.round((base * (1.0 - values) + line * values) * 255.0).astype(np.uint8)
+
+
 def _brighter(color: Sequence[float]) -> tuple[float, float, float]:
     r, g, b = (float(value) for value in color)
     return (min(1.0, r * 0.6 + 0.4), min(1.0, g * 0.6 + 0.4), min(1.0, b * 0.6 + 0.4))
@@ -237,6 +257,7 @@ def _brighter(color: Sequence[float]) -> tuple[float, float, float]:
 
 __all__ = (
     "ModelingSceneInput",
+    "crease_colors",
     "deviation_colors",
     "model_id_from_node",
     "model_node_id",
