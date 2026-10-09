@@ -66,6 +66,12 @@ ICONS: dict[str, str] = {
         '<path d="M3 18 7.5 6H21l-4.5 12z" opacity="0.5"/>'
         '<path d="M8.5 15.5 10.5 9.5h5.2a1.6 1.6 0 0 1 1.5 2.1l-1.3 3.9z" stroke-width="2.1"/>'
     ),
+    # a profile pushed out into a block
+    "extrude": (
+        '<path d="M4 17.5 9 15h11l-5 2.5z" opacity="0.55"/>'
+        '<path d="M4 17.5V9l5-2.5h11V15M4 9h11l5-2.5M15 9v8.5"/>'
+        '<path d="M12 4.5V1.8m0 0-1.6 1.6M12 1.8l1.6 1.6" stroke-width="1.6"/>'
+    ),
     # surfacing tools: a patch laid over scan points
     "fit_surface": (
         '<path d="M3 15c3-4 6-6 9-6s6 2 9 6l-4 5H7z"/>'

@@ -151,6 +151,35 @@ def profile_shape(frame: PlaneFrame, loops: list[dict[str, Any]]) -> tuple[Any, 
     return shape, {"faces": faces, "wires": sum(1 for value in closed if not value), "loops": len(loops)}
 
 
+def loop_faces(frame: PlaneFrame, loops: list[dict[str, Any]]) -> list[tuple[Any, int, int]]:
+    """Each closed loop as its own planar face (no holes), with its index and nesting
+    depth: 0 outermost, 1 a hole in it, 2 an island in the hole ..."""
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+    from OCP.ShapeFix import ShapeFix_Face
+
+    plane = gp_Pln(gp_Ax3(gp_Pnt(*frame.origin.tolist()), gp_Dir(*frame.normal.tolist()), gp_Dir(*frame.u.tolist())))
+    outlines = [np.asarray(loop.get("outline", np.zeros((0, 2))), dtype=float).reshape(-1, 2) for loop in loops]
+    closed = [index for index, loop in enumerate(loops) if loop.get("closed", False)]
+    faces = []
+    for index in closed:
+        maker = BRepBuilderAPI_MakeWire()
+        for edge in loop_edges(frame, loops[index]["segments"]):
+            maker.Add(edge)
+        if not maker.IsDone() or not maker.Wire().Closed():
+            continue
+        face_maker = BRepBuilderAPI_MakeFace(plane, maker.Wire())
+        if not face_maker.IsDone():
+            raise ValueError(f"loop {index + 1} could not be made into a face")
+        fixer = ShapeFix_Face(face_maker.Face())
+        fixer.FixOrientation()
+        fixer.Perform()
+        depth = sum(_inside(outlines[index], outlines[other]) for other in closed if other != index)
+        faces.append((fixer.Face(), index, depth))
+    return faces
+
+
 def _inside(inner: np.ndarray, outer: np.ndarray) -> bool:
     """Whether loop ``inner`` lies inside loop ``outer`` (both as 2D outlines)."""
 
@@ -165,4 +194,4 @@ def _inside(inner: np.ndarray, outer: np.ndarray) -> bool:
     return bool(np.count_nonzero(crossing & (x < at)) % 2)
 
 
-__all__ = ("PlaneFrame", "loop_edges", "profile_shape")
+__all__ = ("PlaneFrame", "loop_edges", "loop_faces", "profile_shape")

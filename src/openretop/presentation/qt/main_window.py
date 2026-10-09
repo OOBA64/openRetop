@@ -391,6 +391,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             ("model.fit_surface", "fit_surface", "Fit Surface", False),
             ("model.sketch", "curve", "3D Sketch", False),
             ("model.section_sketch", "section_sketch", "Section Sketch", False),
+            ("model.extrude", "extrude", "Extrude", False),
             ("model.loft", "loft", "Loft", False),
             ("model.fill", "fill", "Fill", False),
             ("model.extend", "extend", "Extend", False),

@@ -33,7 +33,8 @@ from openretop.modeling import (
 from openretop.modeling.profile2d import Profile2D, auto_tolerance, fit_profile
 from openretop.modeling.sketch import MeshProjector, boundary_loop, curve_on_mesh, loop_polylines, region_inside
 
-TOOLS = ("sketch", "section", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+TOOLS = ("sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+EXTRUDE_MODES = ("new", "add", "cut")
 SECTION_PLANES = {  # name: (in-plane u, in-plane v, the world axis the offset runs along)
     "XY": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
     "YZ": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
@@ -48,6 +49,7 @@ TOOL_TITLES = {
     "compare": "Compare",
     "sketch": "3D Sketch",
     "section": "Section Sketch",
+    "extrude": "Extrude",
 }
 SELECTION_MODES = ("smart", "brush", "erase")
 MAX_KERNEL_SCAN_POINTS = 200_000  # scan points sent for trimming (a dense scan is subsampled)
@@ -99,6 +101,17 @@ class ToolSession:
     section_loops: list[np.ndarray] = field(default_factory=list)  # world polylines
     section_closed: list[bool] = field(default_factory=list)
     section_profiles: list[Profile2D] | None = None
+    # Extrude: the sketch, the body to add to / cut from, depths along the sketch's normal
+    # (front ahead of the plane, back behind it), draft in degrees; with ``extrude_auto`` the
+    # depths come from the scan and each hole keeps its own (a pocket stays a pocket)
+    extrude_profile: str = ""
+    extrude_target: str = ""
+    extrude_mode: str = "new"
+    extrude_front: float = 10.0
+    extrude_back: float = 0.0
+    extrude_draft: float = 0.0
+    extrude_auto: bool = True
+    extrude_holes: dict[int, tuple[float, float]] = field(default_factory=dict)  # loop -> measured range
 
 
 @dataclass
@@ -201,6 +214,19 @@ class ModelingController(ControllerBase):
             else:
                 self.session.section_offset = self._scan_center(self.session.section_plane)
             self.section_cut()  # the section shows as soon as the tool opens
+        if tool == "extrude":
+            profile = self._extrude_profile_entity()
+            if profile is None:
+                self.session = previous
+                return CommandResult.failure("Make a sketch first (Section Sketch), then Extrude it.")
+            self.session.extrude_profile = profile.id
+            bodies = [entity for entity in self.state.model.entities if entity.kind == "solid"]
+            selected = [entity for entity in bodies if entity.id in self.state.model.selected_ids]
+            target = selected[0] if selected else (bodies[-1] if bodies else None)
+            self.session.extrude_target = "" if target is None else target.id
+            self.session.extrude_mode = "add" if target is not None else "new"
+            self.extrude_measure()
+            self.extrude_preview()  # shown at once; a failure here just means no preview yet
         hints = {
             "fit_surface": "Click the scan to select a smooth area (or brush it), then Fit.",
             "loft": "Select two or more curves, then Loft.",
@@ -210,6 +236,7 @@ class ModelingController(ControllerBase):
             "compare": "Compare colours the scan by its distance to the model.",
             "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it.",
             "section": "Pick a plane (click the scan to move it there), then Fit Profile and Create.",
+            "extrude": "Extrude the sketch: the depth comes from the scan; adjust it, choose new / add / cut, then Create.",
         }
         return CommandResult.ok(status=f"{TOOL_TITLES[tool]}: {hints[tool]}", changed=True, metadata={"tool": tool})
 
@@ -229,7 +256,8 @@ class ModelingController(ControllerBase):
             if key.startswith("fit_") and hasattr(session.fit, key[4:]):
                 setattr(session.fit, key[4:], type(getattr(session.fit, key[4:]))(value))
             elif hasattr(session, key) and key not in (
-                "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles"
+                "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles",
+                "extrude_holes",
             ):
                 current = getattr(session, key)
                 setattr(session, key, type(current)(value) if current is not None else value)
@@ -241,6 +269,10 @@ class ModelingController(ControllerBase):
             session.section_plane = "XY"
         if any(key in values for key in ("section_tolerance", "section_sharp")):
             session.section_profiles = None  # fitted for other options
+        if session.extrude_mode not in EXTRUDE_MODES:
+            session.extrude_mode = "new"
+        if any(key.startswith("extrude_") for key in values):
+            session.preview = None
         return CommandResult.ok(status="Options updated", changed=True)
 
     # -- scan selection (Fit Surface) ----------------------------------------------------------
@@ -556,6 +588,146 @@ class ModelingController(ControllerBase):
         entity = entity_from_result(self.state.model, reply.value, tool="section", params=params)
         session.section_profiles = None  # created: the next Fit starts afresh
         return self._add_entities([entity], name="Section Sketch")
+
+    # -- Extrude -------------------------------------------------------------------------------
+
+    def _extrude_profile_entity(self) -> ModelEntity | None:
+        model = self.state.model
+        profiles = [entity for entity in model.entities if entity.kind == "profile"]
+        selected = [entity for entity in profiles if entity.id in model.selected_ids]
+        if selected:
+            return selected[-1]
+        current = None if self.session is None else model.get(self.session.extrude_profile)
+        if current is not None and current.kind == "profile":
+            return current
+        visible = [entity for entity in profiles if entity.visible]
+        candidates = visible or profiles
+        return candidates[-1] if candidates else None
+
+    def extrude_measure(self) -> CommandResult:
+        """Depths from the scan: how far the sketch's walls run either side of its plane."""
+
+        session = self._session_for("extrude")
+        if isinstance(session, CommandResult):
+            return session
+        profile = self.state.model.get(session.extrude_profile)
+        if profile is None or self.state.mesh_object is None:
+            return CommandResult.failure("Needs a sketch and the scan.")
+        from openretop.modeling.feature_depth import loop_depths
+
+        points, normals = self._world_scan_points(MAX_KERNEL_SCAN_POINTS)
+        spacing = self._scan_spacing()
+        tolerance = float(profile.params.get("tolerance", 0.05))
+        depths = loop_depths(points, normals, profile.params["frame"], profile.params["loops"], band=max(4.0 * tolerance, 0.5 * spacing), step=spacing)
+        outer = [depth for depth in depths if depth.found and depth.depth % 2 == 0]
+        if not outer:
+            session.extrude_holes = {}
+            return CommandResult.ok(status="No wall found in the scan along the sketch: set the depth by hand.", changed=True)
+        session.extrude_front = round(max(0.0, max(depth.high for depth in outer)), 4)
+        session.extrude_back = round(max(0.0, -min(depth.low for depth in outer)), 4)
+        session.extrude_holes = {index: (depth.low, depth.high) for index, depth in enumerate(depths) if depth.found and depth.depth % 2}
+        session.preview = None
+        units = self.state.units
+        pockets = "".join(f"; hole {index + 1}: {low:.3f} to {high:.3f}" for index, (low, high) in session.extrude_holes.items())
+        return CommandResult.ok(
+            status=f"Depth from the scan: {session.extrude_front:.3f} ahead, {session.extrude_back:.3f} behind {units}{pockets}.",
+            changed=True,
+        )
+
+    def extrude_ranges(self) -> list[tuple[float, float]]:
+        """Per loop of the sketch: (low, high) along its normal."""
+
+        session = self.session
+        profile = None if session is None else self.state.model.get(session.extrude_profile)
+        if session is None or profile is None:
+            return []
+        low, high = -session.extrude_back, session.extrude_front
+        ranges = []
+        for index, _loop in enumerate(profile.params.get("loops", [])):
+            hole = session.extrude_holes.get(index) if session.extrude_auto else None
+            ranges.append((max(low, hole[0]), min(high, hole[1])) if hole is not None else (low, high))
+        return ranges
+
+    def _extrude_job(self) -> KernelReply | CommandResult:
+        session = self._session_for("extrude")
+        if isinstance(session, CommandResult):
+            return session
+        profile = self.state.model.get(session.extrude_profile)
+        if profile is None:
+            return CommandResult.failure("The sketch to extrude is gone.")
+        if session.extrude_front + session.extrude_back <= 0.0:
+            return CommandResult.failure("Give the extrusion some depth (ahead, behind or both).")
+        target = self.state.model.get(session.extrude_target) if session.extrude_mode != "new" else None
+        if session.extrude_mode != "new" and target is None:
+            return CommandResult.failure("Add and Cut need a body: make one first (New body), or pick one in the tree.")
+        return self.worker.call(
+            "extrude",
+            profile.params["frame"],
+            profile.params["loops"],
+            self.extrude_ranges(),
+            draft=session.extrude_draft,
+            mode=session.extrude_mode,
+            target=None if target is None else target.brep,
+        )
+
+    def extrude_preview(self) -> CommandResult:
+        reply = self._extrude_job()
+        if isinstance(reply, CommandResult):
+            return reply
+        if not reply.ok:
+            return _kernel_failure("Extrude failed", reply)
+        session = self.session
+        assert session is not None
+        session.preview = reply.value
+        valid = "" if reply.value.get("solid") else " (not a valid solid: check the sketch)"
+        return CommandResult.ok(status=f"Extrude: volume {reply.value['volume']:.1f} {self.state.units}^3{valid}. Create keeps it.", changed=True)
+
+    def extrude_apply(self) -> CommandResult:
+        reply = self._extrude_job()
+        if isinstance(reply, CommandResult):
+            return reply
+        if not reply.ok:
+            return _kernel_failure("Extrude failed", reply)
+        session = self.session
+        assert session is not None
+        model = self.state.model
+        before = model.snapshot()
+        mode = session.extrude_mode
+        params = {
+            "profile": session.extrude_profile,
+            "mode": session.extrude_mode,
+            "front": session.extrude_front,
+            "back": session.extrude_back,
+            "draft": session.extrude_draft,
+            "ranges": [list(item) for item in self.extrude_ranges()],
+        }
+        target = model.get(session.extrude_target) if session.extrude_mode != "new" else None
+        sources = (session.extrude_profile,) + (() if target is None else (target.id,))
+        entity = entity_from_result(model, reply.value, tool="extrude", params=params, sources=sources)
+        if target is not None:  # the body changes: the new one takes its place
+            entity.name = target.name
+            model.remove(target.id)
+        model.add(entity)
+        profile = model.get(session.extrude_profile)
+        if profile is not None:
+            profile.visible = False  # used: out of the way, as in CAD
+        model.selected_ids = [entity.id]
+        session.preview = None
+        session.extrude_target = entity.id
+        session.extrude_mode = "add"  # a further sketch most likely adds to (or cuts) this body
+        verb = {"new": "Created", "add": "Added to", "cut": "Cut from"}[mode]
+        return self._changed("Extrude", before, f"{verb} {entity.name}: volume {reply.value['volume']:.1f} {self.state.units}^3")
+
+    def _scan_spacing(self) -> float:
+        """The scan's typical point spacing (median edge length)."""
+
+        source = self.transform.transformed_source_mesh()
+        triangles = np.asarray(source.triangles)[:20000]
+        vertices = np.asarray(source.vertices, dtype=float)
+        if len(triangles) == 0:
+            return 1.0
+        edges = vertices[triangles[:, [1, 2, 0]]] - vertices[triangles]
+        return float(np.median(np.linalg.norm(edges, axis=2))) or 1.0
 
     def _scan_center(self, plane: str) -> float:
         if self.state.mesh_object is None or plane not in SECTION_PLANES:
@@ -1220,4 +1392,13 @@ def _kernel_failure(prefix: str, reply: KernelReply) -> CommandResult:
     return CommandResult.failure(message, status=message)
 
 
-__all__ = ("FitOptions", "ModelingController", "SECTION_PLANES", "SELECTION_MODES", "TOOLS", "TOOL_TITLES", "ToolSession")
+__all__ = (
+    "EXTRUDE_MODES",
+    "FitOptions",
+    "ModelingController",
+    "SECTION_PLANES",
+    "SELECTION_MODES",
+    "TOOLS",
+    "TOOL_TITLES",
+    "ToolSession",
+)

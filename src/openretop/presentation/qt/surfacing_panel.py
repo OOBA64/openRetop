@@ -41,7 +41,8 @@ SURFACE_TYPES = (
     ("torus", "Torus"),
 )
 SELECTION_MODES = (("smart", "Smart"), ("brush", "Brush"), ("erase", "Erase"))
-PAGES = ("sketch", "section", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+PAGES = ("sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+EXTRUDE_MODES = (("new", "New body"), ("add", "Add"), ("cut", "Cut"))
 SECTION_PLANES = (("XY", "XY (top)"), ("XZ", "XZ (front)"), ("YZ", "YZ (side)"))
 
 
@@ -119,6 +120,7 @@ class SurfacingPanel(QWidget):
         for name, builder in (
             ("sketch", self._build_sketch),
             ("section", self._build_section),
+            ("extrude", self._build_extrude),
             ("fit_surface", self._build_fit),
             ("loft", self._build_loft),
             ("fill", self._build_fill),
@@ -157,6 +159,7 @@ class SurfacingPanel(QWidget):
             self._show_fit(session, facts)
             self._show_sketch(facts.extra, facts.busy)
             self._show_section(session, facts)
+            self._show_extrude(session, facts)
             self.loft_info.setText(
                 f"{facts.selected_curves} curve(s) selected." if facts.selected_curves else "No curves selected."
             )
@@ -256,8 +259,29 @@ class SurfacingPanel(QWidget):
         self.section_fit.setEnabled(loops > 0 and not facts.busy)
         self.section_create.setEnabled(loops > 0 and not facts.busy)
 
+    def _show_extrude(self, session: Any, facts: PanelFacts) -> None:
+        if session.tool != "extrude":
+            return
+        extra = facts.extra
+        for mode, button in self.extrude_mode_buttons.items():
+            button.setChecked(session.extrude_mode == mode)
+            button.setEnabled(mode == "new" or bool(extra.get("has_target")))
+        for box in (self.extrude_front, self.extrude_back):
+            box.setSuffix(f" {facts.units}")
+        self.extrude_front.setValue(float(session.extrude_front))
+        self.extrude_back.setValue(float(session.extrude_back))
+        self.extrude_draft.setValue(float(session.extrude_draft))
+        self.extrude_auto.setChecked(bool(session.extrude_auto))
+        self.extrude_info.setText(str(extra.get("extrude_text", "")))
+        self.extrude_create.setEnabled(not facts.busy)
+        self.extrude_measure.setEnabled(not facts.busy)
+
     def _inputs(self) -> list[QWidget]:
         return [
+            self.extrude_front,
+            self.extrude_back,
+            self.extrude_draft,
+            self.extrude_auto,
             self.section_offset,
             self.section_tolerance,
             self.section_sharp,
@@ -498,6 +522,60 @@ class SurfacingPanel(QWidget):
         layout.addLayout(row)
         self.section_info = _hint()
         layout.addWidget(self.section_info)
+
+    def _build_extrude(self, layout: QVBoxLayout) -> None:
+        self.extrude_info = _hint()
+        layout.addWidget(self.extrude_info)
+        row = QHBoxLayout()
+        self.extrude_mode_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
+        for mode, label in EXTRUDE_MODES:
+            button = QToolButton()
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.clicked.connect(lambda _checked=False, mode=mode: self._emit("model.configure", {"extrude_mode": mode}))
+            group.addButton(button)
+            row.addWidget(button)
+            self.extrude_mode_buttons[mode] = button
+        layout.addLayout(row)
+        form = QFormLayout()
+        self.extrude_front = QDoubleSpinBox()
+        self.extrude_back = QDoubleSpinBox()
+        for box, key, tip in (
+            (self.extrude_front, "extrude_front", "How far the extrusion runs ahead of the sketch plane (along its normal)."),
+            (self.extrude_back, "extrude_back", "How far it runs behind the sketch plane (0: one side only)."),
+        ):
+            box.setRange(0.0, 1e5)
+            box.setDecimals(3)
+            box.setSingleStep(0.5)
+            box.setToolTip(tip)
+            box.valueChanged.connect(lambda value, key=key: self._emit("model.configure", {key: value}))
+        form.addRow("Ahead", self.extrude_front)
+        form.addRow("Behind", self.extrude_back)
+        self.extrude_draft = QDoubleSpinBox()
+        self.extrude_draft.setRange(-30.0, 30.0)
+        self.extrude_draft.setDecimals(2)
+        self.extrude_draft.setSingleStep(0.5)
+        self.extrude_draft.setSuffix(" deg")
+        self.extrude_draft.setToolTip("Walls taper away from the sketch plane by this angle (holes the other way).")
+        self.extrude_draft.valueChanged.connect(lambda value: self._emit("model.configure", {"extrude_draft": value}))
+        form.addRow("Draft", self.extrude_draft)
+        layout.addLayout(form)
+        self.extrude_auto = QCheckBox("Holes keep their own depth from the scan")
+        self.extrude_auto.setToolTip("A pocket in the sketch stops where the scan's pocket does, instead of cutting through.")
+        self.extrude_auto.toggled.connect(lambda value: self._emit("model.configure", {"extrude_auto": bool(value)}))
+        layout.addWidget(self.extrude_auto)
+        row = QHBoxLayout()
+        self.extrude_measure = _button("Depth From Scan")
+        self.extrude_measure.setToolTip("Measure again how far the sketch's walls run in the scan.")
+        self.extrude_measure.clicked.connect(lambda: self._emit("model.extrude_measure"))
+        self.extrude_create = _button("Create", primary=True)
+        self.extrude_create.setToolTip("Keep the extrusion (Enter).")
+        self.extrude_create.clicked.connect(lambda: self._emit("model.extrude_apply"))
+        row.addWidget(self.extrude_measure)
+        row.addWidget(self.extrude_create)
+        layout.addLayout(row)
 
     def _build_loft(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_hint("Select two or more curves (Ctrl+click in the tree or the scene), in order. Draw curves on the scan with Draw Curve."))

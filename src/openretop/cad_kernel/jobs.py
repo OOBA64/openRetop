@@ -347,6 +347,27 @@ def profile(frame: dict[str, Any], loops: list[dict[str, Any]], **info: Any) -> 
     return surface_result(shape, kind="profile", **counts, **info)
 
 
+def extrude(
+    frame: dict[str, Any],
+    loops: list[dict[str, Any]],
+    ranges: list[tuple[float, float]],
+    *,
+    draft: float = 0.0,
+    mode: str = "new",
+    target: bytes | None = None,
+) -> dict[str, Any]:
+    """A sketch profile extruded into a solid (each loop over its own depth range), as a new
+    body or added to / cut from ``target``."""
+
+    from openretop.cad_kernel.features import combine, is_valid
+    from openretop.cad_kernel.features import extrude as make_extrusion
+    from openretop.cad_kernel.profiles import PlaneFrame
+
+    body = make_extrusion(PlaneFrame.from_dict(frame), loops, [(float(low), float(high)) for low, high in ranges], draft=draft)
+    shape = combine(body, None if target is None else S.from_brep(target), mode)
+    return surface_result(shape, kind="solid", volume=S.shape_volume(shape), solid=is_valid(shape))
+
+
 def selftest_sleep(seconds: float) -> float:
     """For tests of the worker's timeout."""
 
@@ -375,6 +396,7 @@ JOBS = frozenset(
         "sew",
         "deviation",
         "export",
+        "extrude",
         "profile",
         "selftest_sleep",
         "selftest_crash",

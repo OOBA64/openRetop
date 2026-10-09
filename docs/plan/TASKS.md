@@ -51,7 +51,7 @@ reference video in RE_PLAN section 2a) comes first.
 | S-11 | S | done | Export Model (File, Ctrl+E, Surfacing toolbar): STEP or IGES of the selected or visible model, read back to check the face count |
 | S-12 | S | done | Save model surfaces, bodies and the 3D Sketch in the project file (`modeling.persistence`: a `model` key with compressed BREP, display mesh, edges and sketch; older versions carry it through untouched) |
 | S-13 | S | doing | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii. Done: auto line/arc profile (`modeling/profile2d.py`), Section Sketch tool (world planes + offset, click to place, auto tolerance, exact wire/face). Next: S-14 extrude; later brush-to-fit single primitives, splines, face/offset planes, endpoint drag |
-| S-14 | S | todo | Extrude / revolve sketch profiles to solids (depth handles, draft, add/cut), live deviation |
+| S-14 | S | doing | Extrude / revolve sketch profiles to solids (depth handles, draft, add/cut), live deviation |
 | S-15 | S | todo | Fillet / chamfer solid edges with Auto radius from the scan, live deviation |
 | S-16 | S | todo | Primitive patches auto-sized, with drag handles to resize |
 | S-17 | S | todo | Live deviation analysis in every tool panel |

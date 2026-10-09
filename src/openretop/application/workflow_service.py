@@ -675,6 +675,7 @@ class WorkflowService:
         starts = {
             "model.sketch": "sketch",
             "model.section_sketch": "section",
+            "model.extrude": "extrude",
             "model.fit_surface": "fit_surface",
             "model.loft": "loft",
             "model.fill": "fill",
@@ -703,6 +704,12 @@ class WorkflowService:
             offset = payload.get("offset")
             plane = str(payload.get("plane") or (modeling.session.section_plane if modeling.session else "XY"))
             return modeling.section_set_plane(plane, offset=None if offset is None else float(offset))  # type: ignore[arg-type]
+        if action == "model.extrude_measure":
+            return modeling.extrude_measure()
+        if action == "model.extrude_preview":
+            return modeling.extrude_preview()
+        if action == "model.extrude_apply":
+            return modeling.extrude_apply()
         if action == "model.section_fit":
             return modeling.section_fit()
         if action == "model.section_create":

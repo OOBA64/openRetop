@@ -25,7 +25,7 @@ from workbench_ui import FieldDefinition, SceneNode
 NODE_MODEL = "model_surfaces"  # the scene tree group of model surfaces and bodies (NODE_MESH is "model")
 
 SURFACING_ACTIONS = frozenset(
-    {"model.sketch", "model.section_sketch", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
+    {"model.sketch", "model.section_sketch", "model.extrude", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
 )
 # kernel work that can take seconds: run off the UI thread
 SURFACING_HEAVY_ACTIONS = frozenset(
@@ -42,12 +42,16 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.sketch_face",
         "model.section_fit",
         "model.section_create",
+        "model.extrude",
+        "model.extrude_preview",
+        "model.extrude_apply",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
     "sketch": "Click points on the scan; click a point to connect, the first point to close. Enter finishes, Backspace undoes a point, drag a point to move it.",
+    "extrude": "The depth comes from the scan; adjust ahead / behind / draft, pick New, Add or Cut, then Create (Enter).",
     "section": "Click the scan to move the sketch plane there; Fit Profile, then Create (Enter).",
     "fit_surface": "Click a smooth area of the scan (Smart) or drag over it (Brush; Alt+drag rotates). Then Fit and Create.",
     "loft": "Select two or more curves, in order, then Loft.",
@@ -101,6 +105,8 @@ class SurfacingWorkbenchMixin:
             if not result.success:
                 self.set_status_message(result.errors[0])  # type: ignore[attr-defined]
             self.refresh()  # type: ignore[attr-defined]
+            if result.success and self.modeling.tool == "extrude":
+                self._dispatch_application_action("model.extrude_preview")  # type: ignore[attr-defined]  # live
             return
         self._dispatch_application_action(action_id, payload or None)  # type: ignore[attr-defined]
 
@@ -130,6 +136,7 @@ class SurfacingWorkbenchMixin:
                 "compare": "model.compare_apply",
                 "loft": "model.loft_apply",
                 "section": "model.section_create",
+                "extrude": "model.extrude_apply",
             }.get(self.modeling.tool or "")
             if primary:
                 self._dispatch_application_action(primary)  # type: ignore[attr-defined]
@@ -372,7 +379,7 @@ class SurfacingWorkbenchMixin:
         selection = self.modeling.selection() if session.tool == "fit_surface" else None
         preview = session.preview
         preview_text = ""
-        if preview is not None:
+        if preview is not None and session.tool == "fit_surface":
             net = f", {preview['control_u']} x {preview['control_v']} net" if preview.get("kind") == "freeform" else ""
             preview_text = (
                 f"{KIND_LABELS.get(preview.get('kind', ''), preview.get('kind', ''))}{net}\n"
@@ -423,6 +430,8 @@ class SurfacingWorkbenchMixin:
     def _sketch_facts(self, session: Any) -> dict[str, Any]:
         if session.tool == "section":
             return self._section_facts(session)
+        if session.tool == "extrude":
+            return self._extrude_facts(session)
         model = self.composition.state.model
         selected = [model.sketch.curve(value) for value in model.selected_curve_ids]
         selected = [curve for curve in selected if curve is not None]
@@ -437,6 +446,22 @@ class SurfacingWorkbenchMixin:
             "loop": loop,
             "fit_to_scan": bool(session.face_fit_to_scan),
         }
+
+    def _extrude_facts(self, session: Any) -> dict[str, Any]:
+        model = self.composition.state.model
+        units = self.composition.state.units
+        profile = model.get(session.extrude_profile)
+        target = model.get(session.extrude_target)
+        lines = [f"Sketch: {getattr(profile, 'name', 'none')}"]
+        if session.extrude_mode != "new":
+            lines.append(f"Body: {getattr(target, 'name', 'none')}")
+        for index, (low, high) in sorted(session.extrude_holes.items()):
+            if session.extrude_auto:
+                lines.append(f"Hole {index + 1}: {low:.3f} to {high:.3f} {units} (from the scan)")
+        preview = session.preview
+        if preview is not None and "volume" in preview:
+            lines.append(f"Volume {preview['volume']:.1f} {units}^3" + ("" if preview.get("solid") else " - not a valid solid"))
+        return {"extrude_text": "\n".join(lines), "has_target": target is not None}
 
     def _section_facts(self, session: Any) -> dict[str, Any]:
         if session.section_key is None:
