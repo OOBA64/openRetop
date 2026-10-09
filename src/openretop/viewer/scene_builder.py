@@ -3,30 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Mapping
 
 import numpy as np
 
 from openretop.application.scene_ids import (
-    NODE_BREP_SURFACES,
-    NODE_CURVES,
     NODE_MESH,
     NODE_REGIONS,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
-    NODE_SURFACES,
-    curve_group_node_id,
-    curve_node_id,
     region_node_id,
     section_plane_node_id,
     section_result_node_id,
-    surface_node_id,
 )
 from openretop.sections.section_state import plane_normal, plane_origin
 from openretop.viewer.modeling_scene import ModelingSceneInput, modeling_items
 from openretop.viewer.scene_types import (
     CameraRequest,
-    CurveRenderItem,
     DisplayStyleSnapshot,
     MeshRenderItem,
     RegionRenderItem,
@@ -34,7 +27,6 @@ from openretop.viewer.scene_types import (
     SectionPlaneRenderItem,
     SectionResultRenderItem,
     SelectionRenderState,
-    SurfaceRenderItem,
     ToolPreviewState,
     geometry_revision,
 )
@@ -78,8 +70,8 @@ def _mesh_revision(vertices: object, triangles: object) -> int:
 class SceneBuilder:
     """Translate application state and prepared geometry into a snapshot.
 
-    Surface triangulation and manual-curve sampling remain in their existing
-    domain services.  The builder only describes already prepared geometry.
+    The model (surfaces, bodies, 3D Sketch curves) arrives as ``modeling``, already
+    tessellated; the builder only describes prepared geometry.
     """
 
     def build(
@@ -87,12 +79,8 @@ class SceneBuilder:
         state: object,
         *,
         options: SceneBuildOptions | None = None,
-        surface_previews: Sequence[object] = (),
         tool_preview: ToolPreviewState | None = None,
         camera_request: CameraRequest | None = None,
-        visible_curves: Sequence[object] | None = None,
-        active_surface_id: str | None = None,
-        surface_source_curve_ids: Sequence[str] = (),
         object_origin: object | None = None,
         active_transform_angle_delta: float | None = None,
         modeling: ModelingSceneInput | None = None,
@@ -102,22 +90,6 @@ class SceneBuilder:
         meshes = self._mesh_items(mesh_object, build_options)
         mesh_world_bounds = meshes[0].world_bounds if meshes else None
 
-        curve_records = (
-            tuple(visible_curves)
-            if visible_curves is not None
-            else tuple(getattr(getattr(state, "curve_collection", None), "curves", ()))
-        )
-        curves = () if build_options.hide_expensive_overlays else self._curve_items(
-            curve_records,
-            active_curve_id=getattr(
-                getattr(state, "curve_collection", None), "active_curve_id", None
-            ),
-            surface_source_curve_ids=surface_source_curve_ids,
-        )
-        surfaces = () if build_options.hide_expensive_overlays else self._surface_items(
-            surface_previews,
-            active_surface_id=active_surface_id,
-        )
         regions = () if build_options.hide_expensive_overlays else self._region_items(
             state,
             mesh_object,
@@ -138,16 +110,9 @@ class SceneBuilder:
         selection = SelectionRenderState(
             selected_ids=frozenset(self._selected_ids(state)),
             selected_item=getattr(state, "selected_item", None),
-            active_curve_id=getattr(
-                getattr(state, "curve_collection", None), "active_curve_id", None
-            ),
-            active_surface_id=active_surface_id,
-            surface_source_curve_ids=tuple(str(value) for value in surface_source_curve_ids),
         )
         revision = geometry_revision(
             tuple((item.id, item.revision, item.visible) for item in meshes),
-            tuple((item.id, item.revision, item.visible, item.category) for item in curves),
-            tuple((item.id, item.revision, item.visible) for item in surfaces),
             tuple((item.id, item.revision, item.visible) for item in regions),
             tuple((item.id, item.revision, item.visible) for item in section_planes),
             tuple((item.id, item.revision, item.visible) for item in section_results),
@@ -159,8 +124,6 @@ class SceneBuilder:
         return SceneSnapshot(
             revision=revision,
             meshes=meshes,
-            curves=curves,
-            surfaces=surfaces,
             regions=regions,
             section_planes=section_planes,
             section_results=section_results,
@@ -224,91 +187,6 @@ class SceneBuilder:
                 selection_keys=(NODE_MESH,),
             ),
         )
-
-    @staticmethod
-    def _curve_items(
-        curves: Sequence[object],
-        *,
-        active_curve_id: str | None,
-        surface_source_curve_ids: Sequence[str],
-    ) -> tuple[CurveRenderItem, ...]:
-        source_ids = {str(value) for value in surface_source_curve_ids}
-        items: list[CurveRenderItem] = []
-        for curve in curves:
-            points = np.asarray(getattr(curve, "fitted_points", ()), dtype=float)
-            if points.ndim != 2 or points.shape[1:] != (3,):
-                points = np.zeros((0, 3), dtype=float)
-            curve_id = str(getattr(curve, "id", f"curve-{len(items)}"))
-            metadata = dict(getattr(curve, "metadata", {}) or {})
-            selected = bool(getattr(curve, "selected", False))
-            active = active_curve_id is not None and curve_id == str(active_curve_id)
-            category = _curve_category(
-                curve,
-                metadata,
-                selected=selected,
-                active=active,
-                surface_source=curve_id in source_ids,
-            )
-            group_id = str(getattr(curve, "section_result_id", "") or "")
-            selection_keys = [curve_node_id(curve_id), NODE_CURVES]
-            if group_id:
-                selection_keys.append(curve_group_node_id(group_id))
-            items.append(
-                CurveRenderItem(
-                    id=curve_id,
-                    revision=geometry_revision(points, bool(getattr(curve, "is_closed", False))),
-                    points=points,
-                    visible=bool(getattr(curve, "visible", True)),
-                    closed=bool(getattr(curve, "is_closed", False)),
-                    category=category,
-                    selected=selected,
-                    active=active,
-                    metadata=metadata,
-                    selection_keys=tuple(selection_keys),
-                )
-            )
-        return tuple(items)
-
-    @staticmethod
-    def _surface_items(
-        previews: Sequence[object],
-        *,
-        active_surface_id: str | None,
-    ) -> tuple[SurfaceRenderItem, ...]:
-        items: list[SurfaceRenderItem] = []
-        for preview in previews:
-            vertices = np.asarray(getattr(preview, "vertices", ()), dtype=float).reshape((-1, 3))
-            faces = np.asarray(getattr(preview, "faces", ()), dtype=int).reshape((-1, 3))
-            surface_id = str(getattr(preview, "source_surface_id", f"surface-{len(items)}"))
-            selected = bool(getattr(preview, "selected", False))
-            active = active_surface_id is not None and surface_id == str(active_surface_id)
-            role = str(getattr(preview, "display_role", "preview_surface"))
-            opacity = getattr(preview, "opacity", None)
-            if opacity is None:
-                opacity = 0.58 if selected or active else 0.22
-            family_key = NODE_BREP_SURFACES if role == "brep_visual_preview" else NODE_SURFACES
-            handles = np.asarray(
-                getattr(preview, "overbuild_handle_points", ()), dtype=float
-            ).reshape((-1, 3))
-            items.append(
-                SurfaceRenderItem(
-                    id=surface_id,
-                    revision=geometry_revision(vertices, faces, handles),
-                    vertices=vertices,
-                    faces=faces,
-                    selected=selected,
-                    active=active,
-                    display_role=role,
-                    wireframe_overlay=bool(getattr(preview, "wireframe_overlay", False)),
-                    overbuild_handle_points=handles,
-                    show_overbuild_handles=bool(
-                        getattr(preview, "show_overbuild_handles", False)
-                    ),
-                    style=DisplayStyleSnapshot(opacity=float(opacity)),
-                    selection_keys=(surface_node_id(surface_id), family_key),
-                )
-            )
-        return tuple(items)
 
     @staticmethod
     def _region_items(
@@ -407,9 +285,6 @@ class SceneBuilder:
         collection_specs = (
             (getattr(state, "section_collection", None), "selected_plane_ids"),
             (getattr(state, "section_collection", None), "selected_result_ids"),
-            (getattr(state, "curve_collection", None), "selected_curve_ids"),
-            (getattr(state, "surface_collection", None), "selected_surface_ids"),
-            (getattr(state, "brep_surface_collection", None), "selected_surface_ids"),
         )
         for collection, attribute in collection_specs:
             selected.update(str(value) for value in getattr(collection, attribute, ()))
@@ -417,37 +292,6 @@ class SceneBuilder:
         if region is not None and bool(getattr(region, "selected", False)):
             selected.add(str(getattr(region, "id", "")))
         return selected
-
-
-def _curve_category(
-    curve: object,
-    metadata: Mapping[str, object],
-    *,
-    selected: bool,
-    active: bool,
-    surface_source: bool,
-) -> str:
-    creation_type = str(metadata.get("creation_type", "")).strip().lower()
-    snap_mode = str(metadata.get("snap_mode", "")).strip().lower()
-    category = (
-        "manual"
-        if creation_type in {"manual", "curve_on_mesh"}
-        or snap_mode == "mesh"
-        or "control_points" in metadata
-        or metadata.get("snap_to_mesh") is True
-        else "normal"
-    )
-    if bool(getattr(curve, "is_tiny_fragment", False)):
-        category = "tiny"
-    if any(key in metadata for key in ("repair_type", "curve_repair", "repair_operation")):
-        category = "repaired"
-    if surface_source:
-        category = "active_surface_source"
-    if selected:
-        category = "selected"
-    if active:
-        category = "active"
-    return category
 
 
 def _plane_frame_bounds(mesh_bounds: object | None, origin: object):

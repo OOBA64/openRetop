@@ -9,29 +9,20 @@ from openretop.application.controller_support import (
     MODEL_SYNC_VIEWPORT_REQUESTS,
     CallbackUndoPayload,
     ControllerBase,
-    curve_ids_for_group,
     publish_scene_change,
 )
 from openretop.application.results import CommandResult
 from openretop.application.scene_ids import (
-    NODE_BREP_SURFACES,
-    NODE_CURVES,
     NODE_MESH,
     NODE_REGIONS,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
-    NODE_SURFACES,
-    curve_group_id_from_node,
-    curve_id_from_node,
-    curve_node_id,
     region_id_from_node,
     region_node_id,
     section_plane_id_from_node,
     section_plane_node_id,
     section_result_id_from_node,
     section_result_node_id,
-    surface_id_from_node,
-    surface_node_id,
 )
 from openretop.application.state import AppState
 
@@ -51,16 +42,6 @@ class VisibilityController(ControllerBase):
         node_ids.extend(
             section_result_node_id(result.id)
             for result in state.section_collection.results
-        )
-        node_ids.extend(curve_node_id(curve.id) for curve in state.curve_collection.curves)
-        node_ids.extend(
-            surface_node_id(surface.id)
-            for surface in state.surface_collection.surfaces
-        )
-        node_ids.extend(
-            surface_node_id(surface.id)
-            for surface in state.brep_surface_collection.surfaces
-            if surface_node_id(surface.id) not in node_ids
         )
         region = state.region_collection.active_region
         if region is not None:
@@ -87,22 +68,10 @@ class VisibilityController(ControllerBase):
             elif node_id == NODE_SECTION_RESULTS:
                 for result in state.section_collection.results:
                     add(section_result_node_id(result.id))
-            elif node_id == NODE_CURVES:
-                for curve in state.curve_collection.curves:
-                    add(curve_node_id(curve.id))
-            elif node_id == NODE_SURFACES:
-                for surface in state.surface_collection.surfaces:
-                    add(surface_node_id(surface.id))
-            elif node_id == NODE_BREP_SURFACES:
-                for surface in state.brep_surface_collection.surfaces:
-                    add(surface_node_id(surface.id))
             elif node_id == NODE_REGIONS:
                 region = state.region_collection.active_region
                 if region is not None:
                     add(region_node_id(region.id))
-            elif (group_id := curve_group_id_from_node(node_id)) is not None:
-                for curve_id in curve_ids_for_group(state, group_id):
-                    add(curve_node_id(curve_id))
             elif self._node_exists(node_id):
                 add(node_id)
         return tuple(expanded)
@@ -122,18 +91,6 @@ class VisibilityController(ControllerBase):
             node_id = section_result_node_id(section_result.id)
             if node_id in target_set:
                 result[node_id] = bool(section_result.visible)
-        for curve in state.curve_collection.curves:
-            node_id = curve_node_id(curve.id)
-            if node_id in target_set:
-                result[node_id] = bool(curve.visible)
-        for surface in state.surface_collection.surfaces:
-            node_id = surface_node_id(surface.id)
-            if node_id in target_set:
-                result[node_id] = bool(surface.visible)
-        for surface in state.brep_surface_collection.surfaces:
-            node_id = surface_node_id(surface.id)
-            if node_id in target_set:
-                result[node_id] = bool(surface.visible)
         region = state.region_collection.active_region
         if region is not None:
             node_id = region_node_id(region.id)
@@ -413,21 +370,6 @@ class VisibilityController(ControllerBase):
             for result in state.section_collection.results
             if section_result_node_id(result.id) in targets
         )
-        owners.extend(
-            (curve_node_id(curve.id), curve)
-            for curve in state.curve_collection.curves
-            if curve_node_id(curve.id) in targets
-        )
-        owners.extend(
-            (surface_node_id(surface.id), surface)
-            for surface in state.surface_collection.surfaces
-            if surface_node_id(surface.id) in targets
-        )
-        owners.extend(
-            (surface_node_id(surface.id), surface)
-            for surface in state.brep_surface_collection.surfaces
-            if surface_node_id(surface.id) in targets
-        )
         region = state.region_collection.active_region
         if region is not None and region_node_id(region.id) in targets:
             owners.append((region_node_id(region.id), region))
@@ -445,18 +387,6 @@ class VisibilityController(ControllerBase):
             return any(
                 result.id == section_result_id_from_node(node_id)
                 for result in self.state.section_collection.results
-            )
-        curve_id = curve_id_from_node(node_id)
-        if curve_id is not None:
-            return any(curve.id == curve_id for curve in self.state.curve_collection.curves)
-        surface_id = surface_id_from_node(node_id)
-        if surface_id is not None:
-            return any(
-                surface.id == surface_id
-                for surface in (
-                    *self.state.surface_collection.surfaces,
-                    *self.state.brep_surface_collection.surfaces,
-                )
             )
         region_id = region_id_from_node(node_id)
         region = self.state.region_collection.active_region
@@ -478,9 +408,6 @@ class VisibilityController(ControllerBase):
             if active_result is not None and active_result.visible
             else None
         )
-        state.curve_results = [
-            curve for curve in state.curve_collection.curves if curve.visible
-        ]
 
     @staticmethod
     def _is_persistent_node(node_id: str) -> bool:

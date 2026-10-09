@@ -258,28 +258,21 @@ class SurfacingWindowTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_KERNEL, "OpenCASCADE / CadQuery not installed")
 class CurveToolTests(unittest.TestCase):
-    """Loft and Fill from curves (curves drawn on the scan are stored curves)."""
+    """Loft and Fill from 3D Sketch curves (from the sketch tool, sections or regions)."""
 
     def setUp(self) -> None:
         self.composition = _composition()
         self.workflow = self.composition.workflow
 
     def _curve(self, name: str, points: np.ndarray) -> str:
-        from openretop.curves.curve_state import StoredCurve, add_curve
-
-        curve = StoredCurve(
-            id=name, name=name, section_result_id="", plane_id="", original_points=points, fitted_points=points,
-            mean_error=0.0, max_error=0.0, is_closed=False,
-        )
-        add_curve(self.composition.state.curve_collection, curve)
-        return name
+        return self.composition.state.model.sketch.add_polyline_curve(points, name=name).id
 
     def test_loft_between_two_selected_curves(self) -> None:
         angle = np.linspace(0, np.pi, 40)
         first = self._curve("c1", np.c_[20 * np.cos(angle), 20 * np.sin(angle), np.zeros(40)])
         second = self._curve("c2", np.c_[20 * np.cos(angle), 20 * np.sin(angle), np.full(40, 30.0)])
-        self.composition.state.curve_collection.selected_curve_ids = {first, second}
-        result = self.workflow.dispatch("model.loft_apply", {"curve_ids": [first, second]})
+        self.composition.state.model.selected_curve_ids = [first, second]
+        result = self.workflow.dispatch("model.loft_apply", {})
         self.assertTrue(result.success, result.errors)
         entity = self.composition.state.model.entities[-1]
         self.assertEqual(entity.kind, "loft")

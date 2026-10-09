@@ -29,37 +29,12 @@ class ActionCondition(str, Enum):
     MULTI_SELECTION = "multi_selection"
     HAS_SECTION_PLANE = "has_section_plane"
     HAS_SECTION_RESULT = "has_section_result"
-    HAS_CURVES = "has_curves"
-    HAS_CURVE_SELECTION = "has_curve_selection"
-    SINGLE_CURVE = "single_curve"
-    TWO_CURVES = "two_curves"
-    AT_LEAST_TWO_CURVES = "at_least_two_curves"
-    AT_LEAST_THREE_CURVES = "at_least_three_curves"
-    FOUR_CURVES = "four_curves"
-    SINGLE_CLOSED_CURVE = "single_closed_curve"
-    SINGLE_OPEN_CURVE = "single_open_curve"
-    SINGLE_EDITABLE_CURVE = "single_editable_curve"
-    HAS_SURFACE_SELECTION = "has_surface_selection"
-    SINGLE_SURFACE = "single_surface"
     HAS_REGION = "has_region"
-    HAS_BREP_SELECTION = "has_brep_selection"
-    HAS_LOFT_FEATURE = "has_loft_feature"
-    HAS_SOURCE_CURVES = "has_source_curves"
     CAN_TRANSFORM = "can_transform"
     TRANSFORM_ACTIVE = "transform_active"
-    MANUAL_CURVE_ACTIVE = "manual_curve_active"
-    MANUAL_CURVE_IDLE = "manual_curve_idle"
-    MANUAL_CURVE_CREATING = "manual_curve_creating"
-    MANUAL_CURVE_EDITING = "manual_curve_editing"
-    CAN_ADD_MANUAL_POINT = "can_add_manual_point"
-    HAS_MANUAL_CONTROL_POINT = "has_manual_control_point"
     REGION_TOOL_ACTIVE = "region_tool_active"
     MEASURE_TOOL_ACTIVE = "measure_tool_active"
     HAS_MEASUREMENTS = "has_measurements"
-    HAS_REGION_BOUNDARY_CURVES = "has_region_boundary_curves"
-    SELECTED_REGION_BOUNDARY_CURVE = "selected_region_boundary_curve"
-    CAD_AVAILABLE = "cad_available"
-    HAS_RUNTIME_BREP = "has_runtime_brep"
     HAS_MODEL = "has_model"
     HAS_MODEL_SELECTION = "has_model_selection"
     MODEL_TOOL_ACTIVE = "model_tool_active"
@@ -79,37 +54,12 @@ CONDITION_REQUIREMENTS: Mapping[ActionCondition, str] = MappingProxyType(
         ActionCondition.MULTI_SELECTION: "more than one item selected",
         ActionCondition.HAS_SECTION_PLANE: "a section plane",
         ActionCondition.HAS_SECTION_RESULT: "a computed section",
-        ActionCondition.HAS_CURVES: "at least one curve",
-        ActionCondition.HAS_CURVE_SELECTION: "a selected curve",
-        ActionCondition.SINGLE_CURVE: "exactly one curve selected",
-        ActionCondition.TWO_CURVES: "exactly two curves selected",
-        ActionCondition.AT_LEAST_TWO_CURVES: "two or more curves selected",
-        ActionCondition.AT_LEAST_THREE_CURVES: "three or more curves selected",
-        ActionCondition.FOUR_CURVES: "exactly four curves selected",
-        ActionCondition.SINGLE_CLOSED_CURVE: "one closed curve selected",
-        ActionCondition.SINGLE_OPEN_CURVE: "one open curve selected",
-        ActionCondition.SINGLE_EDITABLE_CURVE: "one hand-drawn (editable) curve selected",
-        ActionCondition.HAS_SURFACE_SELECTION: "a selected surface",
-        ActionCondition.SINGLE_SURFACE: "exactly one surface selected",
         ActionCondition.HAS_REGION: "a selected region (Create > Region Select)",
-        ActionCondition.HAS_BREP_SELECTION: "a selected BREP surface",
-        ActionCondition.HAS_LOFT_FEATURE: "an editable loft",
-        ActionCondition.HAS_SOURCE_CURVES: "a surface with source curves",
         ActionCondition.CAN_TRANSFORM: "the model or a section plane selected",
         ActionCondition.TRANSFORM_ACTIVE: "a move/rotate in progress",
-        ActionCondition.MANUAL_CURVE_ACTIVE: "the curve tool active",
-        ActionCondition.MANUAL_CURVE_IDLE: "the curve tool to be finished first",
-        ActionCondition.MANUAL_CURVE_CREATING: "a new curve being drawn",
-        ActionCondition.MANUAL_CURVE_EDITING: "a curve being edited",
-        ActionCondition.CAN_ADD_MANUAL_POINT: "the curve tool active",
-        ActionCondition.HAS_MANUAL_CONTROL_POINT: "a selected curve point",
         ActionCondition.REGION_TOOL_ACTIVE: "the region tool active",
         ActionCondition.MEASURE_TOOL_ACTIVE: "the measure tool active",
         ActionCondition.HAS_MEASUREMENTS: "a measurement on the scan (Inspect > Measure Distance)",
-        ActionCondition.HAS_REGION_BOUNDARY_CURVES: "extracted region boundary curves",
-        ActionCondition.SELECTED_REGION_BOUNDARY_CURVE: "a region boundary curve selected",
-        ActionCondition.CAD_AVAILABLE: "the CAD kernel (CadQuery) to be installed",
-        ActionCondition.HAS_RUNTIME_BREP: "a built BREP (rebuild it first)",
         ActionCondition.HAS_MODEL: "a surface in the model (Surfacing > Fit Surface)",
         ActionCondition.HAS_MODEL_SELECTION: "a selected model surface",
         ActionCondition.MODEL_TOOL_ACTIVE: "a surfacing tool open",
@@ -130,31 +80,12 @@ class ActionContext:
     selection_count: int = 0
     has_section_plane: bool = False
     has_section_result: bool = False
-    has_curves: bool = False
-    selected_curve_count: int = 0
-    selected_curve_closed: bool = False
-    selected_curve_open: bool = False
-    selected_curve_editable: bool = False
-    selected_surface_count: int = 0
     has_region: bool = False
-    selected_brep_count: int = 0
-    has_loft_feature: bool = False
-    has_source_curves: bool = False
     can_transform: bool = False
     transform_active: bool = False
-    manual_curve_active: bool = False
-    manual_curve_idle: bool = False
-    manual_curve_creating: bool = False
-    manual_curve_editing: bool = False
-    can_add_manual_point: bool = False
-    has_manual_control_point: bool = False
     region_tool_active: bool = False
     measure_tool_active: bool = False
     has_measurements: bool = False
-    has_region_boundary_curves: bool = False
-    selected_region_boundary_curve: bool = False
-    cad_available: bool = False
-    has_runtime_brep: bool = False
     model_count: int = 0
     selected_model_count: int = 0
     model_tool_active: bool = False
@@ -182,68 +113,18 @@ class ActionContext:
             return self.has_section_plane
         if condition is ActionCondition.HAS_SECTION_RESULT:
             return self.has_section_result
-        if condition is ActionCondition.HAS_CURVES:
-            return self.has_curves
-        if condition is ActionCondition.HAS_CURVE_SELECTION:
-            return self.selected_curve_count > 0
-        if condition is ActionCondition.SINGLE_CURVE:
-            return self.selected_curve_count == 1
-        if condition is ActionCondition.TWO_CURVES:
-            return self.selected_curve_count == 2
-        if condition is ActionCondition.AT_LEAST_TWO_CURVES:
-            return self.selected_curve_count >= 2
-        if condition is ActionCondition.AT_LEAST_THREE_CURVES:
-            return self.selected_curve_count >= 3
-        if condition is ActionCondition.FOUR_CURVES:
-            return self.selected_curve_count == 4
-        if condition is ActionCondition.SINGLE_CLOSED_CURVE:
-            return self.selected_curve_count == 1 and self.selected_curve_closed
-        if condition is ActionCondition.SINGLE_OPEN_CURVE:
-            return self.selected_curve_count == 1 and self.selected_curve_open
-        if condition is ActionCondition.SINGLE_EDITABLE_CURVE:
-            return self.selected_curve_count == 1 and self.selected_curve_editable
-        if condition is ActionCondition.HAS_SURFACE_SELECTION:
-            return self.selected_surface_count > 0
-        if condition is ActionCondition.SINGLE_SURFACE:
-            return self.selected_surface_count == 1
         if condition is ActionCondition.HAS_REGION:
             return self.has_region
         if condition is ActionCondition.MEASURE_TOOL_ACTIVE:
             return self.measure_tool_active
         if condition is ActionCondition.HAS_MEASUREMENTS:
             return self.has_measurements
-        if condition is ActionCondition.HAS_BREP_SELECTION:
-            return self.selected_brep_count > 0
-        if condition is ActionCondition.HAS_LOFT_FEATURE:
-            return self.has_loft_feature
-        if condition is ActionCondition.HAS_SOURCE_CURVES:
-            return self.has_source_curves
         if condition is ActionCondition.CAN_TRANSFORM:
             return self.can_transform
         if condition is ActionCondition.TRANSFORM_ACTIVE:
             return self.transform_active
-        if condition is ActionCondition.MANUAL_CURVE_ACTIVE:
-            return self.manual_curve_active
-        if condition is ActionCondition.MANUAL_CURVE_IDLE:
-            return self.manual_curve_idle
-        if condition is ActionCondition.MANUAL_CURVE_CREATING:
-            return self.manual_curve_creating
-        if condition is ActionCondition.MANUAL_CURVE_EDITING:
-            return self.manual_curve_editing
-        if condition is ActionCondition.CAN_ADD_MANUAL_POINT:
-            return self.can_add_manual_point
-        if condition is ActionCondition.HAS_MANUAL_CONTROL_POINT:
-            return self.has_manual_control_point
         if condition is ActionCondition.REGION_TOOL_ACTIVE:
             return self.region_tool_active
-        if condition is ActionCondition.HAS_REGION_BOUNDARY_CURVES:
-            return self.has_region_boundary_curves
-        if condition is ActionCondition.SELECTED_REGION_BOUNDARY_CURVE:
-            return self.selected_region_boundary_curve
-        if condition is ActionCondition.CAD_AVAILABLE:
-            return self.cad_available
-        if condition is ActionCondition.HAS_RUNTIME_BREP:
-            return self.has_runtime_brep
         if condition is ActionCondition.HAS_MODEL:
             return self.model_count > 0
         if condition is ActionCondition.HAS_MODEL_SELECTION:
@@ -443,8 +324,6 @@ _DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
         "section.compute": "Slice the scan with the active section plane; the outline becomes a curve.",
         "section.clear_active": "Remove the active section result and its curves.",
         "section.clear_all": "Remove every section result and its curves.",
-        "manual_curve.create": "Draw a curve by clicking points on the scan. Enter finishes, Esc cancels.",
-        "manual_curve.edit": "Edit the points of the selected hand-drawn curve.",
         "model.sketch": "Draw curves on the scan: click points, Enter finishes, click the first point to close, snap to points to connect curves. Drag a point to move it.",
         "model.sketch_face": "A face inside the selected closed curve, or loop of connected curves, fitted to the scan inside it.",
         "model.sketch_loft": "A surface through the selected sketch curves (two or more).",
@@ -464,15 +343,6 @@ _DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
         "measure.clear": "Remove every measurement from the view.",
         "measure.finish": "Leave the measure tool; finished measurements stay on screen.",
         "region.extract_boundary": "Turn the outline of the selected region into curves.",
-        "surface.fill": "Fill one closed curve with a surface.",
-        "surface.brep_face": "Create a CAD face from the selected closed curve (needs the CAD kernel).",
-        "surface.brep_loft": "Create a CAD surface skinned between two curves (needs the CAD kernel).",
-        "surface.editable_brep_loft": "Loft a CAD surface between two curves; changing the curves rebuilds it (needs the CAD kernel).",
-        "surface.rebuild_brep": "Rebuild the selected CAD surface from its source curves.",
-        "curve.join": "Join selected curves whose ends meet within the join tolerance.",
-        "curve.auto_close": "Close the selected open curve if its ends are close enough.",
-        "curve.simplify": "Remove points from the selected curve while staying within the tolerance.",
-        "curve.smooth": "Smooth the selected curve.",
         "view.frame_all": "Fit everything in the view.",
         "view.frame_selected": "Fit the selected objects in the view.",
         "view.reset": "Return to the default camera.",
@@ -533,20 +403,7 @@ _ALWAYS = (ActionCondition.ALWAYS,)
 _NOT_BUSY = (ActionCondition.NOT_BUSY,)
 _MESH = (ActionCondition.HAS_MESH, ActionCondition.NOT_BUSY)
 _SELECTION = (ActionCondition.HAS_SCENE_SELECTION,)
-_CURVES = (ActionCondition.HAS_CURVE_SELECTION, ActionCondition.NOT_BUSY)
-_ONE_CURVE = (ActionCondition.SINGLE_CURVE, ActionCondition.NOT_BUSY)
-_TWO_CURVES = (ActionCondition.TWO_CURVES, ActionCondition.NOT_BUSY)
-_SURFACE = (ActionCondition.HAS_SURFACE_SELECTION, ActionCondition.NOT_BUSY)
 _REGION = (ActionCondition.HAS_REGION, ActionCondition.NOT_BUSY)
-_MANUAL = (ActionCondition.MANUAL_CURVE_ACTIVE,)
-_MANUAL_IDLE = (ActionCondition.MANUAL_CURVE_IDLE,)
-_MANUAL_CREATE = (ActionCondition.MANUAL_CURVE_CREATING,)
-_MANUAL_EDIT = (ActionCondition.MANUAL_CURVE_EDITING,)
-_MANUAL_POINT = (
-    ActionCondition.MANUAL_CURVE_EDITING,
-    ActionCondition.HAS_MANUAL_CONTROL_POINT,
-)
-_MANUAL_CAN_ADD = (ActionCondition.CAN_ADD_MANUAL_POINT,)
 
 
 WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
@@ -562,13 +419,9 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("scene.show_selected", "Show Selected", "Scene", "show_selected_scene_objects", enabled_when=_SELECTION),
     _workflow_action("scene.set_visibility", "Set Visibility", "Scene", "set_scene_visibility"),
     _workflow_action("scene.isolate_selected", "Isolate Selected", "Scene", "hide_unselected_scene_objects", enabled_when=_SELECTION, shortcut="Shift+H"),
-    _workflow_action("scene.select_source_curves", "Select Source Curves", "Scene", "select_source_curves_for_active_surface", enabled_when=(ActionCondition.HAS_SOURCE_CURVES,)),
-    _workflow_action("scene.isolate_source_curves", "Isolate Source Curves", "Scene", "isolate_source_curves_for_active_surface", enabled_when=(ActionCondition.HAS_SOURCE_CURVES,)),
-    _workflow_action("scene.show_source_curves", "Show Source Curves", "Scene", "show_source_curves_for_active_surface", enabled_when=(ActionCondition.HAS_SOURCE_CURVES,)),
 
     # View commands without file or dialog ownership. Task 77 retains camera math.
     _workflow_action("view.frame_region", "Frame Region", "View", "frame_selected_region", enabled_when=_REGION),
-    _workflow_action("view.frame_source_curves", "Frame Source Curves", "View", "frame_source_curves_for_active_surface", enabled_when=(ActionCondition.HAS_SOURCE_CURVES,)),
     _workflow_action("view.reset", "Reset View", "View", "reset_view"),
     *tuple(
         _workflow_action(
@@ -643,51 +496,8 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("section.toggle_result_visibility", "Toggle Section Result Visibility", "Sections", "_on_section_result_visibility_changed", enabled_when=(ActionCondition.HAS_SECTION_RESULT,)),
 
     # Stored-curve processing; manual-curve geometry remains Task 74-owned.
-    _workflow_action("curve.join", "Join Selected Curves", "Curves", "join_selected_curves", enabled_when=(ActionCondition.AT_LEAST_TWO_CURVES, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.auto_close", "Auto-Close Selected Curve", "Curves", "auto_close_selected_curve", enabled_when=(ActionCondition.SINGLE_OPEN_CURVE, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.simplify", "Simplify Selected Curve", "Curves", "simplify_selected_curve", enabled_when=_ONE_CURVE),
-    _workflow_action("curve.smooth", "Smooth Selected Curve", "Curves", "smooth_selected_curve", enabled_when=_ONE_CURVE),
-    _workflow_action("curve.project", "Project Selected Curve to Mesh", "Curves", "project_selected_curve_to_mesh", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.SINGLE_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.rebuild", "Rebuild Selected Curve", "Curves", "rebuild_selected_curve", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.SINGLE_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.validate_fill", "Validate Selected Curve", "Curves", "validate_selected_curve", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.SINGLE_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.validate_loft", "Validate Selected Curves for Loft", "Curves", "validate_selected_curves_for_loft", enabled_when=_TWO_CURVES),
-    _workflow_action("curve.convert_smooth", "Convert to Smooth Curve", "Curves", "convert_selected_curve_to_smooth_guide", enabled_when=(ActionCondition.SINGLE_EDITABLE_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.simplify_guide", "Reduce Guide Curve", "Curves", "reduce_simplify_selected_guide_curve", enabled_when=(ActionCondition.SINGLE_EDITABLE_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.hide_selected", "Hide Selected Curves", "Curves", "hide_selected_curves", enabled_when=_CURVES),
-    _workflow_action("curve.isolate_selected", "Hide Unselected Curves", "Curves", "hide_unselected_curves", enabled_when=_CURVES),
-    _workflow_action("curve.show_all", "Show All Curves", "Curves", "show_all_curves", enabled_when=(ActionCondition.HAS_CURVES,)),
-    _workflow_action("curve.select_tiny", "Select Tiny Curves", "Curves", "select_tiny_curves", enabled_when=(ActionCondition.HAS_CURVES,)),
-    _workflow_action("curve.hide_tiny", "Hide Tiny Curves", "Curves", "hide_tiny_curves", enabled_when=(ActionCondition.HAS_CURVES,)),
-    _workflow_action("curve.delete_tiny", "Delete Tiny Curves", "Curves", "delete_tiny_curves", enabled_when=(ActionCondition.HAS_CURVES, ActionCondition.NOT_BUSY)),
-    _workflow_action("curve.delete_selected", "Delete Selected Curve", "Curves", "delete_selected_curve", enabled_when=_CURVES),
-    _workflow_action("curve.toggle_visibility", "Toggle Curve Visibility", "Curves", "_on_curve_visibility_changed", enabled_when=_CURVES),
 
     # Task 74 manual-curve controller actions, now centrally discoverable.
-    _workflow_action("manual_curve.create", "Create Manual Curve", "Manual Curve", "start_manual_curve_mode", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("manual_curve.edit", "Edit Selected Curve", "Manual Curve", "start_manual_curve_edit_mode", enabled_when=(ActionCondition.SINGLE_EDITABLE_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("manual_curve.finish", "Finish Manual Curve", "Manual Curve", "_finish_manual_curve_action", enabled_when=_MANUAL, visible_when=_MANUAL),
-    _workflow_action("manual_curve.apply", "Apply Curve Edits", "Manual Curve", "apply_manual_curve_edits", enabled_when=_MANUAL_EDIT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.cancel", "Cancel Manual Curve", "Manual Curve", "_cancel_manual_curve_mode", enabled_when=_MANUAL, visible_when=_MANUAL),
-    _workflow_action("manual_curve.remove_last", "Remove Last Point", "Manual Curve", "_remove_last_manual_curve_point", enabled_when=_MANUAL_CREATE, visible_when=_MANUAL),
-    _workflow_action("manual_curve.toggle_closed", "Toggle Closed", "Manual Curve", "_toggle_manual_curve_closed", enabled_when=_MANUAL, visible_when=_MANUAL),
-    _workflow_action("manual_curve.add_point", "Add Point", "Manual Curve", "activate_manual_curve_add_point", enabled_when=_MANUAL_CAN_ADD, visible_when=_MANUAL),
-    _workflow_action("manual_curve.insert_point", "Insert Point", "Manual Curve", "activate_manual_curve_insert_point", enabled_when=_MANUAL_EDIT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.delete_point", "Delete Selected Point", "Manual Curve", "delete_selected_manual_curve_point", enabled_when=_MANUAL_POINT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.point_smooth", "Set Point Smooth", "Manual Curve", "set_selected_manual_curve_point_smooth", enabled_when=_MANUAL_POINT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.point_corner", "Set Point Corner", "Manual Curve", "set_selected_manual_curve_point_corner", enabled_when=_MANUAL_POINT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.toggle_point_type", "Toggle Point Type", "Manual Curve", "toggle_selected_manual_curve_point_type", enabled_when=_MANUAL, visible_when=_MANUAL),
-    _workflow_action("manual_curve.auto_corners", "Auto Detect Corners", "Manual Curve", "auto_detect_manual_curve_corners", enabled_when=_MANUAL, visible_when=_MANUAL),
-    _workflow_action("manual_curve.clear_auto_corners", "Clear Auto Corners", "Manual Curve", "clear_auto_detected_manual_curve_corners", enabled_when=_MANUAL, visible_when=_MANUAL),
-    _workflow_action("manual_curve.smooth_span", "Smooth Selected Span", "Manual Curve", "smooth_selected_manual_curve_span", enabled_when=_MANUAL_EDIT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.straighten_span", "Straighten Selected Span", "Manual Curve", "straighten_selected_manual_curve_span", enabled_when=_MANUAL_EDIT, visible_when=_MANUAL_EDIT),
-    _workflow_action("manual_curve.snap_option", "Manual Curve Snap", "Manual Curve", "_on_manual_curve_snap_to_mesh_changed", enabled_when=(ActionCondition.HAS_MESH,)),
-    _workflow_action("manual_curve.smoothness_option", "Manual Curve Smoothness", "Manual Curve", "_on_manual_curve_smoothness_changed", enabled_when=_ALWAYS),
-    _workflow_action("manual_curve.type_option", "Manual Curve Type", "Manual Curve", "_on_manual_curve_type_changed", enabled_when=_MANUAL),
-    _workflow_action("manual_curve.sample_count_option", "Manual Curve Sample Count", "Manual Curve", "_on_manual_curve_sample_count_changed", enabled_when=_MANUAL),
-    _workflow_action("manual_curve.corner_threshold_option", "Manual Curve Corner Threshold", "Manual Curve", "_on_manual_curve_corner_threshold_changed", enabled_when=_MANUAL),
-    _workflow_action("manual_curve.placement_option", "Manual Curve Point Placement", "Manual Curve", "_on_manual_curve_placement_changed", enabled_when=_MANUAL),
-    _workflow_action("manual_curve.auto_corners_option", "Manual Curve Auto Corners", "Manual Curve", "_on_manual_curve_auto_corners_changed", enabled_when=_MANUAL),
-    _workflow_action("manual_curve.keep_on_mesh_option", "Keep Manual Curve on Mesh", "Manual Curve", "_on_manual_curve_keep_on_mesh_changed", enabled_when=(ActionCondition.HAS_MESH,)),
 
     # Measuring the scan.
     _workflow_action("measure.distance", "Measure Distance", "Inspect", "start_measure_mode", enabled_when=_MESH, shortcut="M"),
@@ -733,7 +543,7 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("model.select_invert", "Invert Scan Selection", "Surfacing", "invert_scan_selection", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.fit_preview", "Fit", "Surfacing", "fit_surface_preview", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.fit_create", "Create Fitted Surface", "Surfacing", "fit_surface_create", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
-    _workflow_action("model.loft_apply", "Loft Selected Curves", "Surfacing", "loft_selected_curves", enabled_when=(ActionCondition.AT_LEAST_TWO_CURVES, ActionCondition.NOT_BUSY)),
+    _workflow_action("model.loft_apply", "Loft Selected Curves", "Surfacing", "loft_selected_curves", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.fill_apply", "Fill", "Surfacing", "fill_boundary", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.fill_clear", "Clear Fill Boundary", "Surfacing", "clear_fill_boundary", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.fill_continuity", "Set Fill Side Continuity", "Surfacing", "set_fill_continuity", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
@@ -753,42 +563,12 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("region.rename", "Rename Region", "Regions", "_on_region_name_changed", enabled_when=_REGION),
     _workflow_action("region.finish", "Done Region Select", "Regions", "_exit_region_select_mode", enabled_when=(ActionCondition.REGION_TOOL_ACTIVE,), visible_when=(ActionCondition.REGION_TOOL_ACTIVE,)),
     _workflow_action("region.extract_boundary", "Extract Region Boundary", "Regions", "extract_region_boundary", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_REGION, ActionCondition.NOT_BUSY)),
-    _workflow_action("region.select_boundaries", "Select Boundary Curves", "Regions", "select_boundary_curves_for_active_region", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_REGION, ActionCondition.HAS_REGION_BOUNDARY_CURVES, ActionCondition.NOT_BUSY)),
-    _workflow_action("region.convert_boundary", "Convert Boundary to Guide Curve", "Regions", "convert_boundary_to_hybrid_guide_curve", enabled_when=(ActionCondition.SELECTED_REGION_BOUNDARY_CURVE, ActionCondition.MANUAL_CURVE_IDLE, ActionCondition.NOT_BUSY)),
     _workflow_action("region.threshold", "Region Threshold", "Regions", "_on_region_threshold_slider_changed", enabled_when=(ActionCondition.HAS_MESH,), requires_payload=True),
     _workflow_action("region.max_triangles", "Region Maximum Triangles", "Regions", "_on_region_max_triangle_entry_changed", enabled_when=(ActionCondition.HAS_MESH,)),
 
     # Preview surfaces, BREP records, and editable feature workflows.
-    _workflow_action("surface.create_from_curves", "Create Surface From Curves", "Surfaces", "create_surface_from_curves", enabled_when=_CURVES),
-    _workflow_action("surface.fill", "Fill Closed Curve", "Surfaces", "fill_closed_curve", enabled_when=(ActionCondition.SINGLE_CLOSED_CURVE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.loft", "Loft Between Two Curves", "Surfaces", "loft_between_two_curves", enabled_when=_TWO_CURVES),
-    _workflow_action("surface.conforming_loft", "Mesh-Conforming Loft Preview", "Surfaces", "create_mesh_conforming_loft_preview", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.AT_LEAST_TWO_CURVES, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.boundary_patch", "Create Boundary Patch", "Surfaces", "create_boundary_patch_from_curve", enabled_when=(ActionCondition.SINGLE_CLOSED_CURVE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.four_curve_patch", "Create Four-Curve Patch", "Surfaces", "create_four_curve_patch", enabled_when=(ActionCondition.FOUR_CURVES, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.curve_network", "Create Curve Network Patch", "Surfaces", "create_curve_network_patch", enabled_when=(ActionCondition.AT_LEAST_THREE_CURVES, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.brep_face", "Create BREP Face", "BREP", "create_brep_face_from_closed_curve", enabled_when=(ActionCondition.SINGLE_CLOSED_CURVE, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.region_brep_face", "Create BREP Face From Region", "BREP", "create_brep_face_from_selected_region", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_REGION, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.brep_loft", "Create BREP Loft", "BREP", "create_brep_loft_from_two_curves", enabled_when=(ActionCondition.TWO_CURVES, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.editable_brep_loft", "Create Editable BREP Loft", "BREP", "create_editable_brep_loft_from_curves", enabled_when=(ActionCondition.AT_LEAST_TWO_CURVES, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.rebuild_brep", "Rebuild Selected BREP", "BREP", "rebuild_selected_brep_surface", enabled_when=(ActionCondition.HAS_BREP_SELECTION, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.delete", "Delete Selected Surface", "Surfaces", "delete_selected_surface", enabled_when=_SURFACE),
-    _workflow_action("surface.toggle_visibility", "Toggle Surface Visibility", "Surfaces", "toggle_active_surface_visibility", enabled_when=_SURFACE),
-    _workflow_action("surface.opacity", "Surface Opacity", "Surfaces", "_on_surface_opacity_changed", enabled_when=_SURFACE, requires_payload=True),
-    _workflow_action("surface.wireframe", "Surface Wireframe Overlay", "Surfaces", "_on_surface_wireframe_changed", enabled_when=_SURFACE),
-    _workflow_action("surface.set_visibility", "Set Surface Visibility", "Surfaces", "_on_surface_visibility_changed", enabled_when=_SURFACE),
-    _workflow_action("surface.loft_options", "Editable Loft Options", "BREP", "_on_loft_feature_options_changed", enabled_when=(ActionCondition.HAS_LOFT_FEATURE,)),
-    _workflow_action("surface.rebuild_loft", "Rebuild Loft", "BREP", "rebuild_selected_loft_feature", enabled_when=(ActionCondition.HAS_LOFT_FEATURE, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.edit_source", "Edit First Source Curve", "BREP", "edit_first_source_curve_for_active_loft", enabled_when=(ActionCondition.HAS_LOFT_FEATURE, ActionCondition.HAS_SOURCE_CURVES)),
-    _workflow_action("surface.reverse_source", "Reverse Source Curve", "BREP", "reverse_selected_loft_source_curve_direction", enabled_when=(ActionCondition.HAS_LOFT_FEATURE, ActionCondition.HAS_SOURCE_CURVES)),
-    _workflow_action("surface.source_up", "Move Source Curve Up", "BREP", "move_selected_loft_source_curve_up", enabled_when=(ActionCondition.HAS_LOFT_FEATURE, ActionCondition.HAS_SOURCE_CURVES)),
-    _workflow_action("surface.source_down", "Move Source Curve Down", "BREP", "move_selected_loft_source_curve_down", enabled_when=(ActionCondition.HAS_LOFT_FEATURE, ActionCondition.HAS_SOURCE_CURVES)),
-    _workflow_action("surface.duplicate_loft", "Duplicate Loft Feature", "BREP", "duplicate_selected_loft_feature", enabled_when=(ActionCondition.HAS_LOFT_FEATURE, ActionCondition.CAD_AVAILABLE, ActionCondition.NOT_BUSY)),
-    _workflow_action("surface.delete_loft", "Delete Loft Feature", "BREP", "delete_selected_loft_feature", enabled_when=(ActionCondition.HAS_LOFT_FEATURE,)),
-    _workflow_action("surface.rebuild_four_boundary", "Rebuild Four-Boundary Patch", "Surfaces", "rebuild_selected_four_boundary_patch_feature", enabled_when=_SURFACE),
 
     # Read-only analysis actions.
-    _workflow_action("analysis.refresh", "Refresh Analysis", "Analysis", "_update_stats", enabled_when=(ActionCondition.HAS_SCENE_OBJECTS,)),
-    _workflow_action("analysis.mesh_deviation", "Compute Mesh Deviation", "Analysis", "compute_mesh_deviation", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.NOT_BUSY), requires_payload=True),
 )
 
 

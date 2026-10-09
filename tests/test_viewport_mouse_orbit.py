@@ -421,13 +421,6 @@ class MouseRoutingTests(unittest.TestCase):
         window = _window()
         try:
             self.assertIsNone(window.viewport.left_capture_owner)
-            window.composition.manual_curve_controller.begin_new_curve(
-                plane_origin=(0.0, 0.0, 0.0),
-                plane_normal=(0.0, 0.0, 1.0),
-            )
-            window.refresh()
-            self.assertEqual(window.viewport.left_capture_owner, "manual_curve")
-            window.composition.manual_curve_controller.cancel()
             window.composition.region_controller.start()
             window.refresh()
             self.assertEqual(window.viewport.left_capture_owner, "region")

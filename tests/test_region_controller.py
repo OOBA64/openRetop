@@ -144,8 +144,12 @@ class RegionControllerTests(unittest.TestCase):
         self.assertIsNone(state.region_collection.active_region)
         self.assertIsNone(state.selected_item)
 
-    def test_boundary_extraction_preserves_lineage_and_is_reversible(self) -> None:
+    def test_boundary_extraction_adds_world_space_sketch_curves_and_is_reversible(self) -> None:
         state = _state_with_mesh()
+        # the scan was moved: its boundary must come out where the scan is shown
+        matrix = np.identity(4)
+        matrix[:3, 3] = (10.0, 0.0, 5.0)
+        state.mesh_object.transform_matrix = matrix  # type: ignore[union-attr]
         events = EventPublisher()
         received: list[ApplicationEvent] = []
         events.subscribe(ApplicationEvent, received.append)
@@ -161,41 +165,21 @@ class RegionControllerTests(unittest.TestCase):
         self.assertTrue(result.dirty)
         self.assertEqual(result.metadata["source_region_id"], region_id)
         self.assertEqual(len(result.metadata["created_curve_ids"]), 1)
-        curve = state.curve_collection.curves[0]
-        self.assertEqual(curve.metadata["creation_type"], "region_boundary")
-        self.assertEqual(curve.metadata["source_region_id"], region_id)
-        self.assertEqual(curve.metadata["source_region_name"], "Region 1")
-        self.assertEqual(curve.metadata["source_mesh_name"], "sample.stl")
-        self.assertEqual(curve.metadata["source_curve_tags"], ["region_boundary"])
-        self.assertEqual(curve.metadata["boundary_index"], 1)
-        self.assertTrue(curve.is_closed)
-        self.assertEqual(state.selected_item, "curve")
+        curves = state.model.sketch.curves
+        self.assertEqual(len(curves), 1)
+        curve = curves[0]
+        self.assertTrue(curve.closed)
+        self.assertIn("Boundary", curve.name)
+        self.assertEqual(state.model.selected_curve_ids, [curve.id])
+        polyline = np.asarray(curve.polyline)
+        np.testing.assert_allclose(polyline.min(axis=0), (10.0, 0.0, 5.0), atol=1e-9)
+        np.testing.assert_allclose(polyline.max(axis=0), (11.0, 1.0, 5.0), atol=1e-9)
         self.assertTrue(any(isinstance(event, SceneChangedEvent) for event in received))
 
         result.undo_payload.undo()  # type: ignore[union-attr]
-        self.assertFalse(state.curve_collection.curves)
-        self.assertEqual(state.selected_item, "region")
-        self.assertTrue(state.region_collection.active_region.selected)  # type: ignore[union-attr]
+        self.assertEqual(state.model.sketch.curves, [])
         result.undo_payload.redo()  # type: ignore[union-attr]
-        self.assertEqual(len(state.curve_collection.curves), 1)
-        self.assertEqual(state.selected_item, "curve")
-
-        selected = controller.select_boundary_curves()
-        self.assertTrue(selected.success)
-        self.assertFalse(selected.dirty)
-
-        converted = controller.convert_boundary_to_hybrid_guide()
-        self.assertTrue(converted.success)
-        self.assertTrue(converted.dirty)
-        guide = next(
-            curve
-            for curve in state.curve_collection.curves
-            if curve.id == converted.metadata["created_curve_id"]
-        )
-        self.assertEqual(guide.metadata["creation_type"], "hybrid_region_guide")
-        self.assertEqual(guide.metadata["source_curve_id"], curve.id)
-        self.assertEqual(guide.metadata["source_region_id"], region_id)
-
+        self.assertEqual([item.id for item in state.model.sketch.curves], [curve.id])
 
 if __name__ == "__main__":
     unittest.main()

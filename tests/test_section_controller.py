@@ -11,7 +11,6 @@ from openretop.application.section_controller import SectionController
 from openretop.application.state import AppState, MeshObjectState
 from openretop.application.transform_math import build_object_transform_matrix
 from openretop.mesh.triangle_mesh import TriangleMeshData
-from openretop.surfaces.surface_state import SurfacePatch, add_surface
 
 
 def _cube_mesh() -> TriangleMeshData:
@@ -86,17 +85,38 @@ class SectionControllerTests(unittest.TestCase):
         self.assertTrue(result.dirty)
         self.assertIsNotNone(result.undo_payload)
         self.assertEqual(len(state.section_collection.results), 1)
-        self.assertGreater(len(state.curve_collection.curves), 0)
+        # the cut's loops become 3D Sketch curves, selected for Loft or Face From Curves
+        curves = state.model.sketch.curves
+        self.assertGreater(len(curves), 0)
+        self.assertTrue(all(curve.closed for curve in curves))
+        self.assertEqual(state.model.selected_curve_ids, [curve.id for curve in curves])
         self.assertIsNotNone(state.section_result)
         self.assertEqual(scene_events[-1].reason, "section_computed")
-        self.assertIn("curve_collection", state_events[-1].changed_fields)
+        self.assertIn("model", state_events[-1].changed_fields)
 
         result.undo_payload.undo()
         self.assertEqual(state.section_collection.results, [])
-        self.assertEqual(state.curve_collection.curves, [])
+        self.assertEqual(state.model.sketch.curves, [])
         result.undo_payload.redo()
         self.assertEqual(len(state.section_collection.results), 1)
-        self.assertGreater(len(state.curve_collection.curves), 0)
+        self.assertGreater(len(state.model.sketch.curves), 0)
+
+    def test_scraps_of_scan_fragments_do_not_become_sketch_curves(self) -> None:
+        state = _state_with_mesh()
+        cube = state.mesh_object.source_mesh
+        # a speck of scan (0.002 across) floating beside the part, straddling the plane
+        speck = np.asarray([(3.0, 0.0, -0.001), (3.002, 0.0, 0.001), (3.0, 0.002, 0.001)])
+        mesh = TriangleMeshData(
+            vertices=np.vstack([cube.vertices, speck]),
+            triangles=np.vstack([cube.triangles, [[8, 9, 10]]]),
+        )
+        result = SectionController(state).compute(mesh)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.metadata["skipped_scraps"], 1)
+        self.assertEqual(len(state.model.sketch.curves), 1)
+        self.assertTrue(state.model.sketch.curves[0].closed)
+        self.assertIn("1 scrap(s) left out", result.status)
 
     def test_compute_fails_without_mesh_and_does_not_mutate(self) -> None:
         state = AppState()
@@ -109,33 +129,21 @@ class SectionControllerTests(unittest.TestCase):
         self.assertFalse(result.dirty)
         self.assertEqual(state.section_collection.results, [])
 
-    def test_axis_change_invalidates_results_curves_and_dependent_surface(self) -> None:
+    def test_axis_change_clears_the_results_but_keeps_the_sketch_curves(self) -> None:
         state = _state_with_mesh()
         controller = SectionController(state)
         computed = controller.compute(state.mesh_object.source_mesh.copy())
-        curve_id = state.curve_collection.curves[0].id
-        add_surface(
-            state.surface_collection,
-            SurfacePatch(
-                id="preview-1",
-                name="Dependent",
-                source_curve_ids=[curve_id],
-                surface_type="fill",
-            ),
-        )
+        curve_ids = [curve.id for curve in state.model.sketch.curves]
 
         result = controller.set_axis_offset(axis="X", offset=0.25)
 
         self.assertTrue(result.success)
         self.assertTrue(result.dirty)
         self.assertEqual(state.section_collection.results, [])
-        self.assertEqual(state.curve_collection.curves, [])
-        self.assertEqual(state.surface_collection.surfaces, [])
-        self.assertIn("preview-1", result.metadata["removed_preview_surface_ids"])
+        # the curves are the user's now: moving the plane does not take them away
+        self.assertEqual([curve.id for curve in state.model.sketch.curves], curve_ids)
         result.undo_payload.undo()
         self.assertEqual(len(state.section_collection.results), 1)
-        self.assertGreater(len(state.curve_collection.curves), 0)
-        self.assertEqual(state.surface_collection.surfaces[0].id, "preview-1")
         computed.undo_payload.undo()
 
     def test_delete_plane_cascades_and_undo_restores_original_plane(self) -> None:

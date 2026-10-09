@@ -12,8 +12,6 @@ from pathlib import Path
 
 import numpy as np
 
-from openretop.curves.curve_state import CurveCollection, StoredCurve
-from openretop.geometry.curves import CurveFitResult
 from openretop.geometry.sections import SectionResult
 from openretop.mesh.display_proxy import DEFAULT_PROXY_QUALITY
 from openretop.mesh.triangle_mesh import TriangleMeshData
@@ -24,10 +22,6 @@ from openretop.sections.section_state import (
     add_plane,
     create_default_section_plane,
 )
-from openretop.surfaces.brep_state import BrepSurfaceCollection
-from openretop.surfaces.four_boundary_feature import FourBoundaryPatchFeatureCollection
-from openretop.surfaces.loft_feature import LoftFeatureCollection
-from openretop.surfaces.surface_state import SurfaceCollection
 
 
 @dataclass
@@ -118,20 +112,8 @@ class AppState:
     active_transform_axis: str | None = None
     transform_state: ActiveTransformState | None = None
     section_result: SectionResult | None = None
-    curve_results: list[CurveFitResult | StoredCurve] = field(default_factory=list)
     section_collection: SectionCollection = field(
         default_factory=_default_section_collection
-    )
-    curve_collection: CurveCollection = field(default_factory=CurveCollection)
-    surface_collection: SurfaceCollection = field(default_factory=SurfaceCollection)
-    brep_surface_collection: BrepSurfaceCollection = field(
-        default_factory=BrepSurfaceCollection
-    )
-    loft_feature_collection: LoftFeatureCollection = field(
-        default_factory=LoftFeatureCollection
-    )
-    four_boundary_feature_collection: FourBoundaryPatchFeatureCollection = field(
-        default_factory=FourBoundaryPatchFeatureCollection
     )
     region_collection: RegionCollection = field(default_factory=RegionCollection)
     # Length unit of all model-space coordinates (mesh, curves, CAD).
@@ -148,42 +130,19 @@ class AppState:
         self.transform_state = None
         self.section_collection.selected_plane_ids.clear()
         self.section_collection.selected_result_ids.clear()
-        self.curve_collection.selected_curve_ids.clear()
-        self.surface_collection.selected_surface_ids.clear()
-        self.brep_surface_collection.selected_surface_ids.clear()
         for plane in self.section_collection.planes:
             plane.selected = False
         for result in self.section_collection.results:
             result.selected = False
-        for curve in self.curve_collection.curves:
-            curve.selected = False
-        for surface in self.surface_collection.surfaces:
-            surface.selected = False
-        for surface in self.brep_surface_collection.surfaces:
-            surface.selected = False
         region = self.region_collection.active_region
         if region is not None:
             region.selected = False
 
     def clear_sections(self) -> None:
         self.section_result = None
-        self.curve_results = []
         self.section_collection.results = []
         self.section_collection.active_result_id = None
         self.section_collection.selected_result_ids.clear()
-        self.curve_collection.curves = []
-        self.curve_collection.active_curve_id = None
-        self.curve_collection.selected_curve_ids.clear()
-        self.surface_collection.surfaces = []
-        self.surface_collection.active_surface_id = None
-        self.surface_collection.selected_surface_ids.clear()
-        self.brep_surface_collection.surfaces = []
-        self.brep_surface_collection.active_surface_id = None
-        self.brep_surface_collection.selected_surface_ids.clear()
-        self.loft_feature_collection.features = []
-        self.loft_feature_collection.active_feature_id = None
-        self.four_boundary_feature_collection.features = []
-        self.four_boundary_feature_collection.active_feature_id = None
 
 
 __all__ = ("ActiveTransformState", "AppState", "MeshObjectState")

@@ -193,10 +193,10 @@ class WindowBackgroundTests(unittest.TestCase):
 
         window.composition.workflow.section.compute_section = spy  # type: ignore[method-assign]
         self.assertTrue(window._dispatch_application_action("section.compute"))
-        self.assertTrue(pump(lambda: bool(state.curve_collection.curves)))
+        self.assertTrue(pump(lambda: bool(state.model.sketch.curves)))
         self.assertIsNot(threads[0], threading.main_thread())
-        self.assertEqual(len(state.curve_collection.curves), 1)
-        self.assertTrue(state.curve_collection.curves[0].is_closed)
+        self.assertEqual(len(state.model.sketch.curves), 1)
+        self.assertTrue(state.model.sketch.curves[0].closed)
         self.assertEqual(self.errors, [])
 
 

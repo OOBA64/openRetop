@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 
 from openretop import application
 from openretop.application.actions import (
@@ -131,72 +130,35 @@ class ApplicationActionTests(unittest.TestCase):
             "section.clear_active",
             "section.clear_all",
             "section.delete_plane",
-            # Stored/manual curves and regions.
-            "curve.join",
-            "curve.project",
-            "curve.simplify",
-            "curve.delete_selected",
-            "manual_curve.create",
-            "manual_curve.edit",
-            "manual_curve.apply",
-            "manual_curve.type_option",
-            "manual_curve.sample_count_option",
-            "manual_curve.corner_threshold_option",
-            "manual_curve.placement_option",
+            # Regions, the modelling tools and measuring.
             "region.start",
             "region.recompute",
             "region.extract_boundary",
             "region.rename",
             "region.max_triangles",
             "region.delete",
-            # Preview surfaces, BREP, and analysis.
-            "surface.fill",
-            "surface.loft",
-            "surface.four_curve_patch",
-            "surface.brep_face",
-            "surface.editable_brep_loft",
-            "surface.rebuild_brep",
-            "analysis.refresh",
-            "analysis.mesh_deviation",
+            "model.fit_surface",
+            "model.sketch",
+            "model.section_sketch",
+            "model.extrude",
+            "model.loft",
+            "model.fill",
+            "model.trim",
+            "model.compare",
+            "measure.distance",
         }
         self.assertLessEqual(required_actions, workflow_ids)
         self.assertLessEqual(workflow_ids, set(registry.ids))
         self.assertEqual(
             {action.category for action in registry.definitions},
-            {
-                "Analysis",
-                "BREP",
-                "Curves",
-                "Edit",
-                "Inspect",
-                "Manual Curve",
-                "Regions",
-                "Scene",
-                "Sections",
-                "Surfaces",
-                "Surfacing",
-                "Transform",
-                "View",
-            },
+            {"Edit", "Inspect", "Regions", "Scene", "Sections", "Surfacing", "Transform", "View"},
         )
         self.assertEqual(
             {
                 action.id.split(".", 1)[0]
                 for action in WORKFLOW_ACTIONS
             },
-            {
-                "analysis",
-                "curve",
-                "manual_curve",
-                "measure",
-                "model",
-                "region",
-                "scene",
-                "section",
-                "surface",
-                "transform",
-                "view",
-            },
+            {"measure", "model", "region", "scene", "section", "transform", "view"},
         )
         for action in WORKFLOW_ACTIONS:
             self.assertTrue(action.metadata["legacy_handler"])
@@ -214,64 +176,12 @@ class ApplicationActionTests(unittest.TestCase):
             ActionCondition.MULTI_SELECTION: ActionContext(selection_count=2),
             ActionCondition.HAS_SECTION_PLANE: ActionContext(has_section_plane=True),
             ActionCondition.HAS_SECTION_RESULT: ActionContext(has_section_result=True),
-            ActionCondition.HAS_CURVES: ActionContext(has_curves=True),
-            ActionCondition.HAS_CURVE_SELECTION: ActionContext(selected_curve_count=1),
-            ActionCondition.SINGLE_CURVE: ActionContext(selected_curve_count=1),
-            ActionCondition.TWO_CURVES: ActionContext(selected_curve_count=2),
-            ActionCondition.AT_LEAST_TWO_CURVES: ActionContext(selected_curve_count=2),
-            ActionCondition.AT_LEAST_THREE_CURVES: ActionContext(selected_curve_count=3),
-            ActionCondition.FOUR_CURVES: ActionContext(selected_curve_count=4),
-            ActionCondition.SINGLE_CLOSED_CURVE: ActionContext(
-                selected_curve_count=1,
-                selected_curve_closed=True,
-            ),
-            ActionCondition.SINGLE_OPEN_CURVE: ActionContext(
-                selected_curve_count=1,
-                selected_curve_open=True,
-            ),
-            ActionCondition.SINGLE_EDITABLE_CURVE: ActionContext(
-                selected_curve_count=1,
-                selected_curve_editable=True,
-            ),
-            ActionCondition.HAS_SURFACE_SELECTION: ActionContext(
-                selected_surface_count=1
-            ),
-            ActionCondition.SINGLE_SURFACE: ActionContext(selected_surface_count=1),
             ActionCondition.HAS_REGION: ActionContext(has_region=True),
-            ActionCondition.HAS_BREP_SELECTION: ActionContext(selected_brep_count=1),
-            ActionCondition.HAS_LOFT_FEATURE: ActionContext(has_loft_feature=True),
-            ActionCondition.HAS_SOURCE_CURVES: ActionContext(has_source_curves=True),
             ActionCondition.CAN_TRANSFORM: ActionContext(can_transform=True),
             ActionCondition.TRANSFORM_ACTIVE: ActionContext(transform_active=True),
-            ActionCondition.MANUAL_CURVE_ACTIVE: ActionContext(
-                manual_curve_active=True
-            ),
-            ActionCondition.MANUAL_CURVE_IDLE: ActionContext(
-                manual_curve_idle=True
-            ),
-            ActionCondition.MANUAL_CURVE_CREATING: ActionContext(
-                manual_curve_creating=True
-            ),
-            ActionCondition.MANUAL_CURVE_EDITING: ActionContext(
-                manual_curve_editing=True
-            ),
-            ActionCondition.CAN_ADD_MANUAL_POINT: ActionContext(
-                can_add_manual_point=True
-            ),
-            ActionCondition.HAS_MANUAL_CONTROL_POINT: ActionContext(
-                has_manual_control_point=True
-            ),
             ActionCondition.REGION_TOOL_ACTIVE: ActionContext(region_tool_active=True),
             ActionCondition.MEASURE_TOOL_ACTIVE: ActionContext(measure_tool_active=True),
             ActionCondition.HAS_MEASUREMENTS: ActionContext(has_measurements=True),
-            ActionCondition.HAS_REGION_BOUNDARY_CURVES: ActionContext(
-                has_region_boundary_curves=True
-            ),
-            ActionCondition.SELECTED_REGION_BOUNDARY_CURVE: ActionContext(
-                selected_region_boundary_curve=True
-            ),
-            ActionCondition.CAD_AVAILABLE: ActionContext(cad_available=True),
-            ActionCondition.HAS_RUNTIME_BREP: ActionContext(has_runtime_brep=True),
             ActionCondition.HAS_MODEL: ActionContext(model_count=1),
             ActionCondition.HAS_MODEL_SELECTION: ActionContext(selected_model_count=1),
             ActionCondition.MODEL_TOOL_ACTIVE: ActionContext(model_tool_active=True),
@@ -300,11 +210,7 @@ class ApplicationActionTests(unittest.TestCase):
         }
         self.assertEqual(
             set(ActionCondition) - referenced_conditions,
-            {
-                ActionCondition.HAS_RUNTIME_BREP,
-                ActionCondition.MULTI_SELECTION,
-                ActionCondition.SINGLE_SURFACE,
-            },
+            {ActionCondition.MULTI_SELECTION},
         )
 
     def test_representative_workflow_enablement_is_controller_neutral(self) -> None:
@@ -323,32 +229,16 @@ class ApplicationActionTests(unittest.TestCase):
                 ActionContext(mesh_loaded=True, has_section_plane=True),
             ),
             (
-                "curve.join",
-                ActionContext(selected_curve_count=2),
-            ),
-            (
-                "manual_curve.apply",
-                ActionContext(manual_curve_editing=True),
-            ),
-            (
                 "region.extract_boundary",
                 ActionContext(mesh_loaded=True, has_region=True),
             ),
             (
-                "surface.four_curve_patch",
-                ActionContext(selected_curve_count=4),
-            ),
-            (
-                "surface.brep_face",
-                ActionContext(
-                    selected_curve_count=1,
-                    selected_curve_closed=True,
-                    cad_available=True,
-                ),
-            ),
-            (
-                "analysis.mesh_deviation",
+                "model.fit_surface",
                 ActionContext(mesh_loaded=True),
+            ),
+            (
+                "model.trim",
+                ActionContext(mesh_loaded=True, model_count=1),
             ),
         )
         for action_id, enabled_context in cases:
@@ -366,59 +256,6 @@ class ApplicationActionTests(unittest.TestCase):
         self.assertTrue(transform_active.enabled)
         self.assertTrue(transform_active.visible)
 
-    def test_manual_and_region_action_phases_preserve_adapter_enablement(self) -> None:
-        registry = create_core_action_registry()
-        idle = ActionContext(mesh_loaded=True, manual_curve_idle=True)
-        creating = ActionContext(
-            mesh_loaded=True,
-            manual_curve_active=True,
-            manual_curve_creating=True,
-        )
-        editing = ActionContext(
-            mesh_loaded=True,
-            manual_curve_active=True,
-            manual_curve_editing=True,
-            can_add_manual_point=True,
-        )
-        editing_point = replace(editing, has_manual_control_point=True)
-
-        self.assertTrue(registry.state("manual_curve.create", idle).enabled)
-        self.assertFalse(registry.state("manual_curve.create", creating).enabled)
-        self.assertTrue(registry.state("manual_curve.remove_last", creating).enabled)
-        self.assertFalse(registry.state("manual_curve.remove_last", editing).enabled)
-        self.assertFalse(registry.state("manual_curve.add_point", creating).enabled)
-        self.assertTrue(registry.state("manual_curve.add_point", editing).enabled)
-        paused_creation = replace(creating, can_add_manual_point=True)
-        self.assertTrue(
-            registry.state("manual_curve.add_point", paused_creation).enabled
-        )
-        self.assertFalse(registry.state("manual_curve.delete_point", editing).enabled)
-        self.assertTrue(
-            registry.state("manual_curve.delete_point", editing_point).enabled
-        )
-        self.assertTrue(
-            registry.state("manual_curve.toggle_point_type", creating).enabled
-        )
-
-        region_only = ActionContext(mesh_loaded=True, has_region=True)
-        with_boundaries = replace(
-            region_only,
-            has_region_boundary_curves=True,
-        )
-        boundary_selected = ActionContext(
-            manual_curve_idle=True,
-            selected_region_boundary_curve=True,
-        )
-        self.assertFalse(
-            registry.state("region.select_boundaries", region_only).enabled
-        )
-        self.assertTrue(
-            registry.state("region.select_boundaries", with_boundaries).enabled
-        )
-        self.assertTrue(
-            registry.state("region.convert_boundary", boundary_selected).enabled
-        )
-
     def test_application_package_exports_task76_contracts(self) -> None:
         expected_exports = {
             "ActionCondition",
@@ -429,11 +266,7 @@ class ApplicationActionTests(unittest.TestCase):
             "VisibilityController",
             "TransformController",
             "SectionController",
-            "CurveController",
             "RegionController",
-            "SurfaceController",
-            "BrepController",
-            "AnalysisController",
             "create_core_action_registry",
         }
         self.assertLessEqual(expected_exports, set(application.__all__))

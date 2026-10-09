@@ -92,7 +92,7 @@ class V3WorkflowCoverageTests(unittest.TestCase):
         self.assertFalse(composition.state.mesh_object.visible)
         self.assertEqual(composition.selection_controller.snapshot().ids, (NODE_MESH,))
 
-    def test_section_manual_curve_and_region_flows_share_authoritative_state(self) -> None:
+    def test_section_and_region_flows_share_authoritative_state(self) -> None:
         composition = create_application()
         composition.state.mesh_object = _mesh_object()
 
@@ -103,14 +103,8 @@ class V3WorkflowCoverageTests(unittest.TestCase):
         section = composition.workflow.dispatch("section.compute")
         self.assertTrue(section.success, section.errors)
         self.assertTrue(composition.state.section_collection.results)
-
-        curve_count = len(composition.state.curve_collection.curves)
-        self.assertTrue(composition.workflow.dispatch("manual_curve.create").success)
-        for point in ([0, 0, 0], [1, 0, 0], [0.5, 1, 0]):
-            composition.manual_curve_controller.append_point(point)
-        created = composition.workflow.dispatch("manual_curve.finish")
-        self.assertTrue(created.success, created.errors)
-        self.assertEqual(len(composition.state.curve_collection.curves), curve_count + 1)
+        # the cut is now 3D Sketch curves, the same ones the sketch tools edit
+        self.assertTrue(composition.state.model.sketch.curves)
 
         self.assertTrue(composition.workflow.dispatch("region.start").success)
         selected = composition.region_controller.select_seed(
@@ -118,7 +112,6 @@ class V3WorkflowCoverageTests(unittest.TestCase):
         )
         self.assertTrue(selected.success, selected.errors)
         self.assertIsNotNone(composition.state.region_collection.active_region)
-
 
 if __name__ == "__main__":
     unittest.main()

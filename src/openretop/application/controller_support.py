@@ -14,22 +14,13 @@ from openretop.application.results import (
     ViewportRequestKind,
 )
 from openretop.application.scene_ids import (
-    CURVE_GROUP_MANUAL_ID,
-    CURVE_GROUP_PROJECTED_ID,
-    CURVE_GROUP_REBUILT_ID,
-    CURVE_GROUP_REGION_BOUNDARIES_ID,
-    CURVE_GROUP_REPAIRED_ID,
     NODE_MESH,
-    curve_node_id,
     region_node_id,
     section_plane_node_id,
     section_result_node_id,
-    surface_node_id,
 )
 from openretop.application.selection import SelectionSnapshot
 from openretop.application.state import AppState
-from openretop.curves.curve_state import StoredCurve, is_repaired_curve
-from openretop.curves.manual_curve import is_manual_curve_like
 
 MODEL_SYNC_VIEWPORT_REQUESTS = (
     ViewportRequest(ViewportRequestKind.REFRESH),
@@ -55,12 +46,6 @@ class SelectionFamilySnapshot:
     selected_plane_ids: set[str]
     active_result_id: str | None
     selected_result_ids: set[str]
-    active_curve_id: str | None
-    selected_curve_ids: set[str]
-    active_preview_surface_id: str | None
-    selected_preview_surface_ids: set[str]
-    active_brep_surface_id: str | None
-    selected_brep_surface_ids: set[str]
     region_selected: bool
 
     @classmethod
@@ -75,16 +60,6 @@ class SelectionFamilySnapshot:
             selected_plane_ids=set(state.section_collection.selected_plane_ids),
             active_result_id=state.section_collection.active_result_id,
             selected_result_ids=set(state.section_collection.selected_result_ids),
-            active_curve_id=state.curve_collection.active_curve_id,
-            selected_curve_ids=set(state.curve_collection.selected_curve_ids),
-            active_preview_surface_id=state.surface_collection.active_surface_id,
-            selected_preview_surface_ids=set(
-                state.surface_collection.selected_surface_ids
-            ),
-            active_brep_surface_id=state.brep_surface_collection.active_surface_id,
-            selected_brep_surface_ids=set(
-                state.brep_surface_collection.selected_surface_ids
-            ),
             region_selected=bool(region is not None and region.selected),
         )
 
@@ -97,46 +72,13 @@ class SelectionFamilySnapshot:
         state.section_collection.selected_plane_ids = set(self.selected_plane_ids)
         state.section_collection.active_result_id = self.active_result_id
         state.section_collection.selected_result_ids = set(self.selected_result_ids)
-        state.curve_collection.active_curve_id = self.active_curve_id
-        state.curve_collection.selected_curve_ids = set(self.selected_curve_ids)
-        state.surface_collection.active_surface_id = self.active_preview_surface_id
-        state.surface_collection.selected_surface_ids = set(
-            self.selected_preview_surface_ids
-        )
-        state.brep_surface_collection.active_surface_id = self.active_brep_surface_id
-        state.brep_surface_collection.selected_surface_ids = set(
-            self.selected_brep_surface_ids
-        )
         for plane in state.section_collection.planes:
             plane.selected = plane.id in self.selected_plane_ids
         for result in state.section_collection.results:
             result.selected = result.id in self.selected_result_ids
-        for curve in state.curve_collection.curves:
-            curve.selected = curve.id in self.selected_curve_ids
-        for surface in state.surface_collection.surfaces:
-            surface.selected = surface.id in self.selected_preview_surface_ids
-        for surface in state.brep_surface_collection.surfaces:
-            surface.selected = surface.id in self.selected_brep_surface_ids
         region = state.region_collection.active_region
         if region is not None:
             region.selected = self.region_selected
-
-
-def select_surface_exclusively(
-    state: AppState,
-    surface_id: str,
-    *,
-    brep: bool,
-) -> None:
-    state.clear_selection()
-    collection = (
-        state.brep_surface_collection if brep else state.surface_collection
-    )
-    collection.active_surface_id = str(surface_id)
-    collection.selected_surface_ids = {str(surface_id)}
-    for surface in collection.surfaces:
-        surface.selected = surface.id == str(surface_id)
-    state.selected_item = "surface"
 
 
 def selection_snapshot_for_state(state: AppState) -> SelectionSnapshot:
@@ -157,26 +99,8 @@ def selection_snapshot_for_state(state: AppState) -> SelectionSnapshot:
             section_result_node_id(value)
             for value in state.section_collection.selected_result_ids
         ]
-        ids.extend(curve_node_id(value) for value in state.curve_collection.selected_curve_ids)
         if state.section_collection.active_result_id in state.section_collection.selected_result_ids:
             primary_id = section_result_node_id(state.section_collection.active_result_id)
-    elif selected_item == "curve":
-        ids = [curve_node_id(value) for value in state.curve_collection.selected_curve_ids]
-        if state.curve_collection.active_curve_id in state.curve_collection.selected_curve_ids:
-            primary_id = curve_node_id(state.curve_collection.active_curve_id)
-    elif selected_item == "surface":
-        ids = [surface_node_id(value) for value in state.surface_collection.selected_surface_ids]
-        ids.extend(
-            surface_node_id(value)
-            for value in state.brep_surface_collection.selected_surface_ids
-            if surface_node_id(value) not in ids
-        )
-        active_id = (
-            state.surface_collection.active_surface_id
-            or state.brep_surface_collection.active_surface_id
-        )
-        if active_id is not None and surface_node_id(active_id) in ids:
-            primary_id = surface_node_id(active_id)
     elif selected_item == "region":
         region = state.region_collection.active_region
         if region is not None and region.selected:
@@ -259,63 +183,6 @@ def publish_scene_change(
         )
 
 
-def curve_creation_type(curve: StoredCurve) -> str:
-    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-    return str(metadata.get("creation_type", "")).strip().lower()
-
-
-def is_projected_curve(curve: StoredCurve) -> bool:
-    return curve_creation_type(curve) == "projected_curve"
-
-
-def is_rebuilt_curve(curve: StoredCurve) -> bool:
-    return curve_creation_type(curve) == "rebuilt_curve"
-
-
-def is_region_boundary_curve(curve: StoredCurve) -> bool:
-    metadata = curve.metadata if isinstance(curve.metadata, dict) else {}
-    return curve_creation_type(curve) == "region_boundary" or "source_region_id" in metadata
-
-
-def curve_ids_for_group(state: AppState, group_id: str) -> tuple[str, ...]:
-    """Resolve a stable scene curve-group ID without importing presentation."""
-
-    curves = state.curve_collection.curves
-    result_ids = {result.id for result in state.section_collection.results}
-    if group_id == CURVE_GROUP_REPAIRED_ID:
-        selected = (curve for curve in curves if is_repaired_curve(curve))
-    elif group_id == CURVE_GROUP_PROJECTED_ID:
-        selected = (curve for curve in curves if is_projected_curve(curve))
-    elif group_id == CURVE_GROUP_REBUILT_ID:
-        selected = (curve for curve in curves if is_rebuilt_curve(curve))
-    elif group_id == CURVE_GROUP_REGION_BOUNDARIES_ID:
-        selected = (curve for curve in curves if is_region_boundary_curve(curve))
-    elif group_id == CURVE_GROUP_MANUAL_ID:
-        selected = (curve for curve in curves if is_manual_curve_like(curve))
-    elif group_id == "":
-        selected = (
-            curve
-            for curve in curves
-            if curve.section_result_id not in result_ids
-            and not is_repaired_curve(curve)
-            and not is_projected_curve(curve)
-            and not is_rebuilt_curve(curve)
-            and not is_region_boundary_curve(curve)
-            and not is_manual_curve_like(curve)
-        )
-    else:
-        selected = (
-            curve
-            for curve in curves
-            if curve.section_result_id == group_id
-            and not is_projected_curve(curve)
-            and not is_rebuilt_curve(curve)
-            and not is_region_boundary_curve(curve)
-            and not is_manual_curve_like(curve)
-        )
-    return tuple(curve.id for curve in selected)
-
-
 __all__ = (
     "CallbackUndoPayload",
     "ControllerBase",
@@ -323,10 +190,5 @@ __all__ = (
     "MODEL_SYNC_VIEWPORT_REQUESTS",
     "SELECTION_SYNC_UI_REQUESTS",
     "SELECTION_SYNC_VIEWPORT_REQUESTS",
-    "curve_creation_type",
-    "curve_ids_for_group",
-    "is_projected_curve",
-    "is_rebuilt_curve",
-    "is_region_boundary_curve",
     "publish_scene_change",
 )

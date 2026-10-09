@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import platform
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,15 +19,12 @@ from openretop.application.commands import CommandRequest  # noqa: E402
 from openretop.application.results import CommandResult  # noqa: E402
 from openretop.application.scene_ids import (  # noqa: E402
     NODE_MESH,
-    curve_node_id,
     region_node_id,
     section_plane_node_id,
     section_result_node_id,
-    surface_node_id,
 )
 from openretop.application.state import MeshObjectState  # noqa: E402
 from openretop.bootstrap import create_application  # noqa: E402
-from openretop.curves.curve_state import StoredCurve, add_curve  # noqa: E402
 from openretop.geometry.sections import SectionResult  # noqa: E402
 from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
 from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
@@ -37,10 +33,7 @@ from openretop.presentation.qt.pointer_gestures import PointerGestureState  # no
 from openretop.presentation.qt.viewport import QtSceneViewport  # noqa: E402
 from openretop.regions.region_state import RegionSelection  # noqa: E402
 from openretop.sections.section_state import StoredSectionResult  # noqa: E402
-from openretop.surfaces.brep_state import BrepSurfaceRecord, add_brep_surface  # noqa: E402
-from openretop.surfaces.surface_state import SurfacePatch, add_surface  # noqa: E402
 from openretop.viewer.picking_service import (  # noqa: E402
-    MeshPickResult,
     SceneObjectPickResult,
 )
 from openretop.viewer.scene_builder import SceneBuilder, SceneBuildOptions  # noqa: E402
@@ -337,41 +330,6 @@ class PointerRoutingTests(unittest.TestCase):
             window.set_project_dirty(False)
             window.close()
 
-    def test_manual_hover_picks_once_but_native_navigation_never_enters_tool_router(self) -> None:
-        composition = create_application(
-            settings_repository=InMemorySettingsRepository()
-        )
-        composition.state.mesh_object = _mesh_object()
-        window = OpenRetopV3Window(composition)
-        try:
-            composition.manual_curve_controller.begin_new_curve(
-                plane_origin=(0.0, 0.0, 0.0),
-                plane_normal=(0.0, 0.0, 1.0),
-            )
-            with patch.object(
-                window.viewport,
-                "pick_mesh",
-                return_value=MeshPickResult(hit=False),
-            ) as pick:
-                window._on_viewport_pointer("motion", 10, 10, None)
-                pick.assert_called_once_with(10, 10)
-                event = QMouseEvent(
-                    QEvent.MouseButtonPress,
-                    QPointF(20.0, 20.0),
-                    QPointF(20.0, 20.0),
-                    Qt.RightButton,
-                    Qt.RightButton,
-                    Qt.NoModifier,
-                )
-                self.assertFalse(
-                    window.viewport.eventFilter(window.viewport.interactor, event)
-                )
-                pick.assert_called_once()
-        finally:
-            window.set_project_dirty(False)
-            window.close()
-
-
 class SceneTreeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -518,42 +476,6 @@ class SceneTreeTests(unittest.TestCase):
             result=SectionResult("Z", 0.0, (), 0),
         )
         state.section_collection.results.append(section_result)
-        points = np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-        curve = StoredCurve(
-            id="curve-a",
-            name="Curve A",
-            section_result_id="result-a",
-            plane_id=plane.id,
-            original_points=points.copy(),
-            fitted_points=points.copy(),
-            mean_error=0.0,
-            max_error=0.0,
-            is_closed=False,
-        )
-        add_curve(state.curve_collection, curve)
-        manual_curve = replace(
-            curve,
-            id="curve-manual",
-            name="Manual Curve",
-            metadata={"creation_type": "manual"},
-        )
-        region_boundary = replace(
-            curve,
-            id="curve-region-boundary",
-            name="Region Boundary",
-            metadata={
-                "creation_type": "region_boundary",
-                "source_region_id": "region-a",
-            },
-        )
-        add_curve(state.curve_collection, manual_curve)
-        add_curve(state.curve_collection, region_boundary)
-        preview = SurfacePatch("preview-a", "Preview", [curve.id], "loft")
-        brep = BrepSurfaceRecord(
-            "brep-a", "BREP", [curve.id], "loft_surface", "test"
-        )
-        add_surface(state.surface_collection, preview)
-        add_brep_surface(state.brep_surface_collection, brep)
         region = RegionSelection(id="region-a", name="Region", triangle_indices=(0,))
         state.region_collection.set_active(region)
         selection = composition.selection_controller.select_nodes(
@@ -565,11 +487,6 @@ class SceneTreeTests(unittest.TestCase):
             (NODE_MESH, state.mesh_object),
             (section_plane_node_id(plane.id), plane),
             (section_result_node_id(section_result.id), section_result),
-            (curve_node_id(curve.id), curve),
-            (curve_node_id(manual_curve.id), manual_curve),
-            (curve_node_id(region_boundary.id), region_boundary),
-            (surface_node_id(preview.id), preview),
-            (surface_node_id(brep.id), brep),
             (region_node_id(region.id), region),
         )
         action = composition.actions.require("scene.set_visibility")

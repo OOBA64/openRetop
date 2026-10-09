@@ -8,35 +8,22 @@ from openretop.application.controller_support import (
     SELECTION_SYNC_UI_REQUESTS,
     SELECTION_SYNC_VIEWPORT_REQUESTS,
     ControllerBase,
-    curve_ids_for_group,
 )
 from openretop.application.events import SelectionChangedEvent, StateChangedEvent
 from openretop.application.results import CommandResult
 from openretop.application.scene_ids import (
-    NODE_BREP_SURFACES,
-    NODE_CURVES,
     NODE_MESH,
     NODE_REGIONS,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
-    NODE_SURFACES,
-    curve_group_id_from_node,
-    curve_id_from_node,
-    curve_node_id,
     region_id_from_node,
     region_node_id,
     section_plane_id_from_node,
     section_plane_node_id,
     section_result_id_from_node,
     section_result_node_id,
-    surface_id_from_node,
-    surface_node_id,
 )
 from openretop.application.selection import SelectionItem, SelectionKind, SelectionSnapshot
-from openretop.curves.curve_state import (
-    clear_curve_selection,
-    set_selected_curves,
-)
 from openretop.sections.section_state import (
     clear_plane_selection,
     clear_result_selection,
@@ -45,20 +32,10 @@ from openretop.sections.section_state import (
     set_selected_planes,
     set_selected_results,
 )
-from openretop.surfaces.brep_state import (
-    clear_brep_surface_selection,
-    set_selected_brep_surfaces,
-)
-from openretop.surfaces.surface_state import (
-    clear_surface_selection,
-    set_selected_surfaces,
-)
 
 SELECT_MODEL = "model"
 SELECT_SECTION_PLANE = "section_plane"
 SELECT_SECTION_RESULT = "section_result"
-SELECT_CURVE = "curve"
-SELECT_SURFACE = "surface"
 SELECT_REGION = "region"
 
 
@@ -100,39 +77,6 @@ class SelectionController(ControllerBase):
                     )
             if active_id in state.section_collection.selected_result_ids:
                 primary_id = section_result_node_id(active_id)
-            for curve in state.curve_collection.curves:
-                if curve.id in state.curve_collection.selected_curve_ids:
-                    items.append(
-                        SelectionItem(curve_node_id(curve.id), SelectionKind.CURVE)
-                    )
-        elif selected_item == SELECT_CURVE:
-            active_id = state.curve_collection.active_curve_id
-            for curve in state.curve_collection.curves:
-                if curve.id in state.curve_collection.selected_curve_ids:
-                    items.append(
-                        SelectionItem(curve_node_id(curve.id), SelectionKind.CURVE)
-                    )
-            if active_id in state.curve_collection.selected_curve_ids:
-                primary_id = curve_node_id(active_id)
-        elif selected_item == SELECT_SURFACE:
-            active_preview_id = state.surface_collection.active_surface_id
-            active_brep_id = state.brep_surface_collection.active_surface_id
-            for surface in state.surface_collection.surfaces:
-                if surface.id in state.surface_collection.selected_surface_ids:
-                    items.append(
-                        SelectionItem(surface_node_id(surface.id), SelectionKind.SURFACE)
-                    )
-            for surface in state.brep_surface_collection.surfaces:
-                node_id = surface_node_id(surface.id)
-                if (
-                    surface.id in state.brep_surface_collection.selected_surface_ids
-                    and all(item.id != node_id for item in items)
-                ):
-                    items.append(SelectionItem(node_id, SelectionKind.SURFACE))
-            if active_preview_id in state.surface_collection.selected_surface_ids:
-                primary_id = surface_node_id(active_preview_id)
-            elif active_brep_id in state.brep_surface_collection.selected_surface_ids:
-                primary_id = surface_node_id(active_brep_id)
         elif selected_item == SELECT_REGION:
             region = state.region_collection.active_region
             if region is not None and region.selected:
@@ -249,20 +193,7 @@ class SelectionController(ControllerBase):
             return CommandResult.failure(str(exc), status="Section result not found")
 
         selected_result_ids = self.state.section_collection.selected_result_ids
-        child_curve_ids = [
-            curve.id
-            for curve in self.state.curve_collection.curves
-            if curve.section_result_id in selected_result_ids
-        ]
-        if child_curve_ids:
-            set_selected_curves(
-                self.state.curve_collection,
-                child_curve_ids,
-                active_curve_id=child_curve_ids[0],
-            )
-        else:
-            clear_curve_selection(self.state.curve_collection)
-        self._clear_families(keep={SELECT_SECTION_RESULT, SELECT_CURVE})
+        self._clear_families(keep={SELECT_SECTION_RESULT})
         self.state.selected_item = SELECT_SECTION_RESULT
         self._clear_transform_session()
         active = get_active_result(self.state.section_collection)
@@ -278,144 +209,6 @@ class SelectionController(ControllerBase):
         return self._selection_result(
             before, reason="section_results_selected", status=status
         )
-
-    def select_curve(self, curve_id: str | None = None) -> CommandResult:
-        target_id = str(curve_id) if curve_id is not None else (
-            self.state.curve_collection.active_curve_id
-        )
-        if target_id is None:
-            return CommandResult.failure("No curve is available.", status="No selection")
-        return self.select_curves((target_id,), active_curve_id=target_id)
-
-    def select_curves(
-        self,
-        curve_ids: Iterable[str],
-        *,
-        active_curve_id: str | None = None,
-    ) -> CommandResult:
-        if self.state.mesh_object is None:
-            return CommandResult.failure("No mesh is loaded.", status="No selection")
-        requested = tuple(dict.fromkeys(str(value) for value in curve_ids))
-        if not requested:
-            return self.clear()
-        before = self._before_selection()
-        try:
-            set_selected_curves(
-                self.state.curve_collection,
-                list(requested),
-                active_curve_id=active_curve_id,
-            )
-        except ValueError as exc:
-            return CommandResult.failure(str(exc), status="Curve not found")
-        self._clear_families(keep={SELECT_CURVE})
-        self.state.selected_item = SELECT_CURVE
-        self._clear_transform_session()
-        active = next(
-            (
-                curve
-                for curve in self.state.curve_collection.curves
-                if curve.id == self.state.curve_collection.active_curve_id
-            ),
-            None,
-        )
-        count = len(self.state.curve_collection.selected_curve_ids)
-        status = (
-            f"Selected: {active.name}"
-            if count == 1 and active is not None
-            else f"Selected: {count} curves"
-        )
-        return self._selection_result(before, reason="curves_selected", status=status)
-
-    def select_surface(self, surface_id: str | None = None) -> CommandResult:
-        target_id = str(surface_id) if surface_id is not None else (
-            self.state.surface_collection.active_surface_id
-            or self.state.brep_surface_collection.active_surface_id
-        )
-        if target_id is None:
-            return CommandResult.failure("No surface is available.", status="No selection")
-        return self.select_surfaces((target_id,), active_surface_id=target_id)
-
-    def select_surfaces(
-        self,
-        surface_ids: Iterable[str],
-        *,
-        active_surface_id: str | None = None,
-    ) -> CommandResult:
-        if self.state.mesh_object is None:
-            return CommandResult.failure("No mesh is loaded.", status="No selection")
-        requested = tuple(dict.fromkeys(str(value) for value in surface_ids))
-        if not requested:
-            return CommandResult.failure(
-                "No surfaces are available.", status="No surfaces available"
-            )
-        preview_available = {
-            surface.id for surface in self.state.surface_collection.surfaces
-        }
-        brep_available = {
-            surface.id for surface in self.state.brep_surface_collection.surfaces
-        }
-        ambiguous = set(requested) & preview_available & brep_available
-        if ambiguous:
-            return CommandResult.failure(
-                f"Surface ID is ambiguous: {sorted(ambiguous)[0]}",
-                status="Surface not found",
-            )
-        preview_ids = [value for value in requested if value in preview_available]
-        brep_ids = [value for value in requested if value in brep_available]
-        if len(preview_ids) + len(brep_ids) != len(requested):
-            return CommandResult.failure("Surface not found.", status="Surface not found")
-        active_candidate = (
-            active_surface_id if active_surface_id in requested else requested[0]
-        )
-        before = self._before_selection()
-        if preview_ids:
-            set_selected_surfaces(
-                self.state.surface_collection,
-                preview_ids,
-                active_surface_id=(
-                    active_candidate
-                    if active_candidate in preview_ids
-                    else preview_ids[0]
-                ),
-            )
-        else:
-            clear_surface_selection(self.state.surface_collection)
-        if brep_ids:
-            set_selected_brep_surfaces(
-                self.state.brep_surface_collection,
-                brep_ids,
-                active_surface_id=(
-                    active_candidate if active_candidate in brep_ids else brep_ids[0]
-                ),
-            )
-        else:
-            clear_brep_surface_selection(self.state.brep_surface_collection)
-        if preview_ids and brep_ids:
-            if active_candidate in preview_ids:
-                self.state.brep_surface_collection.active_surface_id = None
-            else:
-                self.state.surface_collection.active_surface_id = None
-        self._clear_families(keep={SELECT_SURFACE})
-        self.state.selected_item = SELECT_SURFACE
-        self._clear_transform_session()
-        count = len(preview_ids) + len(brep_ids)
-        active_name = next(
-            (
-                surface.name
-                for surface in (
-                    *self.state.surface_collection.surfaces,
-                    *self.state.brep_surface_collection.surfaces,
-                )
-                if surface.id == active_candidate
-            ),
-            "Surface",
-        )
-        status = (
-            f"Selected: {active_name}"
-            if count == 1
-            else f"Selected: {count} surfaces"
-        )
-        return self._selection_result(before, reason="surfaces_selected", status=status)
 
     def select_region(self, region_id: str | None = None) -> CommandResult:
         region = self.state.region_collection.active_region
@@ -452,32 +245,18 @@ class SelectionController(ControllerBase):
 
         plane_ids = [value for value in map(section_plane_id_from_node, nodes) if value]
         result_ids = [value for value in map(section_result_id_from_node, nodes) if value]
-        curve_ids = [value for value in map(curve_id_from_node, nodes) if value]
-        surface_ids = [value for value in map(surface_id_from_node, nodes) if value]
         region_ids = [value for value in map(region_id_from_node, nodes) if value]
         if nodes == (NODE_SECTION_PLANES,):
             plane_ids = [plane.id for plane in self.state.section_collection.planes]
         elif nodes == (NODE_SECTION_RESULTS,):
             result_ids = [result.id for result in self.state.section_collection.results]
-        elif nodes == (NODE_CURVES,):
-            curve_ids = [curve.id for curve in self.state.curve_collection.curves]
-        elif len(nodes) == 1 and curve_group_id_from_node(nodes[0]) is not None:
-            curve_ids = list(
-                curve_ids_for_group(self.state, curve_group_id_from_node(nodes[0]) or "")
-            )
-        elif nodes == (NODE_SURFACES,):
-            surface_ids = [surface.id for surface in self.state.surface_collection.surfaces]
-        elif nodes == (NODE_BREP_SURFACES,):
-            surface_ids = [
-                surface.id for surface in self.state.brep_surface_collection.surfaces
-            ]
         elif nodes == (NODE_REGIONS,):
             region = self.state.region_collection.active_region
             region_ids = [] if region is None else [region.id]
 
         families = [
             values
-            for values in (plane_ids, result_ids, curve_ids, surface_ids, region_ids)
+            for values in (plane_ids, result_ids, region_ids)
             if values
         ]
         if len(families) != 1:
@@ -490,8 +269,6 @@ class SelectionController(ControllerBase):
                     for parser in (
                         section_plane_id_from_node,
                         section_result_id_from_node,
-                        curve_id_from_node,
-                        surface_id_from_node,
                         region_id_from_node,
                     )
                     if (value := parser(primary_id)) is not None
@@ -505,12 +282,6 @@ class SelectionController(ControllerBase):
         if result_ids:
             return self.select_section_results(
                 result_ids, active_result_id=primary_object_id
-            )
-        if curve_ids:
-            return self.select_curves(curve_ids, active_curve_id=primary_object_id)
-        if surface_ids:
-            return self.select_surfaces(
-                surface_ids, active_surface_id=primary_object_id
             )
         return self.select_region(region_ids[0])
 
@@ -563,11 +334,6 @@ class SelectionController(ControllerBase):
             clear_plane_selection(state.section_collection)
         if SELECT_SECTION_RESULT not in keep:
             clear_result_selection(state.section_collection)
-        if SELECT_CURVE not in keep:
-            clear_curve_selection(state.curve_collection)
-        if SELECT_SURFACE not in keep:
-            clear_surface_selection(state.surface_collection)
-            clear_brep_surface_selection(state.brep_surface_collection)
         if SELECT_REGION not in keep:
             region = state.region_collection.active_region
             if region is not None:
@@ -580,11 +346,9 @@ class SelectionController(ControllerBase):
 
 
 __all__ = (
-    "SELECT_CURVE",
     "SELECT_MODEL",
     "SELECT_REGION",
     "SELECT_SECTION_PLANE",
     "SELECT_SECTION_RESULT",
-    "SELECT_SURFACE",
     "SelectionController",
 )

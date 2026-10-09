@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from openretop.cad_kernel.export_step import export_step
-from openretop.cad_kernel.types import StepExportResult
 from openretop.infrastructure.persistence import (
     JsonProjectRepository,
     ProjectLoadResult,
@@ -68,30 +66,6 @@ class DisplayProxyService:
         _emit(progress, ProgressEvent("display_proxy", "start", "Building display mesh"))
         result = build_display_mesh(source_mesh, quality=quality)
         _emit(progress, ProgressEvent("display_proxy", "complete", "Display mesh ready", 1, 1))
-        return result
-
-
-class StepExportService:
-    def export(
-        self,
-        cad_object: object,
-        path: str | Path,
-        *,
-        units: str = "mm",
-        progress: ProgressListener | None = None,
-    ) -> StepExportResult:
-        _emit(progress, ProgressEvent("step_export", "start", "Exporting STEP"))
-        result = export_step(cad_object, path, units)
-        _emit(
-            progress,
-            ProgressEvent(
-                "step_export",
-                "complete" if result.success else "error",
-                result.reason,
-                1 if result.success else 0,
-                1,
-            ),
-        )
         return result
 
 

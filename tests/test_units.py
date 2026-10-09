@@ -14,7 +14,6 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from openretop.application.state import AppState  # noqa: E402
 from openretop.bootstrap import create_application  # noqa: E402
-from openretop.cad_kernel.export_step import export_step  # noqa: E402
 from openretop.geometry.tolerances import (  # noqa: E402
     curve_fit_tolerance,
     curve_join_tolerance,
@@ -89,12 +88,16 @@ class SettingsAndProjectUnitTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_CADQUERY, "cadquery not installed")
 class StepUnitTests(unittest.TestCase):
-    def _export(self, units: str) -> str:
-        box = cq.Workplane().box(25.4, 25.4, 25.4).val()
+    def _export(self, units: str, file_format: str = "step") -> str:
+        from openretop.cad_kernel import jobs
+        from openretop.cad_kernel.surfacing import to_brep
+
+        box = cq.Workplane().box(25.4, 25.4, 25.4).val().wrapped
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "part.step"
-            result = export_step(box, path, units)
-            self.assertTrue(result.success, result.reason)
+            path = Path(directory) / f"part.{'step' if file_format == 'step' else 'igs'}"
+            info = jobs.export([to_brep(box)], str(path), file_format=file_format, units=units)
+            # read back in the same unit, it is the same box
+            self.assertAlmostEqual(info["volume_back"], info["volume"], delta=1e-6 * info["volume"])
             return path.read_text(encoding="utf-8", errors="replace")
 
     def test_step_file_declares_the_project_unit(self) -> None:
@@ -113,11 +116,19 @@ class StepUnitTests(unittest.TestCase):
         self._export("in")
         self.assertIn("SI_UNIT(.MILLI.,.METRE.)", self._export("mm"))
 
-    def test_unknown_unit_is_a_failed_result_not_an_exception(self) -> None:
-        box = cq.Workplane().box(1, 1, 1).val()
-        with tempfile.TemporaryDirectory() as directory:
-            result = export_step(box, Path(directory) / "x.step", "furlong")
-        self.assertFalse(result.success)
+    def test_iges_file_declares_the_project_unit_and_keeps_the_numbers(self) -> None:
+        text = self._export("in", "iges")
+        header = "".join(line[:72] for line in text.splitlines() if line[72:73] == "G")
+        self.assertIn(",1,4HINCH,", header)  # units flag 1: inches
+        self.assertIn(",12.7,", header)  # the largest coordinate, not 0.5 (12.7 mm in inches)
+
+    def test_unknown_unit_fails_before_writing(self) -> None:
+        from openretop.cad_kernel import jobs
+        from openretop.cad_kernel.surfacing import to_brep
+
+        box = cq.Workplane().box(1, 1, 1).val().wrapped
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            jobs.export([to_brep(box)], str(Path(directory) / "x.step"), units="furlong")
 
 
 class WindowUnitTests(unittest.TestCase):

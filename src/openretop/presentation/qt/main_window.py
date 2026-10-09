@@ -28,53 +28,23 @@ from PySide6.QtWidgets import (
 
 from openretop.application.actions import ActionContext, create_core_action_registry
 from openretop.application.commands import CommandRequest
-from openretop.application.controller_support import (
-    curve_creation_type,
-    is_region_boundary_curve,
-    is_repaired_curve,
-)
 from openretop.application.guidance import build_guidance
 from openretop.application.keybindings import shortcut_conflicts, shortcut_overrides
 from openretop.application.results import CommandResult
 from openretop.application.scene_ids import (
-    NODE_BREP_SURFACES,
-    NODE_CURVE_GROUP_MANUAL,
-    NODE_CURVE_GROUP_PROJECTED,
-    NODE_CURVE_GROUP_REBUILT,
-    NODE_CURVE_GROUP_REGION_BOUNDARIES,
-    NODE_CURVE_GROUP_REPAIRED,
-    NODE_CURVE_GROUP_UNASSIGNED,
-    NODE_CURVES,
-    NODE_FEATURES,
-    NODE_FOUR_BOUNDARY_FEATURE,
-    NODE_LOFT_FEATURE,
     NODE_MESH,
     NODE_REGIONS,
     NODE_SECTION_PLANES,
     NODE_SECTION_RESULTS,
-    NODE_SURFACES,
-    curve_group_node_id,
-    curve_node_id,
-    four_boundary_feature_id_from_node,
-    four_boundary_feature_node_id,
-    loft_feature_id_from_node,
-    loft_feature_node_id,
     region_node_id,
     section_plane_id_from_node,
     section_plane_node_id,
+    section_result_id_from_node,
     section_result_node_id,
-    surface_id_from_node,
-    surface_node_id,
-)
-from openretop.application.scene_labels import (
-    curve_display_label,
-    region_display_label,
-    surface_display_label,
 )
 from openretop.application.state import AppState, MeshObjectState
 from openretop.application.workflow_service import PRESENTATION_ACTION_IDS
 from openretop.bootstrap import ApplicationComposition, create_application
-from openretop.curves.manual_curve import is_manual_curve_like, parse_manual_curve_metadata_v2
 from openretop.geometry.units import UNIT_CODES, get_unit
 from openretop.infrastructure.io_services import ProgressEvent
 from openretop.mesh.display_proxy import normalize_proxy_quality
@@ -91,19 +61,11 @@ from openretop.project.project_session import restore_project_state
 from openretop.project.project_state import project_from_app_state
 from openretop.sections.section_state import get_active_plane, plane_origin
 from openretop.settings.settings_data import DISPLAY_COLOR_FIELDS
-from openretop.surfaces.brep_state import BREP_TYPE_LOFT_SURFACE
-from openretop.surfaces.surface_preview import (
-    CLOSED_CURVE_FILL,
-    TWO_CURVE_LOFT,
-    SurfacePreviewMesh,
-    build_surface_preview,
-)
-from openretop.surfaces.surface_state import SurfacePatch
 from openretop.viewer.modeling_scene import model_id_from_node, model_node_id
-from openretop.viewer.picking_service import MeshPickResult, PickingService, SceneObjectPickResult
+from openretop.viewer.picking_service import MeshPickResult, SceneObjectPickResult
 from openretop.viewer.scene_builder import SceneBuildOptions
 from openretop.viewer.scene_synchronizer import ActorUpdateDiagnostics
-from openretop.viewer.scene_types import CameraRequest, ToolPreviewState, geometry_revision
+from openretop.viewer.scene_types import CameraRequest, ToolPreviewState
 from workbench_ui import (
     ActionDefinition,
     ActionRegistry,
@@ -137,21 +99,9 @@ WORKSPACES = (
 DEFAULT_WORKSPACE = "surface"
 
 
-# Commands that build geometry (sections, CAD faces/lofts) and can take seconds.
+# Commands that build geometry (sections, surfaces, solids) and can take seconds.
 # With a threaded executor they run off the UI thread while the window is locked.
-HEAVY_ACTIONS = frozenset(
-    {
-        "section.compute",
-        "surface.brep_face",
-        "surface.region_brep_face",
-        "surface.brep_loft",
-        "surface.editable_brep_loft",
-        "surface.rebuild_brep",
-        "surface.rebuild_loft",
-        "surface.rebuild_four_boundary",
-        *SURFACING_HEAVY_ACTIONS,
-    }
-)
+HEAVY_ACTIONS = frozenset({"section.compute", *SURFACING_HEAVY_ACTIONS})
 
 
 # Scene tree row icons, by node kind.
@@ -159,15 +109,10 @@ _TREE_KIND_ICONS = {
     "root": "project",
     "mesh": "mesh",
     "group": "folder",
-    "curve_group": "folder",
     "section_plane": "section_plane",
     "section_result": "section_cut",
     "curve": "curve",
-    "surface": "surface",
-    "brep_surface": "solid",
     "region": "region",
-    NODE_LOFT_FEATURE: "feature",
-    NODE_FOUR_BOUNDARY_FEATURE: "feature",
     "model_surface": "surface",
     "model_body": "solid",
 }
@@ -176,7 +121,7 @@ PROPERTIES_MIN_WIDTH = 280  # px: fits the Next-steps buttons and the X/Y/Z boxe
 
 # Starting any of these ends the measure tool, which would otherwise compete for the clicks.
 _TOOL_START_ACTIONS = frozenset(
-    {"region.start", "manual_curve.create", "manual_curve.edit", "transform.move", "transform.rotate"}
+    {"region.start", "transform.move", "transform.rotate"}
 )
 
 # Commands that engage the Section tool, which is what makes the section planes visible.
@@ -211,7 +156,6 @@ _FILE_ACTIONS = (
     ("file.open_project", "Open Project", "File", "Ctrl+Shift+O", "Open an .openretop project and reload its scan."),
     ("file.save_project", "Save Project", "File", "Ctrl+S", "Save the project (the scan itself is referenced, not copied)."),
     ("file.save_project_as", "Save Project As", "File", "Ctrl+Shift+S", "Save the project under a new name."),
-    ("file.export_step", "Export STEP", "File", None, "Write the selected, built BREP surface to a STEP file in the model's units."),
     ("file.export_model", "Export Model...", "File", "Ctrl+E", "Write the model's surfaces and bodies (selected, or all visible) to STEP or IGES."),
     ("view.command_palette", "Command Palette...", "View", "Ctrl+K", "Search every command by name; unavailable ones show what they need."),
     ("file.set_units", "Set Model Units...", "Edit", None, "Change the length unit the model coordinates are labelled with (does not rescale)."),
@@ -257,7 +201,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self.current_project_path: Path | None = None
         self.project_dirty = False
         self._scene_model = SceneTreeModel()
-        self._surface_preview_cache: dict[str, tuple[int, SurfacePreviewMesh]] = {}
         self._progress_dialog: QProgressDialog | None = None
         self._last_project_warnings: tuple[str, ...] = ()
 
@@ -451,8 +394,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             return self.save_project()
         if action_id == "file.save_project_as":
             return self.save_project(as_dialog=True)
-        if action_id == "file.export_step":
-            return self.export_step()
         if action_id == "file.export_model":
             return self.export_model()
         if action_id == "view.command_palette":
@@ -533,13 +474,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         elif action_id == "view.frame_selected" or action_id == "view.frame_region":
             ids = tuple(self.composition.selection_controller.snapshot().ids) + self._surfacing_selected_nodes()
             self._camera_request = CameraRequest.frame_selected(ids)
-        elif action_id == "view.frame_source_curves":
-            result = self._command_result("scene.select_source_curves")
-            if not result.success:
-                self._consume_result(action_id, result)
-                return False
-            ids = self.composition.selection_controller.snapshot().ids
-            self._camera_request = CameraRequest.frame_selected(ids)
         elif action_id.startswith("view.named."):
             self._camera_request = CameraRequest.named_view(action_id.rsplit(".", 1)[-1])
         elif action_id == "view.roll_left":
@@ -596,14 +530,8 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         if not result.success:
             return
         self._surfacing_tool_mode(action_id, result)
-        if action_id in {"manual_curve.create", "manual_curve.edit", "region.start"}:
+        if action_id == "region.start":
             self._section_tool = False
-        if action_id in {"manual_curve.create", "manual_curve.edit"}:
-            self.tool_modes.enter(
-                "manual_curve",
-                "Left-click to place/select points. Enter finishes; Esc cancels the current action.",
-            )
-        elif action_id == "region.start":
             self.tool_modes.enter("region", "Click the mesh to grow a region; Esc finishes.")
         elif action_id == "measure.distance":
             self.tool_modes.enter("measure", "Click two points on the scan to measure. Esc cancels a point, then finishes.")
@@ -618,40 +546,19 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             if self.viewport.interactor is not None:
                 # keys belong to the grab now (locks, typed values), not to the tree or a field
                 self.viewport.interactor.setFocus()
-        elif action_id in {"manual_curve.finish", "manual_curve.apply", "region.finish", "transform.confirm"}:
+        elif action_id in {"region.finish", "transform.confirm"}:
             self.tool_modes.finish()
-        elif action_id in {"manual_curve.cancel", "transform.cancel"}:
+        elif action_id == "transform.cancel":
             self.tool_modes.cancel()
 
     def _on_tree_selection(self, selection: object) -> None:
         ids = self._surfacing_tree_selection(tuple(getattr(selection, "ids", ())))
-        feature_ids = [value for value in ids if _is_feature_node(value)]
-        ordinary_ids = [value for value in ids if not _is_feature_node(value)]
         self._section_tool = any(
             value == NODE_SECTION_PLANES or section_plane_id_from_node(value) is not None for value in ids
         )
-        if feature_ids:
-            self._activate_feature(feature_ids[0])
-        result = self.composition.selection_controller.select_nodes(ordinary_ids)
-        if not ordinary_ids and feature_ids:
-            result = CommandResult.ok(status="Selected editable feature")
+        result = self.composition.selection_controller.select_nodes(ids)
         self.set_status_message(result.status or "Selection changed")
         self.refresh()
-
-    def _activate_feature(self, node_id: str) -> None:
-        loft_id = loft_feature_id_from_node(node_id)
-        if loft_id is not None:
-            self.composition.state.loft_feature_collection.active_feature_id = loft_id
-            feature = next((item for item in self.composition.state.loft_feature_collection.features if item.id == loft_id), None)
-            if feature and feature.brep_surface_id:
-                self.composition.selection_controller.select_surface(feature.brep_surface_id)
-            return
-        four_id = four_boundary_feature_id_from_node(node_id)
-        if four_id is not None:
-            self.composition.state.four_boundary_feature_collection.active_feature_id = four_id
-            feature = next((item for item in self.composition.state.four_boundary_feature_collection.features if item.id == four_id), None)
-            if feature and feature.preview_surface_id:
-                self.composition.selection_controller.select_surface(feature.preview_surface_id)
 
     def _on_tree_visibility(self, node_id: str, visible: bool) -> None:
         if self._surfacing_tree_visibility(node_id, visible):
@@ -673,12 +580,8 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
 
     def _on_tree_context_action(self, action_id: str, context: object) -> None:
         ids = self._surfacing_tree_selection(tuple(getattr(context, "ids", ())))
-        feature_ids = tuple(value for value in ids if _is_feature_node(value))
-        if feature_ids:
-            self._activate_feature(feature_ids[0])
-        ordinary_ids = tuple(value for value in ids if value not in feature_ids)
-        if ordinary_ids:
-            self.composition.selection_controller.select_nodes(ordinary_ids)
+        if ids:
+            self.composition.selection_controller.select_nodes(ids)
         self._dispatch_framework_action(action_id)
 
     def _show_live_transform_values(self) -> None:
@@ -721,13 +624,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             return
 
         if self._surfacing_pointer(event_name, x_position, y_position, pick):
-            return
-
-        manual = self.composition.manual_curve_controller
-        if manual.session.active:
-            if not isinstance(pick, MeshPickResult):
-                pick = self.viewport.pick_mesh(x_position, y_position)
-            self._route_manual_pointer(event_name, x_position, y_position, pick)
             return
 
         region = self.composition.region_controller
@@ -782,6 +678,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             node_id = _node_id_for_pick(pick)
             if node_id is not None:
                 self._section_tool = section_plane_id_from_node(node_id) is not None
+                # a click selects only what it hit: model items and sketch curves let go too
+                self.composition.modeling_controller.select_entities(())
+                self.composition.modeling_controller.sketch_select_curves(())
                 result = self.composition.selection_controller.select_nodes((node_id,))
                 self.set_status_message(result.status or "Selection changed")
                 self.refresh()
@@ -797,104 +696,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             self.composition.modeling_controller.sketch_select_curves(())
             self.set_status_message("Selection cleared")
             self.refresh()
-
-    def _route_manual_pointer(
-        self,
-        event_name: str,
-        x_position: int,
-        y_position: int,
-        pick: object,
-    ) -> None:
-        controller = self.composition.manual_curve_controller
-        session = controller.session
-        projected = self.viewport.project_points(session.control_points)
-        point_pick = PickingService.pick_control_point(
-            (x_position, y_position), projected, session.control_points
-        )
-        dragged = (
-            controller.update_drag_state(x_position, y_position)
-            if event_name == "motion"
-            else session.left_dragged
-        )
-        route = controller.route_pointer_event(
-            event_name,
-            button="left" if event_name.startswith("left") else None,
-            control_point_index=(
-                point_pick.control_point_index if point_pick.hit else None
-            ),
-            dragged=dragged,
-            press_position=(x_position, y_position),
-        )
-        if not route.consumed:
-            return
-        point, snapped, triangle_index, normal = self._manual_pointer_point(
-            x_position, y_position, pick
-        )
-        result = None
-        if route.action == "preview":
-            result = controller.set_preview(
-                point=point,
-                valid=point is not None,
-                snaps_to_mesh=snapped,
-                triangle_index=triangle_index,
-                normal=normal,
-            )
-        elif route.action == "move_point" and point is not None:
-            result = controller.move_drag_candidate(
-                point,
-                snapped=snapped,
-                triangle_index=triangle_index,
-                normal=normal,
-            )
-        elif route.action == "add_point" and point is not None:
-            result = controller.append_point(
-                point,
-                snapped=snapped,
-                triangle_index=triangle_index,
-                normal=normal,
-            )
-        elif route.action == "insert_point" and point is not None:
-            result = controller.insert_point(
-                controller.insert_index_for_point(point),
-                point,
-                snapped=snapped,
-                triangle_index=triangle_index,
-                normal=normal,
-            )
-        elif route.action == "select_point":
-            result = controller.select_point(route.control_point_index)
-        elif route.action == "clear_preview":
-            result = controller.clear_preview()
-        if result is not None:
-            if result.status:
-                self.set_status_message(result.status)
-            if result.project_dirty:
-                self.set_project_dirty(True)
-            if result.needs_viewport_refresh or result.changed:
-                # Hovering and dragging a point only change the 3D preview: re-render the
-                # scene, and rebuild the panels only when a point is added, removed or chosen.
-                if route.action in {"preview", "move_point", "clear_preview"}:
-                    self._render_scene()
-                else:
-                    self.refresh()
-        elif route.action not in {"none", "finish_drag"}:
-            self.refresh()
-
-    def _manual_pointer_point(
-        self, x_position: int, y_position: int, pick: object
-    ) -> tuple[object | None, bool, int | None, object | None]:
-        if isinstance(pick, MeshPickResult) and pick.hit:
-            return pick.position, True, pick.triangle_index, pick.normal
-        session = self.composition.manual_curve_controller.session
-        if session.snap_to_mesh:
-            return None, False, None, None
-        point = self.viewport.point_on_plane(
-            x_position,
-            y_position,
-            plane_origin=session.plane_origin,
-            plane_normal=session.plane_normal,
-        )
-        return point, False, None, session.plane_normal
 
     def keyPressEvent(self, event: object) -> None:
         if self._handle_tool_key(event.key(), event.text()):
@@ -936,8 +737,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
 
         if self.composition.transform_controller.active:
             return "move or rotate"
-        if self.composition.manual_curve_controller.session.active:
-            return "curve tool"
         if self.composition.region_controller.session.active:
             return "region tool"
         return ""
@@ -989,12 +788,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         if not self.composition.transform_controller.active and self._surfacing_key(key):
             return True
         if key in {Qt.Key_Return, Qt.Key_Enter}:
-            manual = self.composition.manual_curve_controller.session
-            if manual.active:
-                self._dispatch_application_action(
-                    "manual_curve.apply" if manual.editing else "manual_curve.finish"
-                )
-                return True
             if self.composition.transform_controller.active:
                 self._dispatch_application_action("transform.confirm")
                 return True
@@ -1007,9 +800,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         if key == Qt.Key_Escape:
             if self.composition.transform_controller.active:
                 self._dispatch_application_action("transform.cancel")
-                return True
-            if self.composition.manual_curve_controller.session.active:
-                self._dispatch_application_action("manual_curve.cancel")
                 return True
             if self.composition.region_controller.session.active:
                 self._dispatch_application_action("region.finish")
@@ -1060,8 +850,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
 
         # Groups only appear once they hold something, so a new project is not a
         # wall of empty folders. Section planes are always offered with a model.
-        result_ids = {item.id for item in state.section_collection.results}
-        curve_parents = {_curve_parent(curve, result_ids) for curve in state.curve_collection.curves}
         has_planes = (
             len(state.section_collection.planes) > 1  # the user added planes of their own
             or (bool(state.section_collection.planes) and self._section_tool_visible())
@@ -1069,16 +857,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         group_rows = (
             (NODE_SECTION_PLANES, "Section Planes", has_planes, {"context_actions": ("section.add_plane", "scene.show_all")}),
             (NODE_SECTION_RESULTS, "Section Results", bool(state.section_collection.results), {}),
-            (NODE_CURVES, "Curves", bool(state.curve_collection.curves), {}),
-            (NODE_SURFACES, "Preview Surfaces", bool(state.surface_collection.surfaces), {}),
-            (NODE_BREP_SURFACES, "BREP Surfaces", bool(state.brep_surface_collection.surfaces), {}),
             (NODE_REGIONS, "Regions", state.region_collection.active_region is not None, {}),
-            (
-                NODE_FEATURES,
-                "Editable Features",
-                bool(state.loft_feature_collection.features or state.four_boundary_feature_collection.features),
-                {},
-            ),
         )
         nodes.extend(
             SceneNode(node_id, label, "group", "scene", metadata=metadata, **group_defaults)
@@ -1094,58 +873,15 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             SceneNode(section_result_node_id(result.id), result.name, "section_result", NODE_SECTION_RESULTS, result.visible, metadata={"context_actions": common})
             for result in state.section_collection.results
         )
-        curve_groups = (
-            (NODE_CURVE_GROUP_UNASSIGNED, "Unassigned"),
-            (NODE_CURVE_GROUP_MANUAL, "Manual"),
-            (NODE_CURVE_GROUP_REGION_BOUNDARIES, "Region Boundaries"),
-            (NODE_CURVE_GROUP_REPAIRED, "Repaired"),
-            (NODE_CURVE_GROUP_PROJECTED, "Projected"),
-            (NODE_CURVE_GROUP_REBUILT, "Rebuilt"),
-        )
-        nodes.extend(
-            SceneNode(node_id, label, "curve_group", NODE_CURVES, **group_defaults)
-            for node_id, label in curve_groups
-            if node_id in curve_parents
-        )
-        nodes.extend(
-            SceneNode(curve_group_node_id(result.id), result.name, "curve_group", NODE_CURVES, **group_defaults)
-            for result in state.section_collection.results
-            if curve_group_node_id(result.id) in curve_parents
-        )
-        for curve in state.curve_collection.curves:
-            parent = _curve_parent(curve, result_ids)
-            nodes.append(SceneNode(curve_node_id(curve.id), curve_display_label(curve), "curve", parent, curve.visible, metadata={"context_actions": common + ("curve.toggle_visibility",)}))
-        nodes.extend(
-            SceneNode(surface_node_id(surface.id), surface_display_label(surface), "surface", NODE_SURFACES, surface.visible, metadata={"context_actions": common + ("surface.toggle_visibility",)})
-            for surface in state.surface_collection.surfaces
-        )
-        nodes.extend(
-            SceneNode(surface_node_id(surface.id), surface_display_label(surface), "brep_surface", NODE_BREP_SURFACES, surface.visible, metadata={"context_actions": common + ("surface.rebuild_brep", "file.export_step")})
-            for surface in state.brep_surface_collection.surfaces
-        )
         region = state.region_collection.active_region
         if region is not None:
-            nodes.append(SceneNode(region_node_id(region.id), region_display_label(region), "region", NODE_REGIONS, region.visible, metadata={"context_actions": common + ("region.extract_boundary",)}))
-        nodes.extend(
-            SceneNode(loft_feature_node_id(feature.id), feature.name, NODE_LOFT_FEATURE, NODE_FEATURES, checkable=False, metadata={"context_actions": ("surface.rebuild_loft", "surface.duplicate_loft", "surface.delete_loft")})
-            for feature in state.loft_feature_collection.features
-        )
-        nodes.extend(
-            SceneNode(four_boundary_feature_node_id(feature.id), feature.name, NODE_FOUR_BOUNDARY_FEATURE, NODE_FEATURES, checkable=False, metadata={"context_actions": ("surface.rebuild_four_boundary",)})
-            for feature in state.four_boundary_feature_collection.features
-        )
+            nodes.append(SceneNode(region_node_id(region.id), f"{region.name or 'Region'} ({len(region.triangle_indices):,} tris)", "region", NODE_REGIONS, region.visible, metadata={"context_actions": common + ("region.extract_boundary",)}))
         return tuple(nodes)
 
     def _sync_tree_selection_from_controller(self) -> None:
-        """Make the tree (and so the inspector) follow selections made outside it, e.g. viewport picks.
-
-        An editable-feature row selected in the tree is not part of the controller's
-        selection, so it is left alone.
-        """
+        """Make the tree (and so the inspector) follow selections made outside it, e.g. viewport picks."""
 
         current = self._scene_model.selected_ids
-        if any(_is_feature_node(value) for value in current):
-            return
         wanted = tuple(self.composition.selection_controller.snapshot().ids) + self._surfacing_selected_nodes()
         if wanted != current:
             self._scene_model.select(wanted)
@@ -1182,12 +918,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         Qt layout each time and made the drag stutter.
         """
 
-        previews = self._surface_previews()
-        active_surface_id = (
-            self.composition.state.surface_collection.active_surface_id
-            or self.composition.state.brep_surface_collection.active_surface_id
-        )
-        source_ids = self.composition.workflow.source_curve_ids()
         settings = self.composition.settings.display
         snapshot = self.composition.scene_builder.build(
             self.composition.state,
@@ -1203,11 +933,8 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
                 region_edge_color=settings.region_selection_edge_color,
                 region_opacity=settings.region_selection_opacity,
             ),
-            surface_previews=previews,
             tool_preview=self._tool_preview(),
             camera_request=self._camera_request,
-            active_surface_id=active_surface_id,
-            surface_source_curve_ids=source_ids,
             object_origin=_active_transform_origin(self.composition.state),
             active_transform_angle_delta=self.composition.transform_controller.angle_delta,
             modeling=self._modeling_scene_input(),
@@ -1235,12 +962,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         incoming.setVisible(True)
         if has_selection:
             return
-        guidance = build_guidance(
-            state,
-            cad_available=self.composition.cad.capabilities.available,
-            has_runtime_brep=bool(self.composition.brep_controller.runtime_objects),
-            selected_curve_count=len(state.curve_collection.selected_curve_ids),
-        )
+        guidance = build_guidance(state, selected_curve_count=len(state.model.selected_curve_ids))
 
         def availability(action_id: str) -> tuple[bool, str]:
             try:
@@ -1282,8 +1004,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
 
         if self.composition.transform_controller.active:
             return "transform"
-        if self.composition.manual_curve_controller.session.active:
-            return "manual_curve"
         if self.composition.region_controller.session.active:
             return "region"
         return self._surfacing_capture_owner()
@@ -1317,10 +1037,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
     def _sync_action_state(self) -> None:
         selection = self.composition.selection_controller.snapshot()
         state = self.composition.state
-        selected_curves = [item for item in state.curve_collection.curves if item.id in state.curve_collection.selected_curve_ids]
-        selected_curve = selected_curves[0] if len(selected_curves) == 1 else None
-        manual = self.composition.manual_curve_controller.session
-        active_surface = self._active_surface_record()
         context = ActionContext(
             has_scene_objects=bool(self.composition.visibility_controller.all_node_ids()),
             has_scene_selection=selection.has_selection or bool(state.model.selected_ids),
@@ -1330,31 +1046,12 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             selection_count=len(selection.ids) + len(state.model.selected_ids),
             has_section_plane=bool(state.section_collection.planes),
             has_section_result=bool(state.section_collection.results),
-            has_curves=bool(state.curve_collection.curves),
-            selected_curve_count=len(selected_curves),
-            selected_curve_closed=bool(selected_curve and selected_curve.is_closed),
-            selected_curve_open=bool(selected_curve and not selected_curve.is_closed),
-            selected_curve_editable=bool(selected_curve and is_manual_curve_like(selected_curve)),
-            selected_surface_count=len(state.surface_collection.selected_surface_ids),
-            selected_brep_count=len(state.brep_surface_collection.selected_surface_ids),
             has_region=state.region_collection.active_region is not None,
-            has_loft_feature=state.loft_feature_collection.active_feature_id is not None,
-            has_source_curves=bool(active_surface and active_surface.source_curve_ids),
             can_transform=state.selected_item in {"model", "section_plane"} or self._section_tool_plane() is not None,
             transform_active=self.composition.transform_controller.active,
-            manual_curve_active=manual.active,
-            manual_curve_idle=not manual.active,
-            manual_curve_creating=manual.active and not manual.editing,
-            manual_curve_editing=manual.editing,
-            can_add_manual_point=manual.active,
-            has_manual_control_point=manual.selected_control_point_index is not None,
             region_tool_active=self.composition.region_controller.session.active,
             measure_tool_active=self.composition.measure_controller.active,
             has_measurements=self.composition.measure_controller.has_measurements,
-            has_region_boundary_curves=any(is_region_boundary_curve(item) for item in state.curve_collection.curves),
-            selected_region_boundary_curve=bool(selected_curve and is_region_boundary_curve(selected_curve)),
-            cad_available=self.composition.cad.capabilities.available,
-            has_runtime_brep=bool(self.composition.brep_controller.runtime_objects),
             model_count=len(state.model.entities),
             selected_model_count=len(state.model.selected_ids),
             model_tool_active=self.composition.modeling_controller.active,
@@ -1378,7 +1075,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         if node_id is None:
             return (
                 FieldDefinition("selection", "Selection", "No selection", "readonly", read_only=True),
-                FieldDefinition("cad", "CAD backend", self.composition.cad.capabilities.backend_name, "readonly", read_only=True, group="Diagnostics"),
             )
         model_fields = self._surfacing_inspector_fields(node_id)
         if model_fields is not None:
@@ -1403,26 +1099,15 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
                     FieldDefinition("section_axis", "Axis", plane.axis, "combo", options=("X", "Y", "Z")),
                     FieldDefinition("section_offset", "Offset", plane.offset, "number", minimum=-1e12, maximum=1e12),
                 )
-        curve_id = node_id.split(":", 1)[1] if node_id.startswith("curve:") else None
-        if curve_id is not None:
-            curve = next((item for item in state.curve_collection.curves if item.id == curve_id), None)
-            if curve is not None:
-                values = [
-                    FieldDefinition("name", "Name", curve.name),
-                    FieldDefinition("visible", "Visible", curve.visible, "checkbox"),
-                    FieldDefinition("closed", "Closed", curve.is_closed, "readonly", read_only=True),
-                    FieldDefinition("point_count", "Point count", curve.point_count, "readonly", read_only=True, group="Diagnostics"),
-                    FieldDefinition("length", "Length", curve.length, "readonly", read_only=True, group="Diagnostics"),
-                ]
-                control = parse_manual_curve_metadata_v2(curve)
-                if control is not None:
-                    values.extend(
-                        (
-                            FieldDefinition("manual_method", "Curve method", control.curve_method, "combo", group="Manual Curve", advanced=True, options=("polyline", "smooth_guide", "hybrid")),
-                            FieldDefinition("manual_samples", "Sample count", control.sample_count, "number", group="Manual Curve", advanced=True, minimum=8, maximum=4096, decimals=0),
-                        )
-                    )
-                return tuple(values)
+        result_id = section_result_id_from_node(node_id)
+        stored = next((item for item in state.section_collection.results if item.id == result_id), None)
+        if stored is not None:
+            return (
+                FieldDefinition("name", "Name", stored.name),
+                FieldDefinition("visible", "Visible", stored.visible, "checkbox"),
+                FieldDefinition("result_plane", "Plane", f"{stored.axis} = {stored.offset:g}", "readonly", read_only=True),
+                FieldDefinition("result_loops", "Loops", len(stored.result.polylines), "readonly", read_only=True, group="Diagnostics"),
+            )
         region = state.region_collection.active_region
         if region is not None and node_id == region_node_id(region.id):
             return (
@@ -1432,27 +1117,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
                 FieldDefinition("region_max", "Maximum triangles", region.max_triangle_count, "number", minimum=1, maximum=10_000_000, decimals=0, advanced=True),
                 FieldDefinition("region_count", "Triangle count", len(region.triangle_indices), "readonly", read_only=True, group="Diagnostics"),
             )
-        surface_id = surface_id_from_node(node_id)
-        if surface_id is not None:
-            surface = self._surface_record(surface_id)
-            if surface is not None:
-                return (
-                    FieldDefinition("name", "Name", surface.name),
-                    FieldDefinition("visible", "Visible", surface.visible, "checkbox"),
-                    FieldDefinition("surface_opacity", "Opacity", float(surface.metadata.get("display_opacity", 0.22)), "number", minimum=0.05, maximum=1.0),
-                    FieldDefinition("surface_wireframe", "Wireframe", bool(surface.metadata.get("wireframe_overlay", False)), "checkbox"),
-                    FieldDefinition("source_count", "Source curves", len(surface.source_curve_ids), "readonly", read_only=True, group="Diagnostics"),
-                )
-        loft_id = loft_feature_id_from_node(node_id)
-        if loft_id is not None:
-            feature = next((item for item in state.loft_feature_collection.features if item.id == loft_id), None)
-            if feature is not None:
-                return (
-                    FieldDefinition("feature_name", "Name", feature.name),
-                    FieldDefinition("feature_sources", "Source curves", len(feature.options.source_curve_ids), "readonly", read_only=True),
-                    FieldDefinition("feature_overbuild", "Overbuild", feature.options.overbuild_amount, "number", minimum=0, maximum=10, advanced=True),
-                    FieldDefinition("feature_status", "Build status", feature.last_build_reason, "readonly", read_only=True, group="Diagnostics"),
-                )
         return (FieldDefinition("selection", "Selection", node_id, "readonly", read_only=True),)
 
     def _on_inspector_value(self, field_id: str, value: object) -> None:
@@ -1487,14 +1151,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             result = self._command_result("region.threshold", {"value": value})
         elif field_id == "region_max":
             result = self._command_result("region.max_triangles", {"value": value})
-        elif field_id == "surface_opacity":
-            result = self._command_result("surface.opacity", {"value": value})
-        elif field_id == "surface_wireframe":
-            result = self._command_result("surface.wireframe", {"value": value})
-        elif field_id == "manual_method":
-            result = self._command_result("manual_curve.type_option", {"value": value})
-        elif field_id == "manual_samples":
-            result = self._command_result("manual_curve.sample_count_option", {"value": int(float(value))})
         else:
             return
         self._consume_result(f"inspector.{field_id}", replace_dirty(result))
@@ -1621,13 +1277,15 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         restored = restore_project_state(self.composition.state, result.project, settings=self.composition.settings)
         self.composition.modeling_controller.reset()
         model, model_warnings = model_from_dict(result.project.metadata.get(MODEL_PROJECT_KEY))
+        for name, points, closed in restored.legacy_curves:
+            # curves from the older curve tools: editable 3D Sketch curves now
+            model.sketch.add_polyline_curve(points, closed=closed, name=name)
         self.composition.state.model = model
         if restored.selected_scene_ids:
             self.composition.selection_controller.select_nodes(
                 restored.selected_scene_ids,
                 primary_id=restored.primary_selection_id,
             )
-        self.composition.brep_controller.runtime_objects.clear()
         self.composition.undo.clear()
         self.current_project_path = Path(path)
         self._add_recent_project(path)
@@ -1637,7 +1295,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         warnings.extend(model_warnings)
         if mesh_warning:
             warnings.append(mesh_warning)
-        self._last_project_warnings = tuple(warnings)
+        self._last_project_warnings = tuple(dict.fromkeys(warnings))  # the same missing scan is reported twice
         self._camera_request = CameraRequest.frame_all()
         self.set_status_message(f"Opened {result.project.name}" + (f" with {len(warnings)} warning(s)" if warnings else ""))
         self.refresh()
@@ -1702,9 +1360,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
     def _heavy_label(action_id: str) -> str:
         if action_id == "section.compute":
             return "Computing section"
-        if action_id.startswith("surface.rebuild"):
-            return "Rebuilding surface"
-        return "Building surface"
+        return "Building geometry"
 
     def _install_model(self, path: Path, model: _ModelRead) -> None:
         self._section_tool = False
@@ -1716,7 +1372,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self.composition.state.mesh_object = MeshObjectState(
             source_mesh=proxy.source_mesh,
             display_mesh=proxy.display_mesh,
-            file_path=Path(path),
+            file_path=Path(path).resolve(),  # the project stores it; a relative path breaks on reopening
             name=loaded.metadata.file_name,
             origin=np.zeros(3),
             location=np.zeros(3),
@@ -1775,12 +1431,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             section_offset=getattr(active_plane, "offset", 0.0),
             show_section_plane=any(item.visible for item in state.section_collection.planes),
             section_collection=state.section_collection,
-            curve_collection=state.curve_collection,
             region_collection=state.region_collection,
-            surface_collection=state.surface_collection,
-            brep_surface_collection=state.brep_surface_collection,
-            loft_feature_collection=state.loft_feature_collection,
-            four_boundary_feature_collection=state.four_boundary_feature_collection,
             selected_scene_ids=selection.ids,
             primary_selection_id=selection.primary_id,
             units=state.units,
@@ -1799,25 +1450,6 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self._add_recent_project(path)
         self.set_project_dirty(False)
         self.set_status_message(f"Project saved: {path}")
-        return True
-
-    def export_step(self) -> bool:
-        selected = self.composition.state.brep_surface_collection.active_surface_id
-        runtime = None if selected is None else self.composition.brep_controller.runtime_objects.get(selected)
-        if runtime is None:
-            self._report_error("STEP export unavailable", "Select and rebuild a BREP surface before export.")
-            return False
-        path, _ = QFileDialog.getSaveFileName(self, "Export STEP", "", "STEP files (*.step *.stp)")
-        if not path:
-            return False
-        result = self.composition.step_export.export(
-            runtime, path, units=self.composition.state.units, progress=self._progress
-        )
-        self._close_progress()
-        if not result.success:
-            self._report_error("STEP export failed", result.reason)
-            return False
-        self.set_status_message(f"Exported STEP: {path}")
         return True
 
     def _default_shortcuts(self) -> dict[str, str]:
@@ -1872,12 +1504,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         fresh = AppState()
         for field in fields(AppState):
             setattr(self.composition.state, field.name, copy.deepcopy(getattr(fresh, field.name)))
-        self.composition.manual_curve_controller.cancel()
         self.composition.region_controller.session.exit()
-        self.composition.brep_controller.runtime_objects.clear()
         self.composition.modeling_controller.reset()
         self.composition.mesh_query_service.invalidate()
-        self._surface_preview_cache.clear()
         self._last_project_warnings = ()
 
     def set_project_dirty(self, value: bool = True) -> None:
@@ -1977,126 +1606,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self.composition.settings.future["recent_projects"] = [value, *recent][:5]
         self.composition.settings_repository.write(self.composition.settings)
 
-    def _active_surface_record(self):
-        active_id = (
-            self.composition.state.surface_collection.active_surface_id
-            or self.composition.state.brep_surface_collection.active_surface_id
-        )
-        return self._surface_record(active_id) if active_id else None
-
-    def _surface_record(self, surface_id: str):
-        return next(
-            (
-                item
-                for item in (
-                    *self.composition.state.surface_collection.surfaces,
-                    *self.composition.state.brep_surface_collection.surfaces,
-                )
-                if item.id == surface_id
-            ),
-            None,
-        )
-
-    def _surface_previews(self) -> tuple[SurfacePreviewMesh, ...]:
-        state = self.composition.state
-        curves = state.curve_collection.curves
-        curve_map = {item.id: item for item in curves}
-        records: list[tuple[SurfacePatch, str]] = [
-            (item, "preview_surface") for item in state.surface_collection.surfaces if item.visible
-        ]
-        for brep in state.brep_surface_collection.surfaces:
-            if not brep.visible:
-                continue
-            records.append(
-                (
-                    SurfacePatch(
-                        id=brep.id,
-                        name=brep.name,
-                        source_curve_ids=list(brep.source_curve_ids),
-                        surface_type="preview_loft" if brep.brep_type == BREP_TYPE_LOFT_SURFACE else "preview_fill",
-                        visible=brep.visible,
-                        selected=brep.selected,
-                        metadata={
-                            **brep.metadata,
-                            "preview_mode": TWO_CURVE_LOFT if brep.brep_type == BREP_TYPE_LOFT_SURFACE else CLOSED_CURVE_FILL,
-                        },
-                    ),
-                    "brep_visual_preview",
-                )
-            )
-        previews: list[SurfacePreviewMesh] = []
-        live_ids: set[str] = set()
-        for surface, role in records:
-            source_curves = [curve_map[value] for value in surface.source_curve_ids if value in curve_map]
-            signature = geometry_revision(
-                surface.source_curve_ids,
-                surface.metadata,
-                tuple((curve.id, curve.fitted_points, curve.is_closed) for curve in source_curves),
-                surface.selected,
-                role,
-            )
-            cached = self._surface_preview_cache.get(surface.id)
-            if cached is not None and cached[0] == signature:
-                preview = cached[1]
-            else:
-                result = build_surface_preview(
-                    surface,
-                    curves,
-                    mesh=None if state.mesh_object is None else self.composition.transform_controller.transformed_source_mesh(),
-                    mesh_query_service=self.composition.mesh_query_service,
-                    mesh_revision=None if state.mesh_object is None else id(state.mesh_object.source_mesh),
-                )
-                if result.mesh is None:
-                    continue
-                source = result.mesh
-                preview = SurfacePreviewMesh(
-                    vertices=source.vertices,
-                    faces=source.faces,
-                    source_surface_id=source.source_surface_id,
-                    selected=surface.selected,
-                    opacity=float(surface.metadata.get("display_opacity", source.opacity or 0.22)),
-                    wireframe_overlay=bool(surface.metadata.get("wireframe_overlay", source.wireframe_overlay)),
-                    display_role=role,
-                    overbuild_handle_points=source.overbuild_handle_points,
-                    show_overbuild_handles=source.show_overbuild_handles,
-                )
-                self._surface_preview_cache[surface.id] = (signature, preview)
-            previews.append(preview)
-            live_ids.add(surface.id)
-        self._surface_preview_cache = {
-            key: value for key, value in self._surface_preview_cache.items() if key in live_ids
-        }
-        return tuple(previews)
-
     def _tool_preview(self) -> ToolPreviewState:
         sketch_preview = self._surfacing_tool_preview()
-        if sketch_preview is not None:
-            return sketch_preview
-        controller = self.composition.manual_curve_controller
-        session = controller.session
-        if session.active:
-            display = controller.display_state(
-                projection_mesh=None if self.composition.state.mesh_object is None else self.composition.transform_controller.transformed_source_mesh(),
-                mesh_revision=None if self.composition.state.mesh_object is None else id(self.composition.state.mesh_object.source_mesh),
-            )
-            return ToolPreviewState(
-                revision=geometry_revision(display.control_points, display.fitted_points, display.preview_point, display.is_closed),
-                active=True,
-                control_points=display.control_points,
-                point_types=tuple(display.point_types or ()),
-                fitted_points=display.fitted_points,
-                closed=display.is_closed,
-                plane_normal=tuple(session.plane_normal),
-                snap_to_mesh=display.snap_to_mesh,
-                selected_control_point_index=display.selected_point_index,
-                curve_method=display.curve_method,
-                sample_count=display.sample_count,
-                preview_point=None if display.preview_point is None else tuple(display.preview_point),
-                preview_valid=display.preview_valid,
-                preview_snaps_closed=display.preview_snaps_closed,
-                preview_snaps_to_mesh=display.preview_snaps_to_mesh,
-            )
-        return ToolPreviewState()
+        return ToolPreviewState() if sketch_preview is None else sketch_preview
 
 
 def _menu_category(action_id: str, category: str) -> str:
@@ -2104,28 +1616,11 @@ def _menu_category(action_id: str, category: str) -> str:
         return "View"
     if action_id.startswith("edit."):
         return "Edit"
-    if action_id in {
-        "section.add_plane",
-        "manual_curve.create",
-        "region.start",
-        "surface.create_from_curves",
-        "surface.fill",
-        "surface.loft",
-        "surface.conforming_loft",
-        "surface.boundary_patch",
-        "surface.four_curve_patch",
-        "surface.curve_network",
-        "surface.brep_face",
-        "surface.region_brep_face",
-        "surface.brep_loft",
-        "surface.editable_brep_loft",
-    }:
+    if action_id in {"section.add_plane", "region.start"}:
         return "Create"
-    if action_id.startswith("analysis."):
-        return "Inspect"
     if action_id.startswith("scene."):
         return "Edit"
-    if category in {"Transform", "Sections", "Curves", "Manual Curve", "Regions", "Surfaces", "BREP"}:
+    if category in {"Transform", "Sections", "Regions"}:
         return "Modify"
     return category if category in {"File", "Edit", "View", "Create", "Modify", "Inspect", "Help"} else "Modify"
 
@@ -2136,8 +1631,6 @@ def _node_id_for_pick(pick: SceneObjectPickResult) -> str | None:
         return None
     converters = {
         "mesh": lambda _value: NODE_MESH,
-        "curve": curve_node_id,
-        "surface": surface_node_id,
         "region": region_node_id,
         "section_plane": section_plane_node_id,
         "section_result": section_result_node_id,
@@ -2160,30 +1653,10 @@ def _model_node_for_actor(object_id: str) -> str | None:
 def _has_scene_content(state: AppState) -> bool:
     return bool(
         state.model.entities
+        or state.model.sketch.curves
         or state.section_collection.results
-        or state.curve_collection.curves
-        or state.surface_collection.surfaces
-        or state.brep_surface_collection.surfaces
         or state.region_collection.active_region is not None
-        or state.loft_feature_collection.features
-        or state.four_boundary_feature_collection.features
     )
-
-
-def _curve_parent(curve: object, result_ids: set[str]) -> str:
-    creation = curve_creation_type(curve)
-    if is_manual_curve_like(curve):
-        return NODE_CURVE_GROUP_MANUAL
-    if is_region_boundary_curve(curve):
-        return NODE_CURVE_GROUP_REGION_BOUNDARIES
-    if is_repaired_curve(curve):
-        return NODE_CURVE_GROUP_REPAIRED
-    if creation == "projected_curve":
-        return NODE_CURVE_GROUP_PROJECTED
-    if creation == "rebuilt_curve":
-        return NODE_CURVE_GROUP_REBUILT
-    result_id = str(getattr(curve, "section_result_id", ""))
-    return curve_group_node_id(result_id) if result_id in result_ids else NODE_CURVE_GROUP_UNASSIGNED
 
 
 def _active_transform_origin(state: AppState) -> tuple[float, float, float] | None:
@@ -2214,10 +1687,6 @@ def _active_transform_origin(state: AppState) -> tuple[float, float, float] | No
     if values is None or not np.all(np.isfinite(values)):
         return None
     return tuple(float(value) for value in np.asarray(values, dtype=float).reshape(3))
-
-
-def _is_feature_node(node_id: str) -> bool:
-    return node_id.startswith(f"{NODE_LOFT_FEATURE}:") or node_id.startswith(f"{NODE_FOUR_BOUNDARY_FEATURE}:")
 
 
 def replace_dirty(result: CommandResult) -> CommandResult:

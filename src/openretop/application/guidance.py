@@ -15,10 +15,10 @@ from openretop.application.state import AppState
 
 class Stage(str, Enum):
     START = "start"  # no scan loaded
-    SCAN = "scan"  # scan loaded, no sections yet
-    SECTIONS = "sections"  # sections/curves exist, no surface yet
-    SURFACES = "surfaces"  # a BREP surface exists
-    EXPORT = "export"  # a built BREP is ready to export
+    SCAN = "scan"  # scan loaded, nothing modelled yet
+    CURVES = "curves"  # sketch curves or sketches, no surface or body yet
+    MODEL = "model"  # surfaces or bodies exist
+    EXPORT = "export"  # a closed body is ready to export
 
 
 @dataclass(frozen=True)
@@ -39,86 +39,72 @@ class Guidance:
     cad_note: str = ""
 
 
-def build_guidance(state: AppState, *, cad_available: bool, has_runtime_brep: bool, selected_curve_count: int = 0) -> Guidance:
+def build_guidance(state: AppState, *, selected_curve_count: int = 0) -> Guidance:
     """Describe the project and the sensible next actions."""
 
-    cad_note = "" if cad_available else "CAD kernel (CadQuery) is not installed: surfaces and STEP export are unavailable."
     mesh = state.mesh_object
     if mesh is None:
         return Guidance(
             stage=Stage.START,
             title="Start with a scan",
-            explanation="openRetop turns a mesh scan into sections, curves and CAD surfaces you can export as STEP.",
+            explanation="openRetop turns a mesh scan into CAD surfaces and solids you can export as STEP.",
             summary=("Supported files: STL, OBJ, PLY", "You can also drag a scan or project onto this window."),
             steps=(
                 GuidanceStep("file.open_model", "Open a scan...", "Choose the file, then its length unit.", primary=True),
                 GuidanceStep("file.open_project", "Open a project...", "Continue earlier work."),
             ),
-            cad_note=cad_note,
         )
 
     summary = _summary(state)
-    curves = state.curve_collection.curves
-    surfaces = state.brep_surface_collection.surfaces
-
-    if surfaces:
-        steps = [
-            GuidanceStep(
-                "file.export_step",
-                "Export STEP...",
-                "Select the BREP surface in the Scene tree first." if not has_runtime_brep else "Writes the surface in the model's units.",
-                primary=has_runtime_brep,
-            )
-        ]
-        if not has_runtime_brep:
-            steps.insert(
-                0,
-                GuidanceStep("surface.rebuild_brep", "Rebuild selected surface", "Surfaces are rebuilt after opening a project.", primary=True),
-            )
-        steps.append(GuidanceStep("section.add_plane", "Add another section plane", "Cut more sections for the next surface."))
+    model = state.model
+    bodies = [entity for entity in model.entities if entity.is_body]
+    if bodies:
         return Guidance(
-            Stage.EXPORT if has_runtime_brep else Stage.SURFACES,
-            "Export your surface" if has_runtime_brep else "Rebuild, then export",
-            "Your BREP surface is ready for CAD." if has_runtime_brep else "The BREP surface needs rebuilding before it can be exported.",
-            summary,
-            tuple(steps),
-            cad_note,
-        )
-
-    if curves:
-        two = selected_curve_count >= 2
-        return Guidance(
-            Stage.SECTIONS,
-            "Turn curves into a surface",
-            "Select curves in the Scene tree, then build a surface from them.",
+            Stage.EXPORT,
+            "Check it and export",
+            "A body is ready. Compare it with the scan, then export it.",
             summary,
             (
-                GuidanceStep(
-                    "surface.editable_brep_loft",
-                    "Loft between two curves",
-                    "Two curves are selected." if two else "Select two curves in the Scene tree first.",
-                    primary=True,
-                ),
-                GuidanceStep("surface.brep_face", "Fill a closed curve", "Select one closed curve first."),
-                GuidanceStep("section.add_plane", "Add another section plane", "More sections give you more curves to loft."),
-                GuidanceStep("manual_curve.create", "Draw a curve by hand", "For edges the sections miss."),
+                GuidanceStep("model.compare", "Compare with the scan", "Colours the scan by its distance to the model.", primary=True),
+                GuidanceStep("file.export_model", "Export STEP...", "Writes the selected or visible model."),
             ),
-            cad_note,
         )
-
+    if model.entities:
+        return Guidance(
+            Stage.MODEL,
+            "Join the surfaces into a body",
+            "Trim the surfaces against each other and sew them; closed, they make a solid.",
+            summary,
+            (
+                GuidanceStep("model.extend", "Extend surfaces", "Grow them past their edges so they meet."),
+                GuidanceStep("model.trim", "Trim and sew", "Keeps the pieces on the scan.", primary=True),
+                GuidanceStep("model.fit_surface", "Fit another surface", "Select an area of the scan."),
+            ),
+        )
+    if model.sketch.curves:
+        two = selected_curve_count >= 2
+        return Guidance(
+            Stage.CURVES,
+            "Turn curves into surfaces",
+            "Loft through curves, or make a face inside a loop of curves.",
+            summary,
+            (
+                GuidanceStep("model.loft", "Loft", "Two curves are selected." if two else "Select two or more curves first.", primary=two),
+                GuidanceStep("model.sketch", "3D Sketch", "Draw more curves; Face From Curves fills a loop.", primary=not two),
+                GuidanceStep("model.fit_surface", "Fit Surface", "Or fit a surface straight to an area of the scan."),
+            ),
+        )
     return Guidance(
         Stage.SCAN,
-        "Cut sections through the scan",
-        "Each section becomes a curve you can loft into a surface.",
+        "Model the part",
+        "Surface: curves on the scan and fitted surfaces (organic shapes). Solid: sketches on planes, extruded.",
         summary,
         (
-            GuidanceStep("section.add_plane", "Add a section plane", "Planes are cutting positions; move them in the Properties panel."),
-            GuidanceStep("section.compute", "Compute section", "Slices the scan at the active plane.", primary=True),
-            GuidanceStep("region.start", "Select a surface region", "Click a smooth area of the scan to pick it."),
-            GuidanceStep("measure.distance", "Measure the scan", "Click two points to check its size against the real part."),
-            GuidanceStep("manual_curve.create", "Draw a curve by hand", "Click points on the scan."),
+            GuidanceStep("model.fit_surface", "Fit Surface", "Select an area of the scan; a surface is fitted to it.", primary=True),
+            GuidanceStep("model.sketch", "3D Sketch", "Click points on the scan; curves follow its surface."),
+            GuidanceStep("model.section_sketch", "Section Sketch", "Cut the scan with a plane; lines and arcs are fitted."),
+            GuidanceStep("measure.distance", "Measure the scan", "Check its size against the real part."),
         ),
-        cad_note,
     )
 
 
@@ -138,11 +124,14 @@ def _summary(state: AppState) -> tuple[str, ...]:
     counts = []
     if state.section_collection.results:
         counts.append(_count(len(state.section_collection.results), "section"))
-    curves = state.curve_collection.curves
-    if curves:
-        counts.append(_count(len(curves), "curve"))
-    if state.brep_surface_collection.surfaces:
-        counts.append(_count(len(state.brep_surface_collection.surfaces), "BREP surface"))
+    if state.model.sketch.curves:
+        counts.append(_count(len(state.model.sketch.curves), "curve"))
+    surfaces = [entity for entity in state.model.entities if not entity.is_body]
+    bodies = [entity for entity in state.model.entities if entity.is_body]
+    if surfaces:
+        counts.append(_count(len(surfaces), "surface"))
+    if bodies:
+        counts.append(_count(len(bodies), "body"))
     if counts:
         lines.append(", ".join(counts))
     return tuple(lines)

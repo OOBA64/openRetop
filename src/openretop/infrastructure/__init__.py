@@ -1,12 +1,10 @@
 """Replaceable external-system adapters for openRetop V3."""
 
-from openretop.infrastructure.cad_adapter import CadCapabilities, PublicCadAdapter
 from openretop.infrastructure.io_services import (
     DisplayProxyService,
     MeshImportService,
     ProgressEvent,
     ProjectFileService,
-    StepExportService,
 )
 from openretop.infrastructure.persistence import (
     InMemoryProjectRepository,
@@ -24,7 +22,6 @@ from openretop.infrastructure.settings_repository import (
 )
 
 __all__ = [
-    "CadCapabilities",
     "DisplayProxyService",
     "InMemoryProjectRepository",
     "InMemorySettingsRepository",
@@ -36,9 +33,7 @@ __all__ = [
     "ProjectLoadResult",
     "ProjectRepository",
     "ProjectSaveResult",
-    "PublicCadAdapter",
     "SettingsLoadResult",
     "SettingsRepository",
     "SettingsSaveResult",
-    "StepExportService",
 ]

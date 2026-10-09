@@ -958,17 +958,19 @@ class ModelingController(ControllerBase):
     # -- Loft ----------------------------------------------------------------------------------
 
     def loft(self, curve_ids: tuple[str, ...] | None = None, *, ruled: bool = False) -> CommandResult:
-        ids = curve_ids if curve_ids is not None else tuple(self.state.curve_collection.selected_curve_ids)
-        curves = [curve for curve in self.state.curve_collection.curves if curve.id in set(ids)]
+        """A surface through two or more sketch curves (3D Sketch or Cut Section), in order."""
+
+        ids = curve_ids if curve_ids is not None else tuple(self.state.model.selected_curve_ids)
+        sketch = self.state.model.sketch
+        curves = [curve for curve in (sketch.curve(value) for value in ids) if curve is not None]
         if len(curves) < 2:
-            return CommandResult.failure("Select two or more curves to loft between (Ctrl+click in the tree or scene).")
-        order = {curve_id: index for index, curve_id in enumerate(ids)}
-        curves.sort(key=lambda curve: order.get(curve.id, 0))
-        polylines = [_curve_points(curve) for curve in curves]
-        reply = self.worker.call("loft", polylines, ruled=ruled)
+            return CommandResult.failure("Select two or more curves to loft between (click them; Ctrl+click adds).")
+        if any(curve.closed for curve in curves) and not all(curve.closed for curve in curves):
+            return CommandResult.failure("Loft between curves that are all open or all closed.")
+        reply = self.worker.call("loft", [curve.polyline for curve in curves], ruled=ruled)
         if not reply.ok:
             return _kernel_failure("Loft failed", reply)
-        entity = entity_from_result(self.state.model, reply.value, tool="loft", params={"curves": [curve.id for curve in curves], "ruled": ruled})
+        entity = entity_from_result(self.state.model, reply.value, tool="loft", params={"sketch_curves": [curve.id for curve in curves], "ruled": ruled})
         return self._add_entities([entity], name="Loft")
 
     # -- Fill ----------------------------------------------------------------------------------
@@ -987,7 +989,7 @@ class ModelingController(ControllerBase):
         session = self._session_for("fill")
         if isinstance(session, CommandResult):
             return session
-        if not any(curve.id == curve_id for curve in self.state.curve_collection.curves):
+        if self.state.model.sketch.curve(curve_id) is None:
             return CommandResult.failure("Pick a curve.")
         session.fill_chain.append({"curve": curve_id, "continuity": "contact"})
         return CommandResult.ok(status=f"Boundary: {len(session.fill_chain)} sides", changed=True)
@@ -1020,8 +1022,10 @@ class ModelingController(ControllerBase):
         sources: list[str] = []
         for side in session.fill_chain:
             if "curve" in side:
-                curve = next(curve for curve in self.state.curve_collection.curves if curve.id == side["curve"])
-                boundaries.append({"points": _curve_points(curve), "continuity": "contact"})
+                curve = self.state.model.sketch.curve(side["curve"])
+                if curve is None:
+                    return CommandResult.failure("A boundary curve was deleted; clear the boundary and pick again.")
+                boundaries.append({"points": curve.polyline, "continuity": "contact"})
             else:
                 entity = self.state.model.get(side["entity"])
                 if entity is None:
@@ -1243,14 +1247,18 @@ class ModelingController(ControllerBase):
         targets = [entity for entity in (self.state.model.get(value) for value in ids) if entity is not None]
         if not targets:
             return CommandResult.failure("There is nothing to export yet.")
-        reply = self.worker.call("export", [entity.brep for entity in targets], str(path), file_format=file_format)
+        reply = self.worker.call(
+            "export", [entity.brep for entity in targets], str(path), file_format=file_format, units=self.state.units
+        )
         if not reply.ok:
             return _kernel_failure("Export failed", reply)
         info = reply.value
         warnings: tuple[str, ...] = ()
         if info["faces_back"] != info["faces"]:
             warnings = (f"The file reads back with {info['faces_back']} faces instead of {info['faces']}.",)
-        return CommandResult.ok(status=f"Exported {len(targets)} item(s), {info['faces']} faces, to {path}", warnings=warnings)
+        return CommandResult.ok(
+            status=f"Exported {len(targets)} item(s), {info['faces']} faces, in {self.state.units}, to {path}", warnings=warnings
+        )
 
     # -- 3D Sketch -------------------------------------------------------------------------------
 
@@ -1595,17 +1603,7 @@ class ModelingController(ControllerBase):
         return self._changed("Delete Sketch Curves", before, f"Deleted {removed} sketch curve(s)")
 
     def sketch_loft(self, curve_ids: tuple[str, ...] | None = None) -> CommandResult:
-        ids = curve_ids if curve_ids is not None else tuple(self.state.model.selected_curve_ids)
-        curves = [curve for curve in (self.state.model.sketch.curve(value) for value in ids) if curve is not None]
-        if len(curves) < 2:
-            return CommandResult.failure("Select two or more sketch curves to loft between (Ctrl+click them).")
-        if any(curve.closed for curve in curves) and not all(curve.closed for curve in curves):
-            return CommandResult.failure("Loft between curves that are all open or all closed.")
-        reply = self.worker.call("loft", [curve.polyline for curve in curves])
-        if not reply.ok:
-            return _kernel_failure("Loft failed", reply)
-        entity = entity_from_result(self.state.model, reply.value, tool="loft", params={"sketch_curves": [curve.id for curve in curves]})
-        return self._add_entities([entity], name="Loft")
+        return self.loft(curve_ids)
 
     def sketch_face(self, curve_ids: tuple[str, ...] | None = None, *, fit_to_scan: bool | None = None) -> CommandResult:
         """A face inside a closed curve or a loop of curves, fitted to the scan inside it."""
@@ -1763,14 +1761,6 @@ class ModelingController(ControllerBase):
 
 def _apply(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
     return points @ matrix[:3, :3].T + matrix[:3, 3]
-
-
-def _curve_points(curve: Any) -> np.ndarray:
-    for name in ("fitted_points", "points", "raw_points"):
-        values = getattr(curve, name, None)
-        if values is not None and len(values) >= 2:
-            return np.asarray(values, dtype=float).reshape(-1, 3)
-    raise ValueError(f"curve {getattr(curve, 'name', '?')} has no points")
 
 
 def _kernel_failure(prefix: str, reply: KernelReply) -> CommandResult:

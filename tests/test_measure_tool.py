@@ -328,7 +328,7 @@ class MeasureToolTests(unittest.TestCase):
         palette = [item.id for item in window.shell.command_palette.search("measure", include_disabled=True)] if hasattr(window, "shell") else []
         if palette:
             self.assertIn("measure.distance", palette)
-        guidance = build_guidance(window.composition.state, cad_available=True, has_runtime_brep=False)
+        guidance = build_guidance(window.composition.state)
         self.assertEqual(guidance.stage, Stage.SCAN)
         self.assertIn("measure.distance", [step.action_id for step in guidance.steps])
         self.assertIn("measure.distance", window.next_steps.step_buttons)

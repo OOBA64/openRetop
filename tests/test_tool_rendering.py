@@ -117,17 +117,18 @@ class ToolPreviewOverlayTests(unittest.TestCase):
         self.assertEqual(overlay.point_count, 0)
         self.assertFalse(bool(overlay.curve_actor.GetVisibility()))
 
-    def test_the_window_feeds_the_curve_tool_into_the_overlay(self) -> None:
+    def test_the_window_feeds_the_3d_sketch_into_the_overlay(self) -> None:
         window = _window(self)
-        controller = window.composition.manual_curve_controller
+        modeling = window.composition.modeling_controller
         with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
-            self.assertTrue(window._dispatch_framework_action("manual_curve.create"))
-        for x in (0.0, 5.0, 9.0):
-            controller.append_point((x, 0.0, 10.0))
-        window.refresh()
+            self.assertTrue(window._dispatch_framework_action("model.sketch"))
+            for angle in (0.0, 45.0, 90.0):
+                radians = np.radians(angle)
+                self.assertTrue(modeling.sketch_click((10.0 * np.cos(radians), 10.0 * np.sin(radians), 0.0)).success)
+            window.refresh()
         overlay = window.viewport.tool_preview_overlay
-        self.assertEqual(len(controller.session.control_points), 3)
-        self.assertEqual(overlay.point_count, 3)
+        self.assertEqual(len(modeling.session.sketch_points), 3)
+        self.assertGreaterEqual(overlay.point_count, 3)
         self.assertTrue(bool(overlay.curve_actor.GetVisibility()))
 
 
@@ -138,37 +139,26 @@ class CurveOnScanTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def _finish(self, *, snapped: bool) -> tuple[OpenRetopV3Window, np.ndarray]:
-        window = _window(self)
-        with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
-            self.assertTrue(window._dispatch_framework_action("manual_curve.create"))
-        controller = window.composition.manual_curve_controller
-        # three points on the capsule's side (radius 10), a quarter turn apart
-        for angle in (0.0, 45.0, 90.0):
-            radians = np.radians(angle)
-            controller.append_point((10.0 * np.cos(radians), 10.0 * np.sin(radians), 0.0), snapped=snapped)
-        with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
-            self.assertTrue(window._dispatch_application_action("manual_curve.finish"))
-        curve = window.composition.state.curve_collection.curves[-1]
-        return window, np.asarray(curve.fitted_points, dtype=float).reshape(-1, 3)
-
-    def _depth_inside(self, window: OpenRetopV3Window, points: np.ndarray) -> float:
+    def test_a_3d_sketch_curve_follows_the_surface_of_the_scan(self) -> None:
         from vtkmodules.vtkFiltersCore import vtkImplicitPolyDataDistance
 
         from openretop.viewer.vtk_actor_utils import polydata
 
+        window = _window(self)
+        modeling = window.composition.modeling_controller
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
+            self.assertTrue(window._dispatch_framework_action("model.sketch"))
+            # three points on the capsule side (radius 10), a quarter turn apart
+            for angle in (0.0, 45.0, 90.0):
+                radians = np.radians(angle)
+                modeling.sketch_click((10.0 * np.cos(radians), 10.0 * np.sin(radians), 0.0))
+            self.assertTrue(modeling.sketch_finish().success)
+        points = np.asarray(window.composition.state.model.sketch.curves[-1].polyline, dtype=float)
         mesh = window.composition.transform_controller.transformed_source_mesh()
         distance = vtkImplicitPolyDataDistance()
         distance.SetInput(polydata(mesh.vertices, mesh.triangles, cell_kind="polys"))
-        return -min(distance.EvaluateFunction(list(point)) for point in points)
-
-    def test_a_curve_drawn_on_the_scan_follows_its_surface(self) -> None:
-        window, points = self._finish(snapped=True)
-        self.assertLess(self._depth_inside(window, points), 1e-3)
-
-    def test_a_curve_drawn_off_the_scan_is_left_where_it_was_drawn(self) -> None:
-        window, points = self._finish(snapped=False)
-        self.assertGreater(self._depth_inside(window, points), 0.3)  # a plain spline: it cuts the corner
+        depth_inside = -min(distance.EvaluateFunction(list(point)) for point in points)
+        self.assertLess(depth_inside, 1e-3)
 
 
 class CurveDepthTests(unittest.TestCase):

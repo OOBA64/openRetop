@@ -1,4 +1,9 @@
-"""UI-independent controller for section-plane and section-result workflows."""
+"""UI-independent controller for section-plane and section-result workflows.
+
+A computed section is the scan's cut by a plane, kept as a section result; each loop of the
+cut also becomes a 3D Sketch curve (the user's own geometry from then on: lofted, filled,
+edited like any curve, and not deleted with the section).
+"""
 
 from __future__ import annotations
 
@@ -16,22 +21,8 @@ from openretop.application.controller_support import (
     ControllerBase,
     publish_scene_change,
 )
-from openretop.application.feature_dependencies import (
-    FeatureDependencyChange,
-    plan_feature_dependency_removal,
-    prune_feature_dependencies,
-)
 from openretop.application.results import CommandResult
 from openretop.application.state import AppState
-from openretop.curves.curve_state import (
-    CurveCollection,
-    StoredCurve,
-    add_curve,
-    clear_curves_for_plane,
-    clear_curves_for_section_result,
-    get_visible_curves,
-    refresh_curve_diagnostics,
-)
 from openretop.geometry.curves import fit_section_polylines
 from openretop.geometry.sections import extract_section, extract_section_by_plane, normalize_axis
 from openretop.geometry.tolerances import curve_fit_tolerance
@@ -52,63 +43,38 @@ from openretop.sections.section_state import (
     set_active_result,
     set_plane_axis_offset,
 )
-from openretop.surfaces.brep_state import BrepSurfaceCollection
-from openretop.surfaces.four_boundary_feature import FourBoundaryPatchFeatureCollection
-from openretop.surfaces.loft_feature import LoftFeatureCollection
-from openretop.surfaces.surface_state import SurfaceCollection
 
 SELECT_SECTION_PLANE = "section_plane"
 
 
 @dataclass(slots=True)
 class SectionWorkflowSnapshot:
-    """Copy of persistent state affected by a section dependency cascade."""
+    """Copy of the state a section command changes (not the potentially large mesh)."""
 
     section_collection: SectionCollection
-    curve_collection: CurveCollection
-    surface_collection: SurfaceCollection
-    brep_surface_collection: BrepSurfaceCollection
-    loft_feature_collection: LoftFeatureCollection
-    four_boundary_feature_collection: FourBoundaryPatchFeatureCollection
+    sketch: object
     section_result: object | None
-    curve_results: list[object]
     selected_item: str | None
 
 
 def capture_section_workflow_state(state: AppState) -> SectionWorkflowSnapshot:
-    """Capture only section-owned state, excluding the potentially large mesh."""
-
     return SectionWorkflowSnapshot(
         section_collection=copy.deepcopy(state.section_collection),
-        curve_collection=copy.deepcopy(state.curve_collection),
-        surface_collection=copy.deepcopy(state.surface_collection),
-        brep_surface_collection=copy.deepcopy(state.brep_surface_collection),
-        loft_feature_collection=copy.deepcopy(state.loft_feature_collection),
-        four_boundary_feature_collection=copy.deepcopy(
-            state.four_boundary_feature_collection
-        ),
+        sketch=state.model.sketch.copy(),
         section_result=copy.deepcopy(state.section_result),
-        curve_results=copy.deepcopy(list(state.curve_results)),
         selected_item=state.selected_item,
     )
 
 
-def restore_section_workflow_state(
-    state: AppState,
-    snapshot: SectionWorkflowSnapshot,
-) -> None:
+def restore_section_workflow_state(state: AppState, snapshot: SectionWorkflowSnapshot) -> None:
     """Restore a snapshot without sharing its mutable collections with callers."""
 
     state.section_collection = copy.deepcopy(snapshot.section_collection)
-    state.curve_collection = copy.deepcopy(snapshot.curve_collection)
-    state.surface_collection = copy.deepcopy(snapshot.surface_collection)
-    state.brep_surface_collection = copy.deepcopy(snapshot.brep_surface_collection)
-    state.loft_feature_collection = copy.deepcopy(snapshot.loft_feature_collection)
-    state.four_boundary_feature_collection = copy.deepcopy(
-        snapshot.four_boundary_feature_collection
-    )
+    state.model.sketch = snapshot.sketch.copy()  # type: ignore[attr-defined]
+    known = {curve.id for curve in state.model.sketch.curves}
+    state.model.selected_curve_ids = [value for value in state.model.selected_curve_ids if value in known]
+    state.model.revision += 1
     state.section_result = copy.deepcopy(snapshot.section_result)
-    state.curve_results = copy.deepcopy(snapshot.curve_results)
     state.selected_item = snapshot.selected_item
 
 
@@ -136,63 +102,25 @@ def sync_display_section_result(
     else:
         set_active_result(state.section_collection, stored_result.id)
         state.section_result = stored_result.result if stored_result.visible else None
-
-    for curve in state.curve_collection.curves:
-        refresh_curve_diagnostics(curve)
-    state.curve_results = list(get_visible_curves(state.curve_collection))
     return stored_result
 
 
-def invalidate_section_plane_dependencies(
-    state: AppState,
-    plane_id: str,
-) -> FeatureDependencyChange:
-    """Remove results and every downstream feature sourced by one plane."""
+def invalidate_section_plane_dependencies(state: AppState, plane_id: str) -> None:
+    """Remove the results cut by one plane (their sketch curves stay: they are the user's)."""
 
-    result_ids = {
-        result.id
-        for result in state.section_collection.results
-        if result.plane_id == str(plane_id)
-    }
-    curve_ids = {
-        curve.id
-        for curve in state.curve_collection.curves
-        if curve.plane_id == str(plane_id)
-        or curve.section_result_id in result_ids
-    }
-    change = plan_feature_dependency_removal(state, curve_ids=curve_ids)
-    prune_feature_dependencies(state, change)
-    clear_curves_for_plane(state.curve_collection, str(plane_id))
     clear_results_for_plane(state.section_collection, str(plane_id))
     sync_display_section_result(state)
-    return change
 
 
-def invalidate_section_result_dependencies(
-    state: AppState,
-    result_id: str,
-) -> FeatureDependencyChange:
-    """Remove one stored result and everything derived from its fitted curves."""
+def invalidate_section_result_dependencies(state: AppState, result_id: str) -> None:
+    """Remove one stored result (its sketch curves stay)."""
 
     normalized_id = str(result_id)
-    curve_ids = {
-        curve.id
-        for curve in state.curve_collection.curves
-        if curve.section_result_id == normalized_id
-    }
-    change = plan_feature_dependency_removal(state, curve_ids=curve_ids)
-    prune_feature_dependencies(state, change)
-    clear_curves_for_section_result(state.curve_collection, normalized_id)
-    state.section_collection.results = [
-        result
-        for result in state.section_collection.results
-        if result.id != normalized_id
-    ]
+    state.section_collection.results = [result for result in state.section_collection.results if result.id != normalized_id]
     state.section_collection.selected_result_ids.discard(normalized_id)
     if state.section_collection.active_result_id == normalized_id:
         state.section_collection.active_result_id = None
     sync_display_section_result(state)
-    return change
 
 
 class SectionController(ControllerBase):
@@ -299,11 +227,8 @@ class SectionController(ControllerBase):
         )
         set_plane_axis_offset(plane, axis_key, offset_value)
         plane.visible = next_visible
-        dependency_change = (
+        if geometry_changed:
             invalidate_section_plane_dependencies(self.state, plane.id)
-            if geometry_changed
-            else plan_feature_dependency_removal(self.state)
-        )
         after = capture_section_workflow_state(self.state)
         undo = self._workflow_undo("Change Section Plane", before, after)
         status = (
@@ -315,18 +240,12 @@ class SectionController(ControllerBase):
             "axis": axis_key,
             "offset": offset_value,
             "reset_to_axis_aligned": reset_to_axis_aligned,
-            **dependency_change.as_metadata(),
         }
         return self._changed_result(
             status=status,
             reason="section_plane_changed",
             object_ids=(plane.id,),
-            changed_fields=(
-                "section_collection",
-                "curve_collection",
-                "surface_collection",
-                "brep_surface_collection",
-            ),
+            changed_fields=("section_collection", "model"),
             undo=undo,
             metadata=metadata,
         )
@@ -446,20 +365,24 @@ class SectionController(ControllerBase):
         )
         add_result(self.state.section_collection, stored)
         created_curve_ids: list[str] = []
-        for index, curve_fit in enumerate(curve_fits, start=1):
-            curve = StoredCurve(
-                id=f"curve-{uuid4().hex}",
-                name=f"{stored.name} Curve {index}",
-                section_result_id=stored.id,
-                plane_id=stored.plane_id,
-                original_points=curve_fit.original_points,
-                fitted_points=curve_fit.fitted_points,
-                mean_error=curve_fit.mean_error,
-                max_error=curve_fit.max_error,
-                is_closed=curve_fit.is_closed,
-            )
-            add_curve(self.state.curve_collection, curve)
+        sketch = self.state.model.sketch
+        # scraps where the plane grazes a scan fragment (a couple of points, a few tenths of a
+        # millimetre) are not curves anyone wants to loft: leave them in the section only
+        extent = mesh.get_axis_aligned_bounding_box().get_max_extent()
+        shortest = 0.005 * float(extent)
+        skipped = 0
+        for curve_fit in curve_fits:
+            points = curve_fit.fitted_points if len(curve_fit.fitted_points) >= 2 else curve_fit.original_points
+            points = np.asarray(points, dtype=float).reshape(-1, 3)
+            length = float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1))) if len(points) >= 2 else 0.0
+            if len(points) < 3 or length < shortest:
+                skipped += 1
+                continue
+            name = f"{stored.name} Curve {len(created_curve_ids) + 1}"
+            curve = sketch.add_polyline_curve(points, closed=bool(curve_fit.is_closed), name=name)
             created_curve_ids.append(curve.id)
+        self.state.model.selected_curve_ids = list(created_curve_ids)
+        self.state.model.revision += 1
         sync_display_section_result(self.state, stored)
         after = capture_section_workflow_state(self.state)
         undo = self._workflow_undo("Compute Section", before, after)
@@ -467,16 +390,17 @@ class SectionController(ControllerBase):
             f"Computed arbitrary section from {plane.name}"
             if arbitrary
             else f"Section computed: {stored.name} - {section_result.segment_count} segments"
-        )
+        ) + f", {len(created_curve_ids)} curve(s)" + (f" ({skipped} scrap(s) left out)" if skipped else "")
         return self._changed_result(
             status=status,
             reason="section_computed",
             object_ids=(stored.id, *created_curve_ids),
-            changed_fields=("section_collection", "curve_collection"),
+            changed_fields=("section_collection", "model"),
             undo=undo,
             metadata={
                 "section_result_id": stored.id,
                 "curve_ids": tuple(created_curve_ids),
+                "skipped_scraps": skipped,
                 "segment_count": section_result.segment_count,
                 "is_arbitrary_plane": arbitrary,
             },
@@ -492,28 +416,20 @@ class SectionController(ControllerBase):
             result.plane_id == plane.id
             for result in self.state.section_collection.results
         )
-        has_curves = any(
-            curve.plane_id == plane.id for curve in self.state.curve_collection.curves
-        )
-        if not has_results and not has_curves:
+        if not has_results:
             return CommandResult.ok(status="Section cleared")
 
         before = capture_section_workflow_state(self.state)
-        change = invalidate_section_plane_dependencies(self.state, plane.id)
+        invalidate_section_plane_dependencies(self.state, plane.id)
         after = capture_section_workflow_state(self.state)
         undo = self._workflow_undo("Clear Section", before, after)
         return self._changed_result(
             status="Section cleared",
             reason="section_results_cleared",
             object_ids=(plane.id,),
-            changed_fields=(
-                "section_collection",
-                "curve_collection",
-                "surface_collection",
-                "brep_surface_collection",
-            ),
+            changed_fields=("section_collection", "model"),
             undo=undo,
-            metadata=change.as_metadata(),
+            metadata={},
         )
 
     clear_section = clear_active_results
@@ -536,72 +452,39 @@ class SectionController(ControllerBase):
         if result is None:
             return CommandResult.failure("Section result not found.")
         before = capture_section_workflow_state(self.state)
-        change = invalidate_section_result_dependencies(self.state, result.id)
+        invalidate_section_result_dependencies(self.state, result.id)
         after = capture_section_workflow_state(self.state)
         undo = self._workflow_undo("Delete Section Result", before, after)
         return self._changed_result(
             status=f"Deleted: {result.name}",
             reason="section_result_deleted",
             object_ids=(result.id,),
-            changed_fields=(
-                "section_collection",
-                "curve_collection",
-                "surface_collection",
-                "brep_surface_collection",
-            ),
+            changed_fields=("section_collection", "model"),
             undo=undo,
-            metadata=change.as_metadata(),
+            metadata={},
         )
 
     def clear_all_results(self) -> CommandResult:
-        state = self.state
-        curve_ids = tuple(curve.id for curve in state.curve_collection.curves)
-        preview_ids = tuple(surface.id for surface in state.surface_collection.surfaces)
-        brep_ids = tuple(surface.id for surface in state.brep_surface_collection.surfaces)
-        changed = bool(
-            state.section_collection.results
-            or curve_ids
-            or preview_ids
-            or brep_ids
-            or state.loft_feature_collection.features
-            or state.four_boundary_feature_collection.features
-        )
-        if not changed:
-            return CommandResult.ok(status="All section results cleared")
+        """Every section result goes (the sketch curves made from them stay)."""
 
+        state = self.state
+        if not state.section_collection.results:
+            return CommandResult.ok(status="All section results cleared")
         before = capture_section_workflow_state(state)
-        dependency_change = plan_feature_dependency_removal(
-            state,
-            curve_ids=curve_ids,
-            preview_surface_ids=preview_ids,
-            brep_surface_ids=brep_ids,
-        )
-        prune_feature_dependencies(state, dependency_change)
+        result_ids = tuple(result.id for result in state.section_collection.results)
         state.section_collection.results = []
         state.section_collection.active_result_id = None
         state.section_collection.selected_result_ids.clear()
-        state.curve_collection = CurveCollection()
-        state.surface_collection = SurfaceCollection()
-        state.brep_surface_collection = BrepSurfaceCollection()
-        state.loft_feature_collection = LoftFeatureCollection()
-        state.four_boundary_feature_collection = FourBoundaryPatchFeatureCollection()
         sync_display_section_result(state)
         after = capture_section_workflow_state(state)
         undo = self._workflow_undo("Clear All Section Results", before, after)
         return self._changed_result(
             status="All section results cleared",
             reason="all_section_results_cleared",
-            object_ids=tuple((*curve_ids, *preview_ids, *brep_ids)),
-            changed_fields=(
-                "section_collection",
-                "curve_collection",
-                "surface_collection",
-                "brep_surface_collection",
-                "loft_feature_collection",
-                "four_boundary_feature_collection",
-            ),
+            object_ids=result_ids,
+            changed_fields=("section_collection",),
             undo=undo,
-            metadata=dependency_change.as_metadata(),
+            metadata={},
         )
 
     clear_all_section_results = clear_all_results
@@ -623,7 +506,7 @@ class SectionController(ControllerBase):
 
         before = capture_section_workflow_state(self.state)
         removed_name = plane.name or "Section Plane"
-        change = invalidate_section_plane_dependencies(self.state, plane.id)
+        invalidate_section_plane_dependencies(self.state, plane.id)
         remove_plane(self.state.section_collection, plane.id)
         replacement = self.ensure_default_plane()
         sync_display_section_result(self.state)
@@ -634,18 +517,11 @@ class SectionController(ControllerBase):
             status=f"Deleted: {removed_name}",
             reason="section_plane_deleted",
             object_ids=(plane.id,),
-            changed_fields=(
-                "section_collection",
-                "curve_collection",
-                "surface_collection",
-                "brep_surface_collection",
-                "selected_item",
-            ),
+            changed_fields=("section_collection", "model", "selected_item"),
             undo=undo,
             metadata={
                 "section_plane_id": plane.id,
                 "active_section_plane_id": replacement.id,
-                **change.as_metadata(),
             },
         )
 
@@ -703,12 +579,7 @@ class SectionController(ControllerBase):
             publish_scene_change(
                 self.events,
                 reason=reason,
-                changed_fields=(
-                    "section_collection",
-                    "curve_collection",
-                    "surface_collection",
-                    "brep_surface_collection",
-                ),
+                changed_fields=("section_collection", "model"),
             )
 
         return CallbackUndoPayload(

@@ -16,7 +16,6 @@ from openretop.application.controller_support import (
     publish_scene_change,
 )
 from openretop.application.events import ActiveToolChangedEvent
-from openretop.application.feature_dependencies import FeatureDependencyChange
 from openretop.application.results import CommandResult, ViewportRequest
 from openretop.application.section_controller import (
     SectionWorkflowSnapshot,
@@ -517,7 +516,6 @@ class TransformController(ControllerBase):
             return CommandResult.ok(status=status or "Transform")
         target = session.selected_item
         changed = self._session_changed(session)
-        dependency_change: FeatureDependencyChange | None = None
         undo: CallbackUndoPayload | None = None
         reason = "transform_committed" if commit else "transform_cancelled"
 
@@ -536,10 +534,7 @@ class TransformController(ControllerBase):
             before_section = self._modal_section_before
             plane = self._section_plane(session.section_plane_id)
             if plane is not None:
-                dependency_change = invalidate_section_plane_dependencies(
-                    self.state,
-                    plane.id,
-                )
+                invalidate_section_plane_dependencies(self.state, plane.id)
             if before_section is not None:
                 after_section = capture_section_workflow_state(self.state)
                 undo = self._section_undo(
@@ -577,8 +572,6 @@ class TransformController(ControllerBase):
             "committed": bool(commit),
             "selected_item": target,
         }
-        if dependency_change is not None:
-            metadata.update(dependency_change.as_metadata())
         return CommandResult.ok(
             status=result_status,
             changed=changed,
@@ -978,12 +971,7 @@ class TransformController(ControllerBase):
             publish_scene_change(
                 self.events,
                 reason=reason,
-                changed_fields=(
-                    "section_collection",
-                    "curve_collection",
-                    "surface_collection",
-                    "brep_surface_collection",
-                ),
+                changed_fields=("section_collection", "model"),
             )
 
         return CallbackUndoPayload(
@@ -1127,9 +1115,8 @@ class TransformController(ControllerBase):
     def _has_generated_geometry(self) -> bool:
         return bool(
             self.state.section_collection.results
-            or self.state.curve_collection.curves
-            or self.state.surface_collection.surfaces
-            or self.state.brep_surface_collection.surfaces
+            or self.state.model.sketch.curves
+            or self.state.model.entities
         )
 
     def _model_status(self, default: str) -> str:

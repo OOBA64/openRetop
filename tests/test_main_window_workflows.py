@@ -16,15 +16,15 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from openretop.application.actions import CORE_ACTIONS  # noqa: E402
-from openretop.application.scene_ids import curve_node_id, region_node_id, surface_node_id  # noqa: E402
+from openretop.application.scene_ids import region_node_id  # noqa: E402
 from openretop.application.state import MeshObjectState  # noqa: E402
 from openretop.bootstrap import create_application  # noqa: E402
-from openretop.curves.curve_state import StoredCurve, add_curve  # noqa: E402
 from openretop.infrastructure.settings_repository import InMemorySettingsRepository  # noqa: E402
 from openretop.mesh.triangle_mesh import TriangleMeshData  # noqa: E402
 from openretop.presentation.qt.main_window import OpenRetopV3Window  # noqa: E402
+from openretop.project.project_data import ProjectCurve, ProjectSurface  # noqa: E402
+from openretop.project.project_io import load_project, save_project  # noqa: E402
 from openretop.regions.region_state import RegionSelection  # noqa: E402
-from openretop.surfaces.surface_state import SurfacePatch, add_surface  # noqa: E402
 from openretop.viewer.picking_service import MeshPickResult  # noqa: E402
 
 
@@ -119,29 +119,11 @@ class MainWindowWorkflowTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_viewport_pointer_routes_manual_curve_and_region_tools(self) -> None:
+    def test_viewport_pointer_routes_the_region_tool(self) -> None:
         composition = _composition()
         composition.state.mesh_object = _mesh_object()
         window = OpenRetopV3Window(composition)
         try:
-            self.assertTrue(window._dispatch_application_action("manual_curve.create"))
-            for index, point in enumerate(
-                (np.asarray([0.0, 0.0, 0.0]), np.asarray([1.0, 0.0, 0.0]), np.asarray([0.0, 1.0, 0.0]))
-            ):
-                pick = MeshPickResult(
-                    True,
-                    position=point,
-                    normal=np.asarray([0.0, 0.0, 1.0]),
-                    triangle_index=0,
-                    mesh_id="mesh",
-                )
-                window._on_viewport_pointer("left_press", index, index, pick)
-                window._on_viewport_pointer("left_release", index, index, pick)
-            self.assertEqual(
-                len(composition.manual_curve_controller.session.control_points), 3
-            )
-            self.assertTrue(window._dispatch_application_action("manual_curve.finish"))
-
             self.assertTrue(window._dispatch_application_action("region.start"))
             pick = MeshPickResult(
                 True,
@@ -162,11 +144,6 @@ class MainWindowWorkflowTests(unittest.TestCase):
         composition.state.mesh_object = _mesh_object()
         window = OpenRetopV3Window(composition)
         try:
-            self.assertTrue(window._dispatch_application_action("manual_curve.create"))
-            QTest.keyClick(window.viewport.interactor, Qt.Key_Escape)
-            self.app.processEvents()
-            self.assertFalse(composition.manual_curve_controller.session.active)
-
             self.assertTrue(window._dispatch_application_action("region.start"))
             QTest.keyClick(window.viewport.interactor, Qt.Key_Escape)
             self.app.processEvents()
@@ -175,31 +152,12 @@ class MainWindowWorkflowTests(unittest.TestCase):
             window.set_project_dirty(False)
             window.close()
 
-    def test_project_open_restores_curves_surfaces_region_and_selection(self) -> None:
+    def test_project_open_restores_sketch_curves_region_and_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "complete.openretop"
             composition = _composition()
-            curve = StoredCurve(
-                id="curve-a",
-                name="Curve A",
-                section_result_id="",
-                plane_id="",
-                original_points=np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
-                fitted_points=np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
-                mean_error=0.0,
-                max_error=0.0,
-                is_closed=True,
-            )
-            add_curve(composition.state.curve_collection, curve)
-            add_surface(
-                composition.state.surface_collection,
-                SurfacePatch(
-                    id="surface-a",
-                    name="Surface A",
-                    source_curve_ids=[curve.id],
-                    surface_type="preview_fill",
-                    metadata={"preview_mode": "closed_curve_fill"},
-                ),
+            curve = composition.state.model.sketch.add_polyline_curve(
+                np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float), closed=True, name="Curve A"
             )
             composition.state.region_collection.active_region = RegionSelection(
                 id="region-a",
@@ -212,32 +170,48 @@ class MainWindowWorkflowTests(unittest.TestCase):
             try:
                 window.current_project_path = path
                 self.assertTrue(window.save_project())
-                composition.state.curve_collection.curves.clear()
-                composition.state.surface_collection.surfaces.clear()
+                composition.state.model.sketch.curves.clear()
                 composition.state.region_collection.clear()
 
                 self.assertTrue(window.open_project_path(path))
-                self.assertEqual(
-                    [item.id for item in composition.state.curve_collection.curves],
-                    ["curve-a"],
-                )
-                self.assertEqual(
-                    [item.id for item in composition.state.surface_collection.surfaces],
-                    ["surface-a"],
-                )
-                self.assertEqual(
-                    composition.state.region_collection.active_region.id, "region-a"
-                )
-                self.assertEqual(
-                    composition.selection_controller.snapshot().ids,
-                    (region_node_id("region-a"),),
-                )
-                self.assertIn(curve_node_id("curve-a"), window._scene_model.nodes)
-                self.assertIn(surface_node_id("surface-a"), window._scene_model.nodes)
+                curves = composition.state.model.sketch.curves
+                self.assertEqual([item.name for item in curves], ["Curve A"])
+                self.assertTrue(curves[0].closed)
+                self.assertEqual(curves[0].id, curve.id)
+                self.assertEqual(composition.state.region_collection.active_region.id, "region-a")
+                self.assertEqual(composition.selection_controller.snapshot().ids, (region_node_id("region-a"),))
+                self.assertIn(f"sketch:{curve.id}", window._scene_model.nodes)
             finally:
                 window.set_project_dirty(False)
                 window.close()
 
+    def test_older_projects_bring_their_curves_into_the_3d_sketch(self) -> None:
+        """Curves saved by the retired curve tools open as 3D Sketch curves; their old
+        preview surfaces cannot be rebuilt and are reported instead of silently lost."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "older.openretop"
+            window = OpenRetopV3Window(_composition())
+            try:
+                window.current_project_path = path
+                self.assertTrue(window.save_project())
+                project = load_project(path)
+                points = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0]]
+                project.curves = [
+                    ProjectCurve("c1", "Old Curve", "", "", points, points, 0.0, 0.0, False, True),
+                    ProjectCurve("c2", "Empty", "", "", [], [], 0.0, 0.0, False, True),
+                ]
+                project.surfaces = [ProjectSurface("s1", "Old Fill", ["c1"], "preview_fill", True, {})]
+                save_project(project, path)
+
+                self.assertTrue(window.open_project_path(path))
+                curves = window.composition.state.model.sketch.curves
+                self.assertEqual([item.name for item in curves], ["Old Curve"])
+                np.testing.assert_allclose(curves[0].polyline[[0, -1]], [points[0], points[-1]], atol=1e-9)
+                self.assertTrue(any("older surface tools" in text for text in window._last_project_warnings))
+            finally:
+                window.set_project_dirty(False)
+                window.close()
 
 if __name__ == "__main__":
     unittest.main()

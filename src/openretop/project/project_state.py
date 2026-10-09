@@ -5,29 +5,18 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from openretop.curves.curve_state import CurveCollection, refresh_curve_diagnostics
-from openretop.curves.manual_curve import ensure_manual_curve_storage
 from openretop.project.project_data import (
-    ProjectBrepSurface,
-    ProjectCurve,
     ProjectData,
     ProjectDisplaySettings,
-    ProjectFourBoundaryPatchFeature,
-    ProjectLoftFeature,
     ProjectRegion,
     ProjectSectionPlane,
     ProjectSectionResult,
     ProjectSectionSettings,
-    ProjectSurface,
     ProjectTransform,
     default_project_data,
 )
 from openretop.regions.region_state import RegionCollection
 from openretop.sections.section_state import SectionCollection, plane_normal, plane_origin
-from openretop.surfaces.brep_state import BrepSurfaceCollection
-from openretop.surfaces.four_boundary_feature import FourBoundaryPatchFeatureCollection
-from openretop.surfaces.loft_feature import LoftFeatureCollection
-from openretop.surfaces.surface_state import SurfaceCollection
 
 
 def project_from_app_state(
@@ -42,12 +31,7 @@ def project_from_app_state(
     show_section_plane: bool,
     display_colors: dict[str, str] | None = None,
     section_collection: SectionCollection | None = None,
-    curve_collection: CurveCollection | None = None,
     region_collection: RegionCollection | None = None,
-    surface_collection: SurfaceCollection | None = None,
-    brep_surface_collection: BrepSurfaceCollection | None = None,
-    loft_feature_collection: LoftFeatureCollection | None = None,
-    four_boundary_feature_collection: FourBoundaryPatchFeatureCollection | None = None,
     selected_scene_ids: Iterable[str] = (),
     primary_selection_id: str | None = None,
     units: str = "mm",
@@ -69,14 +53,7 @@ def project_from_app_state(
         section_collection,
         section_planes,
     )
-    curves = _curves_from_collection(curve_collection)
     region = _region_from_collection(region_collection)
-    surfaces = _surfaces_from_collection(surface_collection)
-    brep_surfaces = _brep_surfaces_from_collection(brep_surface_collection)
-    loft_features = _loft_features_from_collection(loft_feature_collection)
-    four_boundary_patch_features = _four_boundary_features_from_collection(
-        four_boundary_feature_collection
-    )
 
     if mesh_object is not None:
         file_path = getattr(mesh_object, "file_path", None)
@@ -123,12 +100,7 @@ def project_from_app_state(
         section_planes=section_planes,
         active_section_plane_id=active_section_plane_id,
         section_results=section_results,
-        curves=curves,
         region=region,
-        surfaces=surfaces,
-        brep_surfaces=brep_surfaces,
-        loft_features=loft_features,
-        four_boundary_patch_features=four_boundary_patch_features,
         selected_scene_ids=list(dict.fromkeys(str(value) for value in selected_scene_ids)),
         primary_selection_id=(
             None if primary_selection_id is None else str(primary_selection_id)
@@ -216,65 +188,6 @@ def _section_planes_from_collection(
     ]
 
 
-def _curves_from_collection(
-    curve_collection: CurveCollection | None,
-) -> list[ProjectCurve]:
-    if curve_collection is None:
-        return []
-
-    for curve in curve_collection.curves:
-        ensure_manual_curve_storage(curve)
-        refresh_curve_diagnostics(curve)
-
-    return [
-        ProjectCurve(
-            id=str(curve.id),
-            name=str(curve.name),
-            section_result_id=str(curve.section_result_id),
-            plane_id=str(curve.plane_id),
-            original_points=_points_from_value(
-                curve.original_points,
-                "curve_collection.curve.original_points",
-            ),
-            fitted_points=_points_from_value(
-                curve.fitted_points,
-                "curve_collection.curve.fitted_points",
-            ),
-            mean_error=_float_from_value(
-                curve.mean_error,
-                "curve_collection.curve.mean_error",
-            ),
-            max_error=_float_from_value(
-                curve.max_error,
-                "curve_collection.curve.max_error",
-            ),
-            is_closed=bool(curve.is_closed),
-            visible=bool(curve.visible),
-            point_count=int(curve.point_count),
-            length=_float_from_value(
-                curve.length,
-                "curve_collection.curve.length",
-            ),
-            endpoint_distance=_float_from_value(
-                curve.endpoint_distance,
-                "curve_collection.curve.endpoint_distance",
-            ),
-            bounding_box_size=_float_from_value(
-                curve.bounding_box_size,
-                "curve_collection.curve.bounding_box_size",
-            ),
-            is_tiny_fragment=bool(curve.is_tiny_fragment),
-            source_section_result_id=str(curve.section_result_id),
-            source_plane_id=str(curve.plane_id),
-            metadata=_metadata_from_value(
-                curve.metadata,
-                "curve_collection.curve.metadata",
-            ),
-        )
-        for curve in curve_collection.curves
-    ]
-
-
 def _section_results_from_collection(
     section_collection: SectionCollection | None,
 ) -> list[ProjectSectionResult]:
@@ -311,126 +224,6 @@ def _section_results_from_collection(
             segment_count=int(result.result.segment_count),
         )
         for result in section_collection.results
-    ]
-
-
-def _surfaces_from_collection(
-    surface_collection: SurfaceCollection | None,
-) -> list[ProjectSurface]:
-    if surface_collection is None:
-        return []
-
-    return [
-        ProjectSurface(
-            id=str(surface.id),
-            name=str(surface.name),
-            source_curve_ids=[
-                str(curve_id) for curve_id in surface.source_curve_ids
-            ],
-            surface_type=str(surface.surface_type),
-            visible=bool(surface.visible),
-            metadata=_metadata_from_value(
-                surface.metadata,
-                "surface_collection.surface.metadata",
-            ),
-        )
-        for surface in surface_collection.surfaces
-    ]
-
-
-def _brep_surfaces_from_collection(
-    brep_surface_collection: BrepSurfaceCollection | None,
-) -> list[ProjectBrepSurface]:
-    if brep_surface_collection is None:
-        return []
-
-    return [
-        ProjectBrepSurface(
-            id=str(surface.id),
-            name=str(surface.name),
-            source_curve_ids=[
-                str(curve_id) for curve_id in surface.source_curve_ids
-            ],
-            brep_type=str(surface.brep_type),
-            backend=str(surface.backend),
-            visible=bool(surface.visible),
-            selected=surface.id in brep_surface_collection.selected_surface_ids,
-            metadata=_metadata_from_value(
-                surface.metadata,
-                "brep_surface_collection.surface.metadata",
-            ),
-        )
-        for surface in brep_surface_collection.surfaces
-    ]
-
-
-def _loft_features_from_collection(
-    collection: LoftFeatureCollection | None,
-) -> list[ProjectLoftFeature]:
-    if collection is None:
-        return []
-    return [
-        ProjectLoftFeature(
-            id=feature.id,
-            name=feature.name,
-            options=_metadata_from_value(
-                {
-                    "source_curve_ids": list(feature.options.source_curve_ids),
-                    "source_order_locked": feature.options.source_order_locked,
-                    "use_cad_wires": feature.options.use_cad_wires,
-                    "match_curve_directions": feature.options.match_curve_directions,
-                    "align_closed_curve_seams": feature.options.align_closed_curve_seams,
-                    "preserve_corners": feature.options.preserve_corners,
-                    "cap_start": feature.options.cap_start,
-                    "cap_end": feature.options.cap_end,
-                    "create_solid_if_closed": feature.options.create_solid_if_closed,
-                    "ruled": feature.options.ruled,
-                    "smoothing": feature.options.smoothing,
-                    "rebuild_on_source_edit": feature.options.rebuild_on_source_edit,
-                    "overbuild_enabled": feature.options.overbuild_enabled,
-                    "overbuild_amount": feature.options.overbuild_amount,
-                    "overbuild_u_start": feature.options.overbuild_u_start,
-                    "overbuild_u_end": feature.options.overbuild_u_end,
-                    "overbuild_v_start": feature.options.overbuild_v_start,
-                    "overbuild_v_end": feature.options.overbuild_v_end,
-                    "show_overbuild_handles": feature.options.show_overbuild_handles,
-                    "metadata": feature.options.metadata,
-                },
-                "loft_feature.options",
-            ),
-            brep_surface_id=feature.brep_surface_id,
-            preview_surface_id=feature.preview_surface_id,
-            last_build_success=feature.last_build_success,
-            last_build_reason=feature.last_build_reason,
-            last_build_warnings=list(feature.last_build_warnings),
-            metadata=_metadata_from_value(feature.metadata, "loft_feature.metadata"),
-        )
-        for feature in collection.features
-    ]
-
-
-def _four_boundary_features_from_collection(
-    collection: FourBoundaryPatchFeatureCollection | None,
-) -> list[ProjectFourBoundaryPatchFeature]:
-    if collection is None:
-        return []
-    return [
-        ProjectFourBoundaryPatchFeature(
-            id=feature.id,
-            name=feature.name,
-            source_curve_ids=list(feature.source_curve_ids),
-            preserve_corners=feature.preserve_corners,
-            match_directions=feature.match_directions,
-            fill_method=feature.fill_method,
-            brep_surface_id=feature.brep_surface_id,
-            preview_surface_id=feature.preview_surface_id,
-            last_build_status=feature.last_build_status,
-            metadata=_metadata_from_value(
-                feature.metadata,
-                "four_boundary_feature.metadata",
-            ),
-        )
-        for feature in collection.features
     ]
 
 

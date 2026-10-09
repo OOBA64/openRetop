@@ -1,4 +1,9 @@
-"""Apply persistent project records to the UI-independent V3 application state."""
+"""Apply persistent project records to the UI-independent V3 application state.
+
+Projects from versions with the older curve and surface tools: their curves come back as 3D
+Sketch curves (``ProjectRestoreResult.legacy_curves``, added once the model is loaded); their
+mesh-preview and BREP surfaces cannot be rebuilt and are left out, with a warning.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +11,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from openretop.application.scene_ids import region_node_id, surface_node_id
+from openretop.application.scene_ids import region_node_id
 from openretop.application.state import AppState
 from openretop.application.transform_math import build_object_transform_matrix
-from openretop.curves.curve_state import CurveCollection, StoredCurve, refresh_curve_diagnostics
-from openretop.curves.manual_curve import ensure_manual_curve_storage
 from openretop.geometry.sections import SectionPolyline, SectionResult, normalize_axis
 from openretop.project.project_data import ProjectData
 from openretop.regions.region_state import RegionCollection, RegionSelection
@@ -24,17 +27,6 @@ from openretop.sections.section_state import (
     set_active_plane,
 )
 from openretop.settings.settings_data import DISPLAY_COLOR_FIELDS, AppSettings
-from openretop.surfaces.brep_state import BrepSurfaceCollection, BrepSurfaceRecord
-from openretop.surfaces.four_boundary_feature import (
-    FourBoundaryPatchFeatureCollection,
-    FourBoundaryPatchFeatureRecord,
-)
-from openretop.surfaces.loft_feature import (
-    LoftFeatureCollection,
-    LoftFeatureOptions,
-    LoftFeatureRecord,
-)
-from openretop.surfaces.surface_state import SurfaceCollection, SurfacePatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +34,8 @@ class ProjectRestoreResult:
     warnings: tuple[str, ...] = ()
     selected_scene_ids: tuple[str, ...] = ()
     primary_selection_id: str | None = None
+    # curves saved by the older curve tools: (name, points, closed), for the 3D Sketch
+    legacy_curves: tuple[tuple[str, np.ndarray, bool], ...] = ()
 
 
 def restore_project_state(
@@ -58,33 +52,30 @@ def restore_project_state(
     _restore_display(settings, project)
     _restore_mesh(state, project)
     state.section_collection = _restore_sections(project, warnings)
-    state.curve_collection = _restore_curves(project)
     state.region_collection = _restore_region(project)
-    (
-        state.surface_collection,
-        state.brep_surface_collection,
-        state.loft_feature_collection,
-        state.four_boundary_feature_collection,
-    ) = _restore_surfaces(project, state.curve_collection, warnings)
+    legacy_curves = _legacy_curves(project)
+    dropped = len(project.surfaces) + len(project.brep_surfaces)
+    if dropped:
+        warnings.append(
+            f"{dropped} surface(s) made with the older surface tools were not loaded: rebuild them from the curves "
+            "(now in the 3D Sketch) with Loft, Fill or Face From Curves."
+        )
     state.section_result = (
         state.section_collection.results[-1].result
         if state.section_collection.results
         else None
     )
-    state.curve_results = [
-        curve for curve in state.curve_collection.curves if curve.visible
-    ]
     state.clear_selection()
-    selected_ids = tuple(dict.fromkeys(str(value) for value in project.selected_scene_ids))
-    if not selected_ids:
-        legacy_selected: list[str] = []
-        if project.region is not None and project.region.selected:
-            legacy_selected.append(region_node_id(project.region.id))
-        legacy_selected.extend(
-            surface_node_id(item.id) for item in project.brep_surfaces if item.selected
-        )
-        selected_ids = tuple(legacy_selected)
+    known = {item.id for item in state.section_collection.planes} | {item.id for item in state.section_collection.results}
+    if project.region is not None:
+        known.add(project.region.id)
+    selected_ids = tuple(
+        dict.fromkeys(str(value) for value in project.selected_scene_ids if any(str(value).endswith(item) for item in known))
+    )
+    if not selected_ids and project.region is not None and project.region.selected:
+        selected_ids = (region_node_id(project.region.id),)
     return ProjectRestoreResult(
+        legacy_curves=legacy_curves,
         warnings=tuple(warnings),
         selected_scene_ids=selected_ids,
         primary_selection_id=(
@@ -205,26 +196,14 @@ def _restore_sections(
     return collection
 
 
-def _restore_curves(project: ProjectData) -> CurveCollection:
-    curves: list[StoredCurve] = []
+def _legacy_curves(project: ProjectData) -> tuple[tuple[str, np.ndarray, bool], ...]:
+    result = []
     for saved in project.curves:
-        curve = StoredCurve(
-            id=saved.id,
-            name=saved.name,
-            section_result_id=saved.section_result_id,
-            plane_id=saved.plane_id,
-            original_points=np.asarray(saved.original_points, dtype=float),
-            fitted_points=np.asarray(saved.fitted_points, dtype=float),
-            mean_error=float(saved.mean_error),
-            max_error=float(saved.max_error),
-            is_closed=bool(saved.is_closed),
-            visible=bool(saved.visible),
-            metadata=dict(saved.metadata),
-        )
-        ensure_manual_curve_storage(curve)
-        refresh_curve_diagnostics(curve)
-        curves.append(curve)
-    return CurveCollection(curves=curves)
+        points = np.asarray(saved.fitted_points if len(saved.fitted_points) >= 2 else saved.original_points, dtype=float)
+        points = points.reshape(-1, 3) if points.size else np.zeros((0, 3))
+        if len(points) >= 2 and np.all(np.isfinite(points)):
+            result.append((str(saved.name), points, bool(saved.is_closed)))
+    return tuple(result)
 
 
 def _restore_region(project: ProjectData) -> RegionCollection:
@@ -246,138 +225,6 @@ def _restore_region(project: ProjectData) -> RegionCollection:
             metadata=dict(saved.metadata),
         )
     )
-
-
-def _restore_surfaces(
-    project: ProjectData,
-    curves: CurveCollection,
-    warnings: list[str],
-) -> tuple[
-    SurfaceCollection,
-    BrepSurfaceCollection,
-    LoftFeatureCollection,
-    FourBoundaryPatchFeatureCollection,
-]:
-    curve_ids = {item.id for item in curves.curves}
-    previews: list[SurfacePatch] = []
-    for saved in project.surfaces:
-        metadata = _with_missing_curves(saved.metadata, saved.source_curve_ids, curve_ids)
-        if metadata.get("missing_curve_ids"):
-            warnings.append(f"Surface {saved.id} has missing source curves.")
-        previews.append(
-            SurfacePatch(
-                id=saved.id,
-                name=saved.name,
-                source_curve_ids=list(saved.source_curve_ids),
-                surface_type=saved.surface_type,
-                visible=bool(saved.visible),
-                metadata=metadata,
-            )
-        )
-
-    breps: list[BrepSurfaceRecord] = []
-    for saved in project.brep_surfaces:
-        metadata = _with_missing_curves(saved.metadata, saved.source_curve_ids, curve_ids)
-        metadata.update(
-            {
-                "runtime_status": "rebuild_required",
-                "build_reason": "BREP surface record loaded; rebuild required before export.",
-            }
-        )
-        breps.append(
-            BrepSurfaceRecord(
-                id=saved.id,
-                name=saved.name,
-                source_curve_ids=list(saved.source_curve_ids),
-                brep_type=saved.brep_type,
-                backend=saved.backend,
-                visible=bool(saved.visible),
-                selected=False,
-                metadata=metadata,
-            )
-        )
-
-    lofts = [
-        LoftFeatureRecord(
-            id=saved.id,
-            name=saved.name,
-            options=_loft_options(saved.options),
-            brep_surface_id=saved.brep_surface_id,
-            preview_surface_id=saved.preview_surface_id,
-            last_build_success=bool(saved.last_build_success),
-            last_build_reason=saved.last_build_reason,
-            last_build_warnings=list(saved.last_build_warnings),
-            metadata=dict(saved.metadata),
-        )
-        for saved in project.loft_features
-    ]
-    four_boundary = [
-        FourBoundaryPatchFeatureRecord(
-            id=saved.id,
-            name=saved.name,
-            source_curve_ids=list(saved.source_curve_ids),
-            preserve_corners=bool(saved.preserve_corners),
-            match_directions=bool(saved.match_directions),
-            fill_method=saved.fill_method,
-            brep_surface_id=saved.brep_surface_id,
-            preview_surface_id=saved.preview_surface_id,
-            last_build_status=saved.last_build_status,
-            metadata=dict(saved.metadata),
-        )
-        for saved in project.four_boundary_patch_features
-    ]
-    return (
-        SurfaceCollection(surfaces=previews),
-        BrepSurfaceCollection(surfaces=breps),
-        LoftFeatureCollection(
-            features=lofts,
-            active_feature_id=lofts[0].id if lofts else None,
-        ),
-        FourBoundaryPatchFeatureCollection(
-            features=four_boundary,
-            active_feature_id=four_boundary[0].id if four_boundary else None,
-        ),
-    )
-
-
-def _loft_options(value: dict[str, object]) -> LoftFeatureOptions:
-    data = dict(value)
-    return LoftFeatureOptions(
-        source_curve_ids=list(data.get("source_curve_ids", [])),
-        source_order_locked=bool(data.get("source_order_locked", True)),
-        use_cad_wires=bool(data.get("use_cad_wires", True)),
-        match_curve_directions=bool(data.get("match_curve_directions", True)),
-        align_closed_curve_seams=bool(data.get("align_closed_curve_seams", True)),
-        preserve_corners=bool(data.get("preserve_corners", True)),
-        cap_start=bool(data.get("cap_start", False)),
-        cap_end=bool(data.get("cap_end", False)),
-        create_solid_if_closed=bool(data.get("create_solid_if_closed", False)),
-        ruled=bool(data.get("ruled", False)),
-        smoothing=str(data.get("smoothing", "normal")),
-        rebuild_on_source_edit=bool(data.get("rebuild_on_source_edit", True)),
-        overbuild_enabled=bool(data.get("overbuild_enabled", True)),
-        overbuild_amount=data.get("overbuild_amount", 0.10),
-        overbuild_u_start=data.get("overbuild_u_start", 0.10),
-        overbuild_u_end=data.get("overbuild_u_end", 0.10),
-        overbuild_v_start=data.get("overbuild_v_start", 0.10),
-        overbuild_v_end=data.get("overbuild_v_end", 0.10),
-        show_overbuild_handles=bool(data.get("show_overbuild_handles", True)),
-        metadata=dict(data.get("metadata", {}))
-        if isinstance(data.get("metadata"), dict)
-        else {},
-    )
-
-
-def _with_missing_curves(
-    metadata: dict[str, object],
-    source_ids: list[str],
-    existing_ids: set[str],
-) -> dict[str, object]:
-    result = dict(metadata)
-    missing = [item for item in source_ids if item not in existing_ids]
-    if missing:
-        result["missing_curve_ids"] = missing
-    return result
 
 
 def _unique_name(value: str, fallback: str, used: set[str]) -> str:

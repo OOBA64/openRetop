@@ -503,6 +503,30 @@ class Sketch:
         self.curves.append(curve)
         return curve
 
+    def add_polyline_curve(self, polyline: object, *, closed: bool = False, name: str | None = None, points: int | None = None) -> SketchCurve:
+        """A curve from a line already on the scan (a section cut, a region's boundary): it
+        keeps the line exactly and gets points along it, evenly by length, to edit it by
+        (moving one rebuilds the curve over the scan)."""
+
+        line = np.asarray(polyline, dtype=float).reshape(-1, 3)
+        if closed and len(line) > 1 and np.allclose(line[0], line[-1]):
+            line = line[:-1]
+        if len(line) < 2:
+            raise ValueError("a curve needs at least two points")
+        loop = np.vstack([line, line[:1]]) if closed else line
+        lengths = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))]
+        total = float(lengths[-1])
+        count = points if points is not None else int(np.clip(round(total / max(total / 12.0, 1e-9)), 4, 24))
+        count = max(count, 3 if closed else 2)
+        at = np.linspace(0.0, total, count, endpoint=not closed)
+        positions = np.c_[np.interp(at, lengths, loop[:, 0]), np.interp(at, lengths, loop[:, 1]), np.interp(at, lengths, loop[:, 2])]
+        nodes = [self.new_node(position) for position in positions]
+        self.counter += 1
+        curve = SketchCurve(f"c{self.counter}", name or self.next_name(), nodes, closed)
+        curve.polyline = loop.copy()
+        self.curves.append(curve)
+        return curve
+
     def next_name(self) -> str:
         taken = {curve.name for curve in self.curves}
         number = 1

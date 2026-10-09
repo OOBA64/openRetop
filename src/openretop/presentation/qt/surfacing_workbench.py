@@ -621,10 +621,9 @@ class SurfacingWorkbenchMixin:
     def _fill_pick(self, scene_pick: SceneObjectPickResult, x_position: int, y_position: int) -> None:
         if not scene_pick.hit:
             return
-        object_type = str(scene_pick.object_type)
         object_id = str(scene_pick.object_id)
-        if object_type == "curve":
-            self._consume_result("model.pointer", self.modeling.fill_add_curve(object_id))  # type: ignore[attr-defined]
+        if object_id.startswith("sketch-curve:"):
+            self._consume_result("model.pointer", self.modeling.fill_add_curve(object_id.split(":", 1)[1]))  # type: ignore[attr-defined]
             return
         entity_id = None
         if object_id.startswith("model-edges:") or object_id.startswith("model-face:"):
@@ -716,7 +715,7 @@ class SurfacingWorkbenchMixin:
         fill_sides = []
         for side in session.fill_chain:
             if "curve" in side:
-                curve = next((item for item in state.curve_collection.curves if item.id == side["curve"]), None)
+                curve = model.sketch.curve(side["curve"])
                 fill_sides.append(f"{getattr(curve, 'name', 'curve')} - contact")
             else:
                 entity = model.get(side["entity"])
@@ -740,7 +739,7 @@ class SurfacingWorkbenchMixin:
             units=state.units,
             selected_triangles=0 if selection is None else selection.count,
             preview_text=preview_text,
-            selected_curves=len(state.curve_collection.selected_curve_ids),
+            selected_curves=len(model.selected_curve_ids),
             selected_surfaces=tuple(entity.name for entity in selected if entity is not None and not entity.is_body),
             fill_sides=tuple(fill_sides),
             trim_text=trim_text,

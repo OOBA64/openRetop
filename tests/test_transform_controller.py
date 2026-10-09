@@ -12,7 +12,6 @@ from openretop.application.state import AppState, MeshObjectState
 from openretop.application.transform_controller import CameraVectors, TransformController
 from openretop.application.transform_math import build_object_transform_matrix
 from openretop.mesh.triangle_mesh import TriangleMeshData
-from openretop.surfaces.surface_state import SurfacePatch, add_surface
 
 
 def _cube_mesh() -> TriangleMeshData:
@@ -163,20 +162,11 @@ class TransformControllerTests(unittest.TestCase):
         self.assertIsNone(result.undo_payload)
         self.assertTrue(np.allclose(state.mesh_object.rotation, [0.0, 0.0, 0.0]))
 
-    def test_section_transform_commit_invalidates_dependents_and_undo_restores(self) -> None:
+    def test_section_transform_commit_clears_results_keeps_curves_and_undo_restores(self) -> None:
         state = _state_with_mesh()
         sections = SectionController(state)
         sections.compute(state.mesh_object.source_mesh.copy())
-        curve_id = state.curve_collection.curves[0].id
-        add_surface(
-            state.surface_collection,
-            SurfacePatch(
-                id="preview-1",
-                name="Dependent",
-                source_curve_ids=[curve_id],
-                surface_type="fill",
-            ),
-        )
+        curve_ids = [curve.id for curve in state.model.sketch.curves]
         state.selected_item = "section_plane"
         controller = TransformController(state)
         controller.start_move(mouse_start=(0, 0))
@@ -192,13 +182,9 @@ class TransformControllerTests(unittest.TestCase):
         self.assertTrue(result.changed)
         self.assertTrue(result.dirty)
         self.assertEqual(state.section_collection.results, [])
-        self.assertEqual(state.curve_collection.curves, [])
-        self.assertEqual(state.surface_collection.surfaces, [])
-        self.assertIn("preview-1", result.metadata["removed_preview_surface_ids"])
+        self.assertEqual([curve.id for curve in state.model.sketch.curves], curve_ids)
         result.undo_payload.undo()
         self.assertEqual(len(state.section_collection.results), 1)
-        self.assertGreater(len(state.curve_collection.curves), 0)
-        self.assertEqual(state.surface_collection.surfaces[0].id, "preview-1")
 
     def test_controller_has_no_ui_or_main_window_imports(self) -> None:
         source = inspect.getsource(sys.modules[TransformController.__module__])

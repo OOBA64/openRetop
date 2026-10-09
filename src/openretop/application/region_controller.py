@@ -1,11 +1,11 @@
-"""UI-independent orchestration for mesh-region workflows."""
+"""UI-independent orchestration for mesh-region workflows.
+
+A region's boundary becomes 3D Sketch curves (lofted, filled, edited like any sketch curve).
+"""
 
 from __future__ import annotations
 
-import copy
-from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 
@@ -14,7 +14,6 @@ from openretop.application.controller_support import (
     MODEL_SYNC_VIEWPORT_REQUESTS,
     CallbackUndoPayload,
     ControllerBase,
-    is_region_boundary_curve,
     publish_scene_change,
 )
 from openretop.application.events import (
@@ -26,58 +25,12 @@ from openretop.application.region_session import RegionSessionState
 from openretop.application.results import CommandResult
 from openretop.application.selection import SelectionKind, SelectionSnapshot
 from openretop.application.state import AppState
-from openretop.curves.curve_state import (
-    CurveCollection,
-    StoredCurve,
-    add_curve,
-    refresh_curve_diagnostics,
-    set_active_curve,
-    set_selected_curves,
-)
-from openretop.curves.manual_curve import (
-    DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
-    MANUAL_CURVE_METHOD_HYBRID,
-    MANUAL_CURVE_METHOD_POLYLINE,
-    ManualCurveControlDataV2,
-    ManualCurvePoint,
-    auto_detect_manual_curve_corners,
-    build_manual_stored_curve,
-    parse_manual_curve_metadata_v2,
-)
 from openretop.mesh.triangle_mesh import TriangleMeshData
-from openretop.regions.boundary import RegionBoundaryPolyline, extract_region_boundary_polylines
+from openretop.regions.boundary import extract_region_boundary_polylines
 from openretop.regions.region_state import RegionSelection, create_region_selection
 
 SELECT_REGION = "region"
-SELECT_CURVE = "curve"
 REGION_TOOL_ID = "region_select"
-
-
-@dataclass(slots=True)
-class _CurveCreationSnapshot:
-    curve_collection: CurveCollection
-    curve_results: list[object]
-    selected_item: str | None
-    active_region_selected: bool
-
-    @classmethod
-    def capture(cls, state: AppState) -> _CurveCreationSnapshot:
-        return cls(
-            curve_collection=copy.deepcopy(state.curve_collection),
-            curve_results=copy.deepcopy(list(state.curve_results)),
-            selected_item=state.selected_item,
-            active_region_selected=bool(
-                state.region_collection.active_region is not None
-                and state.region_collection.active_region.selected
-            ),
-        )
-
-    def restore(self, state: AppState) -> None:
-        state.curve_collection = copy.deepcopy(self.curve_collection)
-        state.curve_results = copy.deepcopy(self.curve_results)
-        state.selected_item = self.selected_item
-        if state.region_collection.active_region is not None:
-            state.region_collection.active_region.selected = self.active_region_selected
 
 
 class RegionController(ControllerBase):
@@ -427,189 +380,44 @@ class RegionController(ControllerBase):
                 status="No boundary edges found.",
             )
 
-        before = _CurveCreationSnapshot.capture(self.state)
+        model = self.state.model
+        before = model.snapshot()
+        matrix = getattr(self.state.mesh_object, "transform_matrix", None)
+        matrix = np.identity(4) if matrix is None else np.asarray(matrix, dtype=float).reshape(4, 4)
+        created: list[str] = []
         names = self._boundary_curve_names(len(boundaries))
-        created = [
-            self._stored_curve_from_boundary(boundary, index, name, region)
-            for index, (boundary, name) in enumerate(zip(boundaries, names), start=1)
-        ]
-        try:
-            self.state.clear_selection()
-            for curve in created:
-                add_curve(self.state.curve_collection, curve)
-            set_selected_curves(
-                self.state.curve_collection,
-                (curve.id for curve in created),
-                active_curve_id=created[0].id,
-            )
-        except ValueError as exc:
-            before.restore(self.state)
-            return CommandResult.failure(str(exc), status=str(exc))
-        self.state.selected_item = SELECT_CURVE
+        for boundary, name in zip(boundaries, names, strict=True):
+            local = np.asarray(boundary.points, dtype=float).reshape(-1, 3)
+            world = local @ matrix[:3, :3].T + matrix[:3, 3]  # the display mesh is in the scan's own coordinates
+            if len(world) < 2:
+                continue
+            created.append(model.sketch.add_polyline_curve(world, closed=bool(boundary.is_closed), name=name).id)
+        if not created:
+            return CommandResult.failure("No boundary edges found.", status="No boundary edges found.")
+        model.selected_curve_ids = list(created)
+        model.revision += 1
         region.selected = False
-        self._sync_curve_results()
-        after = _CurveCreationSnapshot.capture(self.state)
-        created_ids = tuple(curve.id for curve in created)
-        undo = self._curve_creation_undo(
-            "Extract Region Boundary",
-            before,
-            after,
-            created_ids,
+        after = model.snapshot()
+
+        def restore(snapshot: object, reason: str) -> None:
+            model.restore(snapshot)  # type: ignore[arg-type]
+            publish_scene_change(self.events, reason=reason, object_ids=tuple(created), changed_fields=("model",))
+
+        undo = CallbackUndoPayload(
+            name="Extract Region Boundary",
+            undo_action=lambda: restore(before, "undo_extract_region_boundary"),
+            redo_action=lambda: restore(after, "redo_extract_region_boundary"),
         )
-        publish_scene_change(
-            self.events,
-            reason="region_boundary_extracted",
-            object_ids=created_ids,
-            changed_fields=("curve_collection", "selection"),
-        )
-        self._publish_curve_selection(created_ids, "region_boundary_extracted")
+        publish_scene_change(self.events, reason="region_boundary_extracted", object_ids=tuple(created), changed_fields=("model",))
+        count = len(created)
         return CommandResult.ok(
-            status=self._boundary_status(created),
+            status=f"Extracted {count} boundary curve{'s' if count != 1 else ''} into the 3D Sketch.",
             changed=True,
             dirty=True,
             viewport_requests=MODEL_SYNC_VIEWPORT_REQUESTS,
             ui_requests=MODEL_SYNC_UI_REQUESTS,
             undo_payload=undo,
-            metadata={
-                "created_curve_ids": created_ids,
-                "source_region_id": region.id,
-            },
-        )
-
-    def select_boundary_curves(self) -> CommandResult:
-        region = self.state.region_collection.active_region
-        if region is None:
-            return CommandResult.failure(
-                "No active region to extract.",
-                status="No active region to extract.",
-            )
-        curve_ids = tuple(
-            curve.id
-            for curve in self.state.curve_collection.curves
-            if is_region_boundary_curve(curve)
-            and str(curve.metadata.get("source_region_id", "")) == region.id
-        )
-        if not curve_ids:
-            return CommandResult.failure(
-                "No boundary curves linked to active region.",
-                status="No boundary curves linked to active region.",
-            )
-        self.state.clear_selection()
-        set_selected_curves(
-            self.state.curve_collection,
-            curve_ids,
-            active_curve_id=curve_ids[0],
-        )
-        region.selected = False
-        self.state.selected_item = SELECT_CURVE
-        self._publish_curve_selection(curve_ids, "region_boundary_curves_selected")
-        count = len(curve_ids)
-        return CommandResult.ok(
-            status=(
-                "Selected 1 boundary curve."
-                if count == 1
-                else f"Selected {count} boundary curves."
-            ),
-            changed=True,
-            dirty=False,
-            viewport_requests=MODEL_SYNC_VIEWPORT_REQUESTS,
-            ui_requests=MODEL_SYNC_UI_REQUESTS,
-            metadata={"selected_curve_ids": curve_ids, "source_region_id": region.id},
-        )
-
-    def convert_boundary_to_hybrid_guide(self) -> CommandResult:
-        source = self._active_curve()
-        if source is None or not is_region_boundary_curve(source):
-            return CommandResult.failure(
-                "Select a region boundary curve to convert.",
-                status="Select a region boundary curve to convert.",
-            )
-        control_data = parse_manual_curve_metadata_v2(source)
-        if control_data is None:
-            points = self._finite_points(source.fitted_points)
-            if points is None:
-                return CommandResult.failure(
-                    "Selected boundary curve has no usable points.",
-                    status="Selected boundary curve has no usable points.",
-                )
-            control_data = ManualCurveControlDataV2(
-                points=[ManualCurvePoint(position=point) for point in points],
-                is_closed=bool(source.is_closed),
-                curve_method=MANUAL_CURVE_METHOD_HYBRID,
-                sample_count=DEFAULT_MANUAL_CURVE_SAMPLE_COUNT,
-            )
-        if len(control_data.points) > 64:
-            sample_indices = np.linspace(
-                0,
-                len(control_data.points) - 1,
-                64,
-                dtype=int,
-            )
-            control_data.points = [
-                copy.deepcopy(control_data.points[int(index)])
-                for index in sample_indices
-            ]
-        control_data.curve_method = MANUAL_CURVE_METHOD_HYBRID
-        control_data = auto_detect_manual_curve_corners(control_data)
-        before = _CurveCreationSnapshot.capture(self.state)
-        guide = build_manual_stored_curve(
-            curve_id=f"curve-{uuid4().hex}",
-            name=self._derived_curve_name(f"{source.name} Guide"),
-            control_points=control_data.control_points,
-            is_closed=control_data.is_closed,
-            creation_type="hybrid_region_guide",
-            snap_to_mesh=bool(source.metadata.get("snap_to_mesh", False)),
-            work_plane_type=str(source.metadata.get("work_plane_type", "mesh")),
-            source_mesh_name=source.metadata.get("source_mesh_name"),
-            curve_method=MANUAL_CURVE_METHOD_HYBRID,
-            sample_count=control_data.sample_count,
-            point_types=[point.point_type for point in control_data.points],
-            corner_angle_threshold_degrees=control_data.corner_angle_threshold_degrees,
-            preserve_corners=True,
-        )
-        guide.metadata.update(
-            {
-                "source_curve_id": source.id,
-                "source_region_id": source.metadata.get("source_region_id", ""),
-                "source_region_name": source.metadata.get("source_region_name", ""),
-                "source_curve_tags": ["region_boundary", "hybrid_guide"],
-            }
-        )
-        try:
-            self.state.clear_selection()
-            add_curve(self.state.curve_collection, guide)
-            set_active_curve(self.state.curve_collection, guide.id)
-        except ValueError as exc:
-            before.restore(self.state)
-            return CommandResult.failure(str(exc), status=str(exc))
-        self.state.selected_item = SELECT_CURVE
-        self._sync_curve_results()
-        after = _CurveCreationSnapshot.capture(self.state)
-        undo = self._curve_creation_undo(
-            "Convert Boundary to Hybrid Guide Curve",
-            before,
-            after,
-            (guide.id,),
-        )
-        publish_scene_change(
-            self.events,
-            reason="region_boundary_guide_created",
-            object_ids=(guide.id,),
-            changed_fields=("curve_collection", "selection"),
-        )
-        self._publish_curve_selection((guide.id,), "region_boundary_guide_created")
-        return CommandResult.ok(
-            status=f"Created hybrid guide curve: {guide.name}",
-            changed=True,
-            dirty=True,
-            viewport_requests=MODEL_SYNC_VIEWPORT_REQUESTS,
-            ui_requests=MODEL_SYNC_UI_REQUESTS,
-            undo_payload=undo,
-            metadata={
-                "created_curve_id": guide.id,
-                "source_curve_id": source.id,
-                "source_region_id": guide.metadata.get("source_region_id", ""),
-            },
+            metadata={"created_curve_ids": tuple(created), "source_region_id": region.id},
         )
 
     def _remove_region(self, *, status_verb: str) -> CommandResult:
@@ -658,81 +466,8 @@ class RegionController(ControllerBase):
             metadata={"region_id": region.id, "visible": bool(visible)},
         )
 
-    def _curve_creation_undo(
-        self,
-        name: str,
-        before: _CurveCreationSnapshot,
-        after: _CurveCreationSnapshot,
-        curve_ids: tuple[str, ...],
-    ) -> CallbackUndoPayload:
-        def restore(snapshot: _CurveCreationSnapshot, reason: str) -> None:
-            snapshot.restore(self.state)
-            publish_scene_change(
-                self.events,
-                reason=reason,
-                object_ids=curve_ids,
-                changed_fields=("curve_collection", "selection"),
-            )
-            selected = tuple(self.state.curve_collection.selected_curve_ids)
-            self._publish_curve_selection(selected, reason)
-
-        token = name.lower().replace(" ", "_")
-        return CallbackUndoPayload(
-            name=name,
-            undo_action=lambda: restore(before, f"undo_{token}"),
-            redo_action=lambda: restore(after, f"redo_{token}"),
-        )
-
-    def _stored_curve_from_boundary(
-        self,
-        boundary: RegionBoundaryPolyline,
-        index: int,
-        name: str,
-        region: RegionSelection,
-    ) -> StoredCurve:
-        points = np.asarray(boundary.points, dtype=float).reshape((-1, 3))
-        curve = build_manual_stored_curve(
-            curve_id=f"curve-{uuid4().hex}",
-            name=name,
-            control_points=points,
-            is_closed=bool(boundary.is_closed),
-            creation_type="region_boundary",
-            snap_to_mesh=False,
-            work_plane_type="mesh",
-            source_mesh_name=boundary.source_mesh_name,
-            curve_method=MANUAL_CURVE_METHOD_POLYLINE,
-            sample_count=max(len(points), 2),
-        )
-        metadata = dict(curve.metadata)
-        metadata.update(boundary.metadata)
-        metadata.update(
-            {
-                "creation_type": "region_boundary",
-                "source_region_id": boundary.source_region_id,
-                "source_region_name": region.name,
-                "source_mesh_name": boundary.source_mesh_name,
-                "curve_method": MANUAL_CURVE_METHOD_POLYLINE,
-                "source_curve_tags": ["region_boundary"],
-                "boundary_point_count": int(len(points)),
-                "boundary_closed": bool(boundary.is_closed),
-                "boundary_perimeter": self._polyline_perimeter(
-                    points,
-                    closed=bool(boundary.is_closed),
-                ),
-                "region_triangle_count": len(region.triangle_indices),
-                "source_region_triangle_count": len(region.triangle_indices),
-                "boundary_index": int(index),
-            }
-        )
-        curve.metadata = metadata
-        curve.original_points = points.copy()
-        curve.fitted_points = points.copy()
-        curve.is_closed = bool(boundary.is_closed)
-        refresh_curve_diagnostics(curve)
-        return curve
-
     def _boundary_curve_names(self, count: int) -> list[str]:
-        existing = {curve.name for curve in self.state.curve_collection.curves}
+        existing = {curve.name for curve in self.state.model.sketch.curves}
         names: list[str] = []
         index = 1
         while len(names) < int(count):
@@ -743,31 +478,6 @@ class RegionController(ControllerBase):
             existing.add(candidate)
             names.append(candidate)
         return names
-
-    def _derived_curve_name(self, prefix: str) -> str:
-        existing = {curve.name for curve in self.state.curve_collection.curves}
-        index = 1
-        while f"{prefix} {index}" in existing:
-            index += 1
-        return f"{prefix} {index}"
-
-    def _active_curve(self) -> StoredCurve | None:
-        active_id = self.state.curve_collection.active_curve_id
-        return next(
-            (
-                curve
-                for curve in self.state.curve_collection.curves
-                if curve.id == active_id
-            ),
-            None,
-        )
-
-    def _sync_curve_results(self) -> None:
-        for curve in self.state.curve_collection.curves:
-            refresh_curve_diagnostics(curve)
-        self.state.curve_results = [
-            curve for curve in self.state.curve_collection.curves if bool(curve.visible)
-        ]
 
     def _publish_region_scene(self, reason: str, *region_ids: str | None) -> None:
         ids = tuple(str(value) for value in region_ids if value)
@@ -784,26 +494,6 @@ class RegionController(ControllerBase):
         self.events.publish(
             SelectionChangedEvent(
                 SelectionSnapshot.from_ids(ids, kind=SelectionKind.REGION),
-                reason=reason,
-            )
-        )
-
-    def _publish_curve_selection(self, ids: tuple[str, ...], reason: str) -> None:
-        ordered = tuple(
-            curve.id
-            for curve in self.state.curve_collection.curves
-            if curve.id in set(ids)
-        )
-        primary = self.state.curve_collection.active_curve_id
-        if primary not in ordered:
-            primary = ordered[0] if ordered else None
-        self.events.publish(
-            SelectionChangedEvent(
-                SelectionSnapshot.from_ids(
-                    ordered,
-                    kind=SelectionKind.CURVE,
-                    primary_id=primary,
-                ),
                 reason=reason,
             )
         )
@@ -832,31 +522,6 @@ class RegionController(ControllerBase):
         label = "triangle" if count == 1 else "triangles"
         return f"{prefix}: {count:,} {label} at {region.threshold_degrees:.1f}\N{DEGREE SIGN}."
 
-    @staticmethod
-    def _boundary_status(curves: list[StoredCurve]) -> str:
-        if len(curves) == 1:
-            shape = "closed" if curves[0].is_closed else "open"
-            return f"Extracted 1 {shape} boundary curve."
-        return f"Extracted {len(curves)} boundary curves."
-
-    @staticmethod
-    def _polyline_perimeter(points: np.ndarray, *, closed: bool) -> float:
-        if len(points) < 2:
-            return 0.0
-        length = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
-        if closed and len(points) >= 3:
-            length += float(np.linalg.norm(points[0] - points[-1]))
-        return length
-
-    @staticmethod
-    def _finite_points(value: object) -> np.ndarray | None:
-        try:
-            points = np.asarray(value, dtype=float).reshape((-1, 3))
-        except (TypeError, ValueError):
-            return None
-        if len(points) < 2 or not np.all(np.isfinite(points)):
-            return None
-        return points
 
 
 __all__ = ("REGION_TOOL_ID", "RegionController", "RegionSessionState")

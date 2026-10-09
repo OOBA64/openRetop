@@ -64,17 +64,12 @@ class ArchitectureBaselineTests(unittest.TestCase):
     def test_controllers_state_and_support_do_not_import_presentation(self) -> None:
         application_root = ROOT / "src" / "openretop" / "application"
         expected_controllers = {
-            "analysis_controller.py",
-            "brep_controller.py",
-            "curve_controller.py",
-            "manual_curve_controller.py",
             "measure_controller.py",
             "modeling_controller.py",
             "region_controller.py",
             "scene_controller.py",
             "section_controller.py",
             "selection_controller.py",
-            "surface_controller.py",
             "transform_controller.py",
             "visibility_controller.py",
         }
@@ -85,7 +80,6 @@ class ArchitectureBaselineTests(unittest.TestCase):
 
         protected_names = expected_controllers | {
             "controller_support.py",
-            "feature_dependencies.py",
             "region_session.py",
             "scene_ids.py",
             "state.py",
@@ -127,18 +121,12 @@ class ArchitectureBaselineTests(unittest.TestCase):
         path = ROOT / "src" / "openretop" / "application" / "scene_ids.py"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         required_codecs = {
-            "curve_group_id_from_node",
-            "curve_group_node_id",
-            "curve_id_from_node",
-            "curve_node_id",
             "region_id_from_node",
             "region_node_id",
             "section_plane_id_from_node",
             "section_plane_node_id",
             "section_result_id_from_node",
             "section_result_node_id",
-            "surface_id_from_node",
-            "surface_node_id",
         }
         local_functions = {
             node.name for node in tree.body if isinstance(node, ast.FunctionDef)

@@ -44,25 +44,30 @@ def _state_with_mesh() -> AppState:
 
 class GuidanceLogicTests(unittest.TestCase):
     def test_no_scan_means_open_a_scan(self) -> None:
-        guidance = build_guidance(AppState(), cad_available=True, has_runtime_brep=False)
+        guidance = build_guidance(AppState())
         self.assertEqual(guidance.stage, Stage.START)
         self.assertEqual([step.action_id for step in guidance.steps if step.primary], ["file.open_model"])
 
-    def test_scan_without_sections_suggests_computing_one(self) -> None:
-        guidance = build_guidance(_state_with_mesh(), cad_available=True, has_runtime_brep=False)
+    def test_a_fresh_scan_suggests_modelling_it(self) -> None:
+        guidance = build_guidance(_state_with_mesh())
         self.assertEqual(guidance.stage, Stage.SCAN)
-        self.assertEqual([step.action_id for step in guidance.steps if step.primary], ["section.compute"])
+        self.assertEqual([step.action_id for step in guidance.steps if step.primary], ["model.fit_surface"])
+        self.assertIn("model.section_sketch", [step.action_id for step in guidance.steps])
         self.assertIn("Size: 10 x 20 x 30 in", guidance.summary)
         self.assertIn("2 triangles, units: in", guidance.summary)
 
-    def test_missing_cad_kernel_is_called_out(self) -> None:
-        guidance = build_guidance(_state_with_mesh(), cad_available=False, has_runtime_brep=False)
-        self.assertIn("CadQuery", guidance.cad_note)
+    def test_curves_lead_to_loft_once_two_are_selected(self) -> None:
+        state = _state_with_mesh()
+        for x in (0.0, 5.0):
+            state.model.sketch.add_polyline_curve(np.array([[x, 0.0, 0.0], [x, 20.0, 0.0]]))
+        self.assertEqual(build_guidance(state).stage, Stage.CURVES)
+        primary = [step.action_id for step in build_guidance(state, selected_curve_count=2).steps if step.primary]
+        self.assertEqual(primary, ["model.loft"])
 
     def test_assumed_units_are_flagged(self) -> None:
         state = _state_with_mesh()
         state.units_assumed = True
-        self.assertIn("(assumed)", build_guidance(state, cad_available=True, has_runtime_brep=False).summary[1])
+        self.assertIn("(assumed)", build_guidance(state).summary[1])
 
 
 class PanelAndDropTests(unittest.TestCase):
@@ -90,19 +95,18 @@ class PanelAndDropTests(unittest.TestCase):
         self.assertTrue(button.isEnabled())
         self.assertTrue(button.property("primary"))
 
-    def test_after_loading_the_panel_moves_on_to_sections_and_buttons_run_actions(self) -> None:
+    def test_after_loading_the_panel_moves_on_to_modelling_and_buttons_run_actions(self) -> None:
         window = self._window()
         with tempfile.TemporaryDirectory() as directory:
             self.assertTrue(window.open_model_path(self._stl(directory), units="mm"))
         buttons = window.next_steps.step_buttons
-        self.assertIn("section.compute", buttons)
-        self.assertTrue(buttons["section.compute"].isEnabled())
-        buttons["section.compute"].click()
-        # sections now exist, so the advice advances to building a surface
-        self.assertTrue(window.composition.state.curve_collection.curves)
-        self.assertIn("surface.editable_brep_loft", window.next_steps.step_buttons)
-        self.assertFalse(window.next_steps.step_buttons["surface.editable_brep_loft"].isEnabled())
-        self.assertIn("needs", window.next_steps.step_buttons["surface.editable_brep_loft"].toolTip().lower())
+        self.assertIn("model.section_sketch", buttons)
+        self.assertTrue(buttons["model.section_sketch"].isEnabled())
+        self.assertTrue(buttons["model.fit_surface"].property("primary"))
+        buttons["model.section_sketch"].click()
+        # the button started the tool: its panel takes the place of the next steps
+        self.assertEqual(window.composition.modeling_controller.session.tool, "section")
+        self.assertTrue(window.next_steps.isHidden())
 
     def test_selecting_something_swaps_in_the_inspector(self) -> None:
         window = self._window()

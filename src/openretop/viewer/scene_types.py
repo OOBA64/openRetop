@@ -40,6 +40,10 @@ def geometry_revision(*values: object) -> int:
             except (TypeError, ValueError):
                 digest.update(repr(value).encode("utf-8", "replace"))
             else:
+                if array.dtype == object:
+                    # mixed records (ids, styles): an object array's bytes are pointers
+                    digest.update(repr(value).encode("utf-8", "replace"))
+                    continue
                 digest.update(str(array.dtype).encode("ascii"))
                 digest.update(str(array.shape).encode("ascii"))
                 digest.update(array.tobytes())

@@ -5,20 +5,13 @@ from unittest.mock import patch
 
 import numpy as np
 from tests.mesh_query_reference import (
-    ReferenceMeshQueryService,
     ReferenceMeshSpatialIndex,
     reference_query_closest_points,
 )
 
-from openretop.analysis.deviation import compute_point_deviation_to_mesh
-from openretop.curves import projection as curve_projection
-from openretop.curves.curve_state import StoredCurve
-from openretop.curves.projection import project_curve_points_to_mesh
 from openretop.mesh.query_service import MeshQueryService
 from openretop.mesh.spatial_index import MeshSpatialIndex, vtk_available
 from openretop.mesh.triangle_mesh import TriangleMeshData
-from openretop.surfaces.surface_preview import MESH_CONFORMING_LOFT, build_surface_preview
-from openretop.surfaces.surface_state import SurfacePatch
 
 
 def _query_mesh() -> TriangleMeshData:
@@ -43,24 +36,6 @@ def _query_mesh() -> TriangleMeshData:
             ],
             dtype=int,
         ),
-    )
-
-
-def _plane_curve(curve_id: str, y_value: float, z_value: float) -> StoredCurve:
-    points = np.asarray(
-        [[0.1, y_value, z_value], [0.5, y_value, z_value], [0.9, y_value, z_value]],
-        dtype=float,
-    )
-    return StoredCurve(
-        id=curve_id,
-        name=curve_id,
-        section_result_id="",
-        plane_id="",
-        original_points=points.copy(),
-        fitted_points=points.copy(),
-        mean_error=0.0,
-        max_error=0.0,
-        is_closed=False,
     )
 
 
@@ -203,96 +178,6 @@ class MeshQueryServiceTests(unittest.TestCase):
             service.get_index(second)
 
         self.assertEqual(build_index.call_count, 2)
-
-
-class AcceleratedProjectionContractTests(unittest.TestCase):
-    def test_large_failures_are_aggregated_and_runtime_loop_is_removed(self) -> None:
-        mesh = _query_mesh()
-        points = np.tile(np.asarray([[0.5, 0.5, 10.0]], dtype=float), (128, 1))
-
-        result = project_curve_points_to_mesh(
-            points,
-            mesh,
-            max_search_distance=0.1,
-            mesh_query_service=ReferenceMeshQueryService(),
-        )
-
-        self.assertEqual(result.missed_count, 128)
-        self.assertEqual(len(result.failed_indices), 128)
-        self.assertEqual(len(result.warnings), 1)
-        self.assertIn("128 of 128 points", result.warnings[0])
-        self.assertFalse(hasattr(curve_projection, "_closest_mesh_point"))
-        self.assertFalse(hasattr(curve_projection, "_closest_point_on_triangle"))
-
-
-class MeshConformingServiceTests(unittest.TestCase):
-    def test_preview_reuses_service_and_retains_non_brep_diagnostics(self) -> None:
-        mesh = TriangleMeshData(
-            vertices=np.asarray(
-                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
-                dtype=float,
-            ),
-            triangles=np.asarray([[0, 1, 2], [0, 2, 3]], dtype=int),
-        )
-        surface = SurfacePatch(
-            id="conforming",
-            name="Conforming",
-            source_curve_ids=["a", "b"],
-            surface_type="mesh_conforming_loft_preview",
-            metadata={
-                "preview_mode": MESH_CONFORMING_LOFT,
-                "projection_distance_threshold": 1.0,
-                "grid_v_count": 8,
-            },
-        )
-        curves = [_plane_curve("a", 0.2, 0.2), _plane_curve("b", 0.8, 0.2)]
-        service = ReferenceMeshQueryService()
-
-        first = build_surface_preview(
-            surface,
-            curves,
-            mesh=mesh,
-            mesh_query_service=service,
-            mesh_revision="scan-1",
-        )
-        second = build_surface_preview(
-            surface,
-            curves,
-            mesh=mesh.copy(),
-            mesh_query_service=service,
-            mesh_revision="scan-1",
-        )
-
-        self.assertTrue(first.preview_available)
-        self.assertTrue(second.preview_available)
-        self.assertEqual(service.index_build_count, 1)
-        self.assertEqual(service.query_count, 2)
-        self.assertFalse(first.diagnostics["is_brep"])
-        self.assertFalse(first.mesh.wireframe_overlay)
-        self.assertEqual(first.diagnostics["projection_backend"], "test-brute-force-reference")
-        self.assertIn("projection_query_time_seconds", first.diagnostics)
-
-
-class DeviationComputationTests(unittest.TestCase):
-    def test_mean_max_rms_failures_and_timing_metadata(self) -> None:
-        index = ReferenceMeshSpatialIndex(_query_mesh())
-        points = np.asarray([[0.25, 0.25, 1.0], [0.5, 0.25, 2.0]], dtype=float)
-
-        result = compute_point_deviation_to_mesh(points, index, signed=True)
-
-        self.assertAlmostEqual(result.mean_distance, 1.5)
-        self.assertAlmostEqual(result.max_distance, 2.0)
-        self.assertAlmostEqual(result.rms_distance, np.sqrt(2.5))
-        self.assertEqual(result.failed_sample_count, 0)
-        self.assertIn("index_build_time_seconds", result.metadata)
-        self.assertIn("query_time_seconds", result.metadata)
-        self.assertEqual(result.metadata["query_backend"], "test-brute-force-reference")
-        self.assertTrue(result.metadata["signed_requested"])
-        self.assertFalse(result.metadata["signed_distance_available"])
-        self.assertTrue(all(sample.signed_distance is None for sample in result.samples))
-
-        limited = compute_point_deviation_to_mesh(points, index, max_distance=1.5)
-        self.assertEqual(limited.failed_sample_count, 1)
 
 
 if __name__ == "__main__":

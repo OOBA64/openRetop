@@ -293,40 +293,66 @@ def deviation(breps: list[bytes], points: np.ndarray) -> np.ndarray:
     return S.signed_distances(S.compound(shapes), points).astype(np.float32)
 
 
-def export(breps: list[bytes], path: str, *, file_format: str = "step") -> dict[str, Any]:
-    """Write the shapes to STEP or IGES and read the file back to check it."""
+# OpenCascade's names for the length units openRetop supports, in STEP and in IGES
+_STEP_UNITS = {"mm": "MM", "cm": "CM", "m": "M", "in": "INCH"}
+_IGES_UNITS = {"mm": "MM", "cm": "CM", "m": "M", "in": "IN"}
 
+
+def export(breps: list[bytes], path: str, *, file_format: str = "step", units: str = "mm") -> dict[str, Any]:
+    """Write the shapes to STEP or IGES and read the file back to check it.
+
+    The model's numbers are in ``units`` and the file declares that unit, so another CAD
+    package sees the part at its real size (an inch scan is not read as millimetres).
+    """
+
+    from OCP.Interface import Interface_Static
+
+    from openretop.geometry.units import get_unit
+
+    code = get_unit(units).code
     shapes = [S.from_brep(brep) for brep in breps]
     if not shapes:
         raise ValueError("nothing to export")
     shape = shapes[0] if len(shapes) == 1 else S.compound(shapes)
-    if file_format == "step":
-        from OCP.IFSelect import IFSelect_RetDone
-        from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
+    # STEP: process-wide settings for how OpenCascade reads our numbers (and the file's, on
+    # reading it back) and for the unit the file declares; put back afterwards
+    statics = ("xstep.cascade.unit", "write.step.unit") if file_format == "step" else ()
+    for name in statics:
+        Interface_Static.SetCVal_s(name, _STEP_UNITS[code])
+    try:
+        if file_format == "step":
+            from OCP.IFSelect import IFSelect_RetDone
+            from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
 
-        writer = STEPControl_Writer()
-        writer.Transfer(shape, STEPControl_AsIs)
-        if writer.Write(path) != IFSelect_RetDone:
-            raise ValueError(f"could not write {path}")
-        reader = STEPControl_Reader()
-        if reader.ReadFile(path) != IFSelect_RetDone:
-            raise ValueError("the written STEP file could not be read back")
-        reader.TransferRoots()
-        back = reader.OneShape()
-    elif file_format == "iges":
-        from OCP.IGESControl import IGESControl_Reader, IGESControl_Writer
+            writer = STEPControl_Writer()
+            writer.Transfer(shape, STEPControl_AsIs)
+            if writer.Write(path) != IFSelect_RetDone:
+                raise ValueError(f"could not write {path}")
+            reader = STEPControl_Reader()
+            if reader.ReadFile(path) != IFSelect_RetDone:
+                raise ValueError("the written STEP file could not be read back")
+            reader.TransferRoots()
+            back = reader.OneShape()
+        elif file_format == "iges":
+            from OCP.IGESControl import IGESControl_Reader, IGESControl_Writer
 
-        writer = IGESControl_Writer("MM", 1)
-        writer.AddShape(shape)
-        writer.ComputeModel()
-        if not writer.Write(path):
-            raise ValueError(f"could not write {path}")
-        reader = IGESControl_Reader()
-        reader.ReadFile(path)
-        reader.TransferRoots()
-        back = reader.OneShape()
-    else:
-        raise ValueError(f"unknown export format: {file_format}")
+            # the IGES writer takes the shape to be in millimetres whatever the settings say,
+            # and converts it to the file's unit: hand it millimetres, and read back the same
+            factor = get_unit(code).millimetres
+            writer = IGESControl_Writer(_IGES_UNITS[code], 1)
+            writer.AddShape(_scaled(shape, factor))
+            writer.ComputeModel()
+            if not writer.Write(path):
+                raise ValueError(f"could not write {path}")
+            reader = IGESControl_Reader()
+            reader.ReadFile(path)
+            reader.TransferRoots()
+            back = _scaled(reader.OneShape(), 1.0 / factor)
+        else:
+            raise ValueError(f"unknown export format: {file_format}")
+    finally:
+        for name in statics:
+            Interface_Static.SetCVal_s(name, "MM")
     return {
         "faces": len(S.faces_of(shape)),
         "faces_back": len(S.faces_of(back)),
@@ -335,6 +361,17 @@ def export(breps: list[bytes], path: str, *, file_format: str = "step") -> dict[
         "volume": S.shape_volume(shape),
         "volume_back": S.shape_volume(back),
     }
+
+
+def _scaled(shape: Any, factor: float) -> Any:
+    if factor == 1.0:
+        return shape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Pnt, gp_Trsf
+
+    transform = gp_Trsf()
+    transform.SetScale(gp_Pnt(0.0, 0.0, 0.0), factor)
+    return BRepBuilderAPI_Transform(shape, transform, True).Shape()
 
 
 def profile(frame: dict[str, Any], loops: list[dict[str, Any]], **info: Any) -> dict[str, Any]:

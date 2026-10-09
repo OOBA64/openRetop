@@ -8,10 +8,10 @@ import numpy as np
 from vtkmodules.vtkRenderingCore import vtkRenderer
 
 from openretop.application.state import AppState, MeshObjectState
-from openretop.curves.curve_state import CurveCollection, StoredCurve
 from openretop.mesh.triangle_mesh import TriangleMeshData
 from openretop.viewer.actor_factories import VTKActorAdapter
 from openretop.viewer.camera_controller import CameraController, frame_pose, named_view_vectors
+from openretop.viewer.modeling_scene import ModelingSceneInput
 from openretop.viewer.picking_service import PickingService, PickKind
 from openretop.viewer.scene_builder import SceneBuilder, SceneBuildOptions
 from openretop.viewer.scene_synchronizer import SceneSynchronizer
@@ -100,7 +100,7 @@ class SceneSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.visible_bounds(), ((10.0, -4.0, 0.0), (31.0, 2.0, 6.0)))
         self.assertEqual(snapshot.bounds_for_ids({"curve:curve-a"}), curve.world_bounds)
 
-    def test_scene_builder_is_stable_and_changes_only_mutated_curve_revision(self) -> None:
+    def test_scene_builder_is_stable_and_changes_only_the_edited_sketch_curve(self) -> None:
         mesh = _mesh()
         mesh_state = MeshObjectState(
             source_mesh=mesh,
@@ -114,28 +114,21 @@ class SceneSnapshotTests(unittest.TestCase):
             source_bounds_min=np.asarray([0.0, 0.0, 0.0]),
             source_bounds_max=np.asarray([2.0, 3.0, 0.0]),
         )
-        curve = StoredCurve(
-            id="curve-a",
-            name="Curve A",
-            section_result_id="result-a",
-            plane_id="plane-a",
-            original_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]),
-            fitted_points=np.asarray([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]),
-            mean_error=0.0,
-            max_error=0.0,
-            is_closed=False,
-        )
-        state = AppState(mesh_object=mesh_state, curve_collection=CurveCollection(curves=[curve]))
+        state = AppState(mesh_object=mesh_state)
         builder = SceneBuilder()
+        options = SceneBuildOptions(show_section_plane=False)
+        polyline = np.asarray([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
 
-        first = builder.build(state, options=SceneBuildOptions(show_section_plane=False))
-        second = builder.build(state, options=SceneBuildOptions(show_section_plane=False))
+        def build(line: np.ndarray):
+            return builder.build(state, options=options, modeling=ModelingSceneInput(sketch_curves=(("curve-a", line, False),)))
+
+        first, second = build(polyline), build(polyline)
         self.assertEqual(first.revision, second.revision)
-        self.assertEqual(first.curves[0].revision, second.curves[0].revision)
+        self.assertEqual(first.model_edges[0].revision, second.model_edges[0].revision)
 
-        curve.fitted_points[1] = [4.0, 5.0, 6.0]
-        third = builder.build(state, options=SceneBuildOptions(show_section_plane=False))
-        self.assertNotEqual(second.curves[0].revision, third.curves[0].revision)
+        # editing a sketch curve rebuilds its polyline (a new array)
+        third = build(np.asarray([[0.0, 0.0, 0.0], [4.0, 5.0, 6.0]]))
+        self.assertNotEqual(second.model_edges[0].revision, third.model_edges[0].revision)
         self.assertEqual(second.meshes[0].revision, third.meshes[0].revision)
 
     def test_snapshot_selection_bounds_support_object_and_group_keys(self) -> None:

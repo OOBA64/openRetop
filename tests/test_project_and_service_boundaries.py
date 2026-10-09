@@ -158,7 +158,7 @@ class ServiceAndBootstrapTests(unittest.TestCase):
         self.assertIsNot(first.mesh_query_service, second.mesh_query_service)
         self.assertIs(first.dependencies.events, first.events)
         self.assertTrue(hasattr(first, "scene_builder"))
-        self.assertTrue(hasattr(first.cad, "capabilities"))
+        self.assertIsNot(first.modeling_controller, second.modeling_controller)
 
 
 if __name__ == "__main__":
