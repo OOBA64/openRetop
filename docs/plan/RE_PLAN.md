@@ -82,6 +82,32 @@ real OCC face, plus mutual trimming. Every tool is a panel with a few parameters
 immediate preview. The patches are deliberately oversized and trimmed at the end. This is
 milestone **S** below, which now comes before the rest of M1.
 
+## 2b. Reference workflow 2: ExModel on a motorcycle swing arm (video reviewed 2026-10-08)
+
+The owner's second reference (3DWonders, "Rebuilding a Swing Arm | EXModel Pro"): a cast,
+very organic part rebuilt quickly with *solid* tools on top of the surfacing ones.
+
+1. **Create Sketch** on a plane (XY/YZ/XZ, a CAD face, an offset, or placed interactively;
+   "for extruded" or "for revolved" surface). The scan's **section** at the plane is drawn on
+   the sketch as reference (optionally stacked sections or the outline of the whole scan).
+2. **Fit primitives** on the section: brush over the section points and a line, arc, circle,
+   rectangle, slot or spline is fitted at once within a target tolerance ("instant fit");
+   lines within a few degrees of horizontal/vertical are made exact; corners can be joined
+   with a radius ("instant join").
+3. **Extrude** the profile: one- or two-sided depths, draft, inverse, new solid / add / cut;
+   top and bottom depths dragged with handles in the viewport; live **deviation analysis**
+   on the scan near the new walls while adjusting.
+4. **Fillet** the edges between faces: pick an edge (tangent edges added), constant or
+   start-to-end radius, an **Auto** button that measures the radius from the scan, and live
+   analysis of the fillet against the scan. Used constantly.
+5. **Extract primitives**: brush an area, get a plane or cylinder (also line, cone, sphere)
+   patch sized to the area, with corner/edge **handles to resize** it by dragging.
+6. Fit Surface for the freeform sides, **Trim** everything into a solid body, Compare.
+
+What it adds to section 2a: sketches from sections with fitted lines and arcs, extrude/revolve
+to solids, fillets measured from the scan, resizable primitive patches, and live deviation in
+every tool. These are milestone M2 (RE-11..16), now pulled forward as S-13..S-17.
+
 ## 3. How we will know it works: round-trip benchmarks
 
 Every milestone is measured against known CAD, not against "looks right". A benchmark suite
@@ -122,6 +148,12 @@ panel with preview, in the order the video uses them.
 | S-09 | Extend and Trim tools: extend by a distance; automatic trimming (tolerance, overlap), click pieces to keep or drop, OK sews; a closed result becomes a solid | B1 from fitted patches to a solid entirely in the UI. |
 | S-10 | Compare: deviation colour map of the scan against the model, legend and statistics | Updates in about a second on a 1M-triangle scan. |
 | S-11 | Export the model: STEP (solids and surfaces) and IGES (surfaces), checked by re-import | Re-import gives the same faces and volume. |
+| S-12 | Save the model (surfaces, bodies, 3D Sketch) in the project file | Reopening a project shows the same surfaces and curves; undo history starts fresh. |
+| S-13 | Section sketch: sketch plane (world planes, a model face, offset, interactive), the scan's section drawn on it, brush-to-fit line/arc/circle/spline within a tolerance, horizontal/vertical snapping, corner radii, drag endpoints; closed profiles detected | B2 shaft profile and B3 housing outline fitted to 0.02 mm, every line and arc found. |
+| S-14 | Extrude and revolve a sketch profile: one/two-sided depth, draft, new body / add / cut; depth handles in the viewport; live deviation | B3 housing walls and pocket within 0.05 mm of the CAD; B2 shaft revolved within 0.02 mm. |
+| S-15 | Fillet and chamfer solid edges: pick edges (tangent chain), constant or variable radius, Auto radius measured from the scan, live deviation | B3 R3/R2 fillets found within 0.05 mm by Auto. |
+| S-16 | Primitive patches sized to their area automatically, with handles to resize planes (edges, corners) and cylinders (length, arc) | A plane patch dragged larger keeps its fit; Trim uses the new size. |
+| S-17 | Live deviation analysis in every tool panel (tolerance, colour map near the new geometry) | Updates while dragging a depth or radius. |
 
 ### M1 - Machined parts from primitives (B1)
 The first thing that produces a real, exportable solid.

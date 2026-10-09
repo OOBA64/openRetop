@@ -49,6 +49,12 @@ reference video in RE_PLAN section 2a) comes first.
 | S-09 | S | done | Extend (by a distance, G1) and Trim (automatic: split all, keep pieces on the scan with tolerance/overlap; click pieces to keep/drop; Apply sews; closed = solid). B1 in the real window: one valid solid, volume 0.012% from the CAD. Todo: trim open borders to the scan outline |
 | S-10 | S | done | Compare: deviation colour map on the scan (green within +/- tolerance, yellow-red above, cyan-blue below, legend), RMS/max/% within; surfaces show as edges while the map is up. B1: RMS 0.020 mm, 98.7% within 0.05 mm |
 | S-11 | S | done | Export Model (File, Ctrl+E, Surfacing toolbar): STEP or IGES of the selected or visible model, read back to check the face count |
+| S-12 | S | todo | Save model surfaces, bodies and the 3D Sketch in the project file |
+| S-13 | S | todo | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii |
+| S-14 | S | todo | Extrude / revolve sketch profiles to solids (depth handles, draft, add/cut), live deviation |
+| S-15 | S | todo | Fillet / chamfer solid edges with Auto radius from the scan, live deviation |
+| S-16 | S | todo | Primitive patches auto-sized, with drag handles to resize |
+| S-17 | S | todo | Live deviation analysis in every tool panel |
 | RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | done | Automatic segmentation into classified regions (`openretop.segmentation`: fit-guided region growing with a saturation test; 95-97% of triangles correct on B1-B5, every true face found, 1.5-3 s prismatic / ~8 s freeform; freeform areas still yield some small primitive regions, RE-04 edits them) |
