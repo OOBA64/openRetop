@@ -122,10 +122,19 @@ from workbench_ui import (
     ToolbarItem,
     ToolbarSchema,
 )
+from workbench_ui.contracts import WorkspaceDescriptor
 from workbench_ui.icons import themed_icon
 from workbench_ui.shell import action_tooltip
 
 _LOG = logging.getLogger(__name__)
+
+# the stages of the work, each with its own tools (the toolbar row under the tabs)
+WORKSPACES = (
+    WorkspaceDescriptor("scan", "Scan", "Prepare the scan: align it, cut sections, select regions, measure."),
+    WorkspaceDescriptor("surface", "Surface Modeling", "Curves on the scan and surfaces fitted to it: organic shapes."),
+    WorkspaceDescriptor("solid", "Solid Modeling", "Sketches on planes through the scan, extruded into solids."),
+)
+DEFAULT_WORKSPACE = "surface"
 
 
 # Commands that build geometry (sections, CAD faces/lofts) and can take seconds.
@@ -233,12 +242,16 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             action_registry=self._framework_actions,
             menu_schemas=self._menu_schemas(),
             toolbar_schemas=self._toolbar_schemas(),
+            workspaces=self._workspaces(),
             parent=parent,
         )
         self.resize(
             self.composition.settings.ui.window_width,
             self.composition.settings.ui.window_height,
         )
+        remembered = str(self.composition.settings.future.get("workspace", DEFAULT_WORKSPACE))
+        self.set_active_workspace(remembered if remembered in {item.id for item in WORKSPACES} else DEFAULT_WORKSPACE)
+        self.workspace_changed.connect(self._remember_workspace)
         self._camera_request = CameraRequest.frame_all()
         self._section_tool = False  # the Section tool is engaged: section planes are shown
         self.current_project_path: Path | None = None
@@ -369,9 +382,14 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         return tuple(result)
 
     @staticmethod
+    def _workspaces() -> tuple[WorkspaceDescriptor, ...]:
+        return WORKSPACES
+
+    @staticmethod
     def _toolbar_schemas() -> tuple[ToolbarSchema, ...]:
-        # (action, icon, short label, starts a new group): file | history | view | transform | scan tools
-        items = (
+        # (action, icon, short label, starts a new group). Common to every workspace: file |
+        # history | view. Then one toolbar per workspace, in the order a part is worked on.
+        common = (
             ("file.open_model", "open_scan", "Open Scan", False),
             ("file.open_project", "open_project", "Open Project", False),
             ("file.save_project", "save", "Save", False),
@@ -379,42 +397,40 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             ("edit.redo", "redo", "Redo", False),
             ("view.frame_all", "frame_all", "Frame All", True),
             ("view.frame_selected", "frame_selected", "Frame Selected", False),
-            ("transform.move", "move", "Move", True),
+        )
+        scan = (  # preparing the scan: align it, cut it, look at it
+            ("transform.move", "move", "Move", False),
             ("transform.rotate", "rotate", "Rotate", False),
             ("section.add_plane", "section_plane", "Section Plane", True),
             ("section.compute", "section_cut", "Cut Section", False),
-            ("region.start", "region", "Region", False),
+            ("region.start", "region", "Region", True),
             ("measure.distance", "measure", "Measure", False),
         )
-        # the ExModel-style surfacing tools, in the order a part is modelled: their own row
-        surfacing = (
-            ("model.fit_surface", "fit_surface", "Fit Surface", False),
+        surface = (  # ExModel-style surfacing on organic shapes
             ("model.sketch", "curve", "3D Sketch", False),
-            ("model.section_sketch", "section_sketch", "Section Sketch", False),
-            ("model.extrude", "extrude", "Extrude", False),
-            ("model.loft", "loft", "Loft", False),
+            ("model.fit_surface", "fit_surface", "Fit Surface", False),
+            ("model.loft", "loft", "Loft", True),
             ("model.fill", "fill", "Fill", False),
             ("model.extend", "extend", "Extend", False),
             ("model.trim", "trim", "Trim", True),
-            ("model.compare", "compare", "Compare", False),
-            ("file.export_model", "save", "Export", True),
+            ("model.compare", "compare", "Compare", True),
+            ("file.export_model", "save", "Export", False),
         )
+        solid = (  # sketches on planes made into solids
+            ("model.section_sketch", "section_sketch", "Section Sketch", False),
+            ("model.extrude", "extrude", "Extrude", False),
+            ("model.compare", "compare", "Compare", True),
+            ("file.export_model", "save", "Export", False),
+        )
+
+        def items(rows):
+            return tuple(ToolbarItem(action_id, icon=icon, label=label, separator_before=group) for action_id, icon, label, group in rows)
+
         return (
-            ToolbarSchema(
-                "Main",
-                tuple(
-                    ToolbarItem(action_id, icon=icon, label=label, separator_before=group)
-                    for action_id, icon, label, group in items
-                ),
-            ),
-            ToolbarSchema(
-                "Surfacing",
-                tuple(
-                    ToolbarItem(action_id, icon=icon, label=label, separator_before=group)
-                    for action_id, icon, label, group in surfacing
-                ),
-                break_before=True,
-            ),
+            ToolbarSchema("Main", items(common)),
+            ToolbarSchema("Scan", items(scan), workspace="scan"),
+            ToolbarSchema("Surface Modeling", items(surface), workspace="surface"),
+            ToolbarSchema("Solid Modeling", items(solid), workspace="solid"),
         )
 
     def _dispatch_framework_action(
@@ -1900,6 +1916,9 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         if answer == QMessageBox.Save:
             return self.save_project()
         return True
+
+    def _remember_workspace(self, workspace_id: str) -> None:
+        self.composition.settings.future["workspace"] = workspace_id
 
     def closeEvent(self, event: object) -> None:
         if self._executor.busy:

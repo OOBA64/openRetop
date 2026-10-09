@@ -150,7 +150,7 @@ class ExtrudeWindowTests(unittest.TestCase):
         self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
         window.refresh()
         extrude = window._qt_actions["model.extrude"]
-        self.assertIn(extrude, window.findChild(QToolBar, "toolbar_Surfacing").actions())
+        self.assertIn(extrude, window.findChild(QToolBar, "toolbar_Solid_Modeling").actions())
         self.assertFalse(extrude.isEnabled())  # nothing to extrude yet
         window._qt_actions["model.section_sketch"].trigger()
         window._handle_tool_key(Qt.Key.Key_Return)  # creates the sketch

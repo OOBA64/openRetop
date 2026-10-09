@@ -225,7 +225,7 @@ class SurfacingWindowTests(unittest.TestCase):
         window = OpenRetopV3Window(composition)
         self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
         window.refresh()
-        surfacing = window.findChild(QToolBar, "toolbar_Surfacing")
+        surfacing = window.findChild(QToolBar, "toolbar_Surface_Modeling")
         self.assertIn(window._qt_actions["model.fit_surface"], surfacing.actions())
         self.assertTrue(window._qt_actions["model.fit_surface"].isEnabled())
         self.assertFalse(window._qt_actions["model.trim"].isEnabled())  # nothing to trim yet

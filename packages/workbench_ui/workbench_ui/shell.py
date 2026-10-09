@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QLabel,
     QMainWindow,
     QMenu,
+    QTabBar,
     QToolBar,
     QWidget,
 )
@@ -27,6 +28,7 @@ from workbench_ui.contracts import (
     ThemeManager,
     ToolbarSchema,
     ToolModeManager,
+    WorkspaceDescriptor,
 )
 from workbench_ui.icons import ICON_SIZE, themed_icon
 
@@ -45,7 +47,15 @@ def action_tooltip(definition: ActionDefinition) -> str:
 
 
 class ApplicationShell(QMainWindow):
-    """Host window for panels, actions, workspace content, and status."""
+    """Host window for panels, actions, workspace content, and status.
+
+    Workspaces: each groups the tools for one stage of the work. Tabs at the start of the
+    toolbar area switch between them; a toolbar belonging to a workspace shows only while it
+    is active, common toolbars always. Invoking an action that only lives in another
+    workspace's toolbar (from a menu, a shortcut, the palette) switches there.
+    """
+
+    workspace_changed = Signal(str)
 
     def __init__(
         self,
@@ -53,6 +63,7 @@ class ApplicationShell(QMainWindow):
         action_registry: ActionRegistry | None = None,
         menu_schemas: Iterable[MenuSchema] = (),
         toolbar_schemas: Iterable[ToolbarSchema] = (),
+        workspaces: Iterable[WorkspaceDescriptor] = (),
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -66,6 +77,11 @@ class ApplicationShell(QMainWindow):
         self._qt_actions: dict[str, QAction] = {}
         self._toolbar_icons: dict[str, str] = {}  # action id -> icon name
         self._docks: dict[str, QDockWidget] = {}
+        self._workspaces: tuple[WorkspaceDescriptor, ...] = tuple(workspaces)
+        self._workspace_toolbars: dict[str, list[QToolBar]] = {}
+        self._action_workspaces: dict[str, set[str]] = {}  # action id -> the workspaces whose toolbar has it
+        self._active_workspace = self._workspaces[0].id if self._workspaces else ""
+        self.workspace_tabs: QTabBar | None = None
         # Left: the latest message (statusBar().showMessage). Right: a persistent
         # info label (e.g. "part.stl - mm - 12,000 triangles"), never a copy of the message.
         self._info_label = QLabel("", self)
@@ -80,7 +96,7 @@ class ApplicationShell(QMainWindow):
         if action is None:
             action = QAction(definition.label, self)
             action.setObjectName(f"action_{definition.id.replace('.', '_')}")
-            action.triggered.connect(lambda _checked=False, action_id=definition.id: self.action_registry.invoke(action_id))
+            action.triggered.connect(lambda _checked=False, action_id=definition.id: self._invoke_from_ui(action_id))
             self._qt_actions[definition.id] = action
         self._sync_qt_action(definition)
         return action
@@ -115,7 +131,60 @@ class ApplicationShell(QMainWindow):
             elif item.action_id:
                 menu.addAction(self._qt_action(self.action_registry.require(item.action_id)))
 
+    def _invoke_from_ui(self, action_id: str) -> None:
+        homes = self._action_workspaces.get(action_id)
+        if homes and self._active_workspace not in homes:
+            self.set_active_workspace(sorted(homes, key=self._workspace_order)[0])
+        self.action_registry.invoke(action_id)
+
+    def _workspace_order(self, workspace_id: str) -> int:
+        ids = [item.id for item in self._workspaces]
+        return ids.index(workspace_id) if workspace_id in ids else len(ids)
+
+    @property
+    def active_workspace(self) -> str:
+        return self._active_workspace
+
+    @property
+    def workspaces(self) -> tuple[WorkspaceDescriptor, ...]:
+        return self._workspaces
+
+    def set_active_workspace(self, workspace_id: str) -> None:
+        if workspace_id not in {item.id for item in self._workspaces}:
+            raise ValueError(f"unknown workspace: {workspace_id}")
+        changed = workspace_id != self._active_workspace
+        self._active_workspace = workspace_id
+        for owner, toolbars in self._workspace_toolbars.items():
+            for toolbar in toolbars:
+                toolbar.setVisible(owner == workspace_id)
+        if self.workspace_tabs is not None:
+            index = self._workspace_order(workspace_id)
+            if self.workspace_tabs.currentIndex() != index:
+                self.workspace_tabs.setCurrentIndex(index)
+        if changed:
+            self.workspace_changed.emit(workspace_id)
+
+    def _build_workspace_tabs(self) -> None:
+        bar = QToolBar("Workspaces", self)
+        bar.setObjectName("toolbar_Workspaces")
+        bar.setMovable(False)
+        tabs = QTabBar(bar)
+        tabs.setObjectName("workspace_tabs")
+        tabs.setDrawBase(False)
+        tabs.setExpanding(False)
+        for workspace in self._workspaces:
+            index = tabs.addTab(workspace.title)
+            if workspace.description:
+                tabs.setTabToolTip(index, workspace.description)
+        tabs.currentChanged.connect(lambda index: self.set_active_workspace(self._workspaces[index].id) if index >= 0 else None)
+        bar.addWidget(tabs)
+        self.addToolBar(bar)
+        self.workspace_tabs = tabs
+
     def _build_toolbars(self, schemas: tuple[ToolbarSchema, ...]) -> None:
+        if self._workspaces:
+            self._build_workspace_tabs()
+        workspace_row_started = False
         for schema in schemas:
             toolbar = QToolBar(schema.title, self)
             toolbar.setObjectName(f"toolbar_{schema.title.replace(' ', '_')}")
@@ -132,9 +201,24 @@ class ApplicationShell(QMainWindow):
                 if item.icon:
                     self._toolbar_icons[item.action_id] = item.icon
                 toolbar.addAction(action)
-            if schema.break_before:
+                if schema.workspace:
+                    self._action_workspaces.setdefault(item.action_id, set()).add(schema.workspace)
+            if schema.workspace:
+                # the workspaces' toolbars share one row: only the active one shows
+                self._workspace_toolbars.setdefault(schema.workspace, []).append(toolbar)
+                if not workspace_row_started:
+                    self.addToolBarBreak()
+                    workspace_row_started = True
+            elif schema.break_before:
                 self.addToolBarBreak()
             self.addToolBar(toolbar)
+        # an action in a common toolbar (or in no toolbar) never switches workspace
+        for schema in schemas:
+            if not schema.workspace:
+                for item in schema.items:
+                    self._action_workspaces.pop(item.action_id, None)
+        if self._workspaces:
+            self.set_active_workspace(self._active_workspace)
         self._paint_toolbar_icons()
 
     def _paint_toolbar_icons(self) -> None:
@@ -209,6 +293,8 @@ class ApplicationShell(QMainWindow):
             )
         except (RuntimeError, TypeError, ValueError):
             restored = False
+        if self._workspaces:  # a restored layout must not show another workspace's toolbar
+            self.set_active_workspace(self._active_workspace)
         if not restored:
             self.layout_manager.reset()
         try:

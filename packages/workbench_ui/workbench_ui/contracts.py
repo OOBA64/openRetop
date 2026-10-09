@@ -128,6 +128,17 @@ class ToolbarSchema:
     title: str
     items: tuple[ToolbarItem, ...]
     break_before: bool = False  # start a new toolbar row
+    workspace: str = ""  # shown only in this workspace ("" = in every workspace)
+
+
+@dataclass(frozen=True)
+class WorkspaceDescriptor:
+    """A set of tools for one stage of the work (e.g. scan preparation, surface modelling):
+    its toolbar shows while it is the active workspace."""
+
+    id: str
+    title: str
+    description: str = ""
 
 
 @dataclass(frozen=True)

@@ -287,7 +287,7 @@ class SketchWindowTests(unittest.TestCase):
         window = OpenRetopV3Window(composition)
         self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
         window.refresh()
-        toolbar = window.findChild(QToolBar, "toolbar_Surfacing")
+        toolbar = window.findChild(QToolBar, "toolbar_Surface_Modeling")
         self.assertIn(window._qt_actions["model.sketch"], toolbar.actions())
         window._qt_actions["model.sketch"].trigger()
         self.assertEqual(window.surfacing_panel.title.text(), "3D Sketch")

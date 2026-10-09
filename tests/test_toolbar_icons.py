@@ -40,53 +40,108 @@ class IconSetTests(unittest.TestCase):
         self.assertGreater(brightest, dimmest)
 
 
+TOOLBARS = ("toolbar_Main", "toolbar_Scan", "toolbar_Surface_Modeling", "toolbar_Solid_Modeling")
+
+
 class MainToolbarTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
-    def _window(self) -> OpenRetopV3Window:
-        window = OpenRetopV3Window(create_application(settings_repository=InMemorySettingsRepository()))
+    def _window(self, **future) -> OpenRetopV3Window:
+        composition = create_application(settings_repository=InMemorySettingsRepository())
+        composition.settings.future.update(future)
+        window = OpenRetopV3Window(composition)
         self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
         return window
 
     def test_every_toolbar_button_has_an_icon_a_short_label_and_a_tooltip(self) -> None:
         window = self._window()
-        toolbar = window.findChild(QToolBar, "toolbar_Main")
-        actions = [action for action in toolbar.actions() if not action.isSeparator()]
-        self.assertGreaterEqual(len(actions), 12)
-        for action in actions:
-            with self.subTest(action=action.objectName()):
-                self.assertFalse(action.icon().isNull())
-                self.assertTrue(action.iconText())
-                self.assertLessEqual(len(action.iconText()), 15)
-                self.assertTrue(action.toolTip())
+        for name in TOOLBARS:
+            toolbar = window.findChild(QToolBar, name)
+            actions = [action for action in toolbar.actions() if not action.isSeparator()]
+            self.assertGreaterEqual(len(actions), 4, name)
+            for action in actions:
+                with self.subTest(toolbar=name, action=action.objectName()):
+                    self.assertFalse(action.icon().isNull())
+                    self.assertTrue(action.iconText())
+                    self.assertLessEqual(len(action.iconText()), 15)
+                    self.assertTrue(action.toolTip())
         # menus keep the full label: only the toolbar uses the short one
         open_scan = window._qt_actions["file.open_model"]
         self.assertEqual(open_scan.iconText(), "Open Scan")
         self.assertNotEqual(open_scan.text(), open_scan.iconText())
 
-    def test_groups_are_separated_and_compute_section_is_on_the_toolbar(self) -> None:
+    def test_groups_are_separated_and_compute_section_is_on_the_scan_toolbar(self) -> None:
         window = self._window()
-        toolbar = window.findChild(QToolBar, "toolbar_Main")
-        self.assertEqual(sum(1 for action in toolbar.actions() if action.isSeparator()), 4)
-        self.assertIn(window._qt_actions["section.compute"], toolbar.actions())
+        main = window.findChild(QToolBar, "toolbar_Main")
+        self.assertEqual(sum(1 for action in main.actions() if action.isSeparator()), 2)  # file | history | view
+        self.assertIn(window._qt_actions["section.compute"], window.findChild(QToolBar, "toolbar_Scan").actions())
 
-    def test_the_toolbar_fits_a_1280_pixel_window(self) -> None:
+    def test_each_toolbar_row_fits_a_1280_pixel_window(self) -> None:
         from PySide6.QtGui import QGuiApplication
 
         window = self._window()
         window.resize(1280, 800)
-        toolbar = window.findChild(QToolBar, "toolbar_Main")
-        if QGuiApplication.platformName() != "offscreen":
-            self.assertLessEqual(toolbar.sizeHint().width(), 1280)  # 1151 px with Segoe UI 9 pt
-        else:
-            # the offscreen platform has no real fonts (its fallback is twice as wide), so
-            # hold the labels to the character budget that measured 1151 px on Windows
+        tabs = window.findChild(QToolBar, "toolbar_Workspaces")
+        for name in TOOLBARS:
+            toolbar = window.findChild(QToolBar, name)
             labels = [action.iconText() for action in toolbar.actions() if not action.isSeparator()]
-            self.assertLessEqual(sum(len(label) for label in labels), 115)
-        buttons = toolbar.findChildren(QToolButton)
-        self.assertTrue(any(button.toolButtonStyle() == button.toolButtonStyle().ToolButtonTextUnderIcon for button in buttons))
+            if QGuiApplication.platformName() != "offscreen":
+                extra = tabs.sizeHint().width() if name == "toolbar_Main" else 0  # the tabs share the first row
+                self.assertLessEqual(toolbar.sizeHint().width() + extra, 1280, name)
+            else:
+                # the offscreen platform has no real fonts (its fallback is twice as wide), so
+                # hold the labels to the character budget that measured 1151 px on Windows
+                self.assertLessEqual(sum(len(label) for label in labels), 115 - (40 if name == "toolbar_Main" else 0), name)
+            buttons = toolbar.findChildren(QToolButton)
+            self.assertTrue(any(button.toolButtonStyle() == button.toolButtonStyle().ToolButtonTextUnderIcon for button in buttons))
+
+
+class WorkspaceTests(unittest.TestCase):
+    """Workspaces: Scan, Surface Modeling, Solid Modeling, each with its own toolbar."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _window(self, **future) -> OpenRetopV3Window:
+        composition = create_application(settings_repository=InMemorySettingsRepository())
+        composition.settings.future.update(future)
+        window = OpenRetopV3Window(composition)
+        self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
+        return window
+
+    def visible(self, window: OpenRetopV3Window) -> list[str]:
+        return [name for name in TOOLBARS[1:] if window.findChild(QToolBar, name).isVisibleTo(window)]
+
+    def test_the_tabs_switch_the_tools(self) -> None:
+        window = self._window()
+        tabs = window.workspace_tabs
+        self.assertEqual([tabs.tabText(index) for index in range(tabs.count())], ["Scan", "Surface Modeling", "Solid Modeling"])
+        self.assertEqual(window.active_workspace, "surface")
+        self.assertEqual(self.visible(window), ["toolbar_Surface_Modeling"])
+        self.assertTrue(window.findChild(QToolBar, "toolbar_Main").isVisibleTo(window))  # common: always
+        tabs.setCurrentIndex(0)
+        self.assertEqual(window.active_workspace, "scan")
+        self.assertEqual(self.visible(window), ["toolbar_Scan"])
+        self.assertEqual(window.composition.settings.future["workspace"], "scan")  # remembered
+
+    def test_a_tool_from_another_workspace_switches_to_it(self) -> None:
+        window = self._window(workspace="scan")
+        self.assertEqual(window.active_workspace, "scan")
+        window._invoke_from_ui("model.section_sketch")  # a menu item or shortcut (no scan: it just says so)
+        self.assertEqual(window.active_workspace, "solid")
+        window._invoke_from_ui("model.compare")  # in Solid Modeling too: stays
+        self.assertEqual(window.active_workspace, "solid")
+        window._invoke_from_ui("view.frame_all")  # common: never switches
+        self.assertEqual(window.active_workspace, "solid")
+        window._invoke_from_ui("model.sketch")
+        self.assertEqual(window.active_workspace, "surface")
+
+    def test_an_unknown_remembered_workspace_falls_back(self) -> None:
+        window = self._window(workspace="nonsense")
+        self.assertEqual(window.active_workspace, "surface")
 
 
 if __name__ == "__main__":

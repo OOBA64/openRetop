@@ -20,6 +20,7 @@ from workbench_ui.contracts import (
     ToolbarItem,
     ToolbarSchema,
     ToolModeManager,
+    WorkspaceDescriptor,
 )
 from workbench_ui.shell import ApplicationShell
 from workbench_ui.viewport import VTKViewportWidget
@@ -58,4 +59,5 @@ __all__ = [
     "ToolbarItem",
     "ToolbarSchema",
     "VTKViewportWidget",
+    "WorkspaceDescriptor",
 ]

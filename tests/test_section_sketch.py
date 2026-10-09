@@ -147,7 +147,7 @@ class SectionSketchWindowTests(unittest.TestCase):
         window = OpenRetopV3Window(composition)
         self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
         window.refresh()
-        surfacing = window.findChild(QToolBar, "toolbar_Surfacing")
+        surfacing = window.findChild(QToolBar, "toolbar_Solid_Modeling")
         action = window._qt_actions["model.section_sketch"]
         self.assertIn(action, surfacing.actions())
         action.trigger()
