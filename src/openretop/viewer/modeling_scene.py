@@ -23,6 +23,8 @@ SELECTED_EDGE_COLOR = (1.00, 0.85, 0.25)
 CHAIN_EDGE_COLOR = (0.95, 0.30, 0.85)
 SKETCH_CURVE_COLOR = (0.85, 0.40, 0.98)  # 3D Sketch curves: violet, unlike surfaces and the selection
 SELECTED_SKETCH_COLOR = (1.00, 0.85, 0.25)
+SECTION_COLOR = (0.98, 0.55, 0.20)  # the scan's section on the sketch plane
+PLANE_COLOR = (0.55, 0.70, 0.95)
 
 # deviation colour scale (signed distance / tolerance)
 _IN_TOLERANCE = np.array([0.30, 0.78, 0.40])
@@ -68,6 +70,10 @@ class ModelingSceneInput:
     deviation_tolerance: float = 0.05
     chain_edges: Sequence[tuple[str, int]] = ()  # (entity id, edge) picked for a fill boundary
     sketch_curves: Sequence[tuple[str, np.ndarray, bool]] = ()  # (curve id, polyline, selected)
+    # Section Sketch: the scan's section, the fitted profile and the plane's outline (world)
+    section_lines: Sequence[np.ndarray] = field(default=(), compare=False)
+    profile_lines: Sequence[np.ndarray] = field(default=(), compare=False)
+    section_plane: np.ndarray | None = field(default=None, compare=False)
 
 
 def modeling_items(
@@ -86,6 +92,7 @@ def modeling_items(
         selected = entity.id in modeling.selected_ids
         token = hash((entity.id, id(entity.vertices)))
         node = model_node_id(entity.id)
+        sketch = getattr(entity, "kind", "") == "profile"  # a sketch: its lines matter, its face is a hint
         faces.append(
             ModelFaceRenderItem(
                 id=f"model-face:{entity.id}",
@@ -95,7 +102,9 @@ def modeling_items(
                 visible=faces_visible,
                 selected=selected,
                 role="body" if entity.is_body else "surface",
-                style=DisplayStyleSnapshot(color=_brighter(entity.color) if selected else tuple(entity.color)),
+                style=DisplayStyleSnapshot(
+                    color=_brighter(entity.color) if selected else tuple(entity.color), opacity=0.35 if sketch else 1.0
+                ),
                 selection_keys=(node,),
             )
         )
@@ -107,7 +116,10 @@ def modeling_items(
                     revision=token,
                     polylines=tuple(entity.edges),
                     visible=visible,
-                    style=DisplayStyleSnapshot(color=SELECTED_EDGE_COLOR if selected else EDGE_COLOR, line_width=2.0 if selected else 1.2),
+                    style=DisplayStyleSnapshot(
+                        color=SELECTED_EDGE_COLOR if selected else (SKETCH_CURVE_COLOR if sketch else EDGE_COLOR),
+                        line_width=(3.0 if sketch else 2.0) if selected else (2.5 if sketch else 1.2),
+                    ),
                     selection_keys=(node,),
                 )
             )
@@ -132,6 +144,20 @@ def modeling_items(
                 selection_keys=(f"sketch:{curve_id}",),
             )
         )
+    for name, lines, color, width in (
+        ("section-plane", () if modeling.section_plane is None else (modeling.section_plane,), PLANE_COLOR, 1.0),
+        ("section-scan", modeling.section_lines, SECTION_COLOR, 1.5),
+        ("section-profile", modeling.profile_lines, SKETCH_CURVE_COLOR, 3.0),
+    ):
+        if len(lines):
+            edges.append(
+                ModelEdgesRenderItem(
+                    id=name,
+                    revision=hash((name, tuple(id(line) for line in lines))),
+                    polylines=tuple(lines),
+                    style=DisplayStyleSnapshot(color=color, line_width=width),
+                )
+            )
     preview = modeling.preview
     if preview is not None:
         faces.append(

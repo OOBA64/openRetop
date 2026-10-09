@@ -75,6 +75,24 @@ class Segment2D:
     def midpoint(self) -> np.ndarray:
         return self.sample(3)[1]
 
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {"kind": self.kind, "start": self.start.tolist(), "end": self.end.tolist()}
+        if self.kind == "arc" and self.center is not None:
+            data.update(center=self.center.tolist(), radius=float(self.radius), ccw=bool(self.ccw))
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> Segment2D:
+        center = data.get("center")
+        return cls(
+            str(data["kind"]),
+            np.asarray(data["start"], dtype=float),
+            np.asarray(data["end"], dtype=float),
+            center=None if center is None else np.asarray(center, dtype=float),
+            radius=float(data.get("radius", 0.0)),  # type: ignore[arg-type]
+            ccw=bool(data.get("ccw", True)),
+        )
+
 
 @dataclass
 class Profile2D:
@@ -82,6 +100,7 @@ class Profile2D:
     closed: bool = False
     deviation: float = 0.0  # largest distance of the fitted samples from the profile
     rms: float = 0.0
+    gap: float = 0.0  # a closed profile's ends may span a hole in the scan this long
 
     @property
     def max_error(self) -> float:
@@ -94,6 +113,29 @@ class Profile2D:
         if not self.segments:
             return np.full(len(points), np.inf)
         return np.min([segment_distances(segment, points) for segment in self.segments], axis=0)
+
+    def to_dict(self) -> dict[str, object]:
+        """Plain data, for the kernel job and the project file."""
+
+        return {
+            "segments": [segment.to_dict() for segment in self.segments],
+            "closed": self.closed,
+            "outline": self.polyline(8).tolist(),
+            "deviation": self.deviation,
+            "rms": self.rms,
+            "gap": self.gap,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> Profile2D:
+        segments = [Segment2D.from_dict(item) for item in data.get("segments", [])]  # type: ignore[attr-defined]
+        return cls(
+            segments,
+            bool(data.get("closed", False)),
+            float(data.get("deviation", 0.0)),  # type: ignore[arg-type]
+            float(data.get("rms", 0.0)),  # type: ignore[arg-type]
+            float(data.get("gap", 0.0)),  # type: ignore[arg-type]
+        )
 
     def polyline(self, per_segment: int = 24) -> np.ndarray:
         pieces = [segment.sample(per_segment)[:-1] for segment in self.segments]
@@ -120,6 +162,38 @@ def segment_distances(segment: Segment2D, points: np.ndarray) -> np.ndarray:
     on_circle = np.abs(np.linalg.norm(offset, axis=1) - segment.radius)
     to_ends = np.minimum(np.linalg.norm(points - segment.start, axis=1), np.linalg.norm(points - segment.end, axis=1))
     return np.where(inside, on_circle, to_ends)
+
+
+def estimate_noise(loops: object, *, window: int = 31, stride: int = 4) -> float:
+    """The spread of section samples about the true outline (a standard deviation).
+
+    A circle (or line) is fitted to each run of ``window`` samples; the lower quartile of
+    their residual RMS is the noise: runs on plain lines and arcs give it, runs across a
+    corner are larger and fall above. Runs must be long: neighbouring section samples come
+    from the same scan triangles, so a short run sees too little of the noise. The samples
+    are interpolated between scan vertices, so their spread is about 0.7x the scan's.
+    """
+
+    values = []
+    for loop in loops:  # type: ignore[attr-defined]
+        points = np.asarray(loop, dtype=float).reshape(-1, 2)
+        for start in range(0, len(points) - window + 1, stride):
+            run = points[start : start + window]
+            point, direction, _error = fit_line_2d(run)
+            residual = (run - point) @ np.array([-direction[1], direction[0]])
+            center, radius, _error = fit_circle_2d(run)
+            on_circle = np.linalg.norm(run - center, axis=1) - radius
+            if np.sum(on_circle**2) < np.sum(residual**2):
+                residual = on_circle
+            values.append(math.sqrt(float(np.sum(residual**2)) / (window - 3)))
+    return float(np.percentile(values, 25)) if values else 0.0
+
+
+def auto_tolerance(loops: object, *, floor: float = 0.005) -> float:
+    """A fit tolerance for these outlines: 6x their sample noise (about 4 standard
+    deviations of the scan's own noise), so noise alone never breaks a line."""
+
+    return max(6.0 * estimate_noise(loops), floor)
 
 
 # -- primitive fits ---------------------------------------------------------------------------
@@ -185,8 +259,7 @@ def fit_profile(
 
     raw = np.asarray(points, dtype=float).reshape(-1, 2)
     if closed is None:
-        # a section broken by a hole in the scan is still a loop: its ends nearly meet, and
-        # the gap is bridged (straight on along an edge, merged into the line there)
+        # a section broken by a hole in the scan is still a loop: its ends nearly meet
         span = float(np.linalg.norm(raw.max(axis=0) - raw.min(axis=0))) if len(raw) else 0.0
         closed = len(raw) > 3 and float(np.linalg.norm(raw[0] - raw[-1])) <= max(1e-6, 0.15 * span)
     if closed and np.linalg.norm(raw[0] - raw[-1]) <= 1e-6:
@@ -195,25 +268,36 @@ def fit_profile(
         return Profile2D([], bool(closed))
     size = float(np.linalg.norm(raw.max(axis=0) - raw.min(axis=0)))
     step = max(float(np.median(np.linalg.norm(np.diff(raw, axis=0), axis=1))), size / 4000.0, 1e-9)
-    path = _resample(raw, step, closed)
+    gap = float(np.linalg.norm(raw[-1] - raw[0])) if closed else 0.0
+    # a loop broken by a hole in the scan: fit what was scanned as an open profile, then close
+    # it where its end pieces meet (a fillet seen in part is rebuilt tangent to its walls);
+    # bridging the hole with a straight chord would invent a piece the scan never showed
+    bridged = bool(closed) and gap > 3.0 * step
+    growing_closed = bool(closed) and not bridged
+    path = _resample(raw, step, growing_closed)
     max_radius = max_radius_factor * size
     sharp = 5.0 * step if sharp_radius is None else sharp_radius
 
     def grow(path: np.ndarray) -> list[Segment2D]:
-        return _grow(path, tolerance=tolerance, max_radius=max_radius, closed=closed, sharp=sharp, corner_degrees=corner_degrees)
+        return _grow(
+            path, tolerance=tolerance, max_radius=max_radius, closed=growing_closed, sharp=sharp, corner_degrees=corner_degrees
+        )
 
     segments = grow(path)
-    if closed and len(segments) > 1:
+    if growing_closed and len(segments) > 1:
         # start the loop at the beginning of its longest piece, so the seam is not in the
         # middle of a feature, and grow again from there
         longest = max(segments, key=lambda segment: _indices(segment)[1] - _indices(segment)[0])
         shift = _indices(longest)[0] % len(path)
         path = np.roll(path, -shift, axis=0)
         segments = grow(path)
-    segments = _merge(path, segments, tolerance, max_radius, closed)
-    segments = _absorb_slivers(path, segments, step, tolerance, max_radius, closed)
-    segments = _sharpen(path, segments, sharp, closed)
-    profile = Profile2D([_finish(path, s, snap_degrees, tolerance) for s in segments], bool(closed))
+    segments = _merge(path, segments, tolerance, max_radius, growing_closed)
+    segments = _absorb_slivers(path, segments, step, tolerance, max_radius, growing_closed)
+    segments = _sharpen(path, segments, sharp, growing_closed)
+    if bridged:  # the two pieces either side of the hole may be one (a wall, a fillet)
+        segments = _merge(path, segments, tolerance, max_radius, True)
+        segments = _seam_arc(path, segments, tolerance, max_radius)
+    profile = Profile2D([_finish(path, s, snap_degrees, tolerance) for s in segments], bool(closed), gap=gap if bridged else 0.0)
     _join(profile, path, corner_degrees)
     _merge_collinear(profile, path, snap_degrees, tolerance, sharp)
     _join(profile, path, corner_degrees)
@@ -372,7 +456,11 @@ def _reach(path: np.ndarray, start: int, last: int, tolerance: float, max_radius
         if len(points) < 5:
             return True
         center, radius, error = fit_circle_2d(points)
-        return error <= tolerance and radius < max_radius
+        if error <= tolerance and radius < max_radius:
+            return True
+        # nearly straight so far: a line is an arc of endless radius, so the arc grows on
+        # (else a fillet entered tangentially dies at its first samples and a chord takes it)
+        return not radius < max_radius and fit_line_2d(points)[2] <= tolerance
 
     low = min(start + (2 if kind == "line" else 4), last)
     if not fits(low):
@@ -398,6 +486,8 @@ def _reach(path: np.ndarray, start: int, last: int, tolerance: float, max_radius
 
 
 def _merge(path: np.ndarray, segments: list[Segment2D], tolerance: float, max_radius: float, closed: bool) -> list[Segment2D]:
+    """One piece for two neighbours of a kind whose samples fit as one."""
+
     changed = True
     while changed and len(segments) > 1:
         changed = False
@@ -421,6 +511,55 @@ def _merge(path: np.ndarray, segments: list[Segment2D], tolerance: float, max_ra
             changed = True
             break
     return segments
+
+
+def _seam_arc(path: np.ndarray, segments: list[Segment2D], tolerance: float, max_radius: float) -> list[Segment2D]:
+    """Across a hole in the scan: the pieces either side of it, between two walls, that
+    together are one fillet tangent to both walls (seen in part) become that fillet.
+
+    At the end of a run a fillet's fragment often grows as a short line (a line and an arc
+    both reach the end, and the line wins the tie), and an arc fragment can run on a little
+    into the wall; measured against the whole wall-fillet-wall corner, neither matters.
+    """
+
+    from scipy.optimize import minimize_scalar
+
+    if len(segments) < 4:
+        return segments
+    last, first = segments[-1], segments[0]
+    before, after = segments[-2], segments[1]  # the walls around the hole's pieces
+    if "arc" not in (last.kind, first.kind) or before.kind != "line" or after.kind != "line":
+        return segments
+    n = len(path)
+    walls = []
+    for wall in (before, after):
+        start, end = _indices(wall)
+        samples = _points(path, start, end, True)
+        point, direction, _error = fit_line_2d(samples)
+        walls.append((point, direction if direction @ (samples[-1] - samples[0]) >= 0 else -direction))
+    (p0, d0), (p1, d1) = walls
+    corner = _line_line(p0, d0, p1, d1)
+    turn = math.degrees(math.acos(float(np.clip(d0 @ d1, -1.0, 1.0))))
+    if corner is None or not 5.0 < turn < 175.0:
+        return segments
+    start, end = _indices(last)[0], _indices(first)[1] + n
+    points = _points(path, start, end, True)
+    shape = _corner_fillet(corner, d0, d1, turn)
+    arc = last if last.kind == "arc" else first
+
+    def distances(radius: float) -> np.ndarray:
+        center, value, tangent0, tangent1 = shape(radius)
+        return _corner_distances(points, center, value, tangent0, tangent1, d0, d1)
+
+    guess = max(arc.radius, 1e-6)
+    result = minimize_scalar(lambda radius: float(np.sum(distances(radius) ** 2)), bounds=(0.2 * guess, 3.0 * guess), method="bounded")
+    error = float(np.max(distances(float(result.x))))
+    if error > 1.5 * tolerance:
+        return segments
+    center, radius, tangent0, tangent1 = shape(float(result.x))
+    merged = Segment2D("arc", tangent0, tangent1, center=center, radius=radius, ccw=_cross(d0, d1) > 0, max_error=error)
+    merged.start_index, merged.end_index = start, end  # type: ignore[attr-defined]
+    return [merged] + segments[1:-1]
 
 
 def _indices(segment: Segment2D) -> tuple[int, int]:
@@ -750,7 +889,10 @@ def _join(profile: Profile2D, path: np.ndarray, corner_degrees: float) -> None:
     for k in pairs:
         first, second = segments[k], segments[(k + 1) % count]
         guess = 0.5 * (first.end + second.start)
-        if "arc" in (first.kind, second.kind) and _turn(first, second) < corner_degrees:
+        across_gap = profile.gap > 0.0 and k == count - 1
+        if across_gap:
+            point = _junction(first, second, guess, reach=0.5)
+        elif "arc" in (first.kind, second.kind) and _turn(first, second) < corner_degrees:
             point = _handover(path, first, profile.closed)
             if first.kind == "line" or second.kind == "line":
                 line = first if first.kind == "line" else second
@@ -823,7 +965,7 @@ def _arc_through_ends(arc: Segment2D, path: np.ndarray, closed: bool) -> None:
     arc.radius = float(np.linalg.norm(arc.start - arc.center))
 
 
-def _junction(first: Segment2D, second: Segment2D, guess: np.ndarray) -> np.ndarray:
+def _junction(first: Segment2D, second: Segment2D, guess: np.ndarray, reach: float = 0.25) -> np.ndarray:
     candidates: list[np.ndarray] = []
     if first.kind == "line" and second.kind == "line":
         hit = _line_line(first.start, first.end - first.start, second.start, second.end - second.start)
@@ -852,8 +994,8 @@ def _junction(first: Segment2D, second: Segment2D, guess: np.ndarray) -> np.ndar
         return guess
     best = min(candidates, key=lambda point: float(np.linalg.norm(point - guess)))
     # an intersection far from where the outline actually turns is spurious (nearly parallel)
-    reach = 0.25 * max(first.length, second.length, 1e-9)
-    return best if float(np.linalg.norm(best - guess)) <= reach else guess
+    limit = reach * max(first.length, second.length, 1e-9)
+    return best if float(np.linalg.norm(best - guess)) <= limit else guess
 
 
 def _cross(a: np.ndarray, b: np.ndarray) -> float:
@@ -891,4 +1033,13 @@ def _circle_circle(c0: np.ndarray, r0: float, c1: np.ndarray, r1: float) -> list
     return [base + perpendicular * h, base - perpendicular * h]
 
 
-__all__ = ("Profile2D", "Segment2D", "fit_circle_2d", "fit_line_2d", "fit_profile", "segment_distances")
+__all__ = (
+    "Profile2D",
+    "Segment2D",
+    "auto_tolerance",
+    "estimate_noise",
+    "fit_circle_2d",
+    "fit_line_2d",
+    "fit_profile",
+    "segment_distances",
+)

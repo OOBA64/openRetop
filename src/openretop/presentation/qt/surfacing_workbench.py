@@ -25,7 +25,7 @@ from workbench_ui import FieldDefinition, SceneNode
 NODE_MODEL = "model_surfaces"  # the scene tree group of model surfaces and bodies (NODE_MESH is "model")
 
 SURFACING_ACTIONS = frozenset(
-    {"model.sketch", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
+    {"model.sketch", "model.section_sketch", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
 )
 # kernel work that can take seconds: run off the UI thread
 SURFACING_HEAVY_ACTIONS = frozenset(
@@ -40,12 +40,15 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.compare_apply",
         "model.sketch_loft",
         "model.sketch_face",
+        "model.section_fit",
+        "model.section_create",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
     "sketch": "Click points on the scan; click a point to connect, the first point to close. Enter finishes, Backspace undoes a point, drag a point to move it.",
+    "section": "Click the scan to move the sketch plane there; Fit Profile, then Create (Enter).",
     "fit_surface": "Click a smooth area of the scan (Smart) or drag over it (Brush; Alt+drag rotates). Then Fit and Create.",
     "loft": "Select two or more curves, in order, then Loft.",
     "fill": "Click surface edges and curves around the gap, in order; then Fill.",
@@ -126,6 +129,7 @@ class SurfacingWorkbenchMixin:
                 "trim": "model.trim_apply",
                 "compare": "model.compare_apply",
                 "loft": "model.loft_apply",
+                "section": "model.section_create",
             }.get(self.modeling.tool or "")
             if primary:
                 self._dispatch_application_action(primary)  # type: ignore[attr-defined]
@@ -220,6 +224,11 @@ class SurfacingWorkbenchMixin:
             hit = pick if isinstance(pick, MeshPickResult) else self.viewport.pick_mesh(x_position, y_position)
             result = self.modeling.select_at(hit.triangle_index if hit.hit else None)
             self._consume_result("model.pointer", result)  # type: ignore[attr-defined]
+            return True
+        if tool == "section":
+            hit = pick if isinstance(pick, MeshPickResult) else self.viewport.pick_mesh(x_position, y_position)
+            if hit.hit:
+                self._consume_result("model.pointer", self.modeling.section_place(hit.position))  # type: ignore[attr-defined]
             return True
         scene_pick = pick if isinstance(pick, SceneObjectPickResult) else self.viewport.pick_scene_object(x_position, y_position)
         if tool == "trim":
@@ -333,7 +342,11 @@ class SurfacingWorkbenchMixin:
         sketch_curves = tuple(
             (curve.id, curve.polyline, curve.id in selected_curves) for curve in model.sketch.curves if curve.visible
         )
+        section = session is not None and session.tool == "section"
         return ModelingSceneInput(
+            section_lines=tuple(session.section_loops) if section else (),
+            profile_lines=tuple(modeling.section_profile_lines()) if section else (),
+            section_plane=modeling.section_plane_outline() if section else None,
             sketch_curves=sketch_curves,
             entities=tuple(self.composition.state.model.entities),
             selected_ids=frozenset(self.composition.state.model.selected_ids),
@@ -408,6 +421,8 @@ class SurfacingWorkbenchMixin:
         return True
 
     def _sketch_facts(self, session: Any) -> dict[str, Any]:
+        if session.tool == "section":
+            return self._section_facts(session)
         model = self.composition.state.model
         selected = [model.sketch.curve(value) for value in model.selected_curve_ids]
         selected = [curve for curve in selected if curve is not None]
@@ -422,6 +437,31 @@ class SurfacingWorkbenchMixin:
             "loop": loop,
             "fit_to_scan": bool(session.face_fit_to_scan),
         }
+
+    def _section_facts(self, session: Any) -> dict[str, Any]:
+        if session.section_key is None:
+            self.modeling.section_cut()  # the plane as set when the tool opened
+        units = self.composition.state.units
+        loops = len(session.section_loops)
+        tolerance = ""
+        if loops and session.section_tolerance <= 0:
+            tolerance = f"\nAuto tolerance: {self.modeling.section_tolerance_in_use():.3f} {units} (about 4x the scan noise)."
+        if loops == 0:
+            text = "The plane misses the scan: click the scan or change the offset."
+        elif session.section_profiles is None:
+            text = f"{loops} section loop(s). Fit Profile fits lines and arcs to them."
+        else:
+            lines = []
+            for number, profile in enumerate(session.section_profiles, start=1):
+                kinds = [segment.kind for segment in profile.segments]
+                radii = sorted({round(segment.radius, 2) for segment in profile.segments if segment.kind == "arc"})
+                arcs = f", arcs R{', R'.join(f'{radius:g}' for radius in radii)}" if radii else ""
+                lines.append(
+                    f"Loop {number} ({'closed' if profile.closed else 'open'}): {kinds.count('line')} lines, "
+                    f"{kinds.count('arc')} arcs{arcs}; max {profile.deviation:.3f} {units}"
+                )
+            text = "\n".join(lines)
+        return {"loops": loops, "section_text": text + tolerance}
 
     # -- scene tree ----------------------------------------------------------------------------
 

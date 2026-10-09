@@ -41,7 +41,8 @@ SURFACE_TYPES = (
     ("torus", "Torus"),
 )
 SELECTION_MODES = (("smart", "Smart"), ("brush", "Brush"), ("erase", "Erase"))
-PAGES = ("sketch", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+PAGES = ("sketch", "section", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+SECTION_PLANES = (("XY", "XY (top)"), ("XZ", "XZ (front)"), ("YZ", "YZ (side)"))
 
 
 @dataclass
@@ -117,6 +118,7 @@ class SurfacingPanel(QWidget):
         self._page_index: dict[str, int] = {}
         for name, builder in (
             ("sketch", self._build_sketch),
+            ("section", self._build_section),
             ("fit_surface", self._build_fit),
             ("loft", self._build_loft),
             ("fill", self._build_fill),
@@ -154,6 +156,7 @@ class SurfacingPanel(QWidget):
         try:
             self._show_fit(session, facts)
             self._show_sketch(facts.extra, facts.busy)
+            self._show_section(session, facts)
             self.loft_info.setText(
                 f"{facts.selected_curves} curve(s) selected." if facts.selected_curves else "No curves selected."
             )
@@ -236,8 +239,28 @@ class SurfacingPanel(QWidget):
         self.sketch_face.setEnabled(bool(extra.get("loop")) and not busy)
         self.sketch_fit.setChecked(bool(extra.get("fit_to_scan", True)))
 
+    def _show_section(self, session: Any, facts: PanelFacts) -> None:
+        if session.tool != "section":
+            return
+        extra = facts.extra
+        for plane, button in self.plane_buttons.items():
+            button.setChecked(session.section_plane == plane)
+        self.section_offset.setSuffix(f" {facts.units}")
+        self.section_offset.setValue(float(session.section_offset))
+        self.section_tolerance.setSuffix(f" {facts.units}")
+        self.section_tolerance.setValue(float(session.section_tolerance))
+        self.section_sharp.setSuffix(f" {facts.units}")
+        self.section_sharp.setValue(float(session.section_sharp))
+        self.section_info.setText(str(extra.get("section_text", "")))
+        loops = int(extra.get("loops", 0))
+        self.section_fit.setEnabled(loops > 0 and not facts.busy)
+        self.section_create.setEnabled(loops > 0 and not facts.busy)
+
     def _inputs(self) -> list[QWidget]:
         return [
+            self.section_offset,
+            self.section_tolerance,
+            self.section_sharp,
             self.sketch_fit,
             self.angle,
             self.connected,
@@ -413,6 +436,68 @@ class SurfacingPanel(QWidget):
         row.addWidget(self.sketch_loft)
         row.addWidget(self.sketch_delete)
         layout.addLayout(row)
+
+    def _build_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_section("Sketch plane"))
+        row = QHBoxLayout()
+        self.plane_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
+        for plane, label in SECTION_PLANES:
+            button = QToolButton()
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.clicked.connect(lambda _checked=False, plane=plane: self._emit("model.section_plane", {"plane": plane}))
+            group.addButton(button)
+            row.addWidget(button)
+            self.plane_buttons[plane] = button
+        layout.addLayout(row)
+        form = QFormLayout()
+        self.section_offset = QDoubleSpinBox()
+        self.section_offset.setRange(-1e6, 1e6)
+        self.section_offset.setDecimals(3)
+        self.section_offset.setSingleStep(0.5)
+        self.section_offset.setToolTip("Where the plane cuts, along its normal. Clicking the scan moves it there.")
+        self.section_offset.valueChanged.connect(lambda value: self._emit("model.section_plane", {"offset": value}))
+        form.addRow("Offset", self.section_offset)
+        layout.addLayout(form)
+        layout.addWidget(_hint("Click the scan to move the plane through that point."))
+        layout.addWidget(_section("Fit"))
+        form = QFormLayout()
+        self.section_tolerance = QDoubleSpinBox()
+        self.section_tolerance.setRange(0.0, 10.0)
+        self.section_tolerance.setDecimals(3)
+        self.section_tolerance.setSingleStep(0.01)
+        self.section_tolerance.setSpecialValueText("Auto")
+        self.section_tolerance.setToolTip(
+            "Each line and arc stays this close to the section. Auto: about four times the scan noise, measured on the section."
+        )
+        self.section_tolerance.valueChanged.connect(lambda value: self._emit("model.configure", {"section_tolerance": value}))
+        form.addRow("Tolerance", self.section_tolerance)
+        self.section_sharp = QDoubleSpinBox()
+        self.section_sharp.setRange(0.0, 100.0)
+        self.section_sharp.setDecimals(2)
+        self.section_sharp.setSingleStep(0.1)
+        self.section_sharp.setSpecialValueText("Auto")
+        self.section_sharp.setToolTip(
+            "A rounded corner smaller than this is a sharp edge the scanner rounded: the lines meet exactly. "
+            "Auto: about the scan's point spacing."
+        )
+        self.section_sharp.valueChanged.connect(lambda value: self._emit("model.configure", {"section_sharp": value}))
+        form.addRow("Sharp below R", self.section_sharp)
+        layout.addLayout(form)
+        row = QHBoxLayout()
+        self.section_fit = _button("Fit Profile")
+        self.section_fit.setToolTip("Fit lines and arcs to the section (shown violet over the orange section).")
+        self.section_fit.clicked.connect(lambda: self._emit("model.section_fit"))
+        self.section_create = _button("Create", primary=True)
+        self.section_create.setToolTip("Keep the profile as a sketch: exact lines and arcs, closed loops as faces (Enter).")
+        self.section_create.clicked.connect(lambda: self._emit("model.section_create"))
+        row.addWidget(self.section_fit)
+        row.addWidget(self.section_create)
+        layout.addLayout(row)
+        self.section_info = _hint()
+        layout.addWidget(self.section_info)
 
     def _build_loft(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_hint("Select two or more curves (Ctrl+click in the tree or the scene), in order. Draw curves on the scan with Draw Curve."))

@@ -337,6 +337,16 @@ def export(breps: list[bytes], path: str, *, file_format: str = "step") -> dict[
     }
 
 
+def profile(frame: dict[str, Any], loops: list[dict[str, Any]], **info: Any) -> dict[str, Any]:
+    """A sketch profile (lines and arcs on a plane) as exact geometry: planar faces for its
+    closed loops (nested loops are holes), wires for open ones."""
+
+    from openretop.cad_kernel.profiles import PlaneFrame, profile_shape
+
+    shape, counts = profile_shape(PlaneFrame.from_dict(frame), loops)
+    return surface_result(shape, kind="profile", **counts, **info)
+
+
 def selftest_sleep(seconds: float) -> float:
     """For tests of the worker's timeout."""
 
@@ -365,6 +375,7 @@ JOBS = frozenset(
         "sew",
         "deviation",
         "export",
+        "profile",
         "selftest_sleep",
         "selftest_crash",
     }

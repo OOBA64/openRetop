@@ -19,7 +19,7 @@ try:
 except ImportError:  # pragma: no cover
     HAVE_CADQUERY = False
 
-from openretop.modeling.profile2d import Segment2D, fit_profile, segment_distances
+from openretop.modeling.profile2d import Segment2D, auto_tolerance, estimate_noise, fit_profile, segment_distances
 
 
 def _section(part_name: str, origin, normal, columns):
@@ -106,6 +106,44 @@ class SyntheticProfileTests(unittest.TestCase):
         self.assertAlmostEqual(circle.radius, 7.0, delta=0.01)
         np.testing.assert_allclose(circle.center, [5.0, 2.0], atol=0.01)
         self.assertAlmostEqual(circle.length, 2 * math.pi * circle.radius, places=6)
+
+    def rounded_rectangle(self, width: float, height: float, radius: float, count: int = 1200) -> np.ndarray:
+        """An outline 2*width x 2*height with corner radius ``radius``, evenly sampled, ccw."""
+
+        straight_x, straight_y = width - radius, height - radius
+        pieces = []
+        for k, (cx, cy) in enumerate(((straight_x, -straight_y), (straight_x, straight_y), (-straight_x, straight_y), (-straight_x, -straight_y))):
+            angle = np.linspace(-math.pi / 2 + k * math.pi / 2, k * math.pi / 2, 40)
+            pieces.append(np.c_[cx + radius * np.cos(angle), cy + radius * np.sin(angle)])
+        loop = np.vstack(pieces)
+        closed = np.vstack([loop, loop[:1]])
+        length = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(closed, axis=0), axis=1))]
+        at = np.linspace(0.0, length[-1], count, endpoint=False)
+        return np.c_[np.interp(at, length, closed[:, 0]), np.interp(at, length, closed[:, 1])]
+
+    def test_a_hole_in_the_scan_across_a_fillet_is_closed_through_it(self) -> None:
+        outline = self.noisy(self.rounded_rectangle(30.0, 20.0, 3.0))
+        # the scan misses the middle of one fillet (2 of its 4.7): the section stops either side
+        corner = np.array([27.0, 17.0]) + 3.0 * np.array([math.cos(math.pi / 4), math.sin(math.pi / 4)])
+        missing = np.linalg.norm(outline - corner, axis=1) < 1.0
+        start = int(np.nonzero(missing)[0].max()) + 1
+        section = np.roll(outline, -start, axis=0)[: int((~missing).sum())]
+        profile = fit_profile(section, tolerance=0.08)
+        self.assertTrue(profile.closed)
+        self.assertGreater(profile.gap, 1.5)
+        self.assertEqual(sorted(segment.kind for segment in profile.segments), ["arc"] * 4 + ["line"] * 4)
+        _assert_connected(self, profile)
+        for segment in profile.segments:
+            if segment.kind == "arc":
+                self.assertAlmostEqual(segment.radius, 3.0, delta=0.15)  # the half-seen one too
+
+    def test_auto_tolerance_follows_the_noise(self) -> None:
+        clean = self.rounded_rectangle(30.0, 20.0, 3.0)
+        for sigma in (0.01, 0.03):
+            noisy = clean + np.random.default_rng(1).normal(0.0, sigma, clean.shape)
+            self.assertAlmostEqual(estimate_noise([noisy]), sigma, delta=0.25 * sigma)
+            self.assertGreater(auto_tolerance([noisy]), 4.0 * sigma)
+        self.assertEqual(auto_tolerance([clean]), 0.005)  # a perfect outline: the floor
 
     def test_a_slot_has_tangent_semicircle_ends(self) -> None:
         a = np.linspace(-math.pi / 2, math.pi / 2, 80)

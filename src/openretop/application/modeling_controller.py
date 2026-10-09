@@ -1,4 +1,5 @@
-"""The surfacing tools (milestone S): Fit Surface, Loft, Fill, Extend, Trim, Compare, Export.
+"""The surfacing tools (milestone S): Fit Surface, Loft, Fill, Extend, Trim, Compare, Export,
+the 3D Sketch and the Section Sketch.
 
 Each tool is a session: ``start`` it, adjust it (selection, options, picks), ``apply`` it.
 Geometry is made by the kernel worker (``cad_kernel.jobs``), so a kernel crash or hang comes
@@ -29,9 +30,15 @@ from openretop.modeling import (
     entity_from_result,
     selected_patch,
 )
+from openretop.modeling.profile2d import Profile2D, auto_tolerance, fit_profile
 from openretop.modeling.sketch import MeshProjector, boundary_loop, curve_on_mesh, loop_polylines, region_inside
 
-TOOLS = ("sketch", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+TOOLS = ("sketch", "section", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+SECTION_PLANES = {  # name: (in-plane u, in-plane v, the world axis the offset runs along)
+    "XY": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "YZ": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    "XZ": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+}
 TOOL_TITLES = {
     "fit_surface": "Fit Surface",
     "loft": "Loft",
@@ -40,6 +47,7 @@ TOOL_TITLES = {
     "trim": "Trim Surfaces",
     "compare": "Compare",
     "sketch": "3D Sketch",
+    "section": "Section Sketch",
 }
 SELECTION_MODES = ("smart", "brush", "erase")
 MAX_KERNEL_SCAN_POINTS = 200_000  # scan points sent for trimming (a dense scan is subsampled)
@@ -81,6 +89,16 @@ class ToolSession:
     drag_node: str | None = None
     drag_before: Any = None
     face_fit_to_scan: bool = True
+    # Section Sketch: the plane (a world plane and its offset), fit options, and what was
+    # cut and fitted for the plane as it was (``section_key``)
+    section_plane: str = "XY"
+    section_offset: float = 0.0
+    section_tolerance: float = 0.0  # 0 = automatic: from the noise measured on the section
+    section_sharp: float = 0.0  # sharp-corner radius; 0 = automatic (5x the section's spacing)
+    section_key: tuple[Any, ...] | None = None
+    section_loops: list[np.ndarray] = field(default_factory=list)  # world polylines
+    section_closed: list[bool] = field(default_factory=list)
+    section_profiles: list[Profile2D] | None = None
 
 
 @dataclass
@@ -134,6 +152,7 @@ class ModelingController(ControllerBase):
             session.sketch_line = None
             session.drag_node = None
             session.drag_before = None
+            session.section_profiles = None
             if session.tool == "trim":
                 session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
             session.fill_chain = [side for side in session.fill_chain if "curve" in side or model.get(side["entity"]) is not None]
@@ -176,6 +195,12 @@ class ModelingController(ControllerBase):
             self.session.brush_radius = self._default_brush_radius()
         if tool == "trim":
             self.session.trim_sources = tuple(entity.id for entity in self.state.model.visible() if not entity.is_body)
+        if tool == "section":
+            if previous is not None and previous.tool == "section":
+                self.session.section_plane, self.session.section_offset = previous.section_plane, previous.section_offset
+            else:
+                self.session.section_offset = self._scan_center(self.session.section_plane)
+            self.section_cut()  # the section shows as soon as the tool opens
         hints = {
             "fit_surface": "Click the scan to select a smooth area (or brush it), then Fit.",
             "loft": "Select two or more curves, then Loft.",
@@ -184,6 +209,7 @@ class ModelingController(ControllerBase):
             "trim": "Trim splits the surfaces by each other and keeps what lies on the scan.",
             "compare": "Compare colours the scan by its distance to the model.",
             "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it.",
+            "section": "Pick a plane (click the scan to move it there), then Fit Profile and Create.",
         }
         return CommandResult.ok(status=f"{TOOL_TITLES[tool]}: {hints[tool]}", changed=True, metadata={"tool": tool})
 
@@ -202,13 +228,19 @@ class ModelingController(ControllerBase):
         for key, value in values.items():
             if key.startswith("fit_") and hasattr(session.fit, key[4:]):
                 setattr(session.fit, key[4:], type(getattr(session.fit, key[4:]))(value))
-            elif hasattr(session, key) and key not in ("tool", "fit", "preview", "trim_pieces", "fill_chain"):
+            elif hasattr(session, key) and key not in (
+                "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles"
+            ):
                 current = getattr(session, key)
                 setattr(session, key, type(current)(value) if current is not None else value)
             else:
                 return CommandResult.failure(f"Unknown option: {key}")
         if values.get("selection_mode") is not None and session.selection_mode not in SELECTION_MODES:
             session.selection_mode = "smart"
+        if session.section_plane not in SECTION_PLANES:
+            session.section_plane = "XY"
+        if any(key in values for key in ("section_tolerance", "section_sharp")):
+            session.section_profiles = None  # fitted for other options
         return CommandResult.ok(status="Options updated", changed=True)
 
     # -- scan selection (Fit Surface) ----------------------------------------------------------
@@ -354,6 +386,186 @@ class ModelingController(ControllerBase):
             dirty=True,
             undo_payload=CallbackUndoPayload(payload.name, undo_action=undo, redo_action=redo),
         )
+
+    # -- Section Sketch ------------------------------------------------------------------------
+
+    def section_frame(self) -> dict[str, list[float]] | None:
+        """The sketch plane as origin + in-plane axes (world), for the session's plane."""
+
+        session = self.session
+        if session is None or session.section_plane not in SECTION_PLANES:
+            return None
+        u, v, axis = (np.asarray(value) for value in SECTION_PLANES[session.section_plane])
+        return {"origin": (axis * session.section_offset).tolist(), "u": u.tolist(), "v": v.tolist()}
+
+    def section_set_plane(self, plane: str, *, offset: float | None = None) -> CommandResult:
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        if plane not in SECTION_PLANES:
+            return CommandResult.failure(f"Unknown sketch plane: {plane} (use {', '.join(SECTION_PLANES)}).")
+        changed_plane = plane != session.section_plane
+        session.section_plane = plane
+        if offset is not None:
+            session.section_offset = float(offset)
+        elif changed_plane:
+            session.section_offset = self._scan_center(plane)
+        return self.section_cut()
+
+    def section_place(self, world_point: object) -> CommandResult:
+        """Move the plane (keeping its direction) through a point picked on the scan."""
+
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        axis = np.asarray(SECTION_PLANES[session.section_plane][2])
+        session.section_offset = float(np.asarray(world_point, dtype=float) @ axis)
+        return self.section_cut()
+
+    def section_cut(self) -> CommandResult:
+        """The scan's section on the plane (cached for the plane as it is)."""
+
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        if self.state.mesh_object is None:
+            return CommandResult.failure("Open a scan first (File > Open Model).")
+        from openretop.geometry.sections import extract_section_by_plane
+
+        source = self.transform.transformed_source_mesh()
+        key = (session.section_plane, round(session.section_offset, 9), id(source.vertices), len(source.vertices))
+        if session.section_key != key:
+            axis = np.asarray(SECTION_PLANES[session.section_plane][2])
+            section = extract_section_by_plane(source, axis * session.section_offset, axis)
+            usable = [poly for poly in section.polylines if poly.point_count >= 8]
+            session.section_loops = [np.asarray(poly.points, dtype=float) for poly in usable]
+            session.section_closed = [bool(poly.is_closed) for poly in usable]
+            session.section_key = key
+            session.section_profiles = None
+        count = len(session.section_loops)
+        where = f"{session.section_plane} at {session.section_offset:.3f} {self.state.units}"
+        if count == 0:
+            return CommandResult.ok(status=f"Section Sketch: the plane ({where}) misses the scan.", changed=True)
+        return CommandResult.ok(status=f"Section Sketch: {count} section loop(s) on {where}. Fit Profile fits lines and arcs.", changed=True)
+
+    def section_fit(self) -> CommandResult:
+        """Lines and arcs within the tolerance through each loop of the section."""
+
+        cut = self.section_cut()
+        if not cut.success:
+            return cut
+        session = self.session
+        assert session is not None
+        if not session.section_loops:
+            return CommandResult.failure("The plane misses the scan: move it (click the scan, or set the offset).")
+        tolerance = self.section_tolerance_in_use()
+        sharp = session.section_sharp if session.section_sharp > 0 else None
+        profiles = [fit_profile(outline, tolerance=tolerance, sharp_radius=sharp) for outline in self._section_outlines()]
+        session.section_profiles = profiles
+        lines = sum(1 for profile in profiles for segment in profile.segments if segment.kind == "line")
+        arcs = sum(1 for profile in profiles for segment in profile.segments if segment.kind == "arc")
+        worst = max(profile.deviation for profile in profiles)
+        rms = float(np.sqrt(np.mean([profile.rms**2 for profile in profiles])))
+        auto = " (auto)" if session.section_tolerance <= 0 else ""
+        return CommandResult.ok(
+            status=f"Profile: {lines} lines, {arcs} arcs in {len(profiles)} loop(s) at tolerance {tolerance:.3f}{auto}; "
+            f"deviation RMS {rms:.3f}, max {worst:.3f} {self.state.units}. Create keeps it.",
+            changed=True,
+        )
+
+    def section_tolerance_in_use(self) -> float:
+        """The tolerance set, or (0 = Auto) one from the noise measured on the section."""
+
+        session = self.session
+        if session is None:
+            return 0.05
+        if session.section_tolerance > 0:
+            return float(session.section_tolerance)
+        return auto_tolerance(self._section_outlines())
+
+    def _section_outlines(self) -> list[np.ndarray]:
+        """The section loops in the plane's 2D coordinates."""
+
+        session = self.session
+        frame = self.section_frame()
+        if session is None or frame is None:
+            return []
+        u, v, origin = (np.asarray(frame[name]) for name in ("u", "v", "origin"))
+        return [np.c_[(loop - origin) @ u, (loop - origin) @ v] for loop in session.section_loops]
+
+    def section_profile_lines(self) -> list[np.ndarray]:
+        """The fitted profile in world coordinates (for display)."""
+
+        session = self.session
+        frame = self.section_frame()
+        if session is None or session.section_profiles is None or frame is None:
+            return []
+        from openretop.cad_kernel.profiles import PlaneFrame
+
+        plane = PlaneFrame.from_dict(frame)
+        return [plane.to_world(profile.polyline(16)) for profile in session.section_profiles if profile.segments]
+
+    def section_plane_outline(self) -> np.ndarray | None:
+        """A rectangle a little larger than the scan on the plane (for display)."""
+
+        frame = self.section_frame()
+        if frame is None or self.state.mesh_object is None:
+            return None
+        source = self.transform.transformed_source_mesh()
+        vertices = np.asarray(source.vertices, dtype=float)
+        if len(vertices) == 0:
+            return None
+        from openretop.cad_kernel.profiles import PlaneFrame
+
+        plane = PlaneFrame.from_dict(frame)
+        local = plane.to_plane(vertices[:: max(1, len(vertices) // 20000)])
+        low, high = local.min(axis=0), local.max(axis=0)
+        margin = 0.08 * float(np.linalg.norm(high - low))
+        low, high = low - margin, high + margin
+        corners = np.array([[low[0], low[1]], [high[0], low[1]], [high[0], high[1]], [low[0], high[1]], [low[0], low[1]]])
+        return plane.to_world(corners)
+
+    def section_create(self) -> CommandResult:
+        """Keep the fitted profile as a sketch: exact lines and arcs, closed loops as faces."""
+
+        session = self._session_for("section")
+        if isinstance(session, CommandResult):
+            return session
+        if session.section_profiles is None:
+            fitted = self.section_fit()
+            if not fitted.success:
+                return fitted
+        profiles = [profile for profile in session.section_profiles or [] if profile.segments]
+        if not profiles:
+            return CommandResult.failure("Nothing to create: fit a profile first.")
+        frame = self.section_frame()
+        assert frame is not None
+        loops = [profile.to_dict() for profile in profiles]
+        worst = max(profile.deviation for profile in profiles)
+        rms = float(np.sqrt(np.mean([profile.rms**2 for profile in profiles])))
+        reply = self.worker.call("profile", frame, loops, rms=rms, max_error=worst)
+        if not reply.ok:
+            return _kernel_failure("Sketch failed", reply)
+        params = {
+            "plane": session.section_plane,
+            "offset": session.section_offset,
+            "frame": frame,
+            "loops": loops,
+            "tolerance": self.section_tolerance_in_use(),
+        }
+        entity = entity_from_result(self.state.model, reply.value, tool="section", params=params)
+        session.section_profiles = None  # created: the next Fit starts afresh
+        return self._add_entities([entity], name="Section Sketch")
+
+    def _scan_center(self, plane: str) -> float:
+        if self.state.mesh_object is None or plane not in SECTION_PLANES:
+            return 0.0
+        vertices = np.asarray(self.transform.transformed_source_mesh().vertices, dtype=float)
+        if len(vertices) == 0:
+            return 0.0
+        axis = np.asarray(SECTION_PLANES[plane][2])
+        values = vertices @ axis
+        return float(0.5 * (values.min() + values.max()))
 
     # -- Loft ----------------------------------------------------------------------------------
 
@@ -1008,4 +1220,4 @@ def _kernel_failure(prefix: str, reply: KernelReply) -> CommandResult:
     return CommandResult.failure(message, status=message)
 
 
-__all__ = ("FitOptions", "ModelingController", "SELECTION_MODES", "TOOLS", "TOOL_TITLES", "ToolSession")
+__all__ = ("FitOptions", "ModelingController", "SECTION_PLANES", "SELECTION_MODES", "TOOLS", "TOOL_TITLES", "ToolSession")

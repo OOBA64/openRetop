@@ -674,6 +674,7 @@ class WorkflowService:
         modeling = self.modeling
         starts = {
             "model.sketch": "sketch",
+            "model.section_sketch": "section",
             "model.fit_surface": "fit_surface",
             "model.loft": "loft",
             "model.fill": "fill",
@@ -698,6 +699,14 @@ class WorkflowService:
         if action == "model.sketch_face":
             fit = payload.get("fit_to_scan")
             return modeling.sketch_face(fit_to_scan=None if fit is None else bool(fit))
+        if action == "model.section_plane":
+            offset = payload.get("offset")
+            plane = str(payload.get("plane") or (modeling.session.section_plane if modeling.session else "XY"))
+            return modeling.section_set_plane(plane, offset=None if offset is None else float(offset))  # type: ignore[arg-type]
+        if action == "model.section_fit":
+            return modeling.section_fit()
+        if action == "model.section_create":
+            return modeling.section_create()
         if action == "model.configure":
             return modeling.configure(**{str(key): value for key, value in payload.items()})
         if action == "model.select_clear":

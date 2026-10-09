@@ -61,6 +61,11 @@ ICONS: dict[str, str] = {
         '<path d="m7 12 2 2M10 9l2 2M13 6l2 2"/>'
     ),
     # scene tree kinds
+    # a sketch on a plane: a profile of lines and a rounded corner
+    "section_sketch": (
+        '<path d="M3 18 7.5 6H21l-4.5 12z" opacity="0.5"/>'
+        '<path d="M8.5 15.5 10.5 9.5h5.2a1.6 1.6 0 0 1 1.5 2.1l-1.3 3.9z" stroke-width="2.1"/>'
+    ),
     # surfacing tools: a patch laid over scan points
     "fit_surface": (
         '<path d="M3 15c3-4 6-6 9-6s6 2 9 6l-4 5H7z"/>'

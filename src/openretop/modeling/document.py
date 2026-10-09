@@ -41,6 +41,7 @@ KIND_LABELS = {
     "extend": "Extended",
     "piece": "Trimmed",
     "patch": "Patch",
+    "profile": "Sketch",
     "shell": "Shell",
     "solid": "Solid",
 }
