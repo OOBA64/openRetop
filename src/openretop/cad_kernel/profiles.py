@@ -185,7 +185,38 @@ def _inside(inner: np.ndarray, outer: np.ndarray) -> bool:
 
     if len(inner) == 0 or len(outer) < 3:
         return False
-    x, y = inner[len(inner) // 2]
+    x, y = interior_point(inner)
+    return point_in_outline((x, y), outer)
+
+
+def interior_point(outline: np.ndarray) -> np.ndarray:
+    """A point just inside a closed outline: beside the middle of its longest edge.
+
+    Not a point of the outline itself: loops that share edges (regions next to each other)
+    would put it on both boundaries, and the inside test would be a coin toss."""
+
+    points = np.asarray(outline, dtype=float).reshape(-1, 2)
+    if len(points) < 3:
+        return points[len(points) // 2] if len(points) else np.zeros(2)
+    following = np.roll(points, -1, axis=0)
+    edges = following - points
+    lengths = np.linalg.norm(edges, axis=1)
+    longest = int(np.argmax(lengths))
+    if lengths[longest] <= 0.0:
+        return points[0]
+    area = 0.5 * float(np.sum(points[:, 0] * following[:, 1] - following[:, 0] * points[:, 1]))
+    direction = edges[longest] / lengths[longest]
+    left = np.array([-direction[1], direction[0]])
+    inward = left if area > 0 else -left
+    middle = 0.5 * (points[longest] + following[longest])
+    return middle + inward * 1e-4 * lengths[longest]
+
+
+def point_in_outline(point: object, outer: np.ndarray) -> bool:
+    x, y = np.asarray(point, dtype=float).reshape(2)
+    outer = np.asarray(outer, dtype=float).reshape(-1, 2)
+    if len(outer) < 3:
+        return False
     ax, ay = outer[:, 0], outer[:, 1]
     bx, by = np.roll(ax, -1), np.roll(ay, -1)
     crossing = (ay > y) != (by > y)
