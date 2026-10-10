@@ -55,9 +55,19 @@ SURFACING_HEAVY_ACTIONS = frozenset(
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of Surface Sketch curves
 NODE_HISTORY = "history"  # the scene tree group of the design history (P-01)
+# 3D Sketch colours: free geometry blue, fully defined white (as Fusion's blue / black on a
+# dark view), the selection yellow, construction teal, the scan's cut orange (as in Section
+# Sketch: grey would vanish against the scan)
+SKETCH2D_FREE = (0.38, 0.66, 1.0)
+SKETCH2D_DEFINED = (0.92, 0.93, 0.96)
+SKETCH2D_SELECTED = (1.0, 0.85, 0.25)
+SKETCH2D_CONSTRUCTION = (0.40, 0.82, 0.74)
+SKETCH2D_REFERENCE = (0.98, 0.55, 0.20)
+SKETCH2D_PLANE = (0.55, 0.70, 0.95)
 FEATURE_PREFIX = "feature:"
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
+    "plane_sketch": "L line, R rectangle, C circle, A arc, S select. Select geometry, then constrain or dimension it (D). Enter / Finish Sketch keeps it.",
     "sketch": "Click points on the scan; Enter finishes. Click a point to select / drag it, double-click a curve to add a point, right-click for more.",
     "extrude": "The depth comes from the scan; adjust ahead / behind / draft, pick New, Add or Cut, then Create (Enter).",
     "section": "Click the scan to move the sketch plane there; Fit Profile. Then drag corners, click a segment to change it (Ctrl+click moves the plane); Create (Enter).",
@@ -132,6 +142,8 @@ class SurfacingWorkbenchMixin:
             return False
         if self.modeling.tool == "sketch" and self._sketch_key(key):
             return True
+        if self.modeling.tool == "plane_sketch" and self._sketch2d_key(key):
+            return True
         if self._brush_key(key):
             return True
         if key == Qt.Key.Key_Escape:
@@ -161,6 +173,212 @@ class SurfacingWorkbenchMixin:
                 self._dispatch_application_action(primary)  # type: ignore[attr-defined]
                 return True
         return False
+
+    SKETCH2D_TOOL_KEYS: dict[Any, str] = {Qt.Key.Key_L: "line", Qt.Key.Key_R: "rectangle", Qt.Key.Key_C: "circle", Qt.Key.Key_A: "arc", Qt.Key.Key_S: "select"}
+
+    def _surfacing_claims_key(self, key: int, modifiers: object = None) -> bool:
+        """Keys a tool takes before the window's shortcuts: the 3D Sketch's tool letters
+        (R is Rectangle there, not Rotate)."""
+
+        held = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        plain = modifiers is None or not (modifiers & held)  # type: ignore[operator, arg-type]
+        return bool(plain and self.modeling.tool == "plane_sketch" and key in self.SKETCH2D_TOOL_KEYS)
+
+    def _sketch2d_key(self, key: int) -> bool:
+        mode = self.modeling.session.sketch2d
+        if mode is None:
+            return False
+        if key == Qt.Key.Key_Escape:
+            if mode.pending:
+                self._consume_result("model.sketch2d_end", self.modeling.sketch2d_end_shape())  # type: ignore[attr-defined]
+            elif mode.tool != "select":
+                self._dispatch_application_action("model.sketch2d_tool", {"tool": "select"})  # type: ignore[attr-defined]
+            else:
+                self._dispatch_application_action("model.finish")  # type: ignore[attr-defined]  # keeps the sketch
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if mode.pending:
+                self._consume_result("model.sketch2d_end", self.modeling.sketch2d_end_shape())  # type: ignore[attr-defined]
+            else:
+                self._dispatch_application_action("model.sketch2d_finish")  # type: ignore[attr-defined]
+            return True
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and mode.selected:
+            self._dispatch_application_action("model.sketch2d_delete")  # type: ignore[attr-defined]
+            return True
+        if key in self.SKETCH2D_TOOL_KEYS:
+            self._dispatch_application_action("model.sketch2d_tool", {"tool": self.SKETCH2D_TOOL_KEYS[key]})  # type: ignore[attr-defined]
+            return True
+        return False
+
+    # -- 3D Sketch (P-03) ------------------------------------------------------------------------
+
+    _sketch2d_drag: str | None = None  # the point being dragged
+    _sketch2d_before: Any = None  # the sketch when the drag began (one undo step per drag)
+
+    def _plane_hit(self, frame: dict[str, Any] | None, x_position: int, y_position: int) -> np.ndarray | None:
+        """Where the line of sight under the pointer meets a plane (origin + u, v)."""
+
+        ray = getattr(self.viewport, "pointer_ray", lambda x, y: None)(x_position, y_position)
+        if frame is None or ray is None:
+            return None
+        origin, direction = ray
+        normal = np.cross(np.asarray(frame["u"], dtype=float), np.asarray(frame["v"], dtype=float))
+        facing = float(direction @ normal)
+        if abs(facing) < 1e-9:
+            return None
+        return origin + direction * (float((np.asarray(frame["origin"], dtype=float) - origin) @ normal) / facing)
+
+    def _extrude_sketch2d(self) -> dict[str, Any] | None:
+        """The plane of the 3D Sketch the Extrude tool is using (None for other sketches)."""
+
+        session = self.modeling.session
+        profile = None if session is None else self.composition.state.model.get(session.extrude_profile)
+        if profile is None or "sketch2d" not in profile.params:
+            return None
+        return profile.params["frame"]
+
+    def _sketch2d_snap(self) -> float:
+        """The snapping distance on the sketch plane: SNAP_PIXELS on screen."""
+
+        from openretop.presentation.qt.tool_preview_overlay import world_per_pixel
+
+        mode = self.modeling.session.sketch2d
+        renderer = getattr(self.viewport, "renderer", None)
+        window = getattr(self.viewport, "render_window", None)
+        if mode is None or renderer is None or window is None:
+            return 1.0
+        height = int(window.GetSize()[1]) or 1
+        return SNAP_PIXELS * world_per_pixel(renderer, np.asarray(mode.frame()["origin"], dtype=float), height)
+
+    def _sketch2d_point_at(self, x_position: int, y_position: int) -> str | None:
+        mode = self.modeling.session.sketch2d
+        if mode is None or not mode.sketch.points:
+            return None
+        ids = list(mode.sketch.points)
+        positions = mode.to_world([mode.sketch.position(point) for point in ids])
+        try:
+            projected = np.asarray(self.viewport.project_points(positions), dtype=float).reshape(len(positions), -1)
+        except Exception:  # viewport not ready
+            return None
+        distance = np.hypot(projected[:, 0] - x_position, projected[:, 1] - y_position)
+        distance[~np.isfinite(distance)] = np.inf
+        best = int(np.argmin(distance))
+        return ids[best] if distance[best] <= SNAP_PIXELS else None
+
+    def _sketch2d_pointer(self, event_name: str, x_position: int, y_position: int) -> None:
+        modeling = self.modeling
+        mode = modeling.session.sketch2d
+        if mode is None:
+            return
+        world = self._plane_hit(mode.frame(), x_position, y_position)
+        if event_name == "motion":
+            if self._sketch2d_drag is not None:
+                if world is not None:
+                    self._drag_moved = True
+                    modeling.sketch2d_drag(self._sketch2d_drag, world)
+                    self._render_scene()  # type: ignore[attr-defined]
+                return
+            if modeling.sketch2d_hover(world).changed:
+                self._render_scene()  # type: ignore[attr-defined]  # the rubber band follows
+            return
+        if event_name == "leave":
+            modeling.sketch2d_hover(None)
+            self._render_scene()  # type: ignore[attr-defined]
+            return
+        if event_name == "right_click":
+            if mode.pending:
+                self._consume_result("model.sketch2d_end", modeling.sketch2d_end_shape())  # type: ignore[attr-defined]
+            return
+        if event_name != "left_release":
+            return
+        from PySide6.QtWidgets import QApplication
+
+        control = bool(QApplication.keyboardModifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+        if self._sketch2d_drag is not None:
+            point, before = self._sketch2d_drag, self._sketch2d_before
+            self._sketch2d_drag, self._sketch2d_before = None, None
+            if self._drag_moved and world is not None:
+                self._drag_moved = False
+                self._apply_model_result("model.sketch2d_drag", modeling.sketch2d_drag(point, world, before=before))
+                return
+            ids = [value for value in mode.selected if value != point] if control and point in mode.selected else ([*mode.selected, point] if control else [point])
+            self._consume_result("model.sketch2d_select", modeling.sketch2d_select(ids))  # type: ignore[attr-defined]
+            return
+        if not self.viewport.last_pointer_release_was_click or world is None:
+            return
+        self._apply_model_result("model.sketch2d_click", modeling.sketch2d_click(world, snap=self._sketch2d_snap(), add=control))
+
+    def _sketch2d_lines(self) -> tuple[tuple[np.ndarray, tuple[float, float, float], float], ...]:
+        lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = []
+        session = self.modeling.session
+        if session is not None and session.tool == "extrude":
+            lines.extend((outline, SKETCH2D_SELECTED, 4.0) for outline in self.modeling.extrude_region_outlines())
+            return tuple(lines)
+        view = self.modeling.sketch2d_view_world()
+        if view is None:
+            return ()
+        outline = self.modeling.sketch2d_plane_outline()
+        if outline is not None:
+            lines.append((outline, SKETCH2D_PLANE, 1.0))
+        lines.extend((line, SKETCH2D_REFERENCE, 1.2) for line in view["reference"])
+        for curve in view["curves"]:
+            if curve["selected"]:
+                color, width = SKETCH2D_SELECTED, 3.5
+            elif curve["construction"]:
+                color, width = SKETCH2D_CONSTRUCTION, 1.5
+            else:
+                color, width = (SKETCH2D_DEFINED if curve["defined"] else SKETCH2D_FREE), 2.5
+            lines.append((curve["world"], color, width))
+        return tuple(lines)
+
+    def _surfacing_annotations(self) -> list[Any]:
+        from openretop.presentation.qt.annotation_overlay import Annotation
+
+        view = self.modeling.sketch2d_view_world()
+        if view is None:
+            return []
+        return [
+            Annotation(
+                tuple(float(value) for value in label["world"]),  # type: ignore[arg-type]
+                str(label["text"]),
+                "glyph" if not label["dimension"] else ("dimension" if label["driving"] else "reference"),
+            )
+            for label in view["labels"]
+        ]
+
+    def _sketch2d_facts(self, session: Any) -> dict[str, Any]:
+        mode = session.sketch2d
+        if mode is None:
+            return {}
+        from openretop.modeling.sketch2d import DIMENSIONS
+
+        view = mode.view()
+        units = self.composition.state.units
+        rows: list[tuple[str, str, float | None, bool]] = []
+        for constraint in mode.sketch.constraints:
+            label = constraint.kind.replace("_", " ").capitalize()
+            refs = ", ".join(constraint.refs)
+            if constraint.kind in DIMENSIONS:
+                rows.append((constraint.id, f"{label} {mode.dimension_text(constraint)} ({refs})", float(constraint.value or 0.0), True))
+            else:
+                rows.append((constraint.id, f"{label} ({refs})", None, False))
+        points = sum(1 for item in mode.selected if item in mode.sketch.points)
+        editing = self.composition.state.model.get(mode.editing) if mode.editing else None
+        dof = int(view["dof"])
+        return {
+            "tool": mode.tool,
+            "plane": mode.plane,
+            "offset": float(mode.offset),
+            "available": mode.available(),
+            "constraints": rows,
+            "selected": len(mode.selected),
+            "two_points": points == 2 and len(mode.selected) == 2,
+            "dof_text": (
+                "Fully defined" if view["defined"] else f"{dof} degree(s) of freedom: blue geometry can still move"
+            ) if mode.sketch.points else "Draw on the plane: lines, rectangles, circles, arcs.",
+            "editing": "" if editing is None else editing.name,
+            "units": units,
+        }
 
     def _brush_key(self, key: int) -> bool:
         """[ and ] shrink and grow the brush."""
@@ -207,6 +425,17 @@ class SurfacingWorkbenchMixin:
         points (to drag it); anywhere else the drag rotates the view and a click still picks."""
 
         session = self.modeling.session
+        if session is not None and session.tool == "plane_sketch":
+            # in Select, a press on a point drags it; anywhere else (and in the drawing tools)
+            # a drag turns the view and a click places or picks
+            mode = session.sketch2d
+            point = self._sketch2d_point_at(x_position, y_position) if mode is not None and mode.tool == "select" else None
+            self._sketch2d_drag = point
+            self._sketch2d_before = None if point is None else mode.sketch.to_dict()
+            self._drag_moved = False
+            return point is not None
+        if session is not None and session.tool == "extrude":
+            return False
         if session is not None and session.tool == "section":
             corner = self._section_vertex_at(x_position, y_position)
             self._section_drag = corner
@@ -238,6 +467,10 @@ class SurfacingWorkbenchMixin:
 
     def _surfacing_capture_owner(self) -> str | None:
         session = self.modeling.session
+        if session is not None and session.tool == "plane_sketch":
+            return "plane_sketch"
+        if session is not None and session.tool == "extrude" and self._extrude_sketch2d() is not None:
+            return "extrude_pick"
         if session is not None and session.tool == "sketch":
             return "sketch"
         if session is not None and session.tool == "section" and session.section_profiles is not None:
@@ -257,6 +490,16 @@ class SurfacingWorkbenchMixin:
         tool = session.tool
         if tool == "sketch":
             self._sketch_pointer(event_name, x_position, y_position)
+            return True
+        if tool == "plane_sketch":
+            self._sketch2d_pointer(event_name, x_position, y_position)
+            return True
+        if tool == "extrude" and self._extrude_sketch2d() is not None:
+            if event_name == "left_release" and self.viewport.last_pointer_release_was_click:
+                frame = self._extrude_sketch2d()
+                point = self._plane_hit(frame, x_position, y_position)
+                if point is not None:
+                    self._consume_result("model.extrude_pick", self.modeling.extrude_pick_region(point))  # type: ignore[attr-defined]
             return True
         if tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             if event_name in ("motion", "left_press"):  # the ring showing the brush follows the pointer
@@ -758,6 +1001,8 @@ class SurfacingWorkbenchMixin:
         return True
 
     def _sketch_facts(self, session: Any) -> dict[str, Any]:
+        if session.tool == "plane_sketch":
+            return self._sketch2d_facts(session)
         if session.tool == "section":
             return self._section_facts(session)
         if session.tool == "extrude":
@@ -840,6 +1085,20 @@ class SurfacingWorkbenchMixin:
         session = self.modeling.session
         if session is not None and session.tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             return self._brush_ring_preview(session)
+        if session is not None and session.tool == "plane_sketch":
+            view = self.modeling.sketch2d_view_world()
+            if view is None:
+                return None
+            nodes = np.asarray([point["world"] for point in view["points"]], dtype=float).reshape(-1, 3)
+            picked = next((index for index, point in enumerate(view["points"]) if point["selected"]), None)
+            band = view["preview_world"]
+            return ToolPreviewState(
+                revision=geometry_revision(nodes, band, picked is not None),
+                active=True,
+                fitted_points=np.zeros((0, 3)) if band is None else band,
+                node_points=nodes,
+                highlighted_node_index=picked,
+            )
         if session is not None and session.tool == "section":
             corners = self.modeling.section_vertices_world()
             if not corners:

@@ -75,6 +75,9 @@ class ModelingSceneInput:
     profile_lines: Sequence[np.ndarray] = field(default=(), compare=False)
     section_plane: np.ndarray | None = field(default=None, compare=False)
     creases: np.ndarray | None = field(default=None, compare=False)
+    # 3D Sketch: its curves, plane, the scan's cut and picked extrude regions, each with
+    # its own colour and width: (polyline (world), (r, g, b), width)
+    sketch2d_lines: Sequence[tuple[np.ndarray, tuple[float, float, float], float]] = field(default=(), compare=False)
     profile_highlight: np.ndarray | None = field(default=None, compare=False)  # the picked segment  # per display vertex, 0..1: "Show body lines"
 
 
@@ -161,6 +164,18 @@ def modeling_items(
                     style=DisplayStyleSnapshot(color=color, line_width=width),
                 )
             )
+    groups: dict[tuple[tuple[float, float, float], float], list[np.ndarray]] = {}
+    for line, color, width in modeling.sketch2d_lines:
+        groups.setdefault((tuple(color), float(width)), []).append(line)  # type: ignore[arg-type]
+    for number, ((color, width), lines) in enumerate(groups.items()):
+        edges.append(
+            ModelEdgesRenderItem(
+                id=f"sketch2d-{number}",
+                revision=hash(("sketch2d", color, width, tuple(id(line) for line in lines))),
+                polylines=tuple(lines),
+                style=DisplayStyleSnapshot(color=color, line_width=width),
+            )
+        )
     preview = modeling.preview
     if preview is not None:
         faces.append(

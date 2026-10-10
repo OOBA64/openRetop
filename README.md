@@ -41,9 +41,13 @@ workspaces:
   **Fit Surface** to a brushed area; **Loft**, **Fill**, **Extend**, **Trim**
   (sews into a solid when closed); **Compare** colours the scan by its distance
   to the model.
-- **Solid**: **Section Sketch** fits lines and arcs to a cut through the scan,
-  editable by hand (drag corners, set radii, add fillets); **Extrude** measures
-  its depth on the scan.
+- **Solid**: **3D Sketch** draws on a plane through the scan (its cut shown
+  to draw over): lines, rectangles, circles and arcs held by constraints and
+  dimensions, Fusion-style (blue until fully defined). **Section Sketch** fits
+  lines and arcs to a cut through the scan, editable by hand. **Extrude** a
+  sketch (or regions of it, picked by clicking) with its depth measured on the
+  scan. The **History** in the scene tree records sketches and extrudes:
+  change a dimension or a depth and the part rebuilds.
 
 **Export Model** writes the selected (or all visible) surfaces and bodies.
 Long operations run off the UI thread; the window stays responsive.

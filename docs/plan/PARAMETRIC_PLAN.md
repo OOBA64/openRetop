@@ -104,7 +104,12 @@ Design
 Status (2026-10-09): **P-02 done** (`modeling.sketch2d`: the solver, 12 constraints, 6 dimensions,
 DOF and fully-defined; no UI yet). **P-01 done** for sketches and extrudes (`modeling.timeline`,
 `application.regeneration`; History in the scene tree, extrude inputs editable in Properties).
-Next: P-03 / P-04 / P-05, i.e. sketch mode on top of the solver and extrude from its profiles.
+**P-03 done** (the Solid workspace's 3D Sketch: line, rectangle, circle, arc; the 12 constraints
+and dimensions from the panel; blue / white by definition; labels and marks over the scene;
+Finish and Edit Sketch with rebuild). **P-04 done** (`modeling.sketch_profiles`: regions with
+islands, picked by click). **P-05 partly**: Extrude from a 3D Sketch's picked regions (new /
+add / cut, distance, symmetric via ahead + behind, draft); Revolve, "to object" and taper
+angle per side are still to come. Next: P-06 fillet / chamfer, P-07 timeline bar.
 
 Order: P-01 and P-02 first (everything stands on them), then P-03/P-04/P-05 together (the
 first end-to-end Fusion-style loop), then P-06, P-07, then the rest as needed by real parts.

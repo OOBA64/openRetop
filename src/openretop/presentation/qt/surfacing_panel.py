@@ -41,9 +41,30 @@ SURFACE_TYPES = (
     ("torus", "Torus"),
 )
 SELECTION_MODES = (("smart", "Smart"), ("brush", "Brush"), ("erase", "Erase"))
-PAGES = ("sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+PAGES = ("sketch", "plane_sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
 EXTRUDE_MODES = (("new", "New body"), ("add", "Add"), ("cut", "Cut"))
 SECTION_PLANES = (("XY", "XY (top)"), ("XZ", "XZ (front)"), ("YZ", "YZ (side)"))
+SKETCH2D_TOOLS = (
+    ("select", "Select", "Pick points and curves to constrain; drag a point to move it (S)."),
+    ("line", "Line", "Click points; click the first one to close the shape; Enter ends (L)."),
+    ("rectangle", "Rectangle", "Click two opposite corners (R)."),
+    ("circle", "Circle", "Click the centre, then a point on the circle (C)."),
+    ("arc", "Arc", "Click the centre, the start, then the end, counter-clockwise (A)."),
+)
+SKETCH2D_CONSTRAINTS = (
+    ("coincident", "Coincident", "A point on another point, a line or a circle."),
+    ("horizontal", "Horizontal", "A line, or two points, level."),
+    ("vertical", "Vertical", "A line, or two points, upright."),
+    ("parallel", "Parallel", "Two lines parallel."),
+    ("perpendicular", "Perpendicular", "Two lines at right angles."),
+    ("tangent", "Tangent", "A line and a circle or arc, or two of them, touching smoothly."),
+    ("equal", "Equal", "Two lines the same length, or two circles / arcs the same radius."),
+    ("concentric", "Concentric", "Two circles or arcs on one centre."),
+    ("midpoint", "Midpoint", "A point at a line's middle."),
+    ("symmetric", "Symmetric", "Two points mirrored about a line."),
+    ("collinear", "Collinear", "Two lines on one line."),
+    ("fix", "Fix", "A point held where it is."),
+)
 
 
 @dataclass
@@ -119,6 +140,7 @@ class SurfacingPanel(QWidget):
         self._page_index: dict[str, int] = {}
         for name, builder in (
             ("sketch", self._build_sketch),
+            ("plane_sketch", self._build_plane_sketch),
             ("section", self._build_section),
             ("extrude", self._build_extrude),
             ("fit_surface", self._build_fit),
@@ -158,6 +180,7 @@ class SurfacingPanel(QWidget):
         try:
             self._show_fit(session, facts)
             self._show_sketch(facts.extra, facts.busy)
+            self._show_plane_sketch(session, facts)
             self._show_section(session, facts)
             self._show_extrude(session, facts)
             self.loft_info.setText(
@@ -300,8 +323,69 @@ class SurfacingPanel(QWidget):
         self.extrude_create.setEnabled(not facts.busy)
         self.extrude_measure.setEnabled(not facts.busy)
 
+    def _show_plane_sketch(self, session: Any, facts: PanelFacts) -> None:
+        if session.tool != "plane_sketch":
+            return
+        extra = facts.extra
+        for plane, button in self.sketch2d_plane_buttons.items():
+            button.setChecked(extra.get("plane") == plane)
+        self.sketch2d_offset.setSuffix(f" {facts.units}")
+        self.sketch2d_offset.setValue(float(extra.get("offset", 0.0)))
+        for tool, button in self.sketch2d_tool_buttons.items():
+            button.setChecked(extra.get("tool") == tool)
+        available = set(extra.get("available", ()))
+        for kind, constraint_button in self.sketch2d_constraint_buttons.items():
+            constraint_button.setEnabled(kind in available and not facts.busy)
+        self.sketch2d_dimension.setEnabled("dimension" in available and not facts.busy)
+        two_points = bool(extra.get("two_points"))
+        self.sketch2d_horizontal_dimension.setEnabled(two_points and not facts.busy)
+        self.sketch2d_vertical_dimension.setEnabled(two_points and not facts.busy)
+        selected = int(extra.get("selected", 0))
+        self.sketch2d_delete.setEnabled(selected > 0 and not facts.busy)
+        self.sketch2d_construction.setEnabled(selected > 0 and not facts.busy)
+        rows = list(extra.get("constraints", ()))
+        current = self._sketch2d_constraint_id()
+        self.sketch2d_constraints.clear()
+        self._sketch2d_rows = rows
+        for row_id, text, _value, _dimension in rows:
+            self.sketch2d_constraints.addItem(text)
+            if row_id == current:
+                self.sketch2d_constraints.setCurrentRow(self.sketch2d_constraints.count() - 1)
+        self._sketch2d_show_value()
+        editing = str(extra.get("editing", ""))
+        self.sketch2d_status.setText((f"Editing {editing}. " if editing else "") + str(extra.get("dof_text", "")))
+        self.sketch2d_finish.setEnabled(not facts.busy)
+
+    def _sketch2d_constraint_id(self) -> str | None:
+        row = self.sketch2d_constraints.currentRow()
+        rows = getattr(self, "_sketch2d_rows", [])
+        return rows[row][0] if 0 <= row < len(rows) else None
+
+    def _sketch2d_show_value(self) -> None:
+        row = self.sketch2d_constraints.currentRow()
+        rows = getattr(self, "_sketch2d_rows", [])
+        dimension = 0 <= row < len(rows) and rows[row][3]
+        blocker = QSignalBlocker(self.sketch2d_value)
+        if dimension:
+            self.sketch2d_value.setValue(float(rows[row][2]))
+        del blocker
+        self.sketch2d_value.setEnabled(bool(dimension))
+        self.sketch2d_remove.setEnabled(0 <= row < len(rows))
+
+    def _sketch2d_apply_value(self) -> None:
+        constraint = self._sketch2d_constraint_id()
+        if constraint is not None and self.sketch2d_value.isEnabled():
+            self._emit("model.sketch2d_set_dimension", {"constraint": constraint, "value": self.sketch2d_value.value()})
+
+    def _sketch2d_remove(self) -> None:
+        constraint = self._sketch2d_constraint_id()
+        if constraint is not None:
+            self._emit("model.sketch2d_delete_constraint", {"constraint": constraint})
+
     def _inputs(self) -> list[QWidget]:
         return [
+            self.sketch2d_offset,
+            self.sketch2d_value,
             self.section_radius,
             self.sketch_feature,
             self.sketch_smoothness,
@@ -539,6 +623,108 @@ class SurfacingPanel(QWidget):
         row.addWidget(self.sketch_loft)
         row.addWidget(self.sketch_delete)
         layout.addLayout(row)
+
+    def _build_plane_sketch(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_section("Plane"))
+        row = QHBoxLayout()
+        self.sketch2d_plane_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
+        for plane, _label in SECTION_PLANES:
+            button = QToolButton()
+            button.setText(plane)
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setToolTip("Sketch on this plane (before drawing); the scan's cut there is shown grey.")
+            button.clicked.connect(lambda _checked=False, plane=plane: self._emit("model.sketch2d_plane", {"plane": plane}))
+            group.addButton(button)
+            row.addWidget(button)
+            self.sketch2d_plane_buttons[plane] = button
+        layout.addLayout(row)
+        form = QFormLayout()
+        self.sketch2d_offset = QDoubleSpinBox()
+        self.sketch2d_offset.setRange(-1e6, 1e6)
+        self.sketch2d_offset.setDecimals(3)
+        self.sketch2d_offset.setSingleStep(0.5)
+        self.sketch2d_offset.setToolTip("Where the plane lies along its axis (the grey scan cut follows).")
+        self.sketch2d_offset.valueChanged.connect(lambda value: self._emit("model.sketch2d_plane", {"offset": value}))
+        form.addRow("Offset", self.sketch2d_offset)
+        layout.addLayout(form)
+        layout.addWidget(_section("Draw"))
+        tools = QGridLayout()
+        self.sketch2d_tool_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
+        for position, (tool, label, tip) in enumerate(SKETCH2D_TOOLS):
+            button = QToolButton()
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, tool=tool: self._emit("model.sketch2d_tool", {"tool": tool}))
+            group.addButton(button)
+            tools.addWidget(button, position // 3, position % 3)
+            self.sketch2d_tool_buttons[tool] = button
+        layout.addLayout(tools)
+        row = QHBoxLayout()
+        self.sketch2d_construction = _button("Construction")
+        self.sketch2d_construction.setToolTip("Selected curves become guides (not part of profiles), or back.")
+        self.sketch2d_construction.clicked.connect(lambda: self._emit("model.sketch2d_construction"))
+        self.sketch2d_delete = _button("Delete")
+        self.sketch2d_delete.setToolTip("Delete the selected points and curves (Delete).")
+        self.sketch2d_delete.clicked.connect(lambda: self._emit("model.sketch2d_delete"))
+        row.addWidget(self.sketch2d_construction)
+        row.addWidget(self.sketch2d_delete)
+        layout.addLayout(row)
+        layout.addWidget(_section("Constrain the selection"))
+        grid = QGridLayout()
+        self.sketch2d_constraint_buttons: dict[str, QPushButton] = {}
+        for position, (kind, label, tip) in enumerate(SKETCH2D_CONSTRAINTS):
+            constraint_button = _button(label)
+            constraint_button.setToolTip(tip)
+            constraint_button.clicked.connect(lambda _checked=False, kind=kind: self._emit("model.sketch2d_constrain", {"kind": kind}))
+            grid.addWidget(constraint_button, position // 2, position % 2)
+            self.sketch2d_constraint_buttons[kind] = constraint_button
+        layout.addLayout(grid)
+        self.sketch2d_dimension = _button("Dimension")
+        self.sketch2d_dimension.setToolTip(
+            "Dimension the selection at its current size (D): a line's length, two points, a point and a line, "
+            "two lines' angle, a circle's diameter, an arc's radius. Change the value below."
+        )
+        self.sketch2d_dimension.clicked.connect(lambda: self._emit("model.sketch2d_dimension"))
+        self.sketch2d_horizontal_dimension = _button("Horizontal Dim.")
+        self.sketch2d_horizontal_dimension.setToolTip("The horizontal distance between the two selected points.")
+        self.sketch2d_horizontal_dimension.clicked.connect(lambda: self._emit("model.sketch2d_dimension", {"kind": "horizontal_distance"}))
+        self.sketch2d_vertical_dimension = _button("Vertical Dim.")
+        self.sketch2d_vertical_dimension.setToolTip("The vertical distance between the two selected points.")
+        self.sketch2d_vertical_dimension.clicked.connect(lambda: self._emit("model.sketch2d_dimension", {"kind": "vertical_distance"}))
+        layout.addWidget(self.sketch2d_dimension)
+        row = QHBoxLayout()
+        row.addWidget(self.sketch2d_horizontal_dimension)
+        row.addWidget(self.sketch2d_vertical_dimension)
+        layout.addLayout(row)
+        layout.addWidget(_section("Constraints and dimensions"))
+        self.sketch2d_constraints = QListWidget()
+        self.sketch2d_constraints.setMinimumHeight(110)
+        self.sketch2d_constraints.currentRowChanged.connect(lambda _row: self._sketch2d_show_value())
+        layout.addWidget(self.sketch2d_constraints)
+        row = QHBoxLayout()
+        self.sketch2d_value = QDoubleSpinBox()
+        self.sketch2d_value.setRange(-1e6, 1e6)
+        self.sketch2d_value.setDecimals(3)
+        self.sketch2d_value.setSingleStep(0.5)
+        self.sketch2d_value.setToolTip("The picked dimension's value: Enter changes it, and the sketch follows.")
+        self.sketch2d_value.lineEdit().returnPressed.connect(self._sketch2d_apply_value)
+        self.sketch2d_remove = _button("Remove")
+        self.sketch2d_remove.setToolTip("Remove the picked constraint or dimension.")
+        self.sketch2d_remove.clicked.connect(self._sketch2d_remove)
+        row.addWidget(self.sketch2d_value, 1)
+        row.addWidget(self.sketch2d_remove)
+        layout.addLayout(row)
+        self.sketch2d_status = _hint()
+        layout.addWidget(self.sketch2d_status)
+        self.sketch2d_finish = _button("Finish Sketch", primary=True)
+        self.sketch2d_finish.setToolTip("Keep the sketch (Enter): its closed regions are profiles to extrude.")
+        self.sketch2d_finish.clicked.connect(lambda: self._emit("model.sketch2d_finish"))
+        layout.addWidget(self.sketch2d_finish)
 
     def _build_section(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_section("Sketch plane"))

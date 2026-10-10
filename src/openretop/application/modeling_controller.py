@@ -269,6 +269,10 @@ class ModelingController(ControllerBase):
 
     def finish(self) -> CommandResult:
         tool = self.tool
+        session = self.session
+        if session is not None and session.sketch2d is not None and session.sketch2d.sketch.curves:
+            # closing a 3D Sketch keeps what was drawn (Fusion's Finish Sketch), never drops it
+            return self.sketch2d_finish()
         self.session = None
         return CommandResult.ok(status=f"{TOOL_TITLES.get(tool or '', 'Tool')} closed", changed=True)
 
@@ -1107,10 +1111,11 @@ class ModelingController(ControllerBase):
         session.sketch2d_reference = [np.asarray(poly.points, dtype=float) for poly in section.polylines if poly.point_count >= 2]
         session.sketch2d_reference_key = key
 
-    def sketch2d_set_plane(self, plane: str, *, offset: float | None = None) -> CommandResult:
+    def sketch2d_set_plane(self, plane: str | None, *, offset: float | None = None) -> CommandResult:
         mode = self._sketch2d()
         if isinstance(mode, CommandResult):
             return mode
+        plane = plane or mode.plane
         if plane not in SKETCH_PLANES:
             return CommandResult.failure(f"Unknown plane: {plane}")
         if plane != mode.plane and mode.sketch.curves:
@@ -1242,7 +1247,7 @@ class ModelingController(ControllerBase):
             message = "Draw something first (or close the tool to leave without a sketch)."
             return CommandResult.failure(message, status=message)
         frame = mode.frame()
-        reply = self.worker.call("profile", frame, loops, rms=0.0, max_error=0.0)
+        reply = self.worker.call("profile", frame, loops)
         if not reply.ok:
             return _kernel_failure("Sketch failed", reply)
         params = {
@@ -1251,8 +1256,6 @@ class ModelingController(ControllerBase):
             "frame": frame,
             "loops": loops,
             "tolerance": 0.05,
-            "rms": 0.0,
-            "max_error": 0.0,
             "sketch2d": mode.sketch.to_dict(),
         }
         model = self.state.model
@@ -1300,6 +1303,25 @@ class ModelingController(ControllerBase):
         session.sketch2d.tool = "select"
         self._sketch2d_reference()
         return CommandResult.ok(status=f"Editing {entity.name}: change dimensions, drag points, draw more; Finish Sketch updates it.", changed=True)
+
+    def sketch2d_plane_outline(self) -> np.ndarray | None:
+        """A rectangle on the sketch plane around the scan's cut and the sketch (world)."""
+
+        session = self.session
+        if session is None or session.sketch2d is None:
+            return None
+        mode = session.sketch2d
+        local = [mode.to_plane(point) for line in session.sketch2d_reference for point in line[:: max(1, len(line) // 200)]]
+        local.extend(mode.sketch.position(point) for point in mode.sketch.points)
+        if local:
+            xy = np.asarray(local)
+            low, high = xy.min(axis=0), xy.max(axis=0)
+        else:
+            low, high = np.array([-50.0, -50.0]), np.array([50.0, 50.0])
+        margin = max(0.15 * float(np.max(high - low)), 10.0)
+        low, high = low - margin, high + margin
+        corners = np.array([[low[0], low[1]], [high[0], low[1]], [high[0], high[1]], [low[0], high[1]], [low[0], low[1]]])
+        return mode.to_world(corners)
 
     def sketch2d_view_world(self) -> dict[str, Any] | None:
         """The sketch as the viewport draws it: polylines and points in world coordinates."""

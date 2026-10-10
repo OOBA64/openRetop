@@ -412,7 +412,8 @@ class WorkflowService:
             return modeling.sketch2d_tool(str(payload.get("tool", "")))
         if action == "model.sketch2d_plane":
             offset = payload.get("offset")
-            return modeling.sketch2d_set_plane(str(payload.get("plane", "XY")), offset=None if offset is None else float(offset))  # type: ignore[arg-type]
+            plane = payload.get("plane")
+            return modeling.sketch2d_set_plane(None if plane is None else str(plane), offset=None if offset is None else float(offset))  # type: ignore[arg-type]
         if action == "model.sketch2d_constrain":
             return modeling.sketch2d_constrain(str(payload.get("kind", "")))
         if action == "model.sketch2d_dimension":

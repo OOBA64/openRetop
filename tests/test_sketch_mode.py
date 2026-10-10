@@ -100,6 +100,14 @@ class DrawingTests(unittest.TestCase):
         self.assertIn("equal", mode.available())
         self.assertNotIn("dimension", mode.available())
 
+    def test_a_click_anywhere_along_a_long_line_picks_it(self) -> None:
+        mode = SketchMode()
+        line = mode.sketch.add_line((0, 0), (300, 0))
+        mode.set_tool("select")
+        for x in (1.0, 77.7, 150.0, 299.0):
+            mode.click((x, 0.3), SNAP)
+            self.assertEqual(mode.selected, [line], x)
+
     def test_construction_curves_and_delete(self) -> None:
         mode = SketchMode()
         line = mode.sketch.add_line((0, 0), (10, 0))
@@ -260,6 +268,99 @@ class PlateAcceptanceTests(unittest.TestCase):
         result = self.composition.workflow.dispatch("model.sketch2d_finish", {})
         self.assertFalse(result.success)
         self.assertIn("Draw something", result.status)
+
+
+@unittest.skipUnless(HAVE_KERNEL, "OpenCASCADE / CadQuery not installed")
+class SketchInTheWindowTests(unittest.TestCase):
+    """The tool through the window's own mouse and keyboard handling (the plane hit faked)."""
+
+    def setUp(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from openretop.bootstrap import create_application
+        from openretop.cad_kernel.worker import KernelWorker
+        from openretop.infrastructure.settings_repository import InMemorySettingsRepository
+        from openretop.presentation.qt.main_window import OpenRetopV3Window
+
+        QApplication.instance() or QApplication([])
+        self.composition = create_application(settings_repository=InMemorySettingsRepository(), kernel_worker=KernelWorker(inline=True))
+        self.window = OpenRetopV3Window(self.composition)
+        self.addCleanup(lambda: (self.window.set_project_dirty(False), self.window.close()))
+
+    def click(self, x: float, y: float) -> None:
+        from unittest.mock import patch
+
+        window = self.window
+        window.viewport._last_pointer_release_was_click = True
+        with patch.object(window, "_plane_hit", return_value=np.array([x, y, 0.0])), patch.object(window, "_sketch2d_snap", return_value=SNAP):
+            window._on_viewport_pointer("left_release", 0, 0, None)
+
+    def key(self, key: object) -> None:
+        self.assertTrue(self.window._handle_tool_key(key, ""))
+
+    def test_draw_dimension_and_finish_with_the_mouse_keys_and_panel(self) -> None:
+        from PySide6.QtCore import Qt
+
+        window, modeling = self.window, self.composition.modeling_controller
+        window._invoke_from_ui("model.plane_sketch")  # as the toolbar, menu or Ctrl+K palette start it
+        self.assertEqual(window.active_workspace, "solid")
+        self.assertTrue(modeling.active)
+        self.assertEqual(window.surfacing_panel.title.text(), "3D Sketch")
+        self.assertEqual(window.viewport.left_capture_owner, "plane_sketch")
+        self.assertTrue(window._surfacing_claims_key(Qt.Key.Key_R))  # Rectangle here, not Rotate
+        self.key(Qt.Key.Key_R)
+        self.assertEqual(modeling.session.sketch2d.tool, "rectangle")
+        self.click(0.0, 0.0)
+        self.click(30.0, 20.0)
+        sketch = modeling.session.sketch2d.sketch
+        self.assertEqual(len(sketch.curves), 4)
+        self.assertTrue(self.composition.undo.can_undo)  # each click is one undo step
+        # select the bottom edge and dimension it from the panel
+        self.key(Qt.Key.Key_S)
+        self.click(15.0, 0.0)
+        bottom = modeling.session.sketch2d.selected
+        self.assertEqual(len(bottom), 1)
+        window.refresh()
+        panel = window.surfacing_panel
+        self.assertTrue(panel.sketch2d_constraint_buttons["horizontal"].isEnabled())  # fits a line (it may turn out redundant)
+        self.assertFalse(panel.sketch2d_constraint_buttons["concentric"].isEnabled())  # needs two circles
+        self.assertTrue(panel.sketch2d_dimension.isEnabled())
+        panel.sketch2d_dimension.click()
+        labels = [item.text for item in window._surfacing_annotations()]
+        self.assertIn("30", labels)
+        self.assertGreater(window.viewport.annotation_overlay.visible_count, 0)
+        # change it in the panel's list: the rectangle follows
+        panel.sketch2d_constraints.setCurrentRow(panel.sketch2d_constraints.count() - 1)
+        panel.sketch2d_value.setValue(45.0)
+        panel._sketch2d_apply_value()
+        line = sketch.curves[bottom[0]]
+        self.assertAlmostEqual(float(np.linalg.norm(sketch.position(line.p2) - sketch.position(line.p1))), 45.0, places=6)  # type: ignore[union-attr]
+        # Enter keeps the sketch; it shows in Model and History
+        self.key(Qt.Key.Key_Return)
+        self.assertFalse(modeling.active)
+        names = [node.label for node in window._scene_nodes()]
+        self.assertIn("3D Sketch 1", names)
+        self.assertIn("Sketch 1", names)
+
+    def test_extrude_picks_regions_by_click(self) -> None:
+        window, modeling = self.window, self.composition.modeling_controller
+        self.assertTrue(window._dispatch_framework_action("model.plane_sketch"))
+        window._dispatch_application_action("model.sketch2d_tool", {"tool": "rectangle"})
+        self.click(0.0, 0.0)
+        self.click(40.0, 20.0)
+        window._dispatch_application_action("model.sketch2d_tool", {"tool": "circle"})
+        self.click(10.0, 10.0)
+        self.click(14.0, 10.0)
+        window._dispatch_application_action("model.sketch2d_finish")
+        self.assertTrue(window._dispatch_framework_action("model.extrude"))
+        self.assertEqual(window.viewport.left_capture_owner, "extrude_pick")
+        self.click(30.0, 10.0)  # the plate, outside the hole
+        self.assertEqual(len(modeling.session.extrude_regions), 1)
+        self.assertTrue(window._sketch2d_lines())  # the picked region is outlined (over the scene)
+        self.assertTrue(modeling.configure(extrude_auto=False, extrude_front=3.0, extrude_back=0.0).success)
+        window._dispatch_application_action("model.extrude_apply")
+        body = next(entity for entity in self.composition.state.model.entities if entity.kind == "solid")
+        self.assertAlmostEqual(body.stats["volume"], (800 - math.pi * 16) * 3.0, delta=0.5)
 
 
 if __name__ == "__main__":

@@ -89,7 +89,8 @@ def _mark(feature: Feature, status: str, message: str) -> None:
 def _run(feature: Feature, timeline: Any, bodies: dict[str, dict[str, Any]], worker: Any) -> tuple[bool, Any, str]:
     inputs = feature.inputs
     if feature.kind == "sketch":
-        reply = worker.call("profile", inputs["frame"], inputs["loops"], rms=inputs.get("rms", 0.0), max_error=inputs.get("max_error", 0.0))
+        fit = {key: inputs[key] for key in ("rms", "max_error") if key in inputs}  # a fitted sketch's deviation
+        reply = worker.call("profile", inputs["frame"], inputs["loops"], **fit)
     elif feature.kind == "base":
         reply = worker.call("shape", inputs["brep"], kind=str(inputs.get("kind", "solid")))
     else:

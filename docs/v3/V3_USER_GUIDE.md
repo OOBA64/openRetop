@@ -8,8 +8,8 @@ palette (`Ctrl+K`), themes and the VTK host. The openRetop presentation supplies
 scene records and dispatches stable actions into UI-independent controllers.
 
 - **Workspaces.** *Scan* (align, sections, regions, measure), *Surface* (3D
-  Sketch, Fit Surface, Loft, Fill, Extend, Trim, Compare) and *Solid* (Section
-  Sketch, Edit Sketch, Extrude). Starting a tool from the menu or palette
+  Sketch, Fit Surface, Loft, Fill, Extend, Trim, Compare) and *Solid* (3D
+  Sketch, Section Sketch, Edit Sketch, Extrude). Starting a tool from the menu or palette
   switches to its workspace; the last one used is remembered.
 - **File** creates/opens/saves projects, opens STL/OBJ/PLY scans, edits
   preferences, and exports model surfaces and bodies to STEP or IGES in the
@@ -21,6 +21,12 @@ scene records and dispatches stable actions into UI-independent controllers.
   actions. Clicking in the viewport selects what was hit and nothing else.
 - The **Properties** dock is contextual; with nothing selected it shows *Model &
   Next steps*, and while a tool is running it shows that tool's panel.
+
+In the 3D Sketch: L line, R rectangle, C circle, A arc, S select; select
+geometry and constrain or dimension it (D); the picked dimension's value is
+changed in the panel. Blue geometry can still move, white is fully defined.
+Enter or Finish Sketch keeps it; Edit Sketch reopens it, and what was built
+from it rebuilds.
 
 Tool hints appear on the canvas. Enter confirms and Escape cancels the active
 tool; right-button and middle-button navigation stay available inside tools.

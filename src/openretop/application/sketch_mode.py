@@ -100,7 +100,7 @@ class SketchMode:
         target = np.asarray(xy, dtype=float)
         best, distance = None, radius
         for curve_id in self.sketch.curves:
-            gap = float(np.min(np.linalg.norm(self.curve_polyline(curve_id) - target, axis=1)))
+            gap = _distance_to_polyline(self.curve_polyline(curve_id), target)
             if gap <= distance:
                 best, distance = curve_id, gap
         return best
@@ -400,6 +400,12 @@ class SketchMode:
         for ref in refs:
             if ref in sketch.points:
                 anchors.append(sketch.position(ref))
+                continue
+            curve = sketch.curves[ref]
+            if isinstance(curve, Line):
+                anchors.append(0.5 * (sketch.position(curve.p1) + sketch.position(curve.p2)))
+            elif isinstance(curve, Circle):  # on the circle, up and to the right
+                anchors.append(sketch.position(curve.center) + curve.radius * np.array([math.sqrt(0.5), math.sqrt(0.5)]))
             else:
                 polyline = self.curve_polyline(ref, 16)
                 anchors.append(polyline[len(polyline) // 2])
@@ -431,6 +437,19 @@ class SketchMode:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SketchMode:
         return cls(Sketch2D.from_dict(data.get("sketch", {})), str(data.get("plane", "XY")), float(data.get("offset", 0.0)))
+
+
+def _distance_to_polyline(points: np.ndarray, target: np.ndarray) -> float:
+    """Distance from ``target`` to the polyline's segments (not just its sample points)."""
+
+    starts, ends = points[:-1], points[1:]
+    if not len(starts):
+        return float(np.linalg.norm(points[0] - target)) if len(points) else float("inf")
+    along = ends - starts
+    length2 = np.maximum(np.einsum("ij,ij->i", along, along), 1e-30)
+    t = np.clip(np.einsum("ij,ij->i", target - starts, along) / length2, 0.0, 1.0)
+    nearest = starts + along * t[:, None]
+    return float(np.min(np.linalg.norm(nearest - target, axis=1)))
 
 
 __all__ = ("DRAW_TOOLS", "GLYPHS", "PLANES", "SketchMode")

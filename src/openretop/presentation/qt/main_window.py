@@ -707,9 +707,11 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
 
     def eventFilter(self, watched: object, event: object) -> bool:
         if watched is self.viewport.interactor:
-            if event.type() == QEvent.ShortcutOverride and self._is_typed_value_key(event.key(), event.text()):
+            if event.type() == QEvent.ShortcutOverride and (
+                self._is_typed_value_key(event.key(), event.text()) or self._surfacing_claims_key(event.key(), event.modifiers())
+            ):
                 # While grabbing, digits type a value: claim them before shortcuts such as
-                # "0" (Isometric) can fire.
+                # "0" (Isometric) can fire. In the 3D Sketch, L R C A S pick its drawing tools.
                 event.accept()
                 return True
             if event.type() == QEvent.KeyPress and self._handle_tool_key(event.key(), event.text()):
@@ -943,6 +945,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         )
         measure = self.composition.measure_controller
         self.viewport.set_measurements(measure.measurements, measure.pending, self.composition.state.units)
+        self.viewport.set_annotations(self._surfacing_annotations(), list(self._sketch2d_lines()))
         diagnostics = self.viewport.render_snapshot(snapshot)
         if diagnostics is None and not self.viewport.is_ready:
             self._diagnostics.setText("Viewport initialization pending; latest scene snapshot retained.")

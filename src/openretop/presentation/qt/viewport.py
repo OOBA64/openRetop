@@ -13,6 +13,7 @@ from vtkmodules.vtkRenderingCore import vtkMapper
 
 from openretop.application.transform_controller import CameraVectors
 from openretop.presentation.qt.adaptive_grid import AdaptiveGrid
+from openretop.presentation.qt.annotation_overlay import Annotation, AnnotationOverlay
 from openretop.presentation.qt.measurement_overlay import MeasurementOverlay
 from openretop.presentation.qt.pointer_gestures import PointerGestureState
 from openretop.presentation.qt.selection_overlay import SelectionBoxOverlay
@@ -95,6 +96,7 @@ class QtSceneViewport(VTKViewportWidget):
         self.transform_overlays = TransformOverlayController(self.renderer)
         self.selection_box = SelectionBoxOverlay(self.renderer)
         self.measurement_overlay = MeasurementOverlay(self.renderer)
+        self.annotation_overlay = AnnotationOverlay(self.renderer)
         self._pointer_gesture = PointerGestureState()
         self._left_capture_owner: str | None = None
         # optional: does the owning tool want this press (x, y)? If not, it navigates
@@ -294,6 +296,14 @@ class QtSceneViewport(VTKViewportWidget):
             return
         self.measurement_overlay.update(measurements, pending, units)  # type: ignore[arg-type]
 
+    def set_annotations(self, annotations: list[Annotation], lines: list[tuple[object, tuple[float, float, float], float]] | None = None) -> None:
+        """Lines and labels drawn over the scene (the 3D Sketch, its dimensions and marks)."""
+
+        if self.renderer is None:
+            return
+        self.annotation_overlay.update_lines(lines or [])
+        self.annotation_overlay.update(annotations)
+
     def camera_vectors(self) -> CameraVectors | None:
         if not self.is_ready or self.renderer is None:
             return None
@@ -382,6 +392,7 @@ class QtSceneViewport(VTKViewportWidget):
         self.transform_overlays.close()
         self.selection_box.close()
         self.measurement_overlay.close()
+        self.annotation_overlay.close()
         self.grid.close()
         self.navigation_cluster.close()
         self.tool_hint.close()
@@ -704,6 +715,8 @@ class QtSceneViewport(VTKViewportWidget):
                     roles[id(entry.actor)] = f"{category}:{item_id}"
         for measurement_actor in self.measurement_overlay.actors:
             roles[id(measurement_actor)] = "measurement"
+        for annotation_actor in [*self.annotation_overlay.actors, *self.annotation_overlay.line_actors]:
+            roles[id(annotation_actor)] = "annotation"
         for preview_actor in self.tool_preview_overlay.actors:
             roles[id(preview_actor)] = "tool_preview"
         for role, actor in (
