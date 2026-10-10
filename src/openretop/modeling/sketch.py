@@ -1,4 +1,4 @@
-"""3D Sketch on the scan: points clicked on the mesh, curves through them lying on the surface.
+"""Surface Sketch on the scan: points clicked on the mesh, curves through them lying on the surface.
 
 The ExModel way of modelling organic parts: click points on the scan; each curve passes
 through its points and runs along the scan between them (a path over the surface, smoothed),

@@ -70,7 +70,7 @@ def _mesh_revision(vertices: object, triangles: object) -> int:
 class SceneBuilder:
     """Translate application state and prepared geometry into a snapshot.
 
-    The model (surfaces, bodies, 3D Sketch curves) arrives as ``modeling``, already
+    The model (surfaces, bodies, Surface Sketch curves) arrives as ``modeling``, already
     tessellated; the builder only describes prepared geometry.
     """
 

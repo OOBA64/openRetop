@@ -36,7 +36,7 @@ workspaces:
 
 - **Scan**: align the scan (G / R, typed values, axis locks), cut sections,
   select regions, measure.
-- **Surface**: **3D Sketch** curves that run along the scan and can follow its
+- **Surface**: **Surface Sketch** curves that run along the scan and can follow its
   body lines (sections and region boundaries become sketch curves too);
   **Fit Surface** to a brushed area; **Loft**, **Fill**, **Extend**, **Trim**
   (sews into a solid when closed); **Compare** colours the scan by its distance
@@ -51,7 +51,7 @@ Long operations run off the UI thread; the window stays responsive.
 Projects are `.openretop` JSON files, written atomically, with the mesh path
 stored relative to the project file. Older files are upgraded on open (version 1
 projects have no recorded unit, so millimetres are assumed and you are warned;
-curves from the retired curve tools open as 3D Sketch curves).
+curves from the retired curve tools open as Surface Sketch curves).
 
 The PySide6 workbench is the only supported shell. See the
 [user guide](docs/v3/V3_USER_GUIDE.md), [architecture](docs/v3/ARCHITECTURE.md)

@@ -402,7 +402,7 @@ class ToolPreviewState:
     preview_valid: bool = False
     preview_snaps_closed: bool = False
     preview_snaps_to_mesh: bool = False
-    # 3D Sketch: every point of the curve network, and the one under the pointer or selected
+    # Surface Sketch: every point of the curve network, and the one under the pointer or selected
     node_points: np.ndarray = field(
         default_factory=lambda: np.zeros((0, 3), dtype=float), compare=False, repr=False
     )

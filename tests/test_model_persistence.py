@@ -1,4 +1,4 @@
-"""S-12: model surfaces, bodies and the 3D Sketch are saved in the project and come back."""
+"""S-12: model surfaces, bodies and the Surface Sketch are saved in the project and come back."""
 
 from __future__ import annotations
 

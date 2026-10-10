@@ -52,7 +52,7 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.rebuild",
     }
 )
-NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
+NODE_SKETCH = "sketch_curves"  # the scene tree group of Surface Sketch curves
 NODE_HISTORY = "history"  # the scene tree group of the design history (P-01)
 FEATURE_PREFIX = "feature:"
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
@@ -183,7 +183,7 @@ class SurfacingWorkbenchMixin:
         drawing = bool(session.sketch_points)
         if key == Qt.Key.Key_Escape and drawing:
             self.modeling.sketch_cancel()
-            self.set_status_message("Curve cancelled (Esc again closes 3D Sketch)")  # type: ignore[attr-defined]
+            self.set_status_message("Curve cancelled (Esc again closes Surface Sketch)")  # type: ignore[attr-defined]
             self.refresh()  # type: ignore[attr-defined]
             return True
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -202,7 +202,7 @@ class SurfacingWorkbenchMixin:
         return False
 
     def _surfacing_press_claim(self, x_position: int, y_position: int) -> bool:
-        """The 3D Sketch and the Section Sketch are choosy: they take a press on one of their
+        """The Surface Sketch and the Section Sketch are choosy: they take a press on one of their
         points (to drag it); anywhere else the drag rotates the view and a click still picks."""
 
         session = self.modeling.session
@@ -832,7 +832,7 @@ class SurfacingWorkbenchMixin:
     # -- scene tree ----------------------------------------------------------------------------
 
     def _surfacing_tool_preview(self) -> Any:
-        """The 3D Sketch's points and live curve, drawn by the tool-preview overlay."""
+        """The Surface Sketch's points and live curve, drawn by the tool-preview overlay."""
 
         from openretop.viewer.scene_types import ToolPreviewState, geometry_revision
 
@@ -899,7 +899,7 @@ class SurfacingWorkbenchMixin:
         group = {"checkable": False, "selectable": False, "renameable": False}
         sketch_nodes: list[SceneNode] = []
         if model.sketch.curves:
-            sketch_nodes.append(SceneNode(NODE_SKETCH, "3D Sketch", "group", "scene", metadata={"context_actions": ("model.sketch", "model.sketch_face", "model.sketch_loft")}, **group))
+            sketch_nodes.append(SceneNode(NODE_SKETCH, "Surface Sketch", "group", "scene", metadata={"context_actions": ("model.sketch", "model.sketch_face", "model.sketch_loft")}, **group))
             sketch_nodes.extend(
                 SceneNode(
                     f"sketch:{curve.id}",

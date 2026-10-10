@@ -258,7 +258,7 @@ class SurfacingWindowTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_KERNEL, "OpenCASCADE / CadQuery not installed")
 class CurveToolTests(unittest.TestCase):
-    """Loft and Fill from 3D Sketch curves (from the sketch tool, sections or regions)."""
+    """Loft and Fill from Surface Sketch curves (from the sketch tool, sections or regions)."""
 
     def setUp(self) -> None:
         self.composition = _composition()

@@ -351,7 +351,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             ("measure.distance", "measure", "Measure", False),
         )
         surface = (  # ExModel-style surfacing on organic shapes
-            ("model.sketch", "curve", "3D Sketch", False),
+            ("model.sketch", "curve", "Surface Sketch", False),
             ("model.fit_surface", "fit_surface", "Fit Surface", False),
             ("model.loft", "loft", "Loft", True),
             ("model.fill", "fill", "Fill", False),
@@ -1281,7 +1281,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         self.composition.modeling_controller.reset()
         model, model_warnings = model_from_dict(result.project.metadata.get(MODEL_PROJECT_KEY))
         for name, points, closed in restored.legacy_curves:
-            # curves from the older curve tools: editable 3D Sketch curves now
+            # curves from the older curve tools: editable Surface Sketch curves now
             model.sketch.add_polyline_curve(points, closed=closed, name=name)
         self.composition.state.model = model
         if restored.selected_scene_ids:
@@ -1440,7 +1440,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             units=state.units,
             units_assumed=state.units_assumed,
         )
-        model = model_to_dict(state.model)  # surfaces, bodies and the 3D Sketch (S-12)
+        model = model_to_dict(state.model)  # surfaces, bodies and the Surface Sketch (S-12)
         if model is not None:
             project.metadata[MODEL_PROJECT_KEY] = model
         project.name = path.stem

@@ -166,7 +166,7 @@ class QtSceneViewport(VTKViewportWidget):
     def set_left_press_claim(self, claim: Callable[[int, int], bool] | None) -> None:
         """Let the tool owning left input decline a press, so that drag orbits the view.
 
-        The 3D Sketch claims a press only on one of its points (to drag it); a press anywhere
+        The Surface Sketch claims a press only on one of its points (to drag it); a press anywhere
         else rotates the view as usual, and a click there still reaches the tool.
         """
 

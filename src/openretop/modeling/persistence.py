@@ -1,4 +1,4 @@
-"""The model (surfaces, bodies, 3D Sketch) in the project file (S-12).
+"""The model (surfaces, bodies, Surface Sketch) in the project file (S-12).
 
 Stored as one JSON object under the project's ``model`` key. Geometry is exact BREP plus the
 display mesh and edges, each zlib-compressed and base64-encoded, so a project reopens with no
@@ -171,7 +171,7 @@ def model_from_dict(data: object) -> tuple[ModelDocument, list[str]]:
             )
         sketch.counter = int(sketch_data.get("counter", len(sketch.nodes) + len(sketch.curves)))
     except (KeyError, TypeError, ValueError, zlib.error, OSError) as exc:
-        warnings.append(f"The 3D Sketch could not be read ({exc}).")
+        warnings.append(f"The Surface Sketch could not be read ({exc}).")
         sketch = Sketch()
     document.sketch = sketch
     try:

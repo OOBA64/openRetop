@@ -509,7 +509,7 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
 
     # Surfacing toolset (milestone S): each opens a tool panel; the panel's buttons are the
     # payload actions below it.
-    _workflow_action("model.sketch", "3D Sketch", "Surfacing", "start_sketch", enabled_when=_MESH),
+    _workflow_action("model.sketch", "Surface Sketch", "Surfacing", "start_sketch", enabled_when=_MESH),
     _workflow_action("model.sketch_finish", "Finish Curve", "Surfacing", "sketch_finish", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.sketch_close", "Close Curve", "Surfacing", "sketch_close", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.sketch_undo_point", "Remove Last Point", "Surfacing", "sketch_undo_point", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),

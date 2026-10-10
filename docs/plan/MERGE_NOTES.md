@@ -7,7 +7,7 @@ fast-forward, no rewritten history).
 |---|---|---|
 | Shell | Tkinter app (`src/app`) | One PySide6 workbench with Scan / Surface / Solid workspaces, command palette, view cube, adaptive grid |
 | Scan handling | Loads meshes | Welded STL load, units chosen at import and stored, grab/rotate with axis locks and typed values, measure, region select |
-| Curves | Stored curves, manual curve tool, repair tools | 3D Sketch: curves that run along the scan and can follow body lines, editable points, split/close/reverse; sections and region boundaries become sketch curves |
+| Curves | Stored curves, manual curve tool, repair tools | Surface Sketch: curves that run along the scan and can follow body lines, editable points, split/close/reverse; sections and region boundaries become sketch curves |
 | Surfaces | Preview and BREP lofts/fills via CadQuery in the UI process | Fit Surface, Loft, Fill, Extend, Trim and sew into solids, run in a separate kernel process (a crash cannot take the window down) |
 | Solids | None | Section Sketch (lines and arcs fitted to a scan cut, hand-editable) and Extrude with depth measured on the scan |
 | Checking | Point-to-mesh deviation analysis | Compare colours the scan by distance to the model |

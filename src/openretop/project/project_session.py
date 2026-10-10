@@ -34,7 +34,7 @@ class ProjectRestoreResult:
     warnings: tuple[str, ...] = ()
     selected_scene_ids: tuple[str, ...] = ()
     primary_selection_id: str | None = None
-    # curves saved by the older curve tools: (name, points, closed), for the 3D Sketch
+    # curves saved by the older curve tools: (name, points, closed), for the Surface Sketch
     legacy_curves: tuple[tuple[str, np.ndarray, bool], ...] = ()
 
 
@@ -58,7 +58,7 @@ def restore_project_state(
     if dropped:
         warnings.append(
             f"{dropped} surface(s) made with the older surface tools were not loaded: rebuild them from the curves "
-            "(now in the 3D Sketch) with Loft, Fill or Face From Curves."
+            "(now in the Surface Sketch) with Loft, Fill or Face From Curves."
         )
     state.section_result = (
         state.section_collection.results[-1].result

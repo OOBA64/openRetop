@@ -1,6 +1,6 @@
 """UI-independent orchestration for mesh-region workflows.
 
-A region's boundary becomes 3D Sketch curves (lofted, filled, edited like any sketch curve).
+A region's boundary becomes Surface Sketch curves (lofted, filled, edited like any sketch curve).
 """
 
 from __future__ import annotations
@@ -411,7 +411,7 @@ class RegionController(ControllerBase):
         publish_scene_change(self.events, reason="region_boundary_extracted", object_ids=tuple(created), changed_fields=("model",))
         count = len(created)
         return CommandResult.ok(
-            status=f"Extracted {count} boundary curve{'s' if count != 1 else ''} into the 3D Sketch.",
+            status=f"Extracted {count} boundary curve{'s' if count != 1 else ''} into the Surface Sketch.",
             changed=True,
             dirty=True,
             viewport_requests=MODEL_SYNC_VIEWPORT_REQUESTS,

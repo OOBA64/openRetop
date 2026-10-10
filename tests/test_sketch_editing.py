@@ -1,4 +1,4 @@
-"""3D Sketch curves that follow the scan and stay editable (user feedback on a car fender scan).
+"""Surface Sketch curves that follow the scan and stay editable (user feedback on a car fender scan).
 
 - A curve runs along the surface between its points; on a large scan with a hole between two
   points it is still quick (the old line-pushed-onto-the-scan froze the app for ~10 s a click

@@ -1,7 +1,7 @@
 """UI-independent controller for section-plane and section-result workflows.
 
 A computed section is the scan's cut by a plane, kept as a section result; each loop of the
-cut also becomes a 3D Sketch curve (the user's own geometry from then on: lofted, filled,
+cut also becomes a Surface Sketch curve (the user's own geometry from then on: lofted, filled,
 edited like any curve, and not deleted with the section).
 """
 

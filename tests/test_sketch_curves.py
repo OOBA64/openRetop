@@ -1,4 +1,4 @@
-"""3D Sketch: curves through points that lie on the scan, joined into networks, made into faces.
+"""Surface Sketch: curves through points that lie on the scan, joined into networks, made into faces.
 
 Owner report (2026-10-08): curves "never follow the face of a mesh, always extending beyond or
 curving weird", and points could not be connected to make a face. Acceptance: curves pass
@@ -290,7 +290,7 @@ class SketchWindowTests(unittest.TestCase):
         toolbar = window.findChild(QToolBar, "toolbar_Surface_Modeling")
         self.assertIn(window._qt_actions["model.sketch"], toolbar.actions())
         window._qt_actions["model.sketch"].trigger()
-        self.assertEqual(window.surfacing_panel.title.text(), "3D Sketch")
+        self.assertEqual(window.surfacing_panel.title.text(), "Surface Sketch")
         self.assertEqual(window.viewport.left_capture_owner, "sketch")
         self.assertTrue(window._surfacing_press_claim(5, 5) is False)  # no point there: the drag orbits
 

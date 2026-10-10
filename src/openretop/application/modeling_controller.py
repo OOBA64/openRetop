@@ -1,5 +1,5 @@
 """The surfacing tools (milestone S): Fit Surface, Loft, Fill, Extend, Trim, Compare, Export,
-the 3D Sketch and the Section Sketch.
+the Surface Sketch and the Section Sketch.
 
 Each tool is a session: ``start`` it, adjust it (selection, options, picks), ``apply`` it.
 Geometry is made by the kernel worker (``cad_kernel.jobs``), so a kernel crash or hang comes
@@ -49,7 +49,7 @@ TOOL_TITLES = {
     "extend": "Extend Surface",
     "trim": "Trim Surfaces",
     "compare": "Compare",
-    "sketch": "3D Sketch",
+    "sketch": "Surface Sketch",
     "section": "Section Sketch",
     "extrude": "Extrude",
 }
@@ -84,7 +84,7 @@ class ToolSession:
     trim_sources: tuple[str, ...] = ()
     trim_pieces: list[dict[str, Any]] | None = None
     sew_tolerance: float = 0.05
-    # 3D Sketch: the curve being drawn (existing point id or None for a new point, position),
+    # Surface Sketch: the curve being drawn (existing point id or None for a new point, position),
     # the pointer's spot on the scan and the live line through them
     sketch_points: list[tuple[str | None, np.ndarray]] = field(default_factory=list)
     hover: np.ndarray | None = None
@@ -158,7 +158,7 @@ class ModelingController(ControllerBase):
         self._selection: ScanSelection | None = None
         self._mapping: tuple[tuple[object, object], SourceMapping] | None = None
         self._projector: tuple[tuple[object, object], MeshProjector] | None = None
-        self._placed_line: tuple[bytes, np.ndarray] | None = None  # 3D Sketch preview cache
+        self._placed_line: tuple[bytes, np.ndarray] | None = None  # Surface Sketch preview cache
         self._normals_cache: tuple[object, np.ndarray] | None = None
         self._crease_cache: tuple[object, np.ndarray] | None = None
 
@@ -1028,7 +1028,7 @@ class ModelingController(ControllerBase):
     # -- Loft ----------------------------------------------------------------------------------
 
     def loft(self, curve_ids: tuple[str, ...] | None = None, *, ruled: bool = False) -> CommandResult:
-        """A surface through two or more sketch curves (3D Sketch or Cut Section), in order."""
+        """A surface through two or more sketch curves (Surface Sketch or Cut Section), in order."""
 
         ids = curve_ids if curve_ids is not None else tuple(self.state.model.selected_curve_ids)
         sketch = self.state.model.sketch
@@ -1331,7 +1331,7 @@ class ModelingController(ControllerBase):
             status=f"Exported {len(targets)} item(s), {info['faces']} faces, in {self.state.units}, to {path}", warnings=warnings
         )
 
-    # -- 3D Sketch -------------------------------------------------------------------------------
+    # -- Surface Sketch -------------------------------------------------------------------------------
 
     def sketch_projector(self) -> MeshProjector | None:
         """The full-resolution scan in world coordinates, for laying curves on it."""

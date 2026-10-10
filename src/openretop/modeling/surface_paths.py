@@ -1,4 +1,4 @@
-"""Paths along the scan's surface: the backbone of 3D Sketch curves.
+"""Paths along the scan's surface: the backbone of Surface Sketch curves.
 
 A curve between two points on the scan runs along the surface itself: the shortest path over
 the mesh's edges, found only in a capsule around the two points (fast on an 800k-triangle

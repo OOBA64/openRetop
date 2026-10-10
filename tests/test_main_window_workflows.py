@@ -186,7 +186,7 @@ class MainWindowWorkflowTests(unittest.TestCase):
                 window.close()
 
     def test_older_projects_bring_their_curves_into_the_3d_sketch(self) -> None:
-        """Curves saved by the retired curve tools open as 3D Sketch curves; their old
+        """Curves saved by the retired curve tools open as Surface Sketch curves; their old
         preview surfaces cannot be rebuilt and are reported instead of silently lost."""
 
         with tempfile.TemporaryDirectory() as directory:

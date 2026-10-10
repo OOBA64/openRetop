@@ -18,7 +18,7 @@ from workbench_ui import FieldDefinition, PropertyInspectorModel, SceneNode, Sce
 
 
 def _state_with_curves(count: int) -> AppState:
-    """A project with ``count`` 3D Sketch curves (the kind sections and the sketch tool make)."""
+    """A project with ``count`` Surface Sketch curves (the kind sections and the sketch tool make)."""
 
     state = AppState()
     base = np.column_stack(

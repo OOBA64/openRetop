@@ -30,7 +30,7 @@ class ReleaseCandidateTests(unittest.TestCase):
         restored = restore_project_state(state, result.project)
 
         self.assertEqual(len(state.section_collection.results), 1)
-        # its curve comes back for the 3D Sketch; its old preview surface is reported as dropped
+        # its curve comes back for the Surface Sketch; its old preview surface is reported as dropped
         self.assertEqual([name for name, _points, _closed in restored.legacy_curves], ["Fixture Manual Curve"])
         self.assertTrue(any("older surface tools" in text for text in restored.warnings))
         self.assertEqual(state.region_collection.active_region.id, "region-a")

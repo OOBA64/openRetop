@@ -85,7 +85,7 @@ class SectionControllerTests(unittest.TestCase):
         self.assertTrue(result.dirty)
         self.assertIsNotNone(result.undo_payload)
         self.assertEqual(len(state.section_collection.results), 1)
-        # the cut's loops become 3D Sketch curves, selected for Loft or Face From Curves
+        # the cut's loops become Surface Sketch curves, selected for Loft or Face From Curves
         curves = state.model.sketch.curves
         self.assertGreater(len(curves), 0)
         self.assertTrue(all(curve.closed for curve in curves))

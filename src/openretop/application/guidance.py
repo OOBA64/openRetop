@@ -90,7 +90,7 @@ def build_guidance(state: AppState, *, selected_curve_count: int = 0) -> Guidanc
             summary,
             (
                 GuidanceStep("model.loft", "Loft", "Two curves are selected." if two else "Select two or more curves first.", primary=two),
-                GuidanceStep("model.sketch", "3D Sketch", "Draw more curves; Face From Curves fills a loop.", primary=not two),
+                GuidanceStep("model.sketch", "Surface Sketch", "Draw more curves; Face From Curves fills a loop.", primary=not two),
                 GuidanceStep("model.fit_surface", "Fit Surface", "Or fit a surface straight to an area of the scan."),
             ),
         )
@@ -101,7 +101,7 @@ def build_guidance(state: AppState, *, selected_curve_count: int = 0) -> Guidanc
         summary,
         (
             GuidanceStep("model.fit_surface", "Fit Surface", "Select an area of the scan; a surface is fitted to it.", primary=True),
-            GuidanceStep("model.sketch", "3D Sketch", "Click points on the scan; curves follow its surface."),
+            GuidanceStep("model.sketch", "Surface Sketch", "Click points on the scan; curves follow its surface."),
             GuidanceStep("model.section_sketch", "Section Sketch", "Cut the scan with a plane; lines and arcs are fitted."),
             GuidanceStep("measure.distance", "Measure the scan", "Check its size against the real part."),
         ),

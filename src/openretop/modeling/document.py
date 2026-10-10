@@ -79,7 +79,7 @@ class ModelDocument:
     selected_ids: list[str] = field(default_factory=list)
     counter: int = 0
     revision: int = 0
-    # the 3D Sketch: points on the scan and the curves through them
+    # the Surface Sketch: points on the scan and the curves through them
     sketch: Sketch = field(default_factory=Sketch)
     selected_curve_ids: list[str] = field(default_factory=list)
     # how the sketches and solids were made, to replay them after an edit (P-01)

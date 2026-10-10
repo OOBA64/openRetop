@@ -103,7 +103,7 @@ class V3WorkflowCoverageTests(unittest.TestCase):
         section = composition.workflow.dispatch("section.compute")
         self.assertTrue(section.success, section.errors)
         self.assertTrue(composition.state.section_collection.results)
-        # the cut is now 3D Sketch curves, the same ones the sketch tools edit
+        # the cut is now Surface Sketch curves, the same ones the sketch tools edit
         self.assertTrue(composition.state.model.sketch.curves)
 
         self.assertTrue(composition.workflow.dispatch("region.start").success)

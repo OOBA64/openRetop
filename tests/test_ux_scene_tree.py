@@ -64,15 +64,15 @@ class SceneTreeContentTests(unittest.TestCase):
         names = labels(window)
         self.assertIn("ball.stl", names)
         self.assertNotIn("Section Planes", names)  # only once the Section tool is used
-        for absent in ("Section Results", "3D Sketch", "Model", "Regions"):
+        for absent in ("Section Results", "Surface Sketch", "Model", "Regions"):
             self.assertNotIn(absent, names)
 
         self.assertTrue(window._dispatch_application_action("section.compute"))
         names = labels(window)
         self.assertIn("Section Planes", names)
         self.assertIn("Section Results", names)
-        # the cut's one loop is a closed 3D Sketch curve; no empty Model or Regions folders
-        self.assertIn("3D Sketch", names)
+        # the cut's one loop is a closed Surface Sketch curve; no empty Model or Regions folders
+        self.assertIn("Surface Sketch", names)
         self.assertNotIn("Model", names)
         self.assertNotIn("Regions", names)
         self.assertEqual(sum(1 for name in names if name.endswith("(closed)")), 1)
