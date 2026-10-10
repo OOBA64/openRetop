@@ -263,21 +263,33 @@ def trim(
     *,
     tolerance: float = 0.1,
     overlap: float = 0.3,
+    cuts: list[dict[str, Any]] | None = None,
+    manual: bool = False,
 ) -> dict[str, Any]:
-    """Split every surface by every other and mark the pieces lying on the scan.
+    """Split every surface by every other, and by the cut lines drawn across them, and mark
+    the pieces to keep.
 
-    ``overlap`` is the share of a piece that must lie on the scan to be kept. A piece at an
-    open border of the model keeps the oversize margin of its patch (nothing trims it), so
-    the default is well below one half.
+    Automatic: the pieces lying on the scan; ``overlap`` is the share of a piece that must lie
+    on it (a piece at an open border keeps its patch's oversize margin, so the default is well
+    below one half). ``manual``: every piece is kept, for the user to drop the ones to go.
+    Each cut is {"points": the line clicked on the surfaces, "direction": the view direction}.
     """
 
     faces = []
     for brep in breps:
         faces.extend(S.faces_of(S.from_brep(brep)))
-    if len(faces) < 2:
-        raise ValueError("trimming needs at least two surfaces")
-    pieces = S.split_faces(faces)
-    S.mark_pieces_on_scan(pieces, scan_vertices, scan_normals, tolerance=tolerance, overlap=overlap)
+    cuts = list(cuts or [])
+    if not faces or (len(faces) < 2 and not cuts):
+        raise ValueError("trimming needs two surfaces, or a cut line drawn across one")
+    reach = 2.0 * max(S.shape_size(S.compound(faces)), 1.0)
+    knives = [face for cut in cuts for face in S.knife_faces(cut["points"], cut["direction"], reach)]
+    pieces = [piece for piece in S.split_faces(faces + knives) if piece.source < len(faces)]
+    scan = np.asarray(scan_vertices, dtype=float).reshape(-1, 3)
+    if manual or len(scan) == 0:
+        for piece in pieces:
+            piece.keep = True
+    else:
+        S.mark_pieces_on_scan(pieces, scan, scan_normals, tolerance=tolerance, overlap=overlap)
     return {
         "pieces": [
             {**surface_result(piece.face), "source": piece.source, "overlap": piece.overlap, "keep": piece.keep}

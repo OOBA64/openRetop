@@ -430,6 +430,12 @@ class WorkflowService:
             return modeling.sketch2d_construction()
         if action == "model.sketch2d_finish":
             return modeling.sketch2d_finish()
+        if action == "model.trim_cut":
+            return modeling.trim_start_cut()
+        if action == "model.trim_cut_finish":
+            return modeling.trim_finish_cut()
+        if action == "model.trim_cut_clear":
+            return modeling.trim_clear_cuts()
         if action == "model.resize":
             changes = payload.get("changes") or {}
             return modeling.resize_surface(str(payload.get("entity", "")), dict(changes))  # type: ignore[arg-type]

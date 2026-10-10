@@ -51,6 +51,7 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.edit_feature",
         "model.rebuild",
         "model.sketch2d_finish",
+        "model.trim_cut_finish",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of Surface Sketch curves
@@ -67,6 +68,7 @@ SKETCH2D_PLANE = (0.55, 0.70, 0.95)
 HANDLE_COLOR = (0.30, 0.85, 1.0)  # a surface's drag arrows
 HANDLE_ACTIVE = (1.0, 0.85, 0.25)  # the arrow being dragged, and where its side will go
 HANDLE_PIXELS = 42  # arrow length on screen
+SECTION_CUT_COLOR = (0.98, 0.55, 0.20)  # a trim's cut lines, once cut
 FEATURE_PREFIX = "feature:"
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
@@ -78,7 +80,7 @@ TOOL_HINTS = {
     "loft": "Select two or more curves, in order, then Loft.",
     "fill": "Click surface edges and curves around the gap, in order; then Fill.",
     "extend": "Select surfaces in the tree or the scene, set the distance, Extend.",
-    "trim": "Automatic Trim, then click pieces to keep or drop them; Apply sews them.",
+    "trim": "Split Surfaces, or Cut Line: click across a surface, Enter cuts. Click pieces to keep or drop them; Apply.",
     "compare": "Compute colours the scan by its distance to the model.",
 }
 
@@ -146,6 +148,13 @@ class SurfacingWorkbenchMixin:
         if self.modeling.tool == "sketch" and self._sketch_key(key):
             return True
         if self.modeling.tool == "plane_sketch" and self._sketch2d_key(key):
+            return True
+        session = self.modeling.session
+        if self.modeling.tool == "trim" and session.trim_drawing and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
+            if key == Qt.Key.Key_Escape:
+                self._consume_result("model.trim_cut_cancel", self.modeling.trim_cancel_cut())  # type: ignore[attr-defined]
+            else:
+                self._dispatch_application_action("model.trim_cut_finish")  # type: ignore[attr-defined]
             return True
         if self._brush_key(key):
             return True
@@ -402,6 +411,11 @@ class SurfacingWorkbenchMixin:
     def _sketch2d_lines(self) -> tuple[tuple[np.ndarray, tuple[float, float, float], float], ...]:
         lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = self._handle_lines()
         session = self.modeling.session
+        if session is not None and session.tool == "trim":
+            lines.extend((np.asarray(cut["points"], dtype=float), SECTION_CUT_COLOR, 2.5) for cut in session.trim_cuts)
+            if len(session.trim_cut) >= 2:
+                lines.append((np.vstack(session.trim_cut), HANDLE_ACTIVE, 3.0))
+            return tuple(lines)
         if session is not None and session.tool == "extrude":
             lines.extend((outline, SKETCH2D_SELECTED, 4.0) for outline in self.modeling.extrude_region_outlines())
             return tuple(lines)
@@ -581,6 +595,8 @@ class SurfacingWorkbenchMixin:
             return "section"
         if session is not None and session.tool == "fit_surface" and session.selection_mode in ("brush", "erase"):
             return "modeling_brush"
+        if session is not None and session.tool == "trim" and session.trim_drawing:
+            return "trim_cut"
         return None
 
     # -- viewport ------------------------------------------------------------------------------
@@ -643,6 +659,15 @@ class SurfacingWorkbenchMixin:
             self._section_pointer(event_name, x_position, y_position, pick)
             return True
         scene_pick = pick if isinstance(pick, SceneObjectPickResult) else self.viewport.pick_scene_object(x_position, y_position)
+        if tool == "trim" and session.trim_drawing:
+            point = scene_pick.position if scene_pick.hit and scene_pick.position is not None else None
+            if point is None:
+                hit = self.viewport.pick_mesh(x_position, y_position)
+                point = hit.position if hit.hit else None
+            if point is not None:
+                result = self.modeling.trim_cut_point(point, self._view_direction())
+                self._consume_result("model.pointer", result)  # type: ignore[attr-defined]
+            return True
         if tool == "trim":
             if scene_pick.hit and str(scene_pick.object_id).startswith("trim-piece:"):
                 index = int(str(scene_pick.object_id).split(":", 1)[1])
@@ -1076,11 +1101,18 @@ class SurfacingWorkbenchMixin:
                 entity = model.get(side["entity"])
                 fill_sides.append(f"Edge {side['edge'] + 1} of {getattr(entity, 'name', '?')} - {side['continuity']}")
         trim_text = ""
-        if session.trim_pieces is not None:
+        if session.tool == "trim" and session.trim_drawing:
+            trim_text = f"Cut line: {len(session.trim_cut)} point(s). Click across the surface; Enter cuts, Esc cancels."
+        elif session.trim_pieces is not None:
             kept = sum(1 for piece in session.trim_pieces if piece["keep"])
             trim_text = f"{len(session.trim_pieces)} pieces, {kept} kept. Click a piece to keep or drop it."
         elif session.tool == "trim":
-            trim_text = f"{len(session.trim_sources)} surfaces will be trimmed."
+            cuts = f" and {len(session.trim_cuts)} cut line(s)" if session.trim_cuts else ""
+            picked = len(session.trim_selected)
+            which = f"{picked} selected surface(s)" if picked >= 2 else f"{len(session.trim_sources)} visible surface(s)"
+            if picked == 1:
+                which += " (or just the selected one, with a cut line)"
+            trim_text = f"{which}{cuts} will be split."
         deviation = self.modeling.deviation
         deviation_text = ""
         if deviation is not None:

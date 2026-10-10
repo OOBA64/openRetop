@@ -564,6 +564,43 @@ def split_faces(faces: list[object], *, fuzzy: float = 1e-4) -> list[TrimPiece]:
     return pieces
 
 
+def knife_faces(points: object, direction: object, reach: float) -> list[object]:
+    """A cut line drawn on screen as cutting faces: each segment swept both ways along the
+    view ``direction`` by ``reach``, and the line's ends run on by ``reach``, so it cuts
+    clean through whatever lies under it (a line clicked just inside an edge still cuts)."""
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    line = np.asarray(points, dtype=float).reshape(-1, 3)
+    keep = np.r_[True, np.linalg.norm(np.diff(line, axis=0), axis=1) > 1e-9]
+    line = line[keep]
+    if len(line) < 2:
+        raise ValueError("a cut line needs two different points")
+    view = np.asarray(direction, dtype=float).reshape(3)
+    view = view / max(float(np.linalg.norm(view)), 1e-12)
+    line = line.copy()
+    for end, inner in ((0, 1), (-1, -2)):
+        outward = line[end] - line[inner]
+        outward = outward - (outward @ view) * view  # across the screen, not into it
+        length = float(np.linalg.norm(outward))
+        if length > 1e-12:
+            line[end] = line[end] + outward / length * reach
+    faces = []
+    for a, b in zip(line[:-1], line[1:], strict=True):
+        corners = (a - view * reach, b - view * reach, b + view * reach, a + view * reach)
+        polygon = BRepBuilderAPI_MakePolygon()
+        for corner in corners:
+            polygon.Add(gp_Pnt(*corner.tolist()))
+        polygon.Close()
+        maker = BRepBuilderAPI_MakeFace(polygon.Wire(), True)
+        if maker.IsDone():
+            faces.append(maker.Face())
+    if not faces:
+        raise ValueError("the cut line could not be made (is it drawn straight along the view?)")
+    return faces
+
+
 def mark_pieces_on_scan(
     pieces: list[TrimPiece],
     scan_vertices: object,

@@ -83,6 +83,13 @@ class ToolSession:
     trim_sources: tuple[str, ...] = ()
     trim_pieces: list[dict[str, Any]] | None = None
     sew_tolerance: float = 0.05
+    trim_manual: bool = False  # keep every piece; the user drops the ones to go
+    trim_selected: tuple[str, ...] = ()  # surfaces selected when the tool opened
+    trim_used: tuple[str, ...] = ()  # the surfaces the pieces came from
+    trim_drawing: bool = False  # clicks place the points of a cut line
+    trim_cut: list[np.ndarray] = field(default_factory=list)  # the cut line being drawn (world)
+    trim_cut_direction: np.ndarray | None = None  # the view direction it was drawn along
+    trim_cuts: list[dict[str, Any]] = field(default_factory=list)  # finished cut lines
     # Surface Sketch: the curve being drawn (existing point id or None for a new point, position),
     # the pointer's spot on the scan and the live line through them
     sketch_points: list[tuple[str | None, np.ndarray]] = field(default_factory=list)
@@ -211,7 +218,7 @@ class ModelingController(ControllerBase):
     def start(self, tool: str) -> CommandResult:
         if tool not in TOOLS:
             return CommandResult.failure(f"Unknown tool: {tool}")
-        if tool in ("sketch", "fit_surface", "trim", "compare") and self.state.mesh_object is None:
+        if tool in ("sketch", "fit_surface", "compare") and self.state.mesh_object is None:
             return CommandResult.failure("Open a scan first (File > Open Model).")
         previous = self.session
         self.session = ToolSession(tool)
@@ -223,7 +230,10 @@ class ModelingController(ControllerBase):
         if self.session.brush_radius <= 0.0:
             self.session.brush_radius = self._default_brush_radius()
         if tool == "trim":
-            self.session.trim_sources = tuple(entity.id for entity in self.state.model.visible() if not entity.is_body)
+            model = self.state.model
+            self.session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
+            picked = [entity for entity in (model.get(value) for value in model.selected_ids) if entity is not None and not entity.is_body]
+            self.session.trim_selected = tuple(entity.id for entity in picked)
         if tool == "sketch":
             if previous is not None and previous.tool == "sketch":
                 self.session.sketch_smoothness, self.session.sketch_feature = previous.sketch_smoothness, previous.sketch_feature
@@ -259,7 +269,7 @@ class ModelingController(ControllerBase):
             "loft": "Select two or more curves, then Loft.",
             "fill": "Click curves or surface edges around the gap, in order; then Fill.",
             "extend": "Select a surface, set the distance, then Extend.",
-            "trim": "Trim splits the surfaces by each other and keeps what lies on the scan.",
+            "trim": "Split the surfaces by each other, or draw a Cut Line across one; click the pieces to cut away, then Apply.",
             "compare": "Compare colours the scan by its distance to the model.",
             "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it. Click a point to edit it; double-click a curve to add a point.",
             "section": "Pick a plane (click the scan to move it there), then Fit Profile and Create.",
@@ -290,6 +300,7 @@ class ModelingController(ControllerBase):
             elif hasattr(session, key) and key not in (
                 "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles",
                 "extrude_holes", "selected_node", "section_selected", "section_drag_before", "section_editing",
+                "trim_drawing", "trim_cut", "trim_cut_direction", "trim_cuts", "trim_selected", "trim_used",
             ):
                 current = getattr(session, key)
                 setattr(session, key, type(current)(value) if current is not None else value)
@@ -1573,10 +1584,19 @@ class ModelingController(ControllerBase):
         session = self._session_for("trim")
         if isinstance(session, CommandResult):
             return session
-        sources = [entity for entity in (self.state.model.get(value) for value in session.trim_sources) if entity is not None]
-        if len(sources) < 2:
-            return CommandResult.failure("Trimming needs two or more visible surfaces.")
-        vertices, normals = self._world_scan_points(MAX_KERNEL_SCAN_POINTS)
+        # two or more selected surfaces trim each other; one selected is cut by the cut lines
+        # alone; otherwise every visible surface takes part (fit several, then Trim)
+        selected = session.trim_selected
+        use_selected = len(selected) >= 2 or (len(selected) == 1 and bool(session.trim_cuts))
+        ids = selected if use_selected else session.trim_sources
+        sources = [entity for entity in (self.state.model.get(value) for value in ids) if entity is not None]
+        session.trim_used = tuple(entity.id for entity in sources)
+        if not sources or (len(sources) < 2 and not session.trim_cuts):
+            return CommandResult.failure("Trimming needs two surfaces, or a cut line drawn across one (Cut Line).")
+        if self.state.mesh_object is not None:
+            vertices, normals = self._world_scan_points(MAX_KERNEL_SCAN_POINTS)
+        else:
+            vertices, normals = np.zeros((0, 3)), np.zeros((0, 3))
         reply = self.worker.call(
             "trim",
             [entity.brep for entity in sources],
@@ -1584,6 +1604,8 @@ class ModelingController(ControllerBase):
             normals,
             tolerance=session.trim_tolerance,
             overlap=session.trim_overlap,
+            cuts=session.trim_cuts,
+            manual=session.trim_manual,
         )
         if not reply.ok:
             return _kernel_failure("Trim failed", reply)
@@ -1592,10 +1614,61 @@ class ModelingController(ControllerBase):
             piece["source_id"] = sources[int(piece["source"])].id
         session.trim_pieces = pieces
         kept = sum(1 for piece in pieces if piece["keep"])
+        why = "all kept: click the pieces to cut away" if session.trim_manual or self.state.mesh_object is None else f"{kept} kept (on the scan)"
         return CommandResult.ok(
-            status=f"{len(pieces)} pieces, {kept} kept (on the scan). Click a piece to keep or drop it, then Apply.",
+            status=f"{len(pieces)} pieces, {why}. Click a piece to keep or drop it, then Apply.",
             changed=True,
         )
+
+    def trim_start_cut(self) -> CommandResult:
+        """Draw a cut line: clicks on the surfaces (or the scan) place its points; it cuts
+        along the view direction it is drawn in, clean through, like a knife."""
+
+        session = self._session_for("trim")
+        if isinstance(session, CommandResult):
+            return session
+        session.trim_drawing, session.trim_cut, session.trim_cut_direction = True, [], None
+        return CommandResult.ok(status="Cut Line: click points across the surface, Enter cuts, Esc cancels.", changed=True)
+
+    def trim_cut_point(self, world_point: object, view_direction: object) -> CommandResult:
+        session = self._session_for("trim")
+        if isinstance(session, CommandResult):
+            return session
+        if not session.trim_drawing:
+            return CommandResult.failure("Start a cut line first (Cut Line).")
+        session.trim_cut.append(np.asarray(world_point, dtype=float).reshape(3))
+        if session.trim_cut_direction is None:
+            session.trim_cut_direction = np.asarray(view_direction, dtype=float).reshape(3)
+        count = len(session.trim_cut)
+        return CommandResult.ok(status=f"Cut line: {count} point(s)" + (", Enter cuts" if count >= 2 else ""), changed=True)
+
+    def trim_finish_cut(self) -> CommandResult:
+        """End the cut line and split the surfaces along it."""
+
+        session = self._session_for("trim")
+        if isinstance(session, CommandResult):
+            return session
+        points, direction = session.trim_cut, session.trim_cut_direction
+        session.trim_drawing, session.trim_cut, session.trim_cut_direction = False, [], None
+        if len(points) < 2 or direction is None:
+            return CommandResult.ok(status="Cut line cancelled (it needs two points)", changed=True)
+        session.trim_cuts.append({"points": np.vstack(points), "direction": direction})
+        return self.trim_compute()
+
+    def trim_cancel_cut(self) -> CommandResult:
+        session = self._session_for("trim")
+        if isinstance(session, CommandResult):
+            return session
+        session.trim_drawing, session.trim_cut, session.trim_cut_direction = False, [], None
+        return CommandResult.ok(status="Cut line cancelled", changed=True)
+
+    def trim_clear_cuts(self) -> CommandResult:
+        session = self._session_for("trim")
+        if isinstance(session, CommandResult):
+            return session
+        session.trim_cuts, session.trim_pieces = [], None
+        session.trim_drawing, session.trim_cut, session.trim_cut_direction = False, [], None
+        return CommandResult.ok(status="Cut lines cleared", changed=True)
 
     def trim_toggle(self, index: int) -> CommandResult:
         session = self._session_for("trim")
@@ -1616,11 +1689,18 @@ class ModelingController(ControllerBase):
             if not computed.success:
                 return computed
         assert session.trim_pieces is not None
+        session.trim_cuts = []  # applied: the next trim starts afresh
         kept = [piece for piece in session.trim_pieces if piece["keep"]]
         if not kept:
             return CommandResult.failure("No piece is kept: click pieces to keep them.")
         sources = tuple(dict.fromkeys(piece["source_id"] for piece in kept))
-        params = {"tolerance": session.trim_tolerance, "overlap": session.trim_overlap, "sources": list(session.trim_sources)}
+        params = {
+            "tolerance": session.trim_tolerance,
+            "overlap": session.trim_overlap,
+            "sources": list(session.trim_used or session.trim_sources),
+            "manual": session.trim_manual,
+            "cuts": [{"points": cut["points"].tolist(), "direction": cut["direction"].tolist()} for cut in session.trim_cuts],
+        }
         if sew:
             reply = self.worker.call("sew", [piece["brep"] for piece in kept], tolerance=session.sew_tolerance)
             if not reply.ok:
@@ -1642,7 +1722,7 @@ class ModelingController(ControllerBase):
                 new_entities.append(entity)
             status = f"{len(new_entities)} trimmed surfaces"
         before = self.state.model.snapshot()
-        for source_id in session.trim_sources:  # hidden, not deleted: trimming again stays possible
+        for source_id in session.trim_used or session.trim_sources:  # hidden, not deleted: trimming again stays possible
             self.state.model.set_visible(source_id, False)
         for entity in new_entities:
             self.state.model.add(entity)

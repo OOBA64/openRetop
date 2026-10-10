@@ -39,8 +39,10 @@ workspaces:
 - **Surface**: **Surface Sketch** curves that run along the scan and can follow its
   body lines (sections and region boundaries become sketch curves too);
   **Fit Surface** to a brushed area; **Loft**, **Fill**, **Extend**, **Trim**
-  (sews into a solid when closed); **Compare** colours the scan by its distance
-  to the model.
+  (sews into a solid when closed; or draw a cut line across a surface and click
+  the overhang away); **Compare** colours the scan by its distance to the model.
+  Select a surface and drag the arrows on its sides to grow or cut it back
+  (planes, cylinders, cones, freeform).
 - **Solid**: **3D Sketch** draws on a plane through the scan (its cut shown
   to draw over): lines, rectangles, circles and arcs held by constraints and
   dimensions, Fusion-style (blue until fully defined). **Section Sketch** fits

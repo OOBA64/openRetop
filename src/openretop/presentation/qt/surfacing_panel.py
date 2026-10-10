@@ -202,6 +202,14 @@ class SurfacingPanel(QWidget):
             self.trim_overlap.setValue(int(round(100 * float(session.trim_overlap))))
             self.trim_overlap_label.setText(f"{int(round(100 * float(session.trim_overlap)))}%")
             self.trim_info.setText(facts.trim_text)
+            for manual, mode_button in self.trim_mode_buttons.items():
+                mode_button.setChecked(bool(session.trim_manual) == manual)
+            drawing = bool(session.trim_drawing)
+            self.trim_cut.setText("Enter to Cut" if drawing else "Cut Line")
+            self.trim_cut.setEnabled(not drawing and not facts.busy)
+            self.trim_cut_clear.setEnabled(bool(session.trim_cuts) and not facts.busy)
+            self.trim_tolerance.setEnabled(not session.trim_manual)
+            self.trim_overlap.setEnabled(not session.trim_manual)
             self.trim_apply.setEnabled(facts.has_pieces and not facts.busy)
             self.trim_compute.setEnabled(not facts.busy)
             self.compare_tolerance.setSuffix(f" {facts.units}")
@@ -936,7 +944,39 @@ class SurfacingPanel(QWidget):
         layout.addWidget(self.extend_button)
 
     def _build_trim(self, layout: QVBoxLayout) -> None:
-        layout.addWidget(_hint("Splits all visible surfaces by each other and keeps the pieces lying on the scan. Click a piece to keep or drop it."))
+        layout.addWidget(
+            _hint(
+                "Splits the selected surfaces (or all visible ones) by each other and by the cut lines you draw. "
+                "Click a piece to keep or drop it (dropped pieces fade), then Apply."
+            )
+        )
+        row = QHBoxLayout()
+        self.trim_mode_buttons: dict[bool, QToolButton] = {}
+        group = QButtonGroup(self)
+        for manual, label, tip in (
+            (False, "Automatic", "Keep the pieces lying on the scan."),
+            (True, "Manual", "Keep every piece: you click the ones to cut away."),
+        ):
+            mode_button = QToolButton()
+            mode_button.setText(label)
+            mode_button.setCheckable(True)
+            mode_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            mode_button.setToolTip(tip)
+            mode_button.clicked.connect(lambda _checked=False, manual=manual: self._emit("model.configure", {"trim_manual": manual}))
+            group.addButton(mode_button)
+            row.addWidget(mode_button)
+            self.trim_mode_buttons[manual] = mode_button
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self.trim_cut = _button("Cut Line")
+        self.trim_cut.setToolTip("Click points across a surface, Enter cuts it along the line (seen from your view). Works on one surface.")
+        self.trim_cut.clicked.connect(lambda: self._emit("model.trim_cut"))
+        self.trim_cut_clear = _button("Clear Cuts")
+        self.trim_cut_clear.setToolTip("Forget the cut lines drawn so far.")
+        self.trim_cut_clear.clicked.connect(lambda: self._emit("model.trim_cut_clear"))
+        row.addWidget(self.trim_cut)
+        row.addWidget(self.trim_cut_clear)
+        layout.addLayout(row)
         form = QFormLayout()
         self.trim_tolerance = QDoubleSpinBox()
         self.trim_tolerance.setRange(0.001, 50.0)
@@ -958,7 +998,7 @@ class SurfacingPanel(QWidget):
         overlap_row.setContentsMargins(0, 0, 0, 0)
         form.addRow("On the scan", overlap)
         layout.addLayout(form)
-        self.trim_compute = _button("Automatic Trim")
+        self.trim_compute = _button("Split Surfaces")
         self.trim_compute.clicked.connect(lambda: self._emit("model.trim_compute"))
         layout.addWidget(self.trim_compute)
         self.trim_info = _hint()
