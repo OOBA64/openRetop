@@ -342,6 +342,34 @@ class SketchInTheWindowTests(unittest.TestCase):
         self.assertIn("3D Sketch 1", names)
         self.assertIn("Sketch 1", names)
 
+    def test_enter_in_a_dimension_field_does_not_finish_the_sketch(self) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        window, modeling = self.window, self.composition.modeling_controller
+        window.show()
+        window._invoke_from_ui("model.plane_sketch")
+        window._dispatch_application_action("model.sketch2d_tool", {"tool": "rectangle"})
+        self.click(0.0, 0.0)
+        self.click(30.0, 20.0)
+        line = next(iter(modeling.session.sketch2d.sketch.curves))
+        modeling.sketch2d_select([line])
+        window._dispatch_application_action("model.sketch2d_dimension")
+        window.refresh()
+        panel = window.surfacing_panel
+        panel.sketch2d_constraints.setCurrentRow(panel.sketch2d_constraints.count() - 1)
+        field = panel.sketch2d_value.lineEdit()
+        field.setFocus()
+        field.selectAll()
+        QTest.keyClicks(field, "42")
+        QTest.keyClick(field, Qt.Key_Return)  # Qt passes this Enter on to the window as well
+        QTest.qWait(20)
+        self.assertEqual(modeling.tool, "plane_sketch")  # still sketching (it used to finish here)
+        sketch = modeling.session.sketch2d.sketch
+        self.assertAlmostEqual(float(np.linalg.norm(np.subtract(*[sketch.position(p) for p in sketch.curve_points(line)]))), 42.0, places=6)
+        self.assertTrue(window._handle_tool_key(Qt.Key.Key_Return, ""))  # Enter in the view still finishes
+        self.assertFalse(modeling.active)
+
     def test_extrude_picks_regions_by_click(self) -> None:
         window, modeling = self.window, self.composition.modeling_controller
         self.assertTrue(window._dispatch_framework_action("model.plane_sketch"))

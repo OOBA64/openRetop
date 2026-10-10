@@ -700,6 +700,18 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             self.refresh()
 
     def keyPressEvent(self, event: object) -> None:
+        from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QLineEdit, QTextEdit
+
+        if self._field_enter and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._field_enter = False
+            event.accept()
+            return
+        if isinstance(QApplication.focusWidget(), (QAbstractSpinBox, QLineEdit, QTextEdit, QComboBox)):
+            # A key a text or number field passed on (Qt hands Enter up so dialogs can take
+            # it): it was typed into the field, not meant for the tool (Enter after a
+            # dimension value finished the whole 3D Sketch).
+            super().keyPressEvent(event)
+            return
         if self._handle_tool_key(event.key(), event.text()):
             event.accept()
             return

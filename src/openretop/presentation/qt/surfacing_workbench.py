@@ -105,10 +105,19 @@ class SurfacingWorkbenchMixin:
         if setter is not None:
             setter(self._surfacing_press_claim)
 
+    _field_enter = False  # the Enter that just finished typing in a panel field
+
     def _focus_viewport(self) -> None:
         interactor = getattr(self.viewport, "interactor", None)
         if interactor is not None:
             interactor.setFocus()
+        # The number box passes that Enter on (Qt does, for dialogs' default buttons): it
+        # reaches the window after the focus moved, and must not count as the tool's Enter
+        # (it finished the whole 3D Sketch after a dimension was typed).
+        self._field_enter = True
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, lambda: setattr(self, "_field_enter", False))
 
     @property
     def modeling(self) -> Any:

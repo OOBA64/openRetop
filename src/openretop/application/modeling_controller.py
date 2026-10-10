@@ -954,6 +954,9 @@ class ModelingController(ControllerBase):
         model = self.state.model
         before = model.snapshot()
         mode = session.extrude_mode
+        target_volume = None
+        if mode != "new" and model.get(session.extrude_target) is not None:
+            target_volume = float(model.get(session.extrude_target).stats.get("volume", 0.0))  # type: ignore[union-attr]
         params = {
             "profile": session.extrude_profile,
             "mode": session.extrude_mode,
@@ -1003,7 +1006,13 @@ class ModelingController(ControllerBase):
         session.extrude_target = entity.id
         session.extrude_mode = "add"  # a further sketch most likely adds to (or cuts) this body
         verb = {"new": "Created", "add": "Added to", "cut": "Cut from"}[mode]
-        return self._changed("Extrude", before, f"{verb} {entity.name}: volume {reply.value['volume']:.1f} {self.state.units}^3")
+        volume = float(reply.value["volume"])
+        status = f"{verb} {entity.name}: volume {volume:.1f} {self.state.units}^3"
+        if target_volume is not None and abs(volume - target_volume) <= 1e-6 * max(abs(target_volume), 1.0):
+            # nothing changed: the extrusion lies outside (a cut) or inside (an add) the body
+            where = "outside" if mode == "cut" else "inside"
+            status += f" - unchanged: the extrusion lies {where} {entity.name}; check Ahead / Behind (or undo)"
+        return self._changed("Extrude", before, status)
 
     def _extrude_loops(self, profile: ModelEntity) -> list[dict[str, Any]]:
         """The loops an extrude takes: all of the sketch, or a 3D Sketch's picked regions."""
