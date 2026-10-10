@@ -17,6 +17,7 @@ import numpy as np
 
 from openretop.modeling.document import ModelDocument, ModelEntity
 from openretop.modeling.sketch import Sketch, SketchCurve
+from openretop.modeling.timeline import Timeline
 
 FORMAT = 1
 PROJECT_KEY = "model"
@@ -91,6 +92,7 @@ def model_to_dict(document: ModelDocument) -> dict[str, Any] | None:
         "format": FORMAT,
         "counter": int(document.counter),
         "entities": entities,
+        "timeline": _plain(document.timeline.to_dict(_pack_bytes)),
         "sketch": {
             "counter": int(sketch.counter),
             "nodes": {node: [float(v) for v in position] for node, position in sketch.nodes.items()},
@@ -172,6 +174,15 @@ def model_from_dict(data: object) -> tuple[ModelDocument, list[str]]:
         warnings.append(f"The 3D Sketch could not be read ({exc}).")
         sketch = Sketch()
     document.sketch = sketch
+    try:
+        document.timeline = Timeline.from_dict(data.get("timeline"), _unpack_bytes)
+    except (KeyError, TypeError, ValueError, zlib.error) as exc:
+        warnings.append(f"The design history could not be read; the model keeps its shapes but cannot be rebuilt ({exc}).")
+    entity_ids = {entity.id for entity in document.entities}
+    lost = [feature.name for feature in document.timeline.features if feature.entity not in entity_ids]
+    if lost:
+        document.timeline.features = [feature for feature in document.timeline.features if feature.entity in entity_ids]
+        warnings.append(f"History features without their model item were dropped: {', '.join(lost)}.")
     return document, warnings
 
 

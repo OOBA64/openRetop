@@ -20,6 +20,7 @@ import numpy as np
 
 from openretop.application.controller_support import CallbackUndoPayload, ControllerBase
 from openretop.application.events import EventPublisher
+from openretop.application.regeneration import regenerate, replace_entity
 from openretop.application.results import CommandResult
 from openretop.application.state import AppState
 from openretop.cad_kernel.worker import KernelReply, KernelWorker
@@ -603,23 +604,36 @@ class ModelingController(ControllerBase):
             "frame": frame,
             "loops": loops,
             "tolerance": self.section_tolerance_in_use(),
+            "rms": rms,
+            "max_error": worst,
         }
         model = self.state.model
         replaced = model.get(session.section_editing) if session.section_editing else None
-        entity = entity_from_result(model, reply.value, tool="section", params=params, name=None if replaced is None else replaced.name)
         session.section_profiles = None  # created: the next Fit starts afresh
         session.section_selected = None
         session.section_editing = ""
         if replaced is None:
-            return self._add_entities([entity], name="Section Sketch")
+            entity = entity_from_result(model, reply.value, tool="section", params=params)
+            added = self._add_entities([entity], name="Section Sketch")
+            if added.success:
+                model.timeline.add("sketch", entity.id, params, result=reply.value)
+            return added
         before = model.snapshot()
-        position = model.entities.index(replaced)
-        model.remove(replaced.id)
-        model.add(entity)
-        model.entities.remove(entity)
-        model.entities.insert(position, entity)  # in the tree where it was
-        model.selected_ids = [entity.id]
-        return self._changed("Edit Sketch", before, f"Updated {entity.name}")
+        replace_entity(model, replaced.id, reply.value, tool="section", params=params)  # same id, same place
+        model.selected_ids = [replaced.id]
+        feature = model.timeline.maker(replaced.id)
+        if feature is None:  # a sketch from before the history: it starts one now
+            model.timeline.add("sketch", replaced.id, params, result=reply.value)
+            return self._changed("Edit Sketch", before, f"Updated {replaced.name}")
+        feature.inputs = dict(params)
+        feature.result = reply.value
+        feature.status, feature.message = "ok", ""
+        later = model.timeline.features[model.timeline.index(feature.id) + 1 :]
+        if not any(feature.id in item.reads() for item in later):
+            model.revision += 1
+            return self._changed("Edit Sketch", before, f"Updated {replaced.name}")
+        report = regenerate(model, self.worker, later[0].id)
+        return self._changed("Edit Sketch", before, f"Updated {replaced.name}. {report.summary()}")
 
     # -- editing the profile by hand -------------------------------------------------------------
 
@@ -919,11 +933,36 @@ class ModelingController(ControllerBase):
         }
         target = model.get(session.extrude_target) if session.extrude_mode != "new" else None
         sources = (session.extrude_profile,) + (() if target is None else (target.id,))
-        entity = entity_from_result(model, reply.value, tool="extrude", params=params, sources=sources)
-        if target is not None:  # the body changes: the new one takes its place
-            entity.name = target.name
-            model.remove(target.id)
-        model.add(entity)
+        timeline = model.timeline
+        sketch_feature = timeline.maker(session.extrude_profile)
+        if sketch_feature is None:  # a sketch from before the history: it starts one now
+            profile_entity = model.get(session.extrude_profile)
+            assert profile_entity is not None
+            sketch_feature = timeline.add("sketch", profile_entity.id, dict(profile_entity.params))
+        if target is not None and not timeline.body_features(target.id):
+            # a body the history did not make (sewn in Surface, or older): kept as it is now
+            timeline.add("base", target.id, {"brep": target.brep, "kind": target.kind})
+        if target is not None:  # the body changes and keeps its id: features further on refer to it
+            entity = replace_entity(model, target.id, reply.value, tool="extrude", params=params)
+            entity.sources = sources
+            model.revision += 1
+        else:
+            entity = entity_from_result(model, reply.value, tool="extrude", params=params, sources=sources)
+            model.add(entity)
+        timeline.add(
+            "extrude",
+            entity.id,
+            {
+                "sketch": sketch_feature.id,
+                "mode": mode,
+                "front": float(session.extrude_front),
+                "back": float(session.extrude_back),
+                "draft": float(session.extrude_draft),
+                "auto": bool(session.extrude_auto),
+                "holes": {str(index): [float(low), float(high)] for index, (low, high) in session.extrude_holes.items()},
+            },
+            result=reply.value,
+        )
         profile = model.get(session.extrude_profile)
         if profile is not None:
             profile.visible = False  # used: out of the way, as in CAD
@@ -933,6 +972,37 @@ class ModelingController(ControllerBase):
         session.extrude_mode = "add"  # a further sketch most likely adds to (or cuts) this body
         verb = {"new": "Created", "add": "Added to", "cut": "Cut from"}[mode]
         return self._changed("Extrude", before, f"{verb} {entity.name}: volume {reply.value['volume']:.1f} {self.state.units}^3")
+
+    # -- history (P-01) ------------------------------------------------------------------------
+
+    def edit_feature(self, feature_id: str, **changes: Any) -> CommandResult:
+        """Change a feature's inputs (an extrude's depths, draft or mode) and replay the
+        history from it."""
+
+        model = self.state.model
+        feature = model.timeline.get(feature_id)
+        if feature is None:
+            return CommandResult.failure("That feature is no longer in the history.")
+        editable = {"extrude": {"front", "back", "draft", "mode", "auto"}}.get(feature.kind, set())
+        unknown = set(changes) - editable
+        if unknown:
+            return CommandResult.failure(f"{feature.name} has no {', '.join(sorted(unknown))} to change.")
+        if "mode" in changes and changes["mode"] not in EXTRUDE_MODES:
+            return CommandResult.failure(f"Unknown extrude mode: {changes['mode']}")
+        before = model.snapshot()
+        feature.inputs.update(changes)
+        report = regenerate(model, self.worker, feature.id)
+        return self._changed(f"Edit {feature.name}", before, report.summary())
+
+    def rebuild(self) -> CommandResult:
+        """Replay the whole history (after opening a project, or to check it)."""
+
+        model = self.state.model
+        if not model.timeline.features:
+            return CommandResult.ok(status="Nothing to rebuild: the model has no history.")
+        before = model.snapshot()
+        report = regenerate(model, self.worker)
+        return self._changed("Rebuild", before, report.summary())
 
     def _scan_spacing(self) -> float:
         """The scan's typical point spacing (median edge length)."""
@@ -1183,6 +1253,7 @@ class ModelingController(ControllerBase):
     def select_entities(self, entity_ids: tuple[str, ...]) -> CommandResult:
         valid = [value for value in entity_ids if self.state.model.get(value) is not None]
         self.state.model.selected_ids = valid
+        self.state.model.selected_feature = ""
         return CommandResult.ok(status=f"{len(valid)} model item(s) selected" if valid else "Selection cleared", changed=True)
 
     def delete(self, entity_ids: tuple[str, ...] | None = None) -> CommandResult:
@@ -1577,6 +1648,8 @@ class ModelingController(ControllerBase):
     def sketch_select_curves(self, curve_ids: tuple[str, ...], *, add: bool = False) -> CommandResult:
         sketch = self.state.model.sketch
         valid = [value for value in curve_ids if sketch.curve(value) is not None]
+        if not add:
+            self.state.model.selected_feature = ""
         if add:
             current = list(self.state.model.selected_curve_ids)
             for value in valid:

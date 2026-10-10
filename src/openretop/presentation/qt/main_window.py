@@ -113,6 +113,7 @@ _TREE_KIND_ICONS = {
     "section_result": "section_cut",
     "curve": "curve",
     "region": "region",
+    "feature": "feature",
     "model_surface": "surface",
     "model_body": "solid",
 }
@@ -1122,6 +1123,8 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
     def _on_inspector_value(self, field_id: str, value: object) -> None:
         node_id = self._scene_model.selected_ids[0] if len(self._scene_model.selected_ids) == 1 else None
         if node_id is None:
+            return
+        if self._surfacing_inspector_value(node_id, field_id, value):
             return
         if field_id == "name":
             self.composition.selection_controller.select_nodes((node_id,))

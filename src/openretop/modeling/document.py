@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from openretop.modeling.sketch import Sketch
+from openretop.modeling.timeline import Timeline
 
 # distinct, mid-saturation colours that read on the grey scan and on each other
 PALETTE: tuple[tuple[float, float, float], ...] = (
@@ -81,6 +82,9 @@ class ModelDocument:
     # the 3D Sketch: points on the scan and the curves through them
     sketch: Sketch = field(default_factory=Sketch)
     selected_curve_ids: list[str] = field(default_factory=list)
+    # how the sketches and solids were made, to replay them after an edit (P-01)
+    timeline: Timeline = field(default_factory=Timeline)
+    selected_feature: str = ""  # a History row picked in the tree (its inputs show in Properties)
 
     def get(self, entity_id: str) -> ModelEntity | None:
         return next((entity for entity in self.entities if entity.id == entity_id), None)
@@ -113,8 +117,36 @@ class ModelDocument:
         self.entities = [entity for entity in self.entities if entity.id not in wanted]
         self.selected_ids = [value for value in self.selected_ids if value not in wanted]
         if removed:
+            self._prune_history({entity.id for entity in removed})
             self.revision += 1
         return removed
+
+    def _prune_history(self, removed: set[str]) -> None:
+        """Drop the features of deleted entities. A body built from a deleted sketch keeps its
+        shape: its history becomes one base feature holding the body as it is now."""
+
+        timeline = self.timeline
+        gone = {feature.id for feature in timeline.features if feature.entity in removed}
+        baked = {
+            feature.entity
+            for feature in timeline.features
+            if feature.id not in gone and gone & set(feature.reads())
+        }
+        kept = []
+        placed: set[str] = set()
+        for feature in timeline.features:
+            if feature.id in gone:
+                continue
+            if feature.entity in baked and feature.kind != "sketch":
+                body = self.get(feature.entity)
+                if feature.entity not in placed and body is not None:
+                    placed.add(feature.entity)
+                    base = timeline.add("base", body.id, {"brep": body.brep, "kind": body.kind})
+                    timeline.features.remove(base)
+                    kept.append(base)
+                continue
+            kept.append(feature)
+        timeline.features = kept
 
     def visible(self) -> list[ModelEntity]:
         return [entity for entity in self.entities if entity.visible]
@@ -127,23 +159,24 @@ class ModelDocument:
         self.revision += 1
         return True
 
-    def snapshot(self) -> tuple[list[ModelEntity], list[str], int, Sketch]:
+    def snapshot(self) -> tuple[list[ModelEntity], list[str], int, Sketch, Timeline]:
         """For undo: entities are replaced rather than edited, so a list copy is enough
         (visibility is the one field changed in place, so the entities are copied shallowly).
-        The sketch is small and edited in place: it is copied whole."""
+        The sketch and the timeline are small and edited in place: they are copied whole."""
 
         from copy import copy
 
-        return [copy(entity) for entity in self.entities], list(self.selected_ids), self.counter, self.sketch.copy()
+        return [copy(entity) for entity in self.entities], list(self.selected_ids), self.counter, self.sketch.copy(), self.timeline.copy()
 
-    def restore(self, snapshot: tuple[list[ModelEntity], list[str], int, Sketch]) -> None:
+    def restore(self, snapshot: tuple[list[ModelEntity], list[str], int, Sketch, Timeline]) -> None:
         from copy import copy
 
-        entities, selected, counter, sketch = snapshot
+        entities, selected, counter, sketch, timeline = snapshot
         self.entities = [copy(entity) for entity in entities]
         self.selected_ids = list(selected)
         self.counter = max(self.counter, counter)
         self.sketch = sketch.copy()
+        self.timeline = timeline.copy()
         self.selected_curve_ids = [value for value in self.selected_curve_ids if self.sketch.curve(value) is not None]
         self.revision += 1
 

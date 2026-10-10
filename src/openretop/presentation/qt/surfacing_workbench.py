@@ -48,9 +48,13 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.extrude_preview",
         "model.extrude_apply",
         "model.section_edit",
+        "model.edit_feature",
+        "model.rebuild",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of 3D Sketch curves
+NODE_HISTORY = "history"  # the scene tree group of the design history (P-01)
+FEATURE_PREFIX = "feature:"
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
     "sketch": "Click points on the scan; Enter finishes. Click a point to select / drag it, double-click a curve to add a point, right-click for more.",
@@ -924,6 +928,21 @@ class SurfacingWorkbenchMixin:
                     metadata={"context_actions": sketch_actions if entity.kind == "profile" else actions},
                 )
             )
+        features = model.timeline.features
+        if features:
+            nodes.append(SceneNode(NODE_HISTORY, "History", "group", "scene", metadata={"context_actions": ("model.rebuild",)}, **group))
+            nodes.extend(
+                SceneNode(
+                    f"{FEATURE_PREFIX}{feature.id}",
+                    feature.name if feature.status == "ok" else f"{feature.name} ({feature.status})",
+                    "feature",
+                    NODE_HISTORY,
+                    checkable=False,
+                    renameable=False,
+                    metadata={"context_actions": ("model.rebuild",)},
+                )
+                for feature in features
+            )
         return nodes
 
     def _surfacing_tree_selection(self, ids: tuple[str, ...]) -> tuple[str, ...]:
@@ -931,9 +950,15 @@ class SurfacingWorkbenchMixin:
 
         model_ids = tuple(value for value in (model_id_from_node(node) for node in ids) if value is not None)
         curve_ids = tuple(node.split(":", 1)[1] for node in ids if str(node).startswith("sketch:"))
-        others = tuple(node for node in ids if model_id_from_node(node) is None and not str(node).startswith("sketch:"))
+        feature_ids = [node[len(FEATURE_PREFIX) :] for node in ids if str(node).startswith(FEATURE_PREFIX)]
+        others = tuple(
+            node
+            for node in ids
+            if model_id_from_node(node) is None and not str(node).startswith(("sketch:", FEATURE_PREFIX)) and node != NODE_HISTORY
+        )
         self.modeling.select_entities(model_ids)
         self.modeling.sketch_select_curves(curve_ids)
+        self.composition.state.model.selected_feature = feature_ids[0] if feature_ids else ""
         return others
 
     def _surfacing_tree_visibility(self, node_id: str, visible: bool) -> bool:
@@ -965,9 +990,62 @@ class SurfacingWorkbenchMixin:
 
     def _surfacing_selected_nodes(self) -> tuple[str, ...]:
         model = self.composition.state.model
-        return tuple(model_node_id(value) for value in model.selected_ids) + tuple(f"sketch:{value}" for value in model.selected_curve_ids)
+        feature = (f"{FEATURE_PREFIX}{model.selected_feature}",) if model.timeline.get(model.selected_feature) else ()
+        return tuple(model_node_id(value) for value in model.selected_ids) + tuple(f"sketch:{value}" for value in model.selected_curve_ids) + feature
+
+    def _feature_inspector_fields(self, feature_id: str) -> tuple[FieldDefinition, ...] | None:
+        """A history feature's inputs; an extrude's can be changed (the rest is rebuilt)."""
+
+        model = self.composition.state.model
+        feature = model.timeline.get(feature_id)
+        if feature is None:
+            return None
+        units = self.composition.state.units
+        status = "OK" if feature.status == "ok" else f"{feature.status.title()}: {feature.message}"
+        fields = [
+            FieldDefinition("feature_name", "Feature", feature.name, "readonly", read_only=True),
+            FieldDefinition("feature_status", "Status", status, "readonly", read_only=True),
+        ]
+        inputs = feature.inputs
+        if feature.kind == "extrude":
+            sketch = model.timeline.get(str(inputs.get("sketch", "")))
+            fields.extend(
+                (
+                    FieldDefinition("feature_sketch", "Sketch", "(deleted)" if sketch is None else sketch.name, "readonly", read_only=True),
+                    FieldDefinition("feature_mode", "Operation", str(inputs.get("mode", "new")), "combo", options=("new", "add", "cut"), group="Extrude"),
+                    FieldDefinition("feature_front", f"Ahead ({units})", float(inputs.get("front", 0.0)), "number", minimum=0.0, maximum=1e6, group="Extrude"),
+                    FieldDefinition("feature_back", f"Behind ({units})", float(inputs.get("back", 0.0)), "number", minimum=0.0, maximum=1e6, group="Extrude"),
+                    FieldDefinition("feature_draft", "Draft (degrees)", float(inputs.get("draft", 0.0)), "number", minimum=-45.0, maximum=45.0, group="Extrude"),
+                    FieldDefinition("feature_auto", "Hole depths from the scan", bool(inputs.get("auto", True)), "checkbox", group="Extrude"),
+                )
+            )
+        elif feature.kind == "sketch":
+            fields.extend(
+                (
+                    FieldDefinition("feature_plane", "Plane", f"{inputs.get('plane', '?')} at {float(inputs.get('offset', 0.0)):g} {units}", "readonly", read_only=True),
+                    FieldDefinition("feature_loops", "Loops", len(inputs.get("loops", [])), "readonly", read_only=True),
+                    FieldDefinition("feature_hint", "To change it", "select the sketch under Model, then Edit Sketch", "readonly", read_only=True),
+                )
+            )
+        else:
+            fields.append(FieldDefinition("feature_hint", "Body", "kept as it was when first used (no history before it)", "readonly", read_only=True))
+        return tuple(fields)
+
+    def _surfacing_inspector_value(self, node_id: str, field_id: str, value: object) -> bool:
+        """Edits made in Properties to a history feature: replayed from that feature on."""
+
+        if not str(node_id).startswith(FEATURE_PREFIX) or not field_id.startswith("feature_"):
+            return False
+        key = field_id[len("feature_") :]
+        if key not in {"mode", "front", "back", "draft", "auto"}:
+            return True
+        cast = {"mode": str, "auto": bool}.get(key, float)
+        self._dispatch_application_action("model.edit_feature", {"feature": node_id[len(FEATURE_PREFIX) :], key: cast(value)})  # type: ignore[attr-defined]
+        return True
 
     def _surfacing_inspector_fields(self, node_id: str) -> tuple[FieldDefinition, ...] | None:
+        if str(node_id).startswith(FEATURE_PREFIX):
+            return self._feature_inspector_fields(node_id[len(FEATURE_PREFIX) :])
         entity_id = model_id_from_node(node_id)
         entity = None if entity_id is None else self.composition.state.model.get(entity_id)
         if entity is None:

@@ -405,6 +405,15 @@ def extrude(
     return surface_result(shape, kind="solid", volume=S.shape_volume(shape), solid=is_valid(shape))
 
 
+def shape(brep: bytes, *, kind: str = "solid") -> dict[str, Any]:
+    """A stored shape back as a result (display mesh, edges, volume): a base body replayed."""
+
+    from openretop.cad_kernel.features import is_valid
+
+    body = S.from_brep(brep)
+    return surface_result(body, kind=kind, volume=S.shape_volume(body), solid=is_valid(body))
+
+
 def selftest_sleep(seconds: float) -> float:
     """For tests of the worker's timeout."""
 
@@ -435,6 +444,7 @@ JOBS = frozenset(
         "export",
         "extrude",
         "profile",
+        "shape",
         "selftest_sleep",
         "selftest_crash",
     }

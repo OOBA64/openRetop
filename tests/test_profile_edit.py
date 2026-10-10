@@ -169,10 +169,13 @@ class ProfileEditInTheToolTests(unittest.TestCase):
         self.dispatch("model.section_create")
         (updated,) = model.entities
         self.assertEqual(updated.name, original.name)
-        self.assertNotEqual(updated.id, original.id)
+        # the same sketch, edited: it keeps its id, so the features built from it still find it
+        self.assertEqual(updated.id, original.id)
+        self.assertIsNot(updated, original)
         self.assertAlmostEqual(updated.stats["area"], HOUSING_AREA_Z0 + (4 - math.pi) * 9 / 4, delta=1.0)  # one R3 corner filled in
         self.dispatch("edit.undo")
         self.assertEqual([entity.id for entity in model.entities], [original.id])
+        self.assertAlmostEqual(model.entities[0].stats["area"], original.stats["area"], places=6)
 
 
 @unittest.skipUnless(HAVE_KERNEL, "OpenCASCADE / CadQuery not installed")

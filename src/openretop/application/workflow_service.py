@@ -407,6 +407,11 @@ class WorkflowService:
             return modeling.section_edit(str(payload.get("operation", "")), None if value is None else float(value))  # type: ignore[arg-type]
         if action == "model.section_fit":
             return modeling.section_fit()
+        if action == "model.edit_feature":
+            changes = {key: value for key, value in payload.items() if key != "feature"}
+            return modeling.edit_feature(str(payload.get("feature", "")), **changes)
+        if action == "model.rebuild":
+            return modeling.rebuild()
         if action == "model.section_create":
             return modeling.section_create()
         if action == "model.configure":
