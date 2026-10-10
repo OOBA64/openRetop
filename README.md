@@ -1,11 +1,12 @@
 # openRetop
 
-openRetop is a guided scan-to-CAD desktop application. It turns STL/OBJ/PLY
-triangle meshes into sections, editable curves, regions, lofted/patched
-surfaces and optional CAD-kernel B-rep/STEP output.
+openRetop is a scan-to-CAD desktop application. It turns STL/OBJ/PLY scans
+into surfaces and solids you can export to STEP or IGES, in the scan's own
+units.
 
 ```
-mesh scan -> sections -> B-spline curves -> regions -> lofted NURBS surfaces -> STEP
+scan -> curves on the scan / fitted surfaces -> trimmed, sewn surfaces -> solid -> STEP
+scan -> section sketch (lines and arcs) -> extrude -> solid -> STEP
 ```
 
 ## Install and run
@@ -22,27 +23,35 @@ python -m pip install -e ".[dev]"
 openretop            # or: python -m openretop
 ```
 
-CadQuery (the CAD kernel) is pinned in `pyproject.toml`; it is a large
-download. Without a working install the app still imports meshes, cuts
-sections and edits curves, but B-rep surfaces and STEP export are unavailable.
+CadQuery / OpenCASCADE (the CAD kernel) is pinned in `pyproject.toml`; it is a
+large download. It runs in a separate worker process, so a kernel crash cannot
+take the window down.
 
 ## Working with a model
 
-1. **Open Model** (`Ctrl+O`) and choose the mesh's length unit (mm, cm, m or
-   in). The unit is stored in the project, drives default tolerances, and is
-   declared in exported STEP files. *Edit > Set Model Units...* relabels it.
-2. Add section planes and **Compute Section**. Each closed or open section
-   becomes a curve fitted with a tolerance-driven B-spline (default 0.05 % of
-   the model size); sharp corners stay sharp.
-3. Create a **BREP Loft** between curves (or a face from a closed curve) and
-   **Export STEP**.
+**Open Scan** (`Ctrl+O`) and choose its length unit (mm, cm, m or in). The unit
+is stored in the project, drives default tolerances and is declared in exported
+files. *Edit > Set Model Units...* relabels it. The tools are grouped in three
+workspaces:
 
-Opening a model, computing sections and building B-reps run on a worker thread;
-the window stays responsive and rejects other edits until the task finishes.
+- **Scan**: align the scan (G / R, typed values, axis locks), cut sections,
+  select regions, measure.
+- **Surface**: **3D Sketch** curves that run along the scan and can follow its
+  body lines (sections and region boundaries become sketch curves too);
+  **Fit Surface** to a brushed area; **Loft**, **Fill**, **Extend**, **Trim**
+  (sews into a solid when closed); **Compare** colours the scan by its distance
+  to the model.
+- **Solid**: **Section Sketch** fits lines and arcs to a cut through the scan,
+  editable by hand (drag corners, set radii, add fillets); **Extrude** measures
+  its depth on the scan.
+
+**Export Model** writes the selected (or all visible) surfaces and bodies.
+Long operations run off the UI thread; the window stays responsive.
 
 Projects are `.openretop` JSON files, written atomically, with the mesh path
 stored relative to the project file. Older files are upgraded on open (version 1
-projects have no recorded unit, so millimetres are assumed and you are warned).
+projects have no recorded unit, so millimetres are assumed and you are warned;
+curves from the retired curve tools open as 3D Sketch curves).
 
 The PySide6 workbench is the only supported shell. See the
 [user guide](docs/v3/V3_USER_GUIDE.md), [architecture](docs/v3/ARCHITECTURE.md)

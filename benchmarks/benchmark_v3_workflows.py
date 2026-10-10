@@ -9,15 +9,18 @@ import numpy as np
 
 from openretop.application.state import AppState
 from openretop.bootstrap import create_application
-from openretop.curves.curve_state import CurveCollection, StoredCurve
+from openretop.modeling.persistence import PROJECT_KEY, model_from_dict, model_to_dict
 from openretop.project.project_io import project_from_dict, project_to_dict
 from openretop.project.project_state import project_from_app_state
+from openretop.viewer.modeling_scene import ModelingSceneInput
 from openretop.viewer.scene_builder import SceneBuilder
 from workbench_ui import FieldDefinition, PropertyInspectorModel, SceneNode, SceneTreeModel
 
 
-def _curves(count: int) -> CurveCollection:
-    records: list[StoredCurve] = []
+def _state_with_curves(count: int) -> AppState:
+    """A project with ``count`` 3D Sketch curves (the kind sections and the sketch tool make)."""
+
+    state = AppState()
     base = np.column_stack(
         (
             np.linspace(0.0, 1.0, 24),
@@ -26,21 +29,8 @@ def _curves(count: int) -> CurveCollection:
         )
     )
     for index in range(count):
-        points = base + np.asarray([0.0, 0.0, index * 0.01])
-        records.append(
-            StoredCurve(
-                id=f"curve-{index}",
-                name=f"Curve {index}",
-                section_result_id="",
-                plane_id="",
-                original_points=points.copy(),
-                fitted_points=points,
-                mean_error=0.0,
-                max_error=0.0,
-                is_closed=False,
-            )
-        )
-    return CurveCollection(curves=records)
+        state.model.sketch.add_polyline_curve(base + np.asarray([0.0, 0.0, index * 0.01]), name=f"Curve {index}")
+    return state
 
 
 def _time(iterations: int, operation) -> tuple[float, object]:
@@ -53,9 +43,12 @@ def _time(iterations: int, operation) -> tuple[float, object]:
 
 def run(iterations: int, curve_count: int) -> None:
     startup_seconds, composition = _time(iterations, create_application)
-    state = AppState(curve_collection=_curves(curve_count))
+    composition.modeling_controller.shutdown()
+    state = _state_with_curves(curve_count)
+    curves = state.model.sketch.curves
+    modeling = ModelingSceneInput(sketch_curves=tuple((curve.id, curve.polyline, False) for curve in curves))
     builder = SceneBuilder()
-    snapshot_seconds, snapshot = _time(iterations, lambda: builder.build(state))
+    snapshot_seconds, snapshot = _time(iterations, lambda: builder.build(state, modeling=modeling))
     project = project_from_app_state(
         mesh_object=None,
         proxy_quality="Medium",
@@ -65,14 +58,16 @@ def run(iterations: int, curve_count: int) -> None:
         section_axis="Z",
         section_offset=0.0,
         show_section_plane=False,
-        curve_collection=state.curve_collection,
     )
-    persistence_seconds, data = _time(
-        iterations, lambda: project_from_dict(project_to_dict(project))
-    )
+    project.metadata[PROJECT_KEY] = model_to_dict(state.model)
+
+    def round_trip():
+        data = project_from_dict(project_to_dict(project))
+        return model_from_dict(data.metadata.get(PROJECT_KEY))[0]
+
+    persistence_seconds, restored = _time(iterations, round_trip)
     nodes = [SceneNode("root", "Scene", renameable=False)] + [
-        SceneNode(item.id, item.name, parent_id="root")
-        for item in state.curve_collection.curves
+        SceneNode(f"sketch:{curve.id}", curve.name, parent_id="root") for curve in curves
     ]
     tree = SceneTreeModel()
     fields = [
@@ -89,8 +84,7 @@ def run(iterations: int, curve_count: int) -> None:
     print(f"project round-trip:  {persistence_seconds / iterations * 1000:.3f} ms/op")
     print(f"tree/inspector:      {ui_model_seconds / iterations * 1000:.3f} ms/op")
     print(f"snapshot items:      {len(snapshot.render_items())}")
-    print(f"project curves:      {len(data.curves)}")
-    print(f"CAD backend:         {composition.cad.capabilities.backend_name}")
+    print(f"project curves:      {len(restored.sketch.curves)}")
 
 
 def main() -> int:

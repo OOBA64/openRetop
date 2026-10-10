@@ -1,28 +1,31 @@
-# openRetop V3 desktop shell
+# openRetop desktop shell
 
-Run the only supported shell with `openretop` (or `python -m openretop`).
+Run it with `openretop` (or `python -m openretop`).
 
 The independent `workbench_ui` framework provides the main window, menus,
-toolbars, docks, scene tree, property inspector, command palette, themes, and
-VTK host. The openRetop presentation supplies scene records and dispatches
-stable actions into UI-independent controllers.
+workspace tabs, toolbars, docks, scene tree, property inspector, command
+palette (`Ctrl+K`), themes and the VTK host. The openRetop presentation supplies
+scene records and dispatches stable actions into UI-independent controllers.
 
-- File creates/opens/saves projects, imports STL/OBJ/PLY, edits preferences,
-  and exports a rebuilt selected BREP to STEP.
-- View contains grid/axes controls, named views, Frame All, Frame Selected,
-  region/source-curve framing, and proxy quality.
-- Create and Modify expose section, transform, curve/manual-curve, region,
-  preview-surface, editable-feature, and BREP workflows.
-- Inspect exposes project/mesh/selection diagnostics and deviation analysis.
-- The Scene dock supports multi-selection, visibility, rename, context actions,
-  source groups, regions, surfaces, and editable features.
-- The Properties dock is contextual and validates values before dispatch.
+- **Workspaces.** *Scan* (align, sections, regions, measure), *Surface* (3D
+  Sketch, Fit Surface, Loft, Fill, Extend, Trim, Compare) and *Solid* (Section
+  Sketch, Edit Sketch, Extrude). Starting a tool from the menu or palette
+  switches to its workspace; the last one used is remembered.
+- **File** creates/opens/saves projects, opens STL/OBJ/PLY scans, edits
+  preferences, and exports model surfaces and bodies to STEP or IGES in the
+  project's unit.
+- **View** has grid/axes controls, named views, Frame All, Frame Selected and
+  display-proxy quality.
+- The **Scene** dock lists the scan, the 3D Sketch, the model, section planes
+  and results, and the selected region, with visibility, rename and context
+  actions. Clicking in the viewport selects what was hit and nothing else.
+- The **Properties** dock is contextual; with nothing selected it shows *Model &
+  Next steps*, and while a tool is running it shows that tool's panel.
 
-Tool instructions appear in the status area. Enter applies or finishes active
-transform, manual-curve, and region tools; Escape cancels or exits them. Mouse
-picks return structured scene/mesh results, and right-button camera navigation
-remains available while modeling tools are active.
+Tool hints appear on the canvas. Enter confirms and Escape cancels the active
+tool; right-button and middle-button navigation stay available inside tools.
 
-Projects preserve transforms, display options/colors, section planes/results,
-curves and manual metadata, regions, preview/BREP records, editable features,
-and stable scene selection. Runtime CAD objects are rebuilt after opening.
+Projects keep the scan reference and its transform, display options, section
+planes and results, the region, the 3D Sketch, sketches and the model's
+surfaces and bodies. Curves saved by the retired curve tools open as 3D Sketch
+curves; surfaces from those tools are not loaded, with a warning.
