@@ -46,21 +46,21 @@ reference video in RE_PLAN section 2a) comes first.
 | S-06 | S | done | Fit Surface panel: selection tools, type (Auto, Freeform, Plane, Cylinder, Cone, Sphere, Torus), U x V (Auto), smoothness, expand, tolerance, Fit preview with deviation, Create (Enter) |
 | S-07 | S | done | 3D Sketch (`modeling.sketch`, Surfacing toolbar): click points on the scan; curves pass exactly through them and lie on the scan (centripetal Catmull-Rom, samples moved along the blended surface normal: no overshoot, no jumping to another face); clicking an existing point connects (and finishes), the first point closes; drag a point to move it (every curve through it follows); Enter/C/Backspace/Esc; Loft and Face From Curves (a loop of connected curves: B-spline fitted to the scan inside, trimmed to the curves). Casting: face 0.035-0.05 mm RMS |
 | S-08 | S | doing | Fill panel: click curves and surface edges around a gap (highlighted), Contact/Smooth per side, follow the scan; tested from curves. Todo: verify edge picking with a live session |
-| S-09 | S | done | Extend (by a distance, G1) and Trim (automatic: split all, keep pieces on the scan with tolerance/overlap; click pieces to keep/drop; Apply sews; closed = solid). B1 in the real window: one valid solid, volume 0.012% from the CAD. Todo: trim open borders to the scan outline |
+| S-09 | S | done | Extend (by a distance, G1) and Trim (automatic: split all, keep pieces on the scan with tolerance/overlap; click pieces to keep/drop; Apply sews; closed = solid). B1 in the real window: one valid solid, volume 0.012% from the CAD. Manual trim: Cut Line across a surface, Enter, click pieces to drop (fixed 2026-10-10: its clicks never registered). Todo: trim open borders to the scan outline |
 | S-10 | S | done | Compare: deviation colour map on the scan (green within +/- tolerance, yellow-red above, cyan-blue below, legend), RMS/max/% within; surfaces show as edges while the map is up. B1: RMS 0.020 mm, 98.7% within 0.05 mm |
 | S-11 | S | done | Export Model (File, Ctrl+E, Surfacing toolbar): STEP or IGES of the selected or visible model, read back to check the face count |
 | S-12 | S | done | Save model surfaces, bodies and the 3D Sketch in the project file (`modeling.persistence`: a `model` key with compressed BREP, display mesh, edges and sketch; older versions carry it through untouched) |
 | S-13 | S | doing | Section sketch: plane + scan section, brush-to-fit lines/arcs/circles/splines, H/V snap, corner radii. Done: auto line/arc profile (`modeling/profile2d.py`), Section Sketch tool (world planes + offset, click to place, auto tolerance, exact wire/face), hand editing (U-03). Later: brush-to-fit single primitives, splines, face/offset planes |
 | S-14 | S | doing | Extrude / revolve sketch profiles to solids (depth handles, draft, add/cut), live deviation |
 | S-15 | S | todo | Fillet / chamfer solid edges with Auto radius from the scan, live deviation |
-| S-16 | S | todo | Primitive patches auto-sized, with drag handles to resize |
+| S-16 | S | doing | Primitive patches auto-sized, with drag handles to resize. Done: arrows on every side and corner of fitted planes, cylinders, cones, freeform (drag, or click and type a distance). Todo: auto size to the face's footprint (H-03) |
 | S-17 | S | todo | Live deviation analysis in every tool panel |
 | U-01 | U | done | (User feedback on a real 794k-triangle bumper scan: curves froze the app ~10 s per click, did not follow body lines, could not be edited.) 3D Sketch curves run along the surface (`modeling.surface_paths`: shortest path in a capsule, 30-100 ms), relaxed coarse to fine, smooth through points; Follow body lines (crease map, crest-centred: 1.3 mm off a fender shoulder line from two clicks vs 15 mm plain); Show body lines; edit points/curves (insert, delete, split, open/close, reverse, smoothness), right-click menu; brush ring with [ ] |
 | U-02 | U | done | Workspaces: Scan, Surface Modeling, Solid Modeling (tabs; each its own toolbar; tools switch to their workspace; remembered) |
 | U-03 | U | done | Section Sketch profiles edited by hand (drag corners, radius, sharp/round corner, H/V, delete segment, close profile; undo in the tool; deviation re-measured); Edit Sketch reopens a created sketch |
 | U-04 | U | todo | Retire or fold the older Curve tool (Create menu) into 3D Sketch: two curve systems confuse |
 | U-05 | U | todo | Scan workspace: cleanup tools (remove pieces, fill holes, decimate) and alignment to world axes from picked faces |
-| U-06 | U | todo | Drag handles in the 3D view for extrude depth and patch size (S-16), not only number fields |
+| U-06 | U | doing | Drag handles in the 3D view for extrude depth and patch size (S-16), not only number fields. Done: patch size. Todo: extrude depth |
 | RE-01 | M1 | done | Benchmark harness: CadQuery reference parts to noisy scan meshes (`openretop.benchmarks`: B1 bracket, B2 shaft, B3 housing, B4 knob, B5 casting; truth parameters, per-triangle face labels, seeded noise and holes; measured noise RMS matches sigma) |
 | RE-02 | M1 | todo | Per-vertex curvature + curvature colour map |
 | RE-03 | M1 | done | Automatic segmentation into classified regions (`openretop.segmentation`: fit-guided region growing with a saturation test; 95-97% of triangles correct on B1-B5, every true face found, 1.5-3 s prismatic / ~8 s freeform; freeform areas still yield some small primitive regions, RE-04 edits them) |
@@ -74,6 +74,41 @@ reference video in RE_PLAN section 2a) comes first.
 | RE-11..16 | M2 | todo | Sketch on section, auto-fit lines/arcs, constraints, extrude/revolve, fillets |
 | RE-17..21 | M3 | todo | Freeform B-spline patches, G1 networks, trim/sew, re-home existing tools |
 | RE-22..26 | M4 | todo | Alignment, mesh prep, workflow stepper, auto-model, performance budget |
+
+## Track H - human use (audit of 2026-10-10)
+
+Every workflow driven through the real window with real mouse and key events
+(`scripts/usability`), judged as an experienced Design X / QuickSurface user and as a
+newcomer. Evidence, persona verdicts and the bugs fixed during the audit:
+[HUMAN_AUDIT.md](HUMAN_AUDIT.md). Order within a priority is the order to do them in.
+Each task is checked again with the usability scripts, not only unit tests.
+
+| ID | Pri | Size | Status | Task | Acceptance |
+|---|---|---|---|---|---|
+| H-01 | P0 | M | todo | **Align the scan to the world** (Scan workspace): pick fitted or picked features - plane gives a world plane, cylinder or two planes' intersection gives an axis, a point or sphere gives the origin (3-2-1); preview, Apply moves the scan and everything built on it; undo | A tilted bracket scan is square to XY/XZ within 0.05 deg in three clicks; Section Sketch planes then lie on its faces |
+| H-02 | P0 | M | todo | **Type In and constraints for fitted primitives** (QuickSurface plane dialog): plane - from another plane at an offset, middle plane of two, normal parallel/perpendicular to a plane or axis; cylinder/cone/sphere - typed radius (round to a value), axis parallel/perpendicular/coaxial; deviation updates live | Bracket: a hole re-typed to 8.00 and its axis made perpendicular to the base; deviation shown before Apply |
+| H-03 | P0 | S | todo | **Fitted planes sized and turned to the face**: rectangle along the selection's principal directions with a small margin (not a 1.3x-diagonal square on OCC's axes); fitted surfaces semi-transparent while the Fit tool is open | A 100 x 10 mm face gets a plane about 110 x 20 mm whose sides are parallel to the face's edges |
+| H-04 | P0 | M | todo | **Automatic segmentation in the app** (the kernel's RE-03): Scan > Segment colours the scan by region with its type; in Fit Surface a click selects a whole region; Auto prefers an exact type when it fits within tolerance (the oil pan flange chose freeform) | Bracket: every face is one click; oil pan flange fits as a plane |
+| H-05 | P0 | M | todo | **Help that answers "how do I"**: F1 and Help > Getting Started (the scan to STEP path in six steps, each a button that starts the tool), Help > Mouse & Keys for the active tool (absorbs UX-17), a "?" in each tool panel opening that tool's page of the user guide | F1 in Trim shows the Trim page; a newcomer reaches Export from Getting Started alone |
+| H-06 | P0 | S | todo | **Trim/sew results a person can act on**: show open edges in a bright colour after Apply; message in plain words ("Not closed yet: 3 edges have no neighbour - fit or extend the face next to the highlighted edges") instead of "Shell with N open edges" | Bracket with one face missing: the gap's edges are highlighted and the message names the next action |
+| H-07 | P0 | M | todo | **Scan cleanup basics** (part of U-05/R-10): delete selected area / disconnected pieces, fill holes (small ones automatically), decimate to a triangle count, smooth; each undoable | The bumper's stray shells removed and decimated to 300k in under 30 s |
+| H-08 | P1 | S | todo | **Autosave and recovery** (UX-19, raised from P1-later): snapshot beside the project every few minutes and before risky operations; offered at start after a crash | Kill the process after fitting three faces: the next start offers them back |
+| H-09 | P1 | M | todo | **Menus that match the workspaces** (UX-05): Create = Fit Surface, Surface Sketch, Section Sketch, 3D Sketch, Extrude, Loft, Fill, Face From Curves, Section Plane; Modify = Move/Rotate, Extend, Trim, Edit Feature; locks leave the menus (they are in the transform hint); Edit loses the mesh-specific duplicates; Scan menu for scan-only commands | Every toolbar command is in exactly one menu under the verb a user would guess |
+| H-10 | P1 | S | todo | **Three sketch tools explained** (decision for the owner: keep the names and explain, or rename Section Sketch to "Sketch From Section"): each tool's panel starts with one line saying what it makes and when to use the other two; the palette shows that line | A newcomer picks the right tool for "a profile of this flange" in a hallway test |
+| H-11 | P1 | S | todo | **Navigation presets**: openRetop (current), SolidWorks/Design X, Fusion 360, Blender mouse mappings in Preferences | Each preset orbits/pans/zooms with its own buttons; setting persists |
+| H-12 | P1 | S | todo | **No 10 s wait on the first fit**: start the kernel worker in the background when a scan opens | First Create after opening takes as long as the second |
+| H-13 | P1 | S | todo | **Fit Surface guards**: warn when the selection is mostly covered by an existing surface (duplicate); hole picking: a click inside a small hole selects its wall | Clicking an already fitted face says so; a 6 mm hole on the bracket is one click |
+| H-14 | P1 | S | todo | **Section Sketch tolerance from the scan's noise**, not its edge length; segments over tolerance drawn red with their deviation | Oil pan section: max deviation shown, no segment over tolerance unmarked |
+| H-15 | P1 | L | todo | **Fillet and chamfer** (S-15 / P-06) with the radius measured from the scan | Bracket edges filleted with radii within 0.1 mm of the CAD |
+| H-16 | P1 | L | todo | **Revolve and Mirror** (rest of P-05, part of P-11) | B2 shaft revolved from a section sketch; a symmetric part mirrored |
+| H-17 | P1 | L | todo | **Timeline bar** (P-07): features left to right under the view, roll-back marker, edit, suppress, failure shown in red | Roll back, insert a feature, roll forward: the part rebuilds |
+| H-18 | P1 | M | todo | **3D Sketch tools**: 3-point and tangent arcs, trim/extend, offset, corner fillet, project a scan section (P-09) | The housing profile drawn with tangent arcs and filleted corners, fully constrained |
+| H-19 | P1 | M | todo | **Deviation tools** (S-17 / RE-09): probe (value under the pointer), legend range and tolerance controls, a short PDF/HTML report | Hovering the bracket's map reads values; report lists RMS, max, % within |
+| H-20 | P2 | S | todo | Undo/redo say "Nothing to undo/redo"; Edit menu shows "Undo <name>" (UX-21) | Ctrl+Z on an empty stack says so |
+| H-21 | P2 | S | todo | **Calmer panels**: the hint paragraph collapses to one line with "More"; the primary button always bottom-right | Panel screenshots: no more than one line of text above the first control |
+| H-22 | P2 | M | todo | **Sample scan and guided tour** (UX-18): Help > Open Sample loads the bracket scan; a 6-step tour over Getting Started | A newcomer reaches a STEP file from the sample without the guide |
+| H-23 | P2 | S | todo | **Face From Curves / Loft warnings**: say when the result strays far from the scan (e.g. the loop crosses an edge of the part) | Housing-top loop over an edge: the message names the max deviation and suggests splitting the loop |
+| H-24 | P1 | S | todo | **Run the usability scripts before each release** (absorbs UX-25 partly): s1-s6, trim, resize; results kept in `docs/plan/` | A run log and screenshots per release |
 
 ## Track U - UX foundations
 
