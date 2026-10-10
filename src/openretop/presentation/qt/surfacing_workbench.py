@@ -64,6 +64,9 @@ SKETCH2D_SELECTED = (1.0, 0.85, 0.25)
 SKETCH2D_CONSTRUCTION = (0.40, 0.82, 0.74)
 SKETCH2D_REFERENCE = (0.98, 0.55, 0.20)
 SKETCH2D_PLANE = (0.55, 0.70, 0.95)
+HANDLE_COLOR = (0.30, 0.85, 1.0)  # a surface's drag arrows
+HANDLE_ACTIVE = (1.0, 0.85, 0.25)  # the arrow being dragged, and where its side will go
+HANDLE_PIXELS = 42  # arrow length on screen
 FEATURE_PREFIX = "feature:"
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
 TOOL_HINTS = {
@@ -210,6 +213,94 @@ class SurfacingWorkbenchMixin:
             return True
         return False
 
+    # -- Resize arrows on a surface's sides ------------------------------------------------------
+
+    _handle_drag: dict[str, Any] | None = None  # the arrow being dragged
+    _handle_distance: float = 0.0  # how far its side has been pulled (world, outward positive)
+
+    def _handle_items(self) -> list[dict[str, Any]]:
+        composition = self.composition
+        if composition.transform_controller.active or composition.region_controller.session.active or composition.measure_controller.active:
+            return []  # those tools own the mouse
+        entity = self.modeling.handle_entity()
+        if entity is None:
+            return []
+        return list(self.modeling.surface_handles(entity.id)["handles"])
+
+    def _arrow_length(self, point: np.ndarray) -> float:
+        from openretop.presentation.qt.tool_preview_overlay import world_per_pixel
+
+        renderer = getattr(self.viewport, "renderer", None)
+        window = getattr(self.viewport, "render_window", None)
+        if renderer is None or window is None:
+            return 1.0
+        return HANDLE_PIXELS * world_per_pixel(renderer, point, int(window.GetSize()[1]) or 1)
+
+    def _handle_at(self, x_position: int, y_position: int) -> dict[str, Any] | None:
+        """The arrow under the pointer (within SNAP_PIXELS of its shaft), if any."""
+
+        best, best_distance = None, float(SNAP_PIXELS)
+        for handle in self._handle_items():
+            start = handle["point"]
+            tip = start + handle["direction"] * self._arrow_length(start)
+            try:
+                ends = np.asarray(self.viewport.project_points(np.vstack([start, tip])), dtype=float).reshape(2, -1)[:, :2]
+            except Exception:  # viewport not ready
+                return None
+            if not np.all(np.isfinite(ends)):
+                continue
+            a, b = ends
+            along = b - a
+            t = float(np.clip(((np.array([x_position, y_position]) - a) @ along) / max(float(along @ along), 1e-9), 0.0, 1.0))
+            distance = float(np.linalg.norm(a + along * t - np.array([x_position, y_position])))
+            if distance <= best_distance:
+                best, best_distance = handle, distance
+        return best
+
+    def _handle_pointer(self, event_name: str, x_position: int, y_position: int) -> None:
+        handle = self._handle_drag
+        assert handle is not None
+        if event_name == "motion":
+            ray = getattr(self.viewport, "pointer_ray", lambda x, y: None)(x_position, y_position)
+            if ray is not None:
+                distance = _along_line(handle["point"], handle["direction"], *ray)
+                if distance is not None:
+                    self._handle_distance = distance
+                    units = self.composition.state.units
+                    self.set_status_message(f"{'+' if distance >= 0 else ''}{distance:.3f} {units} (release to apply)")  # type: ignore[attr-defined]
+                    self._render_scene()  # type: ignore[attr-defined]
+            return
+        if event_name not in ("left_release", "leave"):
+            return
+        self._handle_drag = None
+        distance, self._handle_distance = self._handle_distance, 0.0
+        entity = self.modeling.handle_entity()
+        if event_name != "left_release" or entity is None or abs(distance) < 1e-9:
+            self._render_scene()  # type: ignore[attr-defined]
+            return
+        self._dispatch_application_action("model.resize", {"entity": entity.id, "changes": {handle["side"]: distance}})  # type: ignore[attr-defined]
+
+    def _handle_lines(self) -> list[tuple[np.ndarray, tuple[float, float, float], float]]:
+        """Arrows at the middle of each draggable side, pointing the way it grows; while one is
+        dragged, its side where it will go."""
+
+        lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = []
+        dragged = self._handle_drag
+        for handle in self._handle_items():
+            active = dragged is not None and dragged["side"] == handle["side"]
+            offset = handle["direction"] * (self._handle_distance if active else 0.0)
+            start = handle["point"] + offset
+            length = self._arrow_length(start)
+            tip = start + handle["direction"] * length
+            back = tip - handle["direction"] * 0.32 * length
+            side = handle["tangent"] * 0.16 * length
+            color = HANDLE_ACTIVE if active else HANDLE_COLOR
+            lines.append((np.vstack([start, tip]), color, 3.0))
+            lines.append((np.vstack([back + side, tip, back - side]), color, 3.0))
+            if active:
+                lines.append((handle["edge"] + offset, HANDLE_ACTIVE, 2.5))
+        return lines
+
     # -- 3D Sketch (P-03) ------------------------------------------------------------------------
 
     _sketch2d_drag: str | None = None  # the point being dragged
@@ -309,14 +400,14 @@ class SurfacingWorkbenchMixin:
         self._apply_model_result("model.sketch2d_click", modeling.sketch2d_click(world, snap=self._sketch2d_snap(), add=control))
 
     def _sketch2d_lines(self) -> tuple[tuple[np.ndarray, tuple[float, float, float], float], ...]:
-        lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = []
+        lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = self._handle_lines()
         session = self.modeling.session
         if session is not None and session.tool == "extrude":
             lines.extend((outline, SKETCH2D_SELECTED, 4.0) for outline in self.modeling.extrude_region_outlines())
             return tuple(lines)
         view = self.modeling.sketch2d_view_world()
         if view is None:
-            return ()
+            return tuple(lines)
         outline = self.modeling.sketch2d_plane_outline()
         if outline is not None:
             lines.append((outline, SKETCH2D_PLANE, 1.0))
@@ -425,6 +516,13 @@ class SurfacingWorkbenchMixin:
         points (to drag it); anywhere else the drag rotates the view and a click still picks."""
 
         session = self.modeling.session
+        handle = self._handle_at(x_position, y_position)
+        self._handle_drag = handle
+        self._handle_distance = 0.0
+        if handle is not None:
+            return True
+        if self.viewport.left_capture_owner == "surface_handles":
+            return False  # only the arrows are claimed: everything else orbits and picks
         if session is not None and session.tool == "plane_sketch":
             # in Select, a press on a point drags it; anywhere else (and in the drawing tools)
             # a drag turns the view and a click places or picks
@@ -466,6 +564,12 @@ class SurfacingWorkbenchMixin:
         return ids[best] if distance[best] <= SNAP_PIXELS else None
 
     def _surfacing_capture_owner(self) -> str | None:
+        owner = self._tool_capture_owner()
+        if owner is None and self._handle_items():
+            return "surface_handles"  # a press on an arrow drags it; elsewhere it navigates
+        return owner
+
+    def _tool_capture_owner(self) -> str | None:
         session = self.modeling.session
         if session is not None and session.tool == "plane_sketch":
             return "plane_sketch"
@@ -484,6 +588,9 @@ class SurfacingWorkbenchMixin:
     def _surfacing_pointer(self, event_name: str, x_position: int, y_position: int, pick: object) -> bool:
         """Route pointer events to the active surfacing tool; True when consumed."""
 
+        if self._handle_drag is not None:
+            self._handle_pointer(event_name, x_position, y_position)
+            return True
         session = self.modeling.session
         if session is None:
             return False
@@ -1354,6 +1461,20 @@ class SurfacingWorkbenchMixin:
             self._consume_result("file.export_model", result)  # type: ignore[attr-defined]
 
         return bool(self._run_background("Exporting model", work, done))  # type: ignore[attr-defined]
+
+
+def _along_line(point: np.ndarray, direction: np.ndarray, origin: np.ndarray, ray: np.ndarray) -> float | None:
+    """How far along the line ``point + t * direction`` the pointer's line of sight passes
+    closest (None when looking straight along it)."""
+
+    d = np.asarray(direction, dtype=float)
+    r = np.asarray(ray, dtype=float) / max(float(np.linalg.norm(ray)), 1e-12)
+    w = np.asarray(origin, dtype=float) - np.asarray(point, dtype=float)
+    b = float(d @ r)
+    denominator = float(d @ d) - b * b
+    if denominator < 1e-6:
+        return None
+    return (float(d @ w) - b * float(r @ w)) / denominator
 
 
 __all__ = ("NODE_MODEL", "SURFACING_ACTIONS", "SURFACING_HEAVY_ACTIONS", "SurfacingWorkbenchMixin")

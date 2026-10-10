@@ -162,6 +162,7 @@ class ModelingController(ControllerBase):
         self._selection: ScanSelection | None = None
         self._mapping: tuple[tuple[object, object], SourceMapping] | None = None
         self._projector: tuple[tuple[object, object], MeshProjector] | None = None
+        self._handles: tuple[tuple[str, int], dict[str, Any]] | None = None  # (entity, brep) -> its sides
         self._placed_line: tuple[bytes, np.ndarray] | None = None  # Surface Sketch preview cache
         self._normals_cache: tuple[object, np.ndarray] | None = None
         self._crease_cache: tuple[object, np.ndarray] | None = None
@@ -1507,6 +1508,64 @@ class ModelingController(ControllerBase):
         self.state.model.selected_ids = [new.id for _old, new in replacements]
         self.state.model.revision += 1
         return self._changed("Extend Surface", before, f"Extended {len(replacements)} surface(s) by {length:g} {self.state.units}")
+
+    # -- Resize handles ------------------------------------------------------------------------
+
+    def handle_entity(self) -> ModelEntity | None:
+        """The surface whose sides show drag arrows: the one selected surface, with no tool open
+        (or in Fit Surface or Extend)."""
+
+        if self.tool not in (None, "fit_surface", "extend"):
+            return None
+        model = self.state.model
+        if len(model.selected_ids) != 1:
+            return None
+        entity = model.get(model.selected_ids[0])
+        if entity is None or entity.is_body or not entity.visible:
+            return None
+        return entity
+
+    def surface_handles(self, entity_id: str) -> dict[str, Any]:
+        """The draggable sides of a surface (cached until it changes): for each, its edge,
+        midpoint and outward direction. A trimmed surface has none."""
+
+        entity = self.state.model.get(entity_id)
+        if entity is None:
+            return {"rectangular": False, "handles": []}
+        key = (entity.id, id(entity.brep))
+        if self._handles is not None and self._handles[0] == key:
+            return self._handles[1]
+        reply = self.worker.call("face_handles", entity.brep)
+        value: dict[str, Any] = dict(reply.value) if reply.ok else {"rectangular": False, "handles": [], "reason": reply.error}
+        value["handles"] = [
+            {name: (item if name == "side" else np.asarray(item, dtype=float)) for name, item in handle.items()} for handle in value["handles"]
+        ]
+        self._handles = (key, value)
+        return value
+
+    def resize_surface(self, entity_id: str, changes: dict[str, float]) -> CommandResult:
+        """Move a surface's sides along it: positive grows (an analytic surface continues
+        exactly, a freeform one along its edge tangents), negative cuts it back."""
+
+        model = self.state.model
+        entity = model.get(entity_id)
+        if entity is None or entity.is_body:
+            return CommandResult.failure("Select a surface to resize.")
+        changes = {str(side): float(value) for side, value in changes.items() if abs(float(value)) > 0}
+        if not changes:
+            return CommandResult.ok(status="Nothing to change")
+        reply = self.worker.call("resize", entity.brep, changes, kind=entity.kind)
+        if not reply.ok:
+            return _kernel_failure(f"Resizing {entity.name} failed", reply)
+        before = model.snapshot()
+        fresh = entity_from_result(model, reply.value, tool=entity.tool, params=entity.params, sources=entity.sources)
+        fresh.id, fresh.name, fresh.color, fresh.visible, fresh.kind = entity.id, entity.name, entity.color, entity.visible, entity.kind
+        fresh.stats = {**entity.stats, "area": reply.value.get("area", entity.stats.get("area"))}  # the fit to the scan is unchanged
+        model.entities[model.entities.index(entity)] = fresh
+        model.revision += 1
+        units = self.state.units
+        moved = ", ".join(f"{side} {'+' if value > 0 else ''}{value:.3f}" for side, value in changes.items())
+        return self._changed("Resize Surface", before, f"Resized {entity.name} ({moved} {units})")
 
     # -- Trim ----------------------------------------------------------------------------------
 

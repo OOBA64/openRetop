@@ -230,6 +230,24 @@ def fill(boundaries: list[dict[str, Any]], *, scan_points: np.ndarray | None = N
     return surface_result(face, kind="fill")
 
 
+def face_handles(brep: bytes) -> dict[str, Any]:
+    """The draggable sides of a single untrimmed surface (Resize handles)."""
+
+    faces = S.faces_of(S.from_brep(brep))
+    if len(faces) != 1:
+        return {"rectangular": False, "handles": [], "reason": "a body or a group of faces"}
+    return S.face_handles(faces[0])
+
+
+def resize(brep: bytes, changes: dict[str, float], *, kind: str = "extend") -> dict[str, Any]:
+    """One surface with its sides moved: {"u0": +5.0, "v1": -2.0, ...} in world units."""
+
+    faces = S.faces_of(S.from_brep(brep))
+    if len(faces) != 1:
+        raise ValueError("Resize works on a single surface")
+    return surface_result(S.resize_face(faces[0], changes), kind=kind)
+
+
 def extend(brep: bytes, distance: float, sides: tuple[str, ...] = ("u0", "u1", "v0", "v1")) -> dict[str, Any]:
     shape = S.from_brep(brep)
     faces = S.faces_of(shape)
@@ -438,6 +456,8 @@ JOBS = frozenset(
         "loft",
         "fill",
         "extend",
+        "face_handles",
+        "resize",
         "trim",
         "sew",
         "deviation",

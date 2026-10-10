@@ -318,53 +318,144 @@ def _chain_edges(boundaries: list[FillBoundary]) -> list[object]:
 # -- extend -----------------------------------------------------------------------------------
 
 
-def extend_face(face: Any, distance: float, sides: tuple[str, ...] = ("u0", "u1", "v0", "v1")) -> object:
-    """The face's surface grown by ``distance`` past the chosen sides (ExModel's Extend Surface).
+SIDES = ("u0", "u1", "v0", "v1")
 
-    Analytic faces (plane, cylinder, cone, sphere) get a larger parameter range. Freeform
-    faces continue their end spans' polynomials (curvature-continuous, the B-spline's natural
-    extrapolation), resampled into a new B-spline surface over the larger range.
-    """
 
+def extend_face(face: Any, distance: float, sides: tuple[str, ...] = SIDES) -> object:
+    """The face's surface grown by ``distance`` past the chosen sides (ExModel's Extend Surface)."""
+
+    return resize_face(face, {side: float(distance) for side in sides})
+
+
+def _basis_and_bounds(face: Any) -> tuple[Any, Any, tuple[float, float, float, float]]:
     from OCP.BRep import BRep_Tool
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.BRepTools import BRepTools
+    from OCP.Geom import Geom_RectangularTrimmedSurface
+
+    surface = BRep_Tool.Surface_s(face)
+    basis = surface.BasisSurface() if isinstance(surface, Geom_RectangularTrimmedSurface) else surface
+    return surface, basis, tuple(BRepTools.UVBounds_s(face))  # type: ignore[return-value]
+
+
+def _is_analytic(basis: Any) -> bool:
     from OCP.Geom import (
         Geom_ConicalSurface,
         Geom_CylindricalSurface,
         Geom_Plane,
-        Geom_RectangularTrimmedSurface,
         Geom_SphericalSurface,
         Geom_ToroidalSurface,
     )
 
-    surface = BRep_Tool.Surface_s(face)
-    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
-    basis = surface
-    if isinstance(basis, Geom_RectangularTrimmedSurface):
-        basis = basis.BasisSurface()
-    analytic = (Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface, Geom_SphericalSurface, Geom_ToroidalSurface)
-    if not isinstance(basis, analytic):
-        return _extend_freeform(basis, (u0, u1, v0, v1), distance, sides)
-    # analytic: grow the parameter box; angular parameters grow by distance / radius
-    scale_u, scale_v = _parameter_scales(basis, face)
-    du, dv = distance / scale_u, distance / scale_v
-    if "u0" in sides:
-        u0 -= du
-    if "u1" in sides:
-        u1 += du
-    if "v0" in sides:
-        v0 -= dv
-    if "v1" in sides:
-        v1 += dv
+    return isinstance(basis, (Geom_Plane, Geom_CylindricalSurface, Geom_ConicalSurface, Geom_SphericalSurface, Geom_ToroidalSurface))
+
+
+def _side_frame(surface: Any, bounds: tuple[float, float, float, float], side: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, float] | None:
+    """A side's midpoint, its outward direction along the surface (perpendicular to the edge),
+    the edge's direction there, and world length per unit of the side's parameter."""
+
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    u0, u1, v0, v1 = bounds
+    u = {"u0": u0, "u1": u1}.get(side, 0.5 * (u0 + u1))
+    v = {"v0": v0, "v1": v1}.get(side, 0.5 * (v0 + v1))
+    point, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+    surface.D1(u, v, point, du, dv)
+    across = np.array(du.Coord()) if side[0] == "u" else np.array(dv.Coord())
+    along = np.array(dv.Coord()) if side[0] == "u" else np.array(du.Coord())
+    scale = float(np.linalg.norm(across))
+    if scale < 1e-12 or float(np.linalg.norm(along)) < 1e-12:
+        return None  # a degenerate side (a sphere's pole, a cone's apex)
+    tangent = along / np.linalg.norm(along)
+    outward = across - (across @ tangent) * tangent
+    length = float(np.linalg.norm(outward))
+    if length < 1e-12:
+        return None
+    outward = outward / length * (-1.0 if side.endswith("0") else 1.0)
+    return np.array(point.Coord()), outward, tangent, scale
+
+
+def face_handles(face: Any, samples: int = 33) -> dict[str, Any]:
+    """The sides of an untrimmed face that can be dragged to resize it: for each, the edge,
+    its midpoint and the outward direction (a full turn of a cylinder has no angular sides)."""
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+    surface, basis, bounds = _basis_and_bounds(face)
+    u0, u1, v0, v1 = bounds
+    whole = BRepBuilderAPI_MakeFace(basis, u0, u1, v0, v1, 1e-7).Face()
+    area, box_area = face_area(face), face_area(whole)
+    if box_area <= 0 or abs(area - box_area) > 1e-3 * box_area:
+        return {"rectangular": False, "handles": []}  # trimmed: its outline is not its parameter box
+    handles = []
+    for side in SIDES:
+        periodic = basis.IsUPeriodic() if side[0] == "u" else basis.IsVPeriodic()
+        span = (u1 - u0) if side[0] == "u" else (v1 - v0)
+        if periodic and span >= 2.0 * math.pi - 1e-6:
+            continue  # closed all round: nothing to pull
+        frame = _side_frame(basis, bounds, side)
+        if frame is None:
+            continue
+        middle, outward, tangent, _scale = frame
+        fixed = {"u0": u0, "u1": u1, "v0": v0, "v1": v1}[side]
+        params = np.linspace(v0, v1, samples) if side[0] == "u" else np.linspace(u0, u1, samples)
+        edge = np.array([basis.Value(fixed, t).Coord() if side[0] == "u" else basis.Value(t, fixed).Coord() for t in params])
+        handles.append({"side": side, "point": middle, "direction": outward, "tangent": tangent, "edge": edge})
+    return {"rectangular": True, "handles": handles, "analytic": _is_analytic(basis)}
+
+
+def resize_face(face: Any, changes: dict[str, float]) -> object:
+    """The face with each side moved by its distance along the surface: positive grows it
+    (an analytic surface continues exactly, a freeform one along its edge tangents), negative
+    shrinks it (the surface is cut back)."""
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+    changes = {side: float(value) for side, value in changes.items() if side in SIDES and abs(float(value)) > 1e-12}
+    if not changes:
+        return face
+    _surface, basis, bounds = _basis_and_bounds(face)
+    if not _is_analytic(basis):
+        grow = {side: value for side, value in changes.items() if value > 0}
+        if grow:
+            face = _extend_freeform(basis, bounds, grow)
+            _surface, basis, bounds = _basis_and_bounds(face)
+        changes = {side: value for side, value in changes.items() if value < 0}
+        if not changes:
+            return face
+    u0, u1, v0, v1 = bounds
+    values = {"u0": u0, "u1": u1, "v0": v0, "v1": v1}
+    for side, distance in changes.items():
+        frame = _side_frame(basis, bounds, side)
+        if frame is None:
+            continue
+        step = distance / frame[3]
+        values[side] += -step if side.endswith("0") else step
+    u0, u1, v0, v1 = values["u0"], values["u1"], values["v0"], values["v1"]
+    # keep a usable face: some width left, a full turn at most, a sphere between its poles
+    if u1 - u0 < 1e-6 or v1 - v0 < 1e-6:
+        raise ValueError("that would shrink the surface to nothing")
     if basis.IsUPeriodic() and u1 - u0 > 2.0 * math.pi:
-        u0, u1 = 0.0, 2.0 * math.pi
+        middle = 0.5 * (u0 + u1)
+        u0, u1 = middle - math.pi, middle + math.pi
     if basis.IsVPeriodic() and v1 - v0 > 2.0 * math.pi:
-        v0, v1 = -0.5 * math.pi, 0.5 * math.pi
-    return BRepBuilderAPI_MakeFace(basis, u0, u1, v0, v1, 1e-6).Face()
+        middle = 0.5 * (v0 + v1)
+        v0, v1 = middle - math.pi, middle + math.pi
+    from OCP.Geom import Geom_ConicalSurface, Geom_SphericalSurface
+
+    if isinstance(basis, Geom_SphericalSurface):
+        v0, v1 = max(v0, -0.5 * math.pi), min(v1, 0.5 * math.pi)
+    if isinstance(basis, Geom_ConicalSurface) and bounds[2] >= 0.0:
+        v0 = max(v0, 0.0)  # not past the apex onto the other nappe
+    if not _is_analytic(basis):
+        lo_u, hi_u, lo_v, hi_v = basis.Bounds()
+        u0, u1, v0, v1 = max(u0, lo_u), min(u1, hi_u), max(v0, lo_v), min(v1, hi_v)
+    return BRepBuilderAPI_MakeFace(basis, u0, u1, v0, v1, 1e-7).Face()
 
 
-def _extend_freeform(surface: Any, bounds: tuple[float, float, float, float], distance: float, sides: tuple[str, ...]) -> object:
+def _extend_freeform(surface: Any, bounds: tuple[float, float, float, float], distances: dict[str, float]) -> object:
+    """A freeform face grown past the given sides by their distances: inside, the surface
+    itself; outside, straight on along its unit tangents (G1), refitted as one B-spline."""
+
     from OCP.gp import gp_Pnt, gp_Vec
 
     from openretop.fitting.bspline_surface import fit_grid_surface
@@ -376,43 +467,43 @@ def _extend_freeform(surface: Any, bounds: tuple[float, float, float, float], di
     length_u = max(du_vec.Magnitude() * (u1 - u0), 1e-9)
     length_v = max(dv_vec.Magnitude() * (v1 - v0), 1e-9)
 
-    def steps(length: float, before: bool, after: bool) -> tuple[np.ndarray, np.ndarray]:
-        """Fractions (0..1 across the face, beyond it per unit of ``distance``) and their
-        approximate world positions, sampled about evenly in world units."""
+    def steps(length: float, before: float, after: float) -> tuple[np.ndarray, np.ndarray]:
+        """Fractions (0..1 across the face; below 0 and above 1, per unit of the distance past
+        that side) and their approximate world positions, sampled about evenly in world units."""
 
         inside = 36
-        outside = max(3, int(round(inside * distance / length)))
         fractions = [np.linspace(0.0, 1.0, inside)]
         world = [fractions[0] * length]
-        if before:
-            extra = np.linspace(-1.0, 0.0, outside + 1)[:-1]
+        if before > 0:
+            extra = np.linspace(-1.0, 0.0, max(3, int(round(inside * before / length))) + 1)[:-1]
             fractions.insert(0, extra)
-            world.insert(0, extra * distance)
-        if after:
-            extra = np.linspace(1.0, 2.0, outside + 1)[1:]
+            world.insert(0, extra * before)
+        if after > 0:
+            extra = np.linspace(1.0, 2.0, max(3, int(round(inside * after / length))) + 1)[1:]
             fractions.append(extra)
-            world.append(length + (extra - 1.0) * distance)
+            world.append(length + (extra - 1.0) * after)
         return np.concatenate(fractions), np.concatenate(world)
 
-    steps_u, world_u = steps(length_u, "u0" in sides, "u1" in sides)
-    steps_v, world_v = steps(length_v, "v0" in sides, "v1" in sides)
+    before_u, after_u = distances.get("u0", 0.0), distances.get("u1", 0.0)
+    before_v, after_v = distances.get("v0", 0.0), distances.get("v1", 0.0)
+    steps_u, world_u = steps(length_u, before_u, after_u)
+    steps_v, world_v = steps(length_v, before_v, after_v)
     grid = np.zeros((len(steps_u), len(steps_v), 3))
     for i, su in enumerate(steps_u):
         for j, sv in enumerate(steps_v):
-            # inside: the surface itself; outside: straight on along its unit tangents (G1).
             # A cubic end span continued past its edge curls away within a few millimetres,
             # and a fixed parameter step overshoots where the surface is parameterized fast.
             cu = u0 + min(max(float(su), 0.0), 1.0) * (u1 - u0)
             cv = v0 + min(max(float(sv), 0.0), 1.0) * (v1 - v0)
-            past_u = (su - 1.0 if su > 1.0 else su if su < 0.0 else 0.0) * distance
-            past_v = (sv - 1.0 if sv > 1.0 else sv if sv < 0.0 else 0.0) * distance
+            past_u = (su - 1.0) * after_u if su > 1.0 else su * before_u if su < 0.0 else 0.0
+            past_v = (sv - 1.0) * after_v if sv > 1.0 else sv * before_v if sv < 0.0 else 0.0
             surface.D1(cu, cv, point, du_vec, dv_vec)
             tu = np.array(du_vec.Coord()) / max(du_vec.Magnitude(), 1e-12)
             tv = np.array(dv_vec.Coord()) / max(dv_vec.Magnitude(), 1e-12)
             grid[i, j] = np.array(point.Coord()) + past_u * tu + past_v * tv
     poles_u, poles_v = _pole_counts(surface)
-    grown_u = int(1.5 * poles_u) + int(np.ceil(poles_u * distance / length_u)) * (("u0" in sides) + ("u1" in sides))
-    grown_v = int(1.5 * poles_v) + int(np.ceil(poles_v * distance / length_v)) * (("v0" in sides) + ("v1" in sides))
+    grown_u = int(1.5 * poles_u) + sum(int(np.ceil(poles_u * d / length_u)) for d in (before_u, after_u) if d > 0)
+    grown_v = int(1.5 * poles_v) + sum(int(np.ceil(poles_v * d / length_v)) for d in (before_v, after_v) if d > 0)
     fit = fit_grid_surface(grid, world_u, world_v, control_u=min(grown_u, 48), control_v=min(grown_v, 48), smoothness=0.0)
     return bspline_face(fit)
 

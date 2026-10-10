@@ -430,6 +430,9 @@ class WorkflowService:
             return modeling.sketch2d_construction()
         if action == "model.sketch2d_finish":
             return modeling.sketch2d_finish()
+        if action == "model.resize":
+            changes = payload.get("changes") or {}
+            return modeling.resize_surface(str(payload.get("entity", "")), dict(changes))  # type: ignore[arg-type]
         if action == "model.edit_feature":
             changes = {key: value for key, value in payload.items() if key != "feature"}
             return modeling.edit_feature(str(payload.get("feature", "")), **changes)
