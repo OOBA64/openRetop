@@ -388,7 +388,8 @@ class ModelingController(ControllerBase):
             return CommandResult.failure("Select an area of the scan first: click it, or brush over it.")
         points, triangles, normals = self._selected_scan_data(selection.mask)
         if len(points) < 12:
-            return CommandResult.failure("The selected area is too small to fit.")
+            message = "The selected area is too small to fit: select more of the face (Ctrl+click adds), or paint a narrow face with Brush."
+            return CommandResult.failure(message, status=message)
         options = session.fit
         reply = self.worker.call(
             "fit_surface",
@@ -1735,6 +1736,7 @@ class ModelingController(ControllerBase):
             self.state.model.set_visible(source_id, False)
         for entity in new_entities:
             self.state.model.add(entity)
+        self.state.model.selected_ids = [entity.id for entity in new_entities]  # the result is what you work on next
         session.trim_pieces = None
         return self._changed("Trim Surfaces", before, status)
 
@@ -1830,9 +1832,18 @@ class ModelingController(ControllerBase):
         self.state.model.revision += 1
         return self._changed("Rename", before, f"Renamed to {entity.name}")
 
+    def export_targets(self) -> list[ModelEntity]:
+        """What Export writes: the visible selected items, else everything visible."""
+
+        model = self.state.model
+        selected = [entity for entity in (model.get(value) for value in model.selected_ids) if entity is not None and entity.visible]
+        return selected or model.visible()
+
     def export(self, path: str, *, file_format: str = "step", entity_ids: tuple[str, ...] | None = None) -> CommandResult:
-        ids = entity_ids or tuple(self.state.model.selected_ids) or tuple(entity.id for entity in self.state.model.visible())
-        targets = [entity for entity in (self.state.model.get(value) for value in ids) if entity is not None]
+        if entity_ids:
+            targets = [entity for entity in (self.state.model.get(value) for value in entity_ids) if entity is not None]
+        else:
+            targets = self.export_targets()
         if not targets:
             return CommandResult.failure("There is nothing to export yet.")
         reply = self.worker.call(
@@ -1844,8 +1855,9 @@ class ModelingController(ControllerBase):
         warnings: tuple[str, ...] = ()
         if info["faces_back"] != info["faces"]:
             warnings = (f"The file reads back with {info['faces_back']} faces instead of {info['faces']}.",)
+        names = ", ".join(entity.name for entity in targets[:4]) + (f" and {len(targets) - 4} more" if len(targets) > 4 else "")
         return CommandResult.ok(
-            status=f"Exported {len(targets)} item(s), {info['faces']} faces, in {self.state.units}, to {path}", warnings=warnings
+            status=f"Exported {names} ({info['faces']} faces, {self.state.units}) to {path}", warnings=warnings
         )
 
     # -- Surface Sketch -------------------------------------------------------------------------------

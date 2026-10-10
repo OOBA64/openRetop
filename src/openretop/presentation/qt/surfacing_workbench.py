@@ -1665,9 +1665,11 @@ class SurfacingWorkbenchMixin:
         if not model.entities:
             self._report_error("Nothing to export", "Fit or build surfaces first (Surfacing toolbar).")  # type: ignore[attr-defined]
             return False
+        targets = self.modeling.export_targets()
+        names = ", ".join(entity.name for entity in targets[:3]) + (f" +{len(targets) - 3}" if len(targets) > 3 else "")
         path, chosen = QFileDialog.getSaveFileName(
             self,  # type: ignore[arg-type]
-            "Export Model",
+            f"Export {names}",
             "",
             "STEP files (*.step *.stp);;IGES files (*.iges *.igs)",
         )

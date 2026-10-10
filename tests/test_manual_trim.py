@@ -94,6 +94,10 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(len(visible), 1)
         self.assertAlmostEqual(visible[0].stats["area"], 150.0, places=4)
         self.assertFalse(model.get(self.plane.id).visible)  # type: ignore[union-attr]  # kept, hidden: trim again later
+        # the result is selected, the hidden source is not, and Export takes the result (it once
+        # exported the hidden, still selected source)
+        self.assertEqual(model.selected_ids, [visible[0].id])
+        self.assertEqual([entity.id for entity in self.modeling.export_targets()], [visible[0].id])
         self.dispatch("edit.undo")
         self.assertEqual([entity.id for entity in model.entities], [self.plane.id])
 

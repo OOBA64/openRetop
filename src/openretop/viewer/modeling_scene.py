@@ -207,7 +207,7 @@ def modeling_items(
                 vertices=piece["vertices"],
                 triangles=piece["triangles"],
                 role="piece_keep" if keep else "piece_drop",
-                style=DisplayStyleSnapshot(color=color, opacity=1.0 if keep else 0.45),
+                style=DisplayStyleSnapshot(color=color, opacity=1.0 if keep else 0.25),
             )
         )
         edges.append(

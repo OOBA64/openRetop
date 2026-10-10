@@ -156,6 +156,8 @@ class ModelDocument:
         if entity is None or entity.visible == visible:
             return False
         entity.visible = visible
+        if not visible:  # what cannot be seen is not selected (an export of "the selection" took hidden items)
+            self.selected_ids = [value for value in self.selected_ids if value != entity_id]
         self.revision += 1
         return True
 
