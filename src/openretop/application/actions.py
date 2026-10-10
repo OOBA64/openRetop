@@ -572,7 +572,7 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("model.fill_clear", "Clear Fill Boundary", "Surfacing", "clear_fill_boundary", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.fill_continuity", "Set Fill Side Continuity", "Surfacing", "set_fill_continuity", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
     _workflow_action("model.extend_apply", "Extend Selected Surfaces", "Surfacing", "extend_selected_surfaces", enabled_when=(ActionCondition.HAS_MODEL_SELECTION, ActionCondition.NOT_BUSY)),
-    _workflow_action("model.trim_compute", "Automatic Trim", "Surfacing", "trim_compute", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.trim_compute", "Split Surfaces", "Surfacing", "trim_compute", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.trim_apply", "Apply Trim", "Surfacing", "trim_apply", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
     _workflow_action("model.compare_apply", "Compute Deviation", "Surfacing", "compare_model", enabled_when=(ActionCondition.HAS_MESH, ActionCondition.HAS_MODEL, ActionCondition.NOT_BUSY)),
     _workflow_action("model.compare_clear", "Clear Deviation Map", "Surfacing", "clear_deviation", enabled_when=_ALWAYS),

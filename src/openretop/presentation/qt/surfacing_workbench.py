@@ -750,6 +750,18 @@ class SurfacingWorkbenchMixin:
         self._drag_moved = False
         return node is not None
 
+    def _near_first_point(self, session: Any, x_position: int, y_position: int) -> bool:
+        """Whether the pointer is on the first point of the curve being drawn (on screen)."""
+
+        first = np.asarray(session.sketch_points[0][1], dtype=float).reshape(1, 3)
+        try:
+            projected = np.asarray(self.viewport.project_points(first), dtype=float).reshape(-1)
+        except Exception:  # viewport not ready
+            return False
+        if projected.size < 2 or not np.all(np.isfinite(projected[:2])):
+            return False
+        return float(np.hypot(projected[0] - x_position, projected[1] - y_position)) <= SNAP_PIXELS
+
     def _sketch_node_at(self, x_position: int, y_position: int) -> str | None:
         nodes = self.composition.state.model.sketch.nodes
         if not nodes:
@@ -987,6 +999,11 @@ class SurfacingWorkbenchMixin:
             return
         session.drag_node = None
         self._dragging = self._drag_moved = False
+        if len(session.sketch_points) >= 3 and self._near_first_point(session, x_position, y_position):
+            # back on the curve's first point: close it (the first point is not a sketch point
+            # yet, so the snapping below never saw it and a fresh curve could not be closed)
+            self._apply_model_result("model.sketch_close", self.modeling.sketch_finish(close=True))
+            return
         node = self._sketch_node_at(x_position, y_position)
         if node is not None:
             from PySide6.QtWidgets import QApplication
