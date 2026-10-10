@@ -22,6 +22,8 @@ from openretop.application.controller_support import CallbackUndoPayload, Contro
 from openretop.application.events import EventPublisher
 from openretop.application.regeneration import regenerate, replace_entity
 from openretop.application.results import CommandResult
+from openretop.application.sketch_mode import PLANES as SKETCH_PLANES
+from openretop.application.sketch_mode import SketchMode
 from openretop.application.state import AppState
 from openretop.cad_kernel.worker import KernelReply, KernelWorker
 from openretop.modeling import (
@@ -35,13 +37,9 @@ from openretop.modeling import (
 from openretop.modeling.profile2d import Profile2D, auto_tolerance, fit_profile
 from openretop.modeling.sketch import MeshProjector, boundary_loop, curve_on_mesh, loop_polylines, region_inside
 
-TOOLS = ("sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+TOOLS = ("sketch", "plane_sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
 EXTRUDE_MODES = ("new", "add", "cut")
-SECTION_PLANES = {  # name: (in-plane u, in-plane v, the world axis the offset runs along)
-    "XY": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-    "YZ": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
-    "XZ": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
-}
+SECTION_PLANES = SKETCH_PLANES  # name: (in-plane u, in-plane v, the world axis the offset runs along)
 TOOL_TITLES = {
     "fit_surface": "Fit Surface",
     "loft": "Loft",
@@ -50,6 +48,7 @@ TOOL_TITLES = {
     "trim": "Trim Surfaces",
     "compare": "Compare",
     "sketch": "Surface Sketch",
+    "plane_sketch": "3D Sketch",
     "section": "Section Sketch",
     "extrude": "Extrude",
 }
@@ -121,6 +120,11 @@ class ToolSession:
     extrude_draft: float = 0.0
     extrude_auto: bool = True
     extrude_holes: dict[int, tuple[float, float]] = field(default_factory=dict)  # loop -> measured range
+    extrude_regions: list[str] = field(default_factory=list)  # a 3D Sketch's picked regions (none: all)
+    # 3D Sketch (Solid): the constrained sketch being drawn, and the scan's cut on its plane
+    sketch2d: SketchMode | None = None
+    sketch2d_reference: list[np.ndarray] = field(default_factory=list)
+    sketch2d_reference_key: tuple[Any, ...] | None = None
 
 
 @dataclass
@@ -232,11 +236,15 @@ class ModelingController(ControllerBase):
             else:
                 self.session.section_offset = self._scan_center(self.session.section_plane)
             self.section_cut()  # the section shows as soon as the tool opens
+        if tool == "plane_sketch":
+            plane = previous.sketch2d.plane if previous is not None and previous.sketch2d is not None else "XY"
+            self.session.sketch2d = SketchMode(plane=plane, offset=self._scan_center(plane))
+            self._sketch2d_reference()
         if tool == "extrude":
             profile = self._extrude_profile_entity()
             if profile is None:
                 self.session = previous
-                return CommandResult.failure("Make a sketch first (Section Sketch), then Extrude it.")
+                return CommandResult.failure("Make a sketch first (3D Sketch or Section Sketch), then Extrude it.")
             self.session.extrude_profile = profile.id
             bodies = [entity for entity in self.state.model.entities if entity.kind == "solid"]
             selected = [entity for entity in bodies if entity.id in self.state.model.selected_ids]
@@ -254,6 +262,7 @@ class ModelingController(ControllerBase):
             "compare": "Compare colours the scan by its distance to the model.",
             "sketch": "Click points on the scan; Enter finishes a curve, clicking its first point closes it. Click a point to edit it; double-click a curve to add a point.",
             "section": "Pick a plane (click the scan to move it there), then Fit Profile and Create.",
+            "plane_sketch": "Draw lines, rectangles, circles and arcs on the plane; constrain and dimension them; Finish Sketch.",
             "extrude": "Extrude the sketch: the depth comes from the scan; adjust it, choose new / add / cut, then Create.",
         }
         return CommandResult.ok(status=f"{TOOL_TITLES[tool]}: {hints[tool]}", changed=True, metadata={"tool": tool})
@@ -646,6 +655,8 @@ class ModelingController(ControllerBase):
         entity = next((item for item in candidates if item is not None and item.kind == "profile"), None)
         if entity is None:
             return CommandResult.failure("Select a sketch (in the tree) to edit.")
+        if "sketch2d" in entity.params:
+            return self.sketch2d_edit(entity.id)
         started = self.start("section")
         if not started.success:
             return started
@@ -848,7 +859,7 @@ class ModelingController(ControllerBase):
         points, normals = self._world_scan_points(MAX_KERNEL_SCAN_POINTS)
         spacing = self._scan_spacing()
         tolerance = float(profile.params.get("tolerance", 0.05))
-        depths = loop_depths(points, normals, profile.params["frame"], profile.params["loops"], band=max(4.0 * tolerance, 0.5 * spacing), step=spacing)
+        depths = loop_depths(points, normals, profile.params["frame"], self._extrude_loops(profile), band=max(4.0 * tolerance, 0.5 * spacing), step=spacing)
         outer = [depth for depth in depths if depth.found and depth.depth % 2 == 0]
         if not outer:
             session.extrude_holes = {}
@@ -873,7 +884,7 @@ class ModelingController(ControllerBase):
             return []
         low, high = -session.extrude_back, session.extrude_front
         ranges = []
-        for index, _loop in enumerate(profile.params.get("loops", [])):
+        for index, _loop in enumerate(self._extrude_loops(profile)):
             hole = session.extrude_holes.get(index) if session.extrude_auto else None
             ranges.append((max(low, hole[0]), min(high, hole[1])) if hole is not None else (low, high))
         return ranges
@@ -890,10 +901,13 @@ class ModelingController(ControllerBase):
         target = self.state.model.get(session.extrude_target) if session.extrude_mode != "new" else None
         if session.extrude_mode != "new" and target is None:
             return CommandResult.failure("Add and Cut need a body: make one first (New body), or pick one in the tree.")
+        loops = self._extrude_loops(profile)
+        if not loops:
+            return CommandResult.failure("The picked region is gone from the sketch: pick again.")
         return self.worker.call(
             "extrude",
             profile.params["frame"],
-            profile.params["loops"],
+            loops,
             self.extrude_ranges(),
             draft=session.extrude_draft,
             mode=session.extrude_mode,
@@ -960,6 +974,7 @@ class ModelingController(ControllerBase):
                 "draft": float(session.extrude_draft),
                 "auto": bool(session.extrude_auto),
                 "holes": {str(index): [float(low), float(high)] for index, (low, high) in session.extrude_holes.items()},
+                "regions": list(session.extrude_regions),
             },
             result=reply.value,
         )
@@ -972,6 +987,338 @@ class ModelingController(ControllerBase):
         session.extrude_mode = "add"  # a further sketch most likely adds to (or cuts) this body
         verb = {"new": "Created", "add": "Added to", "cut": "Cut from"}[mode]
         return self._changed("Extrude", before, f"{verb} {entity.name}: volume {reply.value['volume']:.1f} {self.state.units}^3")
+
+    def _extrude_loops(self, profile: ModelEntity) -> list[dict[str, Any]]:
+        """The loops an extrude takes: all of the sketch, or a 3D Sketch's picked regions."""
+
+        session = self.session
+        regions = [] if session is None else session.extrude_regions
+        if not regions or "sketch2d" not in profile.params:
+            return list(profile.params.get("loops", []))
+        from openretop.modeling.sketch2d import Sketch2D
+        from openretop.modeling.sketch_profiles import find_profiles
+
+        return find_profiles(Sketch2D.from_dict(profile.params["sketch2d"])).loops_for(regions) or []
+
+    def extrude_pick_region(self, world_point: object) -> CommandResult:
+        """A click on a 3D Sketch's plane during Extrude: add or remove the region there
+        (none picked: the whole sketch extrudes)."""
+
+        session = self._session_for("extrude")
+        if isinstance(session, CommandResult):
+            return session
+        profile = self.state.model.get(session.extrude_profile)
+        if profile is None or "sketch2d" not in profile.params:
+            return CommandResult.ok(status="This sketch extrudes whole (pick regions in a 3D Sketch).")
+        from openretop.cad_kernel.profiles import PlaneFrame
+        from openretop.modeling.sketch2d import Sketch2D
+        from openretop.modeling.sketch_profiles import find_profiles
+
+        frame = PlaneFrame.from_dict(profile.params["frame"])
+        point = frame.to_plane(world_point)[0]
+        region = find_profiles(Sketch2D.from_dict(profile.params["sketch2d"])).region_at(point)
+        if region is None:
+            return CommandResult.ok(status="No closed region there.")
+        if region.key in session.extrude_regions:
+            session.extrude_regions.remove(region.key)
+        else:
+            session.extrude_regions.append(region.key)
+        session.extrude_holes = {}  # measured for the loops as they were
+        session.preview = None
+        picked = len(session.extrude_regions)
+        self.extrude_preview()
+        return CommandResult.ok(status=f"{picked} region(s) picked" if picked else "All regions (none picked)", changed=True)
+
+    def extrude_region_outlines(self) -> list[np.ndarray]:
+        """The picked regions' outlines (world), to show them."""
+
+        session = self.session
+        profile = None if session is None else self.state.model.get(session.extrude_profile)
+        if session is None or profile is None or not session.extrude_regions or "sketch2d" not in profile.params:
+            return []
+        from openretop.cad_kernel.profiles import PlaneFrame
+        from openretop.modeling.sketch2d import Sketch2D
+        from openretop.modeling.sketch_profiles import find_profiles
+
+        frame = PlaneFrame.from_dict(profile.params["frame"])
+        profiles = find_profiles(Sketch2D.from_dict(profile.params["sketch2d"]))
+        outlines = []
+        for key in session.extrude_regions:
+            region = profiles.region(key)
+            if region is not None:
+                outlines.append(frame.to_world(region.outer.polyline(24)))
+        return outlines
+
+    # -- 3D Sketch (P-03) ------------------------------------------------------------------------
+
+    def _sketch2d(self) -> SketchMode | CommandResult:
+        session = self._session_for("plane_sketch")
+        if isinstance(session, CommandResult):
+            return session
+        assert session.sketch2d is not None
+        return session.sketch2d
+
+    def _sketch2d_change(self, name: str, change: Any) -> CommandResult:
+        """Run ``change(mode)`` (returns a status, or a SolveReport) as one undo step of the tool."""
+
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        before = mode.sketch.to_dict()
+        outcome = change(mode)
+        if hasattr(outcome, "ok"):
+            if not outcome.ok:
+                return CommandResult.failure(outcome.message, status=outcome.message)
+            status = outcome.message
+        else:
+            status = str(outcome)
+        after = mode.sketch.to_dict()
+        if after == before:
+            return CommandResult.ok(status=status, changed=True)
+        from openretop.modeling.sketch2d import Sketch2D
+
+        def restore(data: dict[str, Any]) -> None:
+            session = self.session
+            if session is not None and session.tool == "plane_sketch" and session.sketch2d is not None:
+                session.sketch2d.sketch = Sketch2D.from_dict(data)
+                session.sketch2d.end_shape()
+                session.sketch2d.selected.clear()
+
+        payload = CallbackUndoPayload(name, undo_action=lambda: restore(before), redo_action=lambda: restore(after))
+        dof = mode.sketch.dof()
+        defined = "fully defined" if dof == 0 else f"{dof} degree(s) of freedom"
+        return CommandResult.ok(status=f"{status} - {defined}", changed=True, undo_payload=payload)
+
+    def _sketch2d_reference(self) -> None:
+        """The scan's cut on the sketch plane, shown to draw over (cached per plane)."""
+
+        session = self.session
+        if session is None or session.sketch2d is None or self.state.mesh_object is None:
+            return
+        from openretop.geometry.sections import extract_section_by_plane
+
+        mode = session.sketch2d
+        source = self.transform.transformed_source_mesh()
+        key = (mode.plane, round(mode.offset, 9), id(source.vertices), len(source.vertices))
+        if session.sketch2d_reference_key == key:
+            return
+        axis = np.asarray(SKETCH_PLANES[mode.plane][2])
+        section = extract_section_by_plane(source, axis * mode.offset, axis)
+        session.sketch2d_reference = [np.asarray(poly.points, dtype=float) for poly in section.polylines if poly.point_count >= 2]
+        session.sketch2d_reference_key = key
+
+    def sketch2d_set_plane(self, plane: str, *, offset: float | None = None) -> CommandResult:
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        if plane not in SKETCH_PLANES:
+            return CommandResult.failure(f"Unknown plane: {plane}")
+        if plane != mode.plane and mode.sketch.curves:
+            return CommandResult.failure("The sketch has geometry on this plane: finish it, or start a new 3D Sketch for another plane.")
+        if plane != mode.plane and offset is None:
+            offset = self._scan_center(plane)
+        mode.plane = plane
+        if offset is not None:
+            mode.offset = float(offset)
+        self._sketch2d_reference()
+        units = self.state.units
+        return CommandResult.ok(status=f"3D Sketch on {plane} at {mode.offset:.3f} {units}", changed=True)
+
+    def sketch2d_tool(self, tool: str) -> CommandResult:
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        try:
+            mode.set_tool(tool)
+        except ValueError as error:
+            return CommandResult.failure(str(error))
+        hints = {
+            "select": "Select: click points and curves (Ctrl adds); drag a point to move it.",
+            "line": "Line: click points; click the first one to close; Enter ends.",
+            "rectangle": "Rectangle: click two opposite corners.",
+            "circle": "Circle: click the centre, then a point on it.",
+            "arc": "Arc: click the centre, the start, then the end (counter-clockwise).",
+        }
+        return CommandResult.ok(status=hints[tool], changed=True)
+
+    def sketch2d_click(self, world_point: object, *, snap: float, add: bool = False) -> CommandResult:
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        xy = mode.to_plane(world_point)
+        if mode.tool == "select":
+            status = mode.click(xy, snap, add=add)
+            return CommandResult.ok(status=status, changed=True)
+        return self._sketch2d_change(f"Sketch {mode.tool.title()}", lambda m: m.click(xy, snap, add=add))
+
+    def sketch2d_hover(self, world_point: object | None) -> CommandResult:
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        mode.hover = None if world_point is None else mode.to_plane(world_point)
+        return CommandResult.ok(changed=bool(mode.pending))
+
+    def sketch2d_end_shape(self) -> CommandResult:
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        drawing = bool(mode.pending)
+        mode.end_shape()
+        return CommandResult.ok(status="Shape ended" if drawing else "", changed=drawing)
+
+    def sketch2d_drag(self, point_id: str, world_point: object, *, before: dict[str, Any] | None = None) -> CommandResult:
+        """Drag a point (live); with ``before`` (the sketch when the drag began) the drag
+        ends and becomes one undo step."""
+
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        if point_id not in mode.sketch.points:
+            return CommandResult.failure("That point is gone.")
+        report = mode.drag(point_id, mode.to_plane(world_point))
+        if before is None:
+            return CommandResult.ok(changed=True)
+        from openretop.modeling.sketch2d import Sketch2D
+
+        after = mode.sketch.to_dict()
+
+        def restore(data: dict[str, Any]) -> None:
+            session = self.session
+            if session is not None and session.tool == "plane_sketch" and session.sketch2d is not None:
+                session.sketch2d.sketch = Sketch2D.from_dict(data)
+
+        payload = CallbackUndoPayload("Drag Sketch Point", undo_action=lambda: restore(before), redo_action=lambda: restore(after))
+        return CommandResult.ok(status="Moved" if report.ok else "That point is held where it is", changed=True, undo_payload=payload)
+
+    def sketch2d_select(self, ids: list[str]) -> CommandResult:
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        mode.select(ids)
+        return CommandResult.ok(status=f"{len(mode.selected)} selected", changed=True)
+
+    def sketch2d_constrain(self, kind: str) -> CommandResult:
+        return self._sketch2d_change(kind.replace("_", " ").title(), lambda m: m.constrain(kind))
+
+    def sketch2d_dimension(self, value: float | None = None, kind: str | None = None) -> CommandResult:
+        return self._sketch2d_change("Dimension", lambda m: m.dimension(value, kind))
+
+    def sketch2d_set_dimension(self, constraint_id: str, value: float) -> CommandResult:
+        return self._sketch2d_change("Change Dimension", lambda m: m.set_dimension(constraint_id, value))
+
+    def sketch2d_delete_constraint(self, constraint_id: str) -> CommandResult:
+        def change(mode: SketchMode) -> str:
+            mode.delete_constraint(constraint_id)
+            return "Constraint deleted"
+
+        return self._sketch2d_change("Delete Constraint", change)
+
+    def sketch2d_delete(self) -> CommandResult:
+        def change(mode: SketchMode) -> str:
+            count = mode.delete_selected()
+            return f"Deleted {count} item(s)" if count else "Select points or curves to delete"
+
+        return self._sketch2d_change("Delete Sketch Items", change)
+
+    def sketch2d_construction(self) -> CommandResult:
+        def change(mode: SketchMode) -> str:
+            count = mode.toggle_construction()
+            return f"{count} curve(s) switched construction / normal" if count else "Select curves first"
+
+        return self._sketch2d_change("Construction", change)
+
+    def sketch2d_finish(self) -> CommandResult:
+        """Keep the sketch: a profile (its regions as faces, open curves as wires) and a
+        history feature. Editing a sketch updates it and rebuilds what was made from it."""
+
+        mode = self._sketch2d()
+        if isinstance(mode, CommandResult):
+            return mode
+        from openretop.modeling.sketch_profiles import find_profiles
+
+        mode.end_shape()
+        loops = find_profiles(mode.sketch).all_loops()
+        if not loops:
+            message = "Draw something first (or close the tool to leave without a sketch)."
+            return CommandResult.failure(message, status=message)
+        frame = mode.frame()
+        reply = self.worker.call("profile", frame, loops, rms=0.0, max_error=0.0)
+        if not reply.ok:
+            return _kernel_failure("Sketch failed", reply)
+        params = {
+            "plane": mode.plane,
+            "offset": mode.offset,
+            "frame": frame,
+            "loops": loops,
+            "tolerance": 0.05,
+            "rms": 0.0,
+            "max_error": 0.0,
+            "sketch2d": mode.sketch.to_dict(),
+        }
+        model = self.state.model
+        editing = model.get(mode.editing) if mode.editing else None
+        self.session = None  # the tool closes, as Fusion's Finish Sketch
+        if editing is None:
+            entity = entity_from_result(model, reply.value, tool="sketch2d", params=params, name=model.next_name("3D Sketch"))
+            added = self._add_entities([entity], name="3D Sketch")
+            if added.success:
+                model.timeline.add("sketch", entity.id, params, result=reply.value)
+            return added
+        before = model.snapshot()
+        replace_entity(model, editing.id, reply.value, tool="sketch2d", params=params)
+        model.selected_ids = [editing.id]
+        feature = model.timeline.maker(editing.id)
+        if feature is None:
+            model.timeline.add("sketch", editing.id, params, result=reply.value)
+            return self._changed("Edit 3D Sketch", before, f"Updated {editing.name}")
+        feature.inputs = dict(params)
+        feature.result = reply.value
+        feature.status, feature.message = "ok", ""
+        later = model.timeline.features[model.timeline.index(feature.id) + 1 :]
+        if not any(feature.id in item.reads() for item in later):
+            model.revision += 1
+            return self._changed("Edit 3D Sketch", before, f"Updated {editing.name}")
+        report = regenerate(model, self.worker, later[0].id)
+        return self._changed("Edit 3D Sketch", before, f"Updated {editing.name}. {report.summary()}")
+
+    def sketch2d_edit(self, entity_id: str) -> CommandResult:
+        """Reopen a finished 3D Sketch for editing."""
+
+        entity = self.state.model.get(entity_id)
+        if entity is None or "sketch2d" not in entity.params:
+            return CommandResult.failure("Select a 3D Sketch to edit.")
+        started = self.start("plane_sketch")
+        if not started.success:
+            return started
+        session = self.session
+        assert session is not None and session.sketch2d is not None
+        from openretop.modeling.sketch2d import Sketch2D
+
+        params = entity.params
+        session.sketch2d = SketchMode(Sketch2D.from_dict(params["sketch2d"]), str(params.get("plane", "XY")), float(params.get("offset", 0.0)))
+        session.sketch2d.editing = entity.id
+        session.sketch2d.tool = "select"
+        self._sketch2d_reference()
+        return CommandResult.ok(status=f"Editing {entity.name}: change dimensions, drag points, draw more; Finish Sketch updates it.", changed=True)
+
+    def sketch2d_view_world(self) -> dict[str, Any] | None:
+        """The sketch as the viewport draws it: polylines and points in world coordinates."""
+
+        session = self.session
+        if session is None or session.tool != "plane_sketch" or session.sketch2d is None:
+            return None
+        mode = session.sketch2d
+        view = mode.view()
+        for curve in view["curves"]:
+            curve["world"] = mode.to_world(curve["points"])
+        for point in view["points"]:
+            point["world"] = mode.to_world(point["xy"])[0]
+        for label in view["labels"]:
+            label["world"] = mode.to_world(label["xy"])[0]
+        view["preview_world"] = None if view["preview"] is None else mode.to_world(view["preview"])
+        view["reference"] = list(session.sketch2d_reference)
+        view["frame"] = mode.frame()
+        return view
 
     # -- history (P-01) ------------------------------------------------------------------------
 

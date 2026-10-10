@@ -270,7 +270,10 @@ class Sketch2D:
         self.constraints = [item for item in self.constraints if item.id != constraint_id]
 
     def constraint(self, constraint_id: str) -> Constraint:
-        return next(item for item in self.constraints if item.id == constraint_id)
+        found = next((item for item in self.constraints if item.id == constraint_id), None)
+        if found is None:
+            raise KeyError(f"no constraint {constraint_id or '(none given)'}")
+        return found
 
     def measure(self, constraint: Constraint) -> float:
         """The current value of a dimension (degrees for angles)."""

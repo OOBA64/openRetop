@@ -103,6 +103,14 @@ def _run(feature: Feature, timeline: Any, bodies: dict[str, dict[str, Any]], wor
         if mode != "new" and target is None:
             return False, None, "there is no body to add to or cut from"
         loops = sketch.inputs["loops"]
+        if inputs.get("regions") and "sketch2d" in sketch.inputs:
+            from openretop.modeling.sketch2d import Sketch2D
+            from openretop.modeling.sketch_profiles import find_profiles
+
+            picked = find_profiles(Sketch2D.from_dict(sketch.inputs["sketch2d"])).loops_for(list(inputs["regions"]))
+            if picked is None:
+                return False, None, "a region it extruded is no longer closed in the sketch"
+            loops = picked
         reply = worker.call(
             "extrude",
             sketch.inputs["frame"],
@@ -121,7 +129,8 @@ def _write_entities(model: ModelDocument, replayed: list[Feature], bodies: dict[
 
     for feature in replayed:
         if feature.kind == "sketch" and feature.result is not None:
-            replace_entity(model, feature.entity, feature.result, tool="section", params=feature.inputs)
+            tool = "sketch2d" if "sketch2d" in feature.inputs else "section"
+            replace_entity(model, feature.entity, feature.result, tool=tool, params=feature.inputs)
     for body_id in dict.fromkeys(feature.entity for feature in replayed if feature.kind != "sketch"):
         state = bodies.get(body_id)
         if state is not None:

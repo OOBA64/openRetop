@@ -345,6 +345,7 @@ class WorkflowService:
         starts = {
             "model.sketch": "sketch",
             "model.section_sketch": "section",
+            "model.plane_sketch": "plane_sketch",
             "model.extrude": "extrude",
             "model.fit_surface": "fit_surface",
             "model.loft": "loft",
@@ -407,6 +408,27 @@ class WorkflowService:
             return modeling.section_edit(str(payload.get("operation", "")), None if value is None else float(value))  # type: ignore[arg-type]
         if action == "model.section_fit":
             return modeling.section_fit()
+        if action == "model.sketch2d_tool":
+            return modeling.sketch2d_tool(str(payload.get("tool", "")))
+        if action == "model.sketch2d_plane":
+            offset = payload.get("offset")
+            return modeling.sketch2d_set_plane(str(payload.get("plane", "XY")), offset=None if offset is None else float(offset))  # type: ignore[arg-type]
+        if action == "model.sketch2d_constrain":
+            return modeling.sketch2d_constrain(str(payload.get("kind", "")))
+        if action == "model.sketch2d_dimension":
+            value = payload.get("value")
+            kind = payload.get("kind")
+            return modeling.sketch2d_dimension(None if value is None else float(value), None if kind is None else str(kind))  # type: ignore[arg-type]
+        if action == "model.sketch2d_set_dimension":
+            return modeling.sketch2d_set_dimension(str(payload.get("constraint", "")), float(payload.get("value", 0.0)))  # type: ignore[arg-type]
+        if action == "model.sketch2d_delete_constraint":
+            return modeling.sketch2d_delete_constraint(str(payload.get("constraint", "")))
+        if action == "model.sketch2d_delete":
+            return modeling.sketch2d_delete()
+        if action == "model.sketch2d_construction":
+            return modeling.sketch2d_construction()
+        if action == "model.sketch2d_finish":
+            return modeling.sketch2d_finish()
         if action == "model.edit_feature":
             changes = {key: value for key, value in payload.items() if key != "feature"}
             return modeling.edit_feature(str(payload.get("feature", "")), **changes)

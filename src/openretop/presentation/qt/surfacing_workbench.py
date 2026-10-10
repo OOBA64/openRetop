@@ -25,7 +25,7 @@ from workbench_ui import FieldDefinition, SceneNode
 NODE_MODEL = "model_surfaces"  # the scene tree group of model surfaces and bodies (NODE_MESH is "model")
 
 SURFACING_ACTIONS = frozenset(
-    {"model.sketch", "model.section_sketch", "model.extrude", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
+    {"model.sketch", "model.plane_sketch", "model.section_sketch", "model.extrude", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
 )
 # kernel work that can take seconds: run off the UI thread
 SURFACING_HEAVY_ACTIONS = frozenset(
@@ -50,6 +50,7 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.section_edit",
         "model.edit_feature",
         "model.rebuild",
+        "model.sketch2d_finish",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of Surface Sketch curves

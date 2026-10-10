@@ -66,6 +66,13 @@ ICONS: dict[str, str] = {
         '<path d="M3 18 7.5 6H21l-4.5 12z" opacity="0.5"/>'
         '<path d="M8.5 15.5 10.5 9.5h5.2a1.6 1.6 0 0 1 1.5 2.1l-1.3 3.9z" stroke-width="2.1"/>'
     ),
+    # a constrained sketch on a plane: a rectangle, a hole and a dimension
+    "sketch_3d": (
+        '<path d="M2.5 19 6.5 7H21.5l-4 12z" opacity="0.5"/>'
+        '<path d="M8 16.5 10 10h7.5l-2 6.5z" stroke-width="1.9"/>'
+        '<circle cx="13" cy="13.2" r="1.3"/>'
+        '<path d="M9.2 5h8M9.2 3.8v2.4M17.2 3.8v2.4" stroke-width="1.3"/>'
+    ),
     # a profile pushed out into a block
     "extrude": (
         '<path d="M4 17.5 9 15h11l-5 2.5z" opacity="0.55"/>'
