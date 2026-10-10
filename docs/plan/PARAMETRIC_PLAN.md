@@ -101,6 +101,11 @@ Design
 | P-13 | Live deviation in feature dialogs | Every feature dialog shows deviation before Create |
 | P-14 | Topological naming robustness | A fillet survives an upstream sketch dimension change on B3 |
 
+Status (2026-10-09): **P-02 done** (`modeling.sketch2d`: the solver, 12 constraints, 6 dimensions,
+DOF and fully-defined; no UI yet). **P-01 done** for sketches and extrudes (`modeling.timeline`,
+`application.regeneration`; History in the scene tree, extrude inputs editable in Properties).
+Next: P-03 / P-04 / P-05, i.e. sketch mode on top of the solver and extrude from its profiles.
+
 Order: P-01 and P-02 first (everything stands on them), then P-03/P-04/P-05 together (the
 first end-to-end Fusion-style loop), then P-06, P-07, then the rest as needed by real parts.
 

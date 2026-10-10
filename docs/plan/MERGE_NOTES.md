@@ -16,5 +16,5 @@ fast-forward, no rewritten history).
 | Quality | 40 test files, no packaging | 756 tests, ruff, mypy, architecture checks, CI on Windows and Linux |
 
 Known limits: the 4 tests that need a visible desktop window are skipped in CI;
-the parametric feature timeline and constraint solver are planned in
-[PARAMETRIC_PLAN.md](PARAMETRIC_PLAN.md), not built yet.
+the parametric modelling plan is in [PARAMETRIC_PLAN.md](PARAMETRIC_PLAN.md): its first two
+milestones (the design history and the sketch constraint solver) followed the merge.
