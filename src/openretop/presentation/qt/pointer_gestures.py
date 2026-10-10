@@ -88,12 +88,9 @@ class PointerGestureState:
         distance = float(self.accumulated_distance)
         result = PointerRelease(
             had_press=start is not None,
-            is_click=(
-                start is not None
-                and self.selection_eligible
-                and not self.dragged
-                and distance <= self.drag_threshold
-            ),
+            # a press released without moving is a click whoever owns it; whether it may
+            # select scene objects is ``selection_eligible`` (a tool's clicks are its own)
+            is_click=(start is not None and not self.dragged and distance <= self.drag_threshold),
             distance=distance,
             button=self.press_button,
             active_tool_owner=self.active_tool_owner,

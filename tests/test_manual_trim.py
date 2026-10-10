@@ -182,6 +182,44 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(len(self.modeling.session.trim_pieces), 2)
         self.assertIn("2 pieces", window.surfacing_panel.trim_info.text())
 
+    def test_real_mouse_clicks_place_cut_points(self) -> None:
+        """Through the view's own press / release handling: a click in Cut Line used to be
+        taken for a drag (the tool owned the press), so no point was ever placed."""
+
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+
+        from openretop.presentation.qt.main_window import OpenRetopV3Window
+        from openretop.viewer.picking_service import SceneObjectPickResult
+
+        QApplication.instance() or QApplication([])
+        window = OpenRetopV3Window(self.composition)
+        self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
+        window._invoke_from_ui("model.trim")
+        window._dispatch_application_action("model.trim_cut")
+        viewport = window.viewport
+        spots = iter((np.array([5.0, -3.0, 0.0]), np.array([5.0, 3.0, 0.0])))
+
+        def pick(_x: int, _y: int) -> SceneObjectPickResult:
+            return SceneObjectPickResult(hit=True, object_id=f"model-face:{self.plane.id}", object_type="model_face", position=next(spots))
+
+        def mouse(kind: QEvent.Type, buttons: Qt.MouseButton) -> QMouseEvent:
+            point = QPointF(40.0, 40.0)
+            return QMouseEvent(kind, point, point, Qt.LeftButton, buttons, Qt.NoModifier)
+
+        with patch.object(viewport, "pick_scene_object", side_effect=pick), patch.object(window, "_view_direction", return_value=DOWN):
+            for _ in range(2):
+                viewport.eventFilter(viewport.interactor, mouse(QEvent.MouseButtonPress, Qt.LeftButton))
+                viewport.eventFilter(viewport.interactor, mouse(QEvent.MouseButtonRelease, Qt.NoButton))
+                self.app_events()
+        self.assertEqual(len(self.modeling.session.trim_cut), 2)
+
+    def app_events(self) -> None:
+        from PySide6.QtTest import QTest
+
+        QTest.qWait(20)  # an unclaimed click is delivered on the next event-loop turn
+
 
 if __name__ == "__main__":
     unittest.main()

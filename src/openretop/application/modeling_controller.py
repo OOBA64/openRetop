@@ -1694,6 +1694,7 @@ class ModelingController(ControllerBase):
         if not kept:
             return CommandResult.failure("No piece is kept: click pieces to keep them.")
         sources = tuple(dict.fromkeys(piece["source_id"] for piece in kept))
+        sew = sew and len(sources) > 1  # sewing joins surfaces: one trimmed surface stays a surface
         params = {
             "tolerance": session.trim_tolerance,
             "overlap": session.trim_overlap,

@@ -211,7 +211,16 @@ class SurfacingPanel(QWidget):
             self.trim_tolerance.setEnabled(not session.trim_manual)
             self.trim_overlap.setEnabled(not session.trim_manual)
             self.trim_apply.setEnabled(facts.has_pieces and not facts.busy)
-            self.trim_compute.setEnabled(not facts.busy)
+            can_split = bool(facts.extra.get("can_split", True)) if session.tool == "trim" else True
+            self.trim_compute.setEnabled(can_split and not facts.busy)
+            self.trim_compute.setToolTip(
+                "Split the surfaces by each other (and by the cut lines)."
+                if can_split
+                else "Needs two surfaces, or a cut line across one: click Cut Line and click across the surface."
+            )
+            one_surface = session.tool == "trim" and int(facts.extra.get("surfaces", 2)) < 2
+            self.sew.setEnabled(not one_surface)
+            self.sew.setText("Sew into one body (a solid when it closes)" if not one_surface else "Sew (needs two or more surfaces)")
             self.compare_tolerance.setSuffix(f" {facts.units}")
             self.compare_tolerance.setValue(float(session.fit.tolerance))
             self.compare_info.setText(facts.deviation_text)

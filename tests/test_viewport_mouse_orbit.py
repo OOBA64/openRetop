@@ -125,12 +125,17 @@ class GestureStateTests(unittest.TestCase):
 
     def test_tool_owned_left_gesture_is_never_selection_eligible(self) -> None:
         gesture = PointerGestureState(4.0)
-        gesture.press(2.0, 3.0, active_tool_owner="manual_curve")
+        gesture.press(2.0, 3.0, active_tool_owner="trim_cut")
         release = gesture.release(2.0, 3.0)
-        self.assertEqual(release.active_tool_owner, "manual_curve")
+        self.assertEqual(release.active_tool_owner, "trim_cut")
         self.assertFalse(release.native_navigation_started)
         self.assertFalse(release.selection_eligible)
-        self.assertFalse(release.is_click)
+        # still a click: the tool that owns it acts on it (a cut-line point never registered
+        # when a tool-owned click counted as a drag)
+        self.assertTrue(release.is_click)
+        gesture.press(2.0, 3.0, active_tool_owner="trim_cut")
+        gesture.motion(12.0, 3.0)
+        self.assertFalse(gesture.release(12.0, 3.0).is_click)
 
     def test_four_logical_pixel_click_threshold_remains_inclusive(self) -> None:
         gesture = PointerGestureState(4.0)

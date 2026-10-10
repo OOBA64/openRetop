@@ -415,6 +415,11 @@ class SurfacingWorkbenchMixin:
             lines.extend((np.asarray(cut["points"], dtype=float), SECTION_CUT_COLOR, 2.5) for cut in session.trim_cuts)
             if len(session.trim_cut) >= 2:
                 lines.append((np.vstack(session.trim_cut), HANDLE_ACTIVE, 3.0))
+            for point in session.trim_cut:  # a cross on each point clicked
+                size = 0.3 * self._arrow_length(point)
+                for axis in (np.array([1.0, 1.0, 0.0]), np.array([1.0, -1.0, 0.0]), np.array([0.0, 1.0, 1.0])):
+                    offset = axis / np.linalg.norm(axis) * size
+                    lines.append((np.vstack([point - offset, point + offset]), HANDLE_ACTIVE, 3.0))
             return tuple(lines)
         if session is not None and session.tool == "extrude":
             lines.extend((outline, SKETCH2D_SELECTED, 4.0) for outline in self.modeling.extrude_region_outlines())
@@ -546,8 +551,8 @@ class SurfacingWorkbenchMixin:
             self._sketch2d_before = None if point is None else mode.sketch.to_dict()
             self._drag_moved = False
             return point is not None
-        if session is not None and session.tool == "extrude":
-            return False
+        if session is not None and session.tool in ("extrude", "trim"):
+            return False  # clicks pick (regions, cut-line points, pieces); drags turn the view
         if session is not None and session.tool == "section":
             corner = self._section_vertex_at(x_position, y_position)
             self._section_drag = corner
@@ -1130,14 +1135,23 @@ class SurfacingWorkbenchMixin:
             selected_surfaces=tuple(entity.name for entity in selected if entity is not None and not entity.is_body),
             fill_sides=tuple(fill_sides),
             trim_text=trim_text,
+            extra=self._trim_facts(session) if session.tool == "trim" else self._sketch_facts(session),
             has_pieces=session.trim_pieces is not None,
             deviation_text=deviation_text,
             has_deviation=deviation is not None,
             busy=bool(self._executor.busy),  # type: ignore[attr-defined]
-            extra=self._sketch_facts(session),
         )
         self.surfacing_panel.show_session(session, facts)
         return True
+
+    def _trim_facts(self, session: Any) -> dict[str, Any]:
+        """What the Trim panel can offer: splitting needs two surfaces or a cut line; sewing
+        needs two surfaces."""
+
+        selected = session.trim_selected
+        cut_only = len(selected) == 1 and bool(session.trim_cuts)
+        count = len(selected) if len(selected) >= 2 or cut_only else len(session.trim_sources)
+        return {"surfaces": count, "cuts": len(session.trim_cuts), "can_split": count >= 2 or (count >= 1 and bool(session.trim_cuts))}
 
     def _sketch_facts(self, session: Any) -> dict[str, Any]:
         if session.tool == "plane_sketch":

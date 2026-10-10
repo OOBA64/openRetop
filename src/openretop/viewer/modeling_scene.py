@@ -17,7 +17,7 @@ from openretop.viewer.scene_types import (
 
 SELECTION_COLOR = (0.98, 0.55, 0.20)  # the area picked for Fit Surface: warm, unlike any surface
 PREVIEW_COLOR = (0.55, 0.85, 1.00)
-DROPPED_PIECE_COLOR = (0.55, 0.57, 0.62)
+DROPPED_PIECE_COLOR = (0.92, 0.32, 0.28)  # a trim piece that will be cut away: red, unmistakable
 EDGE_COLOR = (0.10, 0.11, 0.13)
 SELECTED_EDGE_COLOR = (1.00, 0.85, 0.25)
 CHAIN_EDGE_COLOR = (0.95, 0.30, 0.85)
@@ -207,7 +207,7 @@ def modeling_items(
                 vertices=piece["vertices"],
                 triangles=piece["triangles"],
                 role="piece_keep" if keep else "piece_drop",
-                style=DisplayStyleSnapshot(color=color, opacity=1.0 if keep else 0.28),
+                style=DisplayStyleSnapshot(color=color, opacity=1.0 if keep else 0.45),
             )
         )
         edges.append(
