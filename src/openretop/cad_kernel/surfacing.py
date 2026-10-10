@@ -400,7 +400,41 @@ def face_handles(face: Any, samples: int = 33) -> dict[str, Any]:
         params = np.linspace(v0, v1, samples) if side[0] == "u" else np.linspace(u0, u1, samples)
         edge = np.array([basis.Value(fixed, t).Coord() if side[0] == "u" else basis.Value(t, fixed).Coord() for t in params])
         handles.append({"side": side, "point": middle, "direction": outward, "tangent": tangent, "edge": edge})
-    return {"rectangular": True, "handles": handles, "analytic": _is_analytic(basis)}
+    corners = []
+    present = {handle["side"] for handle in handles}
+    for side_u in ("u0", "u1"):
+        for side_v in ("v0", "v1"):
+            if side_u not in present or side_v not in present:
+                continue
+            corner = _corner_frame(basis, bounds, side_u, side_v)
+            if corner is not None:
+                corners.append(corner)
+    return {"rectangular": True, "handles": handles, "corners": corners, "analytic": _is_analytic(basis)}
+
+
+def _corner_frame(surface: Any, bounds: tuple[float, float, float, float], side_u: str, side_v: str) -> dict[str, Any] | None:
+    """A corner where two draggable sides meet: its point and each side's outward direction
+    there (dragging it moves both)."""
+
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    u0, u1, v0, v1 = bounds
+    u = u0 if side_u == "u0" else u1
+    v = v0 if side_v == "v0" else v1
+    point, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+    surface.D1(u, v, point, du, dv)
+    a, b = np.array(du.Coord()), np.array(dv.Coord())
+    if float(np.linalg.norm(a)) < 1e-12 or float(np.linalg.norm(b)) < 1e-12:
+        return None
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    # each side's outward direction: across its edge, within the surface
+    out_u = a - (a @ b) * b
+    out_v = b - (b @ a) * a
+    if float(np.linalg.norm(out_u)) < 1e-9 or float(np.linalg.norm(out_v)) < 1e-9:
+        return None
+    out_u = out_u / np.linalg.norm(out_u) * (-1.0 if side_u == "u0" else 1.0)
+    out_v = out_v / np.linalg.norm(out_v) * (-1.0 if side_v == "v0" else 1.0)
+    return {"sides": (side_u, side_v), "point": np.array(point.Coord()), "directions": (out_u, out_v)}
 
 
 def resize_face(face: Any, changes: dict[str, float]) -> object:

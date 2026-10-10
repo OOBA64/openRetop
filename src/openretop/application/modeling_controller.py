@@ -1551,6 +1551,14 @@ class ModelingController(ControllerBase):
         value["handles"] = [
             {name: (item if name == "side" else np.asarray(item, dtype=float)) for name, item in handle.items()} for handle in value["handles"]
         ]
+        value["corners"] = [
+            {
+                "sides": tuple(corner["sides"]),
+                "point": np.asarray(corner["point"], dtype=float),
+                "directions": tuple(np.asarray(direction, dtype=float) for direction in corner["directions"]),
+            }
+            for corner in value.get("corners", [])
+        ]
         self._handles = (key, value)
         return value
 

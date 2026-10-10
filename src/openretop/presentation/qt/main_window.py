@@ -789,7 +789,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
         if self._is_typed_value_key(key, text):
             self._type_transform_value(key, text)
             return True
-        if not self.composition.transform_controller.active and self._surfacing_key(key):
+        if not self.composition.transform_controller.active and self._surfacing_key(key, text):
             return True
         if key in {Qt.Key_Return, Qt.Key_Enter}:
             if self.composition.transform_controller.active:

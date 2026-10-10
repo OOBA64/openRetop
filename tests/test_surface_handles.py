@@ -148,16 +148,19 @@ class InTheAppTests(unittest.TestCase):
         window.refresh()
         self.assertEqual(window.viewport.left_capture_owner, "surface_handles")
         lines = window._sketch2d_lines()
-        self.assertEqual(len(lines), 8)  # a shaft and a head per side
-        handle = next(item for item in window._handle_items() if item["side"] == "v1")
-        with patch.object(window, "_handle_at", return_value=handle):
-            self.assertTrue(window._surfacing_press_claim(0, 0))
+        self.assertEqual(len(lines), 16)  # a shaft and a head per side (4) and corner (4)
+        handle = next(item for item in window._handle_items() if item.get("side") == "v1")
+        with patch.object(window, "_handle_at", return_value=handle), patch.object(
+            window.viewport, "pointer_ray", return_value=(np.array([0.0, 5.0, 50.0]), np.array([0.0, 0.0, -1.0]))
+        ):
+            self.assertTrue(window._surfacing_press_claim(0, 0))  # grabbed on the side
         # the pointer's line of sight passes 3 past the side (looking straight down)
         with patch.object(window.viewport, "pointer_ray", return_value=(np.array([0.0, 8.0, 50.0]), np.array([0.0, 0.0, -1.0]))):
             window._on_viewport_pointer("motion", 0, 0, None)
         self.assertAlmostEqual(window._handle_distance, 3.0, places=9)
         self.assertIn("+3.000", window.statusBar().currentMessage())
-        self.assertEqual(len(window._sketch2d_lines()), 9)  # and the side where it will go
+        self.assertEqual(len(window._sketch2d_lines()), 17)  # and the side where it will go
+        window.viewport._last_pointer_release_was_click = False  # it was a drag
         window._on_viewport_pointer("left_release", 0, 0, None)
         self.assertIsNone(window._handle_drag)
         self.assertAlmostEqual(self.composition.state.model.get(self.plane.id).stats["area"], 20 * 13, places=4)  # type: ignore[union-attr]
@@ -165,6 +168,68 @@ class InTheAppTests(unittest.TestCase):
         # a press away from the arrows is not claimed: it orbits the view
         with patch.object(window, "_handle_at", return_value=None):
             self.assertFalse(window._surfacing_press_claim(0, 0))
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        from openretop.presentation.qt.main_window import OpenRetopV3Window
+
+        QApplication.instance() or QApplication([])
+        window = OpenRetopV3Window(self.composition)
+        self.addCleanup(lambda: (window.set_project_dirty(False), window.close()))
+        window.refresh()
+        return window
+
+    def test_a_corner_drags_both_sides(self) -> None:
+        window = self._window()
+        corner = next(item for item in window._handle_items() if item.get("sides") == ("u1", "v1"))
+        np.testing.assert_allclose(corner["point"], (10, 5, 0), atol=1e-9)
+        with patch.object(window, "_handle_at", return_value=corner), patch.object(
+            window.viewport, "pointer_ray", return_value=(np.array([11.0, 6.0, 30.0]), np.array([0.0, 0.0, -1.0]))
+        ):
+            self.assertTrue(window._surfacing_press_claim(0, 0))  # grabbed a little outside the corner
+        # then moved to (15, 8): 4 further past the u1 side, 2 past the v1 side
+        with patch.object(window.viewport, "pointer_ray", return_value=(np.array([15.0, 8.0, 30.0]), np.array([0.0, 0.0, -1.0]))):
+            window._on_viewport_pointer("motion", 0, 0, None)
+        self.assertEqual({side: round(value, 9) for side, value in (window._handle_moves or {}).items()}, {"u1": 4.0, "v1": 2.0})
+        window.viewport._last_pointer_release_was_click = False
+        window._on_viewport_pointer("left_release", 0, 0, None)
+        self.assertAlmostEqual(self.composition.state.model.get(self.plane.id).stats["area"], 24 * 12, places=4)  # type: ignore[union-attr]
+
+    def test_click_an_arrow_then_type_the_distance(self) -> None:
+        from PySide6.QtCore import Qt
+
+        window = self._window()
+        handle = next(item for item in window._handle_items() if item.get("side") == "u0")
+        with patch.object(window, "_handle_at", return_value=handle):
+            self.assertTrue(window._surfacing_press_claim(0, 0))
+        window.viewport._last_pointer_release_was_click = True
+        window._on_viewport_pointer("left_release", 0, 0, None)
+        self.assertIsNotNone(window._handle_picked)
+        self.assertIn("Type how far", window.statusBar().currentMessage())
+        self.assertTrue(window._surfacing_claims_key(Qt.Key.Key_1))  # digits are the distance, not view shortcuts
+        for key, text in ((Qt.Key.Key_1, "1"), (Qt.Key.Key_2, "2"), (Qt.Key.Key_Period, "."), (Qt.Key.Key_5, "5")):
+            self.assertTrue(window._handle_tool_key(key, text))
+        self.assertEqual(window._handle_typed, "12.5")
+        self.assertIn("12.5", [item.text.split()[0] for item in window._surfacing_annotations()])
+        self.assertTrue(window._handle_tool_key(Qt.Key.Key_Return, ""))
+        self.assertIsNone(window._handle_picked)
+        self.assertAlmostEqual(self.composition.state.model.get(self.plane.id).stats["area"], 32.5 * 10, places=4)  # type: ignore[union-attr]
+        # Esc lets go without changing anything
+        with patch.object(window, "_handle_at", return_value=handle):
+            window._surfacing_press_claim(0, 0)
+        window._on_viewport_pointer("left_release", 0, 0, None)
+        self.assertTrue(window._handle_tool_key(Qt.Key.Key_Escape, ""))
+        self.assertIsNone(window._handle_picked)
+
+    def test_an_arrow_off_screen_moves_to_the_visible_part_of_its_side(self) -> None:
+        window = self._window()
+        side = next(item for item in self.composition.modeling_controller.surface_handles(self.plane.id)["handles"] if item["side"] == "u1")
+        visible = {tuple(np.round(point, 6)) for point in side["edge"][:5]}
+        with patch.object(window, "_on_screen", side_effect=lambda point: tuple(np.round(point, 6)) in visible):
+            moved = window._visible_handle(side)
+        self.assertIn(tuple(np.round(moved["point"], 6)), visible)
+        np.testing.assert_allclose(moved["direction"], side["direction"])
 
     def test_other_tools_keep_the_mouse(self) -> None:
         from PySide6.QtWidgets import QApplication

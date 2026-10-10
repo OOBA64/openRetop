@@ -142,7 +142,9 @@ class SurfacingWorkbenchMixin:
         elif action_id == "model.finish" and result.success:
             self.tool_modes.finish()  # type: ignore[attr-defined]
 
-    def _surfacing_key(self, key: int) -> bool:
+    def _surfacing_key(self, key: int, text: str = "") -> bool:
+        if self._handle_key(key, text):
+            return True
         if not self.modeling.active:
             return False
         if self.modeling.tool == "sketch" and self._sketch_key(key):
@@ -194,6 +196,10 @@ class SurfacingWorkbenchMixin:
 
         held = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
         plain = modifiers is None or not (modifiers & held)  # type: ignore[operator, arg-type]
+        if self._handle_picked is not None and plain and key in (Qt.Key.Key_Minus, Qt.Key.Key_Period) or (
+            self._handle_picked is not None and plain and Qt.Key.Key_0 <= key <= Qt.Key.Key_9
+        ):
+            return True  # typing a distance for the picked arrow: digits, not view shortcuts
         return bool(plain and self.modeling.tool == "plane_sketch" and key in self.SKETCH2D_TOOL_KEYS)
 
     def _sketch2d_key(self, key: int) -> bool:
@@ -222,19 +228,72 @@ class SurfacingWorkbenchMixin:
             return True
         return False
 
-    # -- Resize arrows on a surface's sides ------------------------------------------------------
+    # -- Resize arrows on a surface's sides and corners -----------------------------------------
+    #
+    # An arrow at the middle of each side that can move (or at the visible part of the side,
+    # when its middle is off screen) and a diagonal one at each corner. Drag one: the side (or
+    # both sides at a corner) follow the pointer. Click one: it is picked, and typing a number
+    # then Enter moves its side exactly that far (Esc lets go).
 
     _handle_drag: dict[str, Any] | None = None  # the arrow being dragged
     _handle_distance: float = 0.0  # how far its side has been pulled (world, outward positive)
+    _handle_moves: dict[str, float] | None = None  # a corner drag: each side's distance
+    _handle_picked: dict[str, Any] | None = None  # an arrow clicked, waiting for a typed distance
+    _handle_typed: str = ""
 
     def _handle_items(self) -> list[dict[str, Any]]:
+        """The arrows to show: sides (``side``) and corners (``sides``)."""
+
         composition = self.composition
         if composition.transform_controller.active or composition.region_controller.session.active or composition.measure_controller.active:
             return []  # those tools own the mouse
         entity = self.modeling.handle_entity()
         if entity is None:
             return []
-        return list(self.modeling.surface_handles(entity.id)["handles"])
+        frames = self.modeling.surface_handles(entity.id)
+        items = [self._visible_handle(handle) for handle in frames["handles"]]
+        for corner in frames.get("corners", []):
+            outward = corner["directions"][0] + corner["directions"][1]
+            items.append(
+                {
+                    "sides": corner["sides"],
+                    "point": corner["point"],
+                    "direction": outward / max(float(np.linalg.norm(outward)), 1e-12),
+                    "directions": corner["directions"],
+                    "tangent": corner["directions"][0] - corner["directions"][1],
+                }
+            )
+        for item in items:
+            item["key"] = item.get("side") or "+".join(item["sides"])
+        return items
+
+    def _visible_handle(self, handle: dict[str, Any]) -> dict[str, Any]:
+        """A side's arrow at its middle, or, when that is off screen, at the nearest point of
+        the side that is on screen (a large plane seen close up)."""
+
+        if self._on_screen(handle["point"]):
+            return handle
+        edge = handle["edge"]
+        visible = [index for index, point in enumerate(edge) if self._on_screen(point)]
+        if not visible:
+            return handle
+        middle = len(edge) // 2
+        index = min(visible, key=lambda value: abs(value - middle))
+        return {**handle, "point": edge[index]}
+
+    def _on_screen(self, point: np.ndarray) -> bool:
+        window = getattr(self.viewport, "render_window", None)
+        if window is None:
+            return True
+        try:
+            projected = np.asarray(self.viewport.project_points(np.asarray(point, dtype=float).reshape(1, 3)), dtype=float).reshape(-1)
+        except Exception:  # viewport not ready
+            return True
+        if projected.size < 2 or not np.all(np.isfinite(projected[:2])):
+            return False
+        width, height = (int(value) for value in window.GetSize())
+        margin = 20
+        return margin <= projected[0] <= width - margin and margin <= projected[1] <= height - margin
 
     def _arrow_length(self, point: np.ndarray) -> float:
         from openretop.presentation.qt.tool_preview_overlay import world_per_pixel
@@ -266,49 +325,161 @@ class SurfacingWorkbenchMixin:
                 best, best_distance = handle, distance
         return best
 
+    def _handle_changes(self, handle: dict[str, Any], distance: float, moves: dict[str, float] | None = None) -> dict[str, float]:
+        if "side" in handle:
+            return {handle["side"]: distance}
+        return dict(moves or {side: distance for side in handle["sides"]})
+
     def _handle_pointer(self, event_name: str, x_position: int, y_position: int) -> None:
         handle = self._handle_drag
         assert handle is not None
+        units = self.composition.state.units
         if event_name == "motion":
-            ray = getattr(self.viewport, "pointer_ray", lambda x, y: None)(x_position, y_position)
-            if ray is not None:
-                distance = _along_line(handle["point"], handle["direction"], *ray)
-                if distance is not None:
-                    self._handle_distance = distance
-                    units = self.composition.state.units
-                    self.set_status_message(f"{'+' if distance >= 0 else ''}{distance:.3f} {units} (release to apply)")  # type: ignore[attr-defined]
-                    self._render_scene()  # type: ignore[attr-defined]
+            position = self._handle_position(handle, x_position, y_position)
+            grab = self._handle_grab
+            if position is None or grab is None:
+                return
+            if "side" in handle:
+                distance = float(position - grab)
+                self._handle_distance = distance
+                self.set_status_message(f"{'+' if distance >= 0 else ''}{distance:.3f} {units} (release to apply)")  # type: ignore[attr-defined]
+            else:
+                first, second = handle["directions"]
+                moved = np.asarray(position) - np.asarray(grab)
+                self._handle_moves = {handle["sides"][0]: float(moved @ first), handle["sides"][1]: float(moved @ second)}
+                self._handle_distance = float(np.linalg.norm(moved))
+                text = ", ".join(f"{'+' if value >= 0 else ''}{value:.3f}" for value in self._handle_moves.values())
+                self.set_status_message(f"{text} {units} (release to apply)")  # type: ignore[attr-defined]
+            self._render_scene()  # type: ignore[attr-defined]
             return
         if event_name not in ("left_release", "leave"):
             return
         self._handle_drag = None
+        moves, self._handle_moves = self._handle_moves, None
         distance, self._handle_distance = self._handle_distance, 0.0
         entity = self.modeling.handle_entity()
-        if event_name != "left_release" or entity is None or abs(distance) < 1e-9:
+        if event_name != "left_release" or entity is None:
             self._render_scene()  # type: ignore[attr-defined]
             return
-        self._dispatch_application_action("model.resize", {"entity": entity.id, "changes": {handle["side"]: distance}})  # type: ignore[attr-defined]
+        if self.viewport.last_pointer_release_was_click:
+            # a click on an arrow (no drag): pick it for a typed distance
+            self._handle_picked, self._handle_typed = {**handle, "entity": entity.id}, ""
+            what = "this side" if "side" in handle else "this corner (both sides)"
+            self.set_status_message(f"Type how far to move {what} ({units}; negative cuts back), Enter applies, Esc cancels")  # type: ignore[attr-defined]
+            self._render_scene()  # type: ignore[attr-defined]
+            return
+        self._dispatch_application_action("model.resize", {"entity": entity.id, "changes": self._handle_changes(handle, distance, moves)})  # type: ignore[attr-defined]
+
+    _handle_grab: Any = None  # where the dragged arrow was grabbed
+
+    def _handle_position(self, handle: dict[str, Any], x_position: int, y_position: int) -> Any:
+        """Where the pointer is for this arrow: along a side's arrow line (a distance), or on
+        the surface's tangent plane at a corner (a point)."""
+
+        ray = getattr(self.viewport, "pointer_ray", lambda x, y: None)(x_position, y_position)
+        if ray is None:
+            return None
+        if "side" in handle:
+            return _along_line(handle["point"], handle["direction"], *ray)
+        first, second = handle["directions"]
+        normal = np.cross(first, second)
+        origin, direction = ray
+        facing = float(direction @ normal)
+        if abs(facing) < 1e-9:
+            return None
+        return origin + direction * (float((handle["point"] - origin) @ normal) / facing)
+
+    @staticmethod
+    def _typed_character(key: int, text: str) -> str:
+        if len(text) == 1:
+            return text
+        if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+            return str(int(key) - int(Qt.Key.Key_0))
+        return {Qt.Key.Key_Period: ".", Qt.Key.Key_Minus: "-"}.get(key, "")  # type: ignore[call-overload]
+
+    def _handle_claims_key(self, key: int, text: str) -> bool:
+        picked = self._handle_picked
+        if picked is None:
+            return False
+        entity = self.modeling.handle_entity()
+        if entity is None or entity.id != picked.get("entity"):
+            self._handle_picked, self._handle_typed = None, ""  # another surface now: the pick is gone
+            return False
+        character = self._typed_character(key, text)
+        return key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape, Qt.Key.Key_Backspace) or (bool(character) and character in "0123456789.-")
+
+    def _handle_key(self, key: int, text: str) -> bool:
+        """Typing a distance for the picked arrow."""
+
+        picked = self._handle_picked
+        if picked is None or not self._handle_claims_key(key, text):
+            return False
+        units = self.composition.state.units
+        if key == Qt.Key.Key_Escape:
+            self._handle_picked, self._handle_typed = None, ""
+            self.set_status_message("Resize cancelled")  # type: ignore[attr-defined]
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            entity = self.modeling.handle_entity()
+            typed, self._handle_picked, self._handle_typed = self._handle_typed, None, ""
+            try:
+                distance = float(typed)
+            except ValueError:
+                self.set_status_message("Type a number first (e.g. 12.5 to grow, -3 to cut back)")  # type: ignore[attr-defined]
+                self._render_scene()  # type: ignore[attr-defined]
+                return True
+            if entity is not None:
+                self._dispatch_application_action("model.resize", {"entity": entity.id, "changes": self._handle_changes(picked, distance)})  # type: ignore[attr-defined]
+                return True
+        else:
+            self._handle_typed = self._handle_typed[:-1] if key == Qt.Key.Key_Backspace else self._handle_typed + self._typed_character(key, text)
+            self.set_status_message(f"Move by {self._handle_typed or '...'} {units}: Enter applies, Esc cancels")  # type: ignore[attr-defined]
+        self._render_scene()  # type: ignore[attr-defined]
+        return True
 
     def _handle_lines(self) -> list[tuple[np.ndarray, tuple[float, float, float], float]]:
-        """Arrows at the middle of each draggable side, pointing the way it grows; while one is
-        dragged, its side where it will go."""
+        """Arrows on each draggable side and corner, pointing the way they grow; while one is
+        dragged (or picked), it is yellow and its side(s) show where they will go."""
 
         lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = []
-        dragged = self._handle_drag
-        for handle in self._handle_items():
-            active = dragged is not None and dragged["side"] == handle["side"]
-            offset = handle["direction"] * (self._handle_distance if active else 0.0)
+        dragged, picked = self._handle_drag, self._handle_picked
+        items = self._handle_items()
+        sides = {item["side"]: item for item in items if "side" in item}
+        for handle in items:
+            active = any(other is not None and other.get("key", other.get("side")) == handle["key"] for other in (dragged, picked))
+            if dragged is not None and dragged.get("key", dragged.get("side")) == handle["key"]:
+                if "side" in handle:
+                    offset = handle["direction"] * self._handle_distance
+                    lines.append((handle["edge"] + offset, HANDLE_ACTIVE, 2.5))
+                else:
+                    moves = self._handle_moves or {}
+                    offset = sum((direction * moves.get(side, 0.0) for side, direction in zip(handle["sides"], handle["directions"], strict=True)), np.zeros(3))
+                    for side in handle["sides"]:
+                        if side in sides:
+                            lines.append((sides[side]["edge"] + sides[side]["direction"] * moves.get(side, 0.0), HANDLE_ACTIVE, 2.5))
+            else:
+                offset = np.zeros(3)
             start = handle["point"] + offset
-            length = self._arrow_length(start)
+            length = self._arrow_length(start) * (1.0 if "side" in handle else 0.7)
             tip = start + handle["direction"] * length
             back = tip - handle["direction"] * 0.32 * length
-            side = handle["tangent"] * 0.16 * length
+            tangent = handle["tangent"] / max(float(np.linalg.norm(handle["tangent"])), 1e-12)
+            across = tangent * 0.16 * length
             color = HANDLE_ACTIVE if active else HANDLE_COLOR
             lines.append((np.vstack([start, tip]), color, 3.0))
-            lines.append((np.vstack([back + side, tip, back - side]), color, 3.0))
-            if active:
-                lines.append((handle["edge"] + offset, HANDLE_ACTIVE, 2.5))
+            lines.append((np.vstack([back + across, tip, back - across]), color, 3.0))
         return lines
+
+    def _handle_annotations(self) -> list[Any]:
+        """The typed distance beside the picked arrow."""
+
+        from openretop.presentation.qt.annotation_overlay import Annotation
+
+        picked = self._handle_picked
+        if picked is None:
+            return []
+        tip = picked["point"] + picked["direction"] * self._arrow_length(picked["point"]) * 1.4
+        units = self.composition.state.units
+        return [Annotation(tuple(float(value) for value in tip), f"{self._handle_typed or '?'} {units}")]  # type: ignore[arg-type]
 
     # -- 3D Sketch (P-03) ------------------------------------------------------------------------
 
@@ -446,8 +617,8 @@ class SurfacingWorkbenchMixin:
 
         view = self.modeling.sketch2d_view_world()
         if view is None:
-            return []
-        return [
+            return self._handle_annotations()
+        return self._handle_annotations() + [
             Annotation(
                 tuple(float(value) for value in label["world"]),  # type: ignore[arg-type]
                 str(label["text"]),
@@ -538,7 +709,11 @@ class SurfacingWorkbenchMixin:
         handle = self._handle_at(x_position, y_position)
         self._handle_drag = handle
         self._handle_distance = 0.0
+        self._handle_moves = None
         if handle is not None:
+            # where the arrow was grabbed: the side moves as far as the pointer does from there
+            # (grabbing it half way along must not make the side jump by that much)
+            self._handle_grab = self._handle_position(handle, x_position, y_position)
             return True
         if self.viewport.left_capture_owner == "surface_handles":
             return False  # only the arrows are claimed: everything else orbits and picks
