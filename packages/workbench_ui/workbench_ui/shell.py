@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from typing import Iterable
 
 from PySide6.QtCore import Qt, Signal
@@ -32,13 +33,15 @@ from workbench_ui.contracts import (
 )
 from workbench_ui.icons import ICON_SIZE, themed_icon
 
+TOOLTIP_WIDTH = 64  # characters per tooltip line
+
 
 def action_tooltip(definition: ActionDefinition) -> str:
     """Tooltip text: label, description, shortcut, and why the action is disabled."""
 
     lines = [definition.label]
-    if definition.description:
-        lines.append(definition.description)
+    if definition.description:  # wrapped: a tooltip shows plain text on one line otherwise
+        lines.extend(textwrap.wrap(definition.description, TOOLTIP_WIDTH))
     if definition.shortcut:
         lines.append(f"Shortcut: {definition.shortcut}")
     if not definition.enabled and definition.disabled_reason:

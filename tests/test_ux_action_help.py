@@ -65,6 +65,27 @@ class ActionTooltipTests(unittest.TestCase):
         self.assertTrue(action.isEnabled())
         self.assertNotIn("Unavailable", action.toolTip())
 
+    def test_the_three_sketch_tools_say_which_to_use_on_hover(self) -> None:
+        # three tools called "... Sketch": hovering one says what it makes and points to the other
+        window = self._window()
+        tips = {
+            action_id: " ".join(window._qt_actions[action_id].toolTip().split())
+            for action_id in ("model.sketch", "model.section_sketch", "model.plane_sketch")
+        }
+        self.assertIn("on the scan itself", tips["model.sketch"])
+        self.assertIn("traced for you", tips["model.section_sketch"])
+        self.assertIn("use 3D Sketch", tips["model.section_sketch"])
+        self.assertIn("draw yourself", tips["model.plane_sketch"])
+        self.assertIn("use Section Sketch", tips["model.plane_sketch"])
+
+    def test_long_descriptions_wrap_in_the_tooltip(self) -> None:
+        from workbench_ui.shell import TOOLTIP_WIDTH
+
+        window = self._window()
+        lines = window._qt_actions["model.plane_sketch"].toolTip().splitlines()
+        self.assertGreater(len(lines), 3)
+        self.assertLessEqual(max(len(line) for line in lines), TOOLTIP_WIDTH)
+
     def test_shortcut_is_shown_in_the_tooltip(self) -> None:
         window = self._window()
         self.assertIn("Ctrl+O", window._qt_actions["file.open_model"].toolTip())

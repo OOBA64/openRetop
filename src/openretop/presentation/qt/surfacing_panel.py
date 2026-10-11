@@ -902,7 +902,7 @@ class SurfacingPanel(QWidget):
         layout.addLayout(row)
 
     def _build_loft(self, layout: QVBoxLayout) -> None:
-        layout.addWidget(_hint("Select two or more curves (Ctrl+click in the tree or the scene), in order. Draw curves on the scan with Draw Curve."))
+        layout.addWidget(_hint("Select two or more curves (Ctrl+click in the tree or the scene), in order. Draw them on the scan with Surface Sketch, or cut sections."))
         self.loft_info = _hint()
         layout.addWidget(self.loft_info)
         self.ruled = QCheckBox("Ruled (straight between curves)")
