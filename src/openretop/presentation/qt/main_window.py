@@ -1661,12 +1661,12 @@ def _node_id_for_pick(pick: SceneObjectPickResult) -> str | None:
 
 
 def _model_node_for_actor(object_id: str) -> str | None:
-    """'model-face:<id>' / 'model-edges:<id>' actors belong to model entity <id>."""
+    """'model-face:<id>' / 'model-edges:<id>' / 'model-open:<id>' actors belong to model entity <id>."""
 
     kind, _sep, entity_id = str(object_id).partition(":")
     if kind == "sketch-curve" and entity_id:
         return f"sketch:{entity_id}"
-    return model_node_id(entity_id) if kind in ("model-face", "model-edges") and entity_id else None
+    return model_node_id(entity_id) if kind in ("model-face", "model-edges", "model-open") and entity_id else None
 
 
 def _has_scene_content(state: AppState) -> bool:

@@ -21,6 +21,7 @@ DROPPED_PIECE_COLOR = (0.92, 0.32, 0.28)  # a trim piece that will be cut away: 
 EDGE_COLOR = (0.10, 0.11, 0.13)
 SELECTED_EDGE_COLOR = (1.00, 0.85, 0.25)
 CHAIN_EDGE_COLOR = (0.95, 0.30, 0.85)
+OPEN_EDGE_COLOR = (1.00, 0.22, 0.16)  # a sewn shell's open edges: where a face is missing
 SKETCH_CURVE_COLOR = (0.85, 0.40, 0.98)  # Surface Sketch curves: violet, unlike surfaces and the selection
 SELECTED_SKETCH_COLOR = (1.00, 0.85, 0.25)
 SECTION_COLOR = (0.98, 0.55, 0.20)  # the scan's section on the sketch plane
@@ -119,11 +120,23 @@ def modeling_items(
         )
         if entity.edges:
             highlighted = [index for index in range(len(entity.edges)) if (entity.id, index) in chain]
+            open_edges = set(getattr(entity, "open_edges", ()) or ()) if visible else set()
+            if open_edges:  # where a face is missing: red, and not also drawn as an ordinary edge
+                edges.append(
+                    ModelEdgesRenderItem(
+                        id=f"model-open:{entity.id}",
+                        revision=hash((token, tuple(sorted(open_edges)))),
+                        polylines=tuple(entity.edges[index] for index in sorted(open_edges)),
+                        visible=True,
+                        style=DisplayStyleSnapshot(color=OPEN_EDGE_COLOR, line_width=4.0),
+                        selection_keys=(node,),
+                    )
+                )
             edges.append(
                 ModelEdgesRenderItem(
                     id=f"model-edges:{entity.id}",
-                    revision=token,
-                    polylines=tuple(entity.edges),
+                    revision=hash((token, tuple(sorted(open_edges)))) if open_edges else token,
+                    polylines=tuple(edge for index, edge in enumerate(entity.edges) if index not in open_edges),
                     visible=visible,
                     style=DisplayStyleSnapshot(
                         color=SELECTED_EDGE_COLOR if selected else (SKETCH_CURVE_COLOR if sketch else EDGE_COLOR),

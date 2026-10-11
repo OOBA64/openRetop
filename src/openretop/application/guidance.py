@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from openretop.application.state import AppState
+from openretop.modeling.document import closure_text
 
 
 class Stage(str, Enum):
@@ -18,6 +19,7 @@ class Stage(str, Enum):
     SCAN = "scan"  # scan loaded, nothing modelled yet
     CURVES = "curves"  # sketch curves or sketches, no surface or body yet
     MODEL = "model"  # surfaces or bodies exist
+    CLOSE = "close"  # a sewn body on view is not closed yet
     EXPORT = "export"  # a closed body is ready to export
 
 
@@ -57,6 +59,19 @@ def build_guidance(state: AppState, *, selected_curve_count: int = 0) -> Guidanc
 
     summary = _summary(state)
     model = state.model
+    open_bodies = [entity for entity in model.visible() if entity.not_closed]
+    if open_bodies:
+        return Guidance(
+            Stage.CLOSE,
+            "Close the gaps",
+            closure_text(open_bodies[0], state.units, model),
+            summary,
+            (
+                GuidanceStep("model.fit_surface", "Fit the missing face", "Click the scan where the red edges are.", primary=True),
+                GuidanceStep("model.extend", "Extend a surface", "Grow one that stops short of its neighbour."),
+                GuidanceStep("model.trim", "Trim again", "The open body's surfaces join in; closed, it becomes a solid."),
+            ),
+        )
     bodies = [entity for entity in model.entities if entity.is_body]
     if bodies:
         return Guidance(

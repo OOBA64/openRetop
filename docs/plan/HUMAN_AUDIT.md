@@ -53,11 +53,12 @@ These were verified with real input. The figures come from the runs:
 - **Fitting surfaces:** Fit Surface, click a face, then Create. Bracket faces come out within 0.02 mm RMS.
 - **Resizing:** arrows on sides and corners; typed values are exact (−5 gives −5.000); undo works.
 - **Manual trim:** two clicks across the overhang, Enter, click the overhang, Apply. The result was one 7149 mm² surface.
-- **Trim, Compare, Export STEP:** these work, but not all the way to a solid. With each face's exact scan area
-  (the kernel test), the bracket sews into a solid within 0.02% of the CAD volume. Driven like a person (click
-  each face, brush the chamfers), it ends as a shell with one hole: Trim dropped one chamfer's piece. The open
-  edges are not shown, so a person cannot find the hole to click that piece back in (H-06). Compare gives
-  RMS 0.021 mm.
+- **Trim, Compare, Export STEP:** driven like a person (click each face, brush the chamfers), the bracket first
+  ended as a shell with one hole that nothing showed. One click on a tall chamfer fitted a plane to a strip of it
+  that stopped short of its neighbours. Since H-03 a plane covers the whole face it lies on, and the run gives
+  one closed solid, 44,238.5 mm^3 against the CAD's 44,239.7. With a face left out, Trim now draws the open edges
+  red, names the surfaces that run past the scan, and closes after the face is fitted and Trim run again (H-06).
+  Compare gives RMS 0.021 mm.
 - **3D Sketch:** dimensions typed in the panel, region picking, extrude new/join/cut, History edit, undo. Constraints and degrees of freedom are shown.
 - **Help while working:** a tool hint on the canvas, a Next steps panel, and tooltips that say why a command is disabled.
 - **Ctrl+K palette:** finds every command the app has.

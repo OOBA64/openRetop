@@ -102,6 +102,25 @@ class ScanSelection:
         self.revision += 1
         return int(np.count_nonzero(reached))
 
+    def grow(self, allowed: object, start: object | None = None) -> np.ndarray:
+        """The triangles reached from ``start`` (the selection) across neighbours that are
+        ``allowed`` (a per-triangle mask): e.g. the whole face a fitted plane lies on, from
+        the part of it that was clicked. The selection itself is not changed."""
+
+        allowed_mask = np.asarray(allowed, dtype=bool).ravel()
+        reached = (self.mask if start is None else np.asarray(start, dtype=bool).ravel()).copy()
+        offsets, neighbours = self._adjacency_arrays()
+        frontier = np.flatnonzero(reached)
+        while len(frontier):
+            starts, ends = offsets[frontier], offsets[frontier + 1]
+            lengths = ends - starts
+            index = np.repeat(starts - np.concatenate([[0], np.cumsum(lengths)[:-1]]), lengths) + np.arange(int(lengths.sum()))
+            candidate = np.unique(neighbours[index])
+            candidate = candidate[allowed_mask[candidate] & ~reached[candidate]]
+            reached[candidate] = True
+            frontier = candidate
+        return reached
+
     def brush(self, center: object, radius: float, *, add: bool = True, view_direction: object | None = None) -> int:
         """Paint the triangles within ``radius`` of ``center`` (facing the viewer, if given)."""
 

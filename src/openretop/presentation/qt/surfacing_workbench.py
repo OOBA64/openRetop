@@ -20,6 +20,7 @@ from openretop.modeling.document import KIND_LABELS
 from openretop.presentation.qt.surfacing_panel import PanelFacts, SurfacingPanel
 from openretop.viewer.modeling_scene import ModelingSceneInput, model_id_from_node, model_node_id
 from openretop.viewer.picking_service import MeshPickResult, SceneObjectPickResult
+from openretop.viewer.scene_types import CameraRequest
 from workbench_ui import FieldDefinition, SceneNode
 
 NODE_MODEL = "model_surfaces"  # the scene tree group of model surfaces and bodies (NODE_MESH is "model")
@@ -132,6 +133,12 @@ class SurfacingWorkbenchMixin:
         self._consume_result(action_id, result)  # type: ignore[attr-defined]
 
     def _on_surfacing_action(self, action_id: str, payload: dict[str, Any]) -> None:
+        if action_id == "view.frame_gaps":  # Trim's "Show the Gaps": look at the red edges
+            bounds = self._open_edge_bounds()
+            if bounds is not None:
+                self._camera_request = CameraRequest.frame_bounds(bounds)  # type: ignore[arg-type]
+                self.refresh()  # type: ignore[attr-defined]
+            return
         if action_id == "model.configure":
             # option changes repaint only the panel and scene: no undo, no project change
             result = self.modeling.configure(**payload)
@@ -1213,7 +1220,7 @@ class SurfacingWorkbenchMixin:
             self._consume_result("model.pointer", self.modeling.fill_add_curve(object_id.split(":", 1)[1]))  # type: ignore[attr-defined]
             return
         entity_id = None
-        if object_id.startswith("model-edges:") or object_id.startswith("model-face:"):
+        if object_id.startswith(("model-edges:", "model-face:", "model-open:")):
             entity_id = object_id.split(":", 1)[1]
         entity = None if entity_id is None else self.composition.state.model.get(entity_id)
         if entity is None or scene_pick.position is None:
@@ -1314,13 +1321,19 @@ class SurfacingWorkbenchMixin:
         elif session.trim_pieces is not None:
             kept = sum(1 for piece in session.trim_pieces if piece["keep"])
             trim_text = f"{len(session.trim_pieces)} pieces, {kept} kept. Click a piece to keep or drop it."
+        elif session.tool == "trim" and session.trim_result:
+            trim_text = session.trim_result  # what the last Apply made
         elif session.tool == "trim":
             cuts = f" and {len(session.trim_cuts)} cut line(s)" if session.trim_cuts else ""
             picked = len(session.trim_selected)
             which = f"{picked} selected surface(s)" if picked >= 2 else f"{len(session.trim_sources)} visible surface(s)"
-            if picked == 1:
-                which += " (or just the selected one, with a cut line)"
-            trim_text = f"{which}{cuts} will be split."
+            reopened = [entity.name for entity in (model.get(value) for value in session.trim_replaces) if entity is not None]
+            if picked < 2 and reopened:
+                trim_text = f"{len(session.trim_sources)} surfaces{cuts} will be split: the visible ones and those of {', '.join(reopened)} (not closed)."
+            else:
+                if picked == 1:
+                    which += " (or just the selected one, with a cut line)"
+                trim_text = f"{which}{cuts} will be split."
         deviation = self.modeling.deviation
         deviation_text = ""
         if deviation is not None:
@@ -1354,7 +1367,28 @@ class SurfacingWorkbenchMixin:
         selected = session.trim_selected
         cut_only = len(selected) == 1 and bool(session.trim_cuts)
         count = len(selected) if len(selected) >= 2 or cut_only else len(session.trim_sources)
-        return {"surfaces": count, "cuts": len(session.trim_cuts), "can_split": count >= 2 or (count >= 1 and bool(session.trim_cuts))}
+        return {
+            "surfaces": count,
+            "cuts": len(session.trim_cuts),
+            "can_split": count >= 2 or (count >= 1 and bool(session.trim_cuts)),
+            "open_bounds": self._open_edge_bounds(),
+        }
+
+    def _open_edge_bounds(self) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
+        """Where the visible open shells' red edges are (to frame them), or None."""
+
+        points = [
+            entity.edges[index]
+            for entity in self.composition.state.model.visible()
+            for index in entity.open_edges
+            if len(entity.edges[index])
+        ]
+        if not points:
+            return None
+        stacked = np.vstack(points)
+        low, high = stacked.min(axis=0), stacked.max(axis=0)
+        margin = 0.5 * float(np.linalg.norm(high - low)) + 1e-3
+        return tuple(float(value) for value in low - margin), tuple(float(value) for value in high + margin)
 
     def _sketch_facts(self, session: Any) -> dict[str, Any]:
         if session.tool == "plane_sketch":
@@ -1537,7 +1571,8 @@ class SurfacingWorkbenchMixin:
             nodes.append(
                 SceneNode(
                     model_node_id(entity.id),
-                    f"{entity.name}" if entity.label in entity.name else f"{entity.name} ({entity.label})",
+                    (f"{entity.name}" if entity.label in entity.name else f"{entity.name} ({entity.label})")
+                    + (" (not closed)" if entity.not_closed else ""),
                     "model_body" if entity.is_body else "model_surface",
                     NODE_MODEL,
                     entity.visible,
@@ -1598,6 +1633,10 @@ class SurfacingWorkbenchMixin:
         entity_id = model_id_from_node(node_id)
         if entity_id is None:
             return False
+        entity = self.composition.state.model.get(entity_id)
+        if entity is not None:  # the row shows "Name (Type) (not closed)": keep only the name
+            for suffix in (" (not closed)", f" ({entity.label})"):
+                name = name[: -len(suffix)] if name.endswith(suffix) else name
         result = self.modeling.rename(entity_id, name)
         if result.undo_payload is not None and result.changed:
             self.composition.undo.push(result.undo_payload)
@@ -1670,7 +1709,7 @@ class SurfacingWorkbenchMixin:
         stats = entity.stats
         fields = [
             FieldDefinition("name", "Name", entity.name),
-            FieldDefinition("model_kind", "Type", entity.label, "readonly", read_only=True),
+            FieldDefinition("model_kind", "Type", entity.label + (" (not closed)" if entity.not_closed else ""), "readonly", read_only=True),
             FieldDefinition("visible", "Visible", entity.visible, "checkbox"),
         ]
         if "rms" in stats:
@@ -1683,7 +1722,14 @@ class SurfacingWorkbenchMixin:
         if stats.get("solid"):
             fields.append(FieldDefinition("model_volume", f"Volume ({units}^3)", round(float(stats.get("volume", 0.0)), 2), "readonly", read_only=True, group="Geometry"))
         elif "free_edges" in stats:
-            fields.append(FieldDefinition("model_open", "Open edges", int(stats["free_edges"]), "readonly", read_only=True, group="Geometry"))
+            count = len(entity.open_edges) or int(stats["free_edges"])
+            fields.append(FieldDefinition("model_open", "Open edges", count, "readonly", read_only=True, group="Geometry"))
+            if entity.not_closed:
+                fields.append(
+                    FieldDefinition(
+                        "model_close", "To close it", "Fit or extend the face at the red edges, then Trim", "readonly", read_only=True, group="Geometry"
+                    )
+                )
         return tuple(fields)
 
     # -- export --------------------------------------------------------------------------------

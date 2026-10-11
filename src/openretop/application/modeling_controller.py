@@ -34,6 +34,7 @@ from openretop.modeling import (
     entity_from_result,
     selected_patch,
 )
+from openretop.modeling.document import closure_text
 from openretop.modeling.profile2d import Profile2D, auto_tolerance, fit_profile
 from openretop.modeling.sketch import MeshProjector, boundary_loop, curve_on_mesh, loop_polylines, region_inside
 
@@ -55,6 +56,7 @@ TOOL_TITLES = {
 SELECTION_MODES = ("smart", "brush", "erase")
 MAX_KERNEL_SCAN_POINTS = 200_000  # scan points sent for trimming (a dense scan is subsampled)
 PLANE_REACH = 0.03  # a fitted plane grows at least this part of the scan's diagonal past its selection
+PLANE_FACE_ANGLE = 12.0  # degrees: scan triangles turned less than this from a fitted plane belong to its face
 
 
 @dataclass
@@ -81,6 +83,8 @@ class ToolSession:
     extend_distance: float = 5.0
     trim_tolerance: float = 0.1
     trim_overlap: float = 0.3
+    trim_result: str = ""  # what the last Apply made, in words (shown in the panel)
+    trim_replaces: tuple[str, ...] = ()  # open shells on view whose surfaces join this trim
     trim_sources: tuple[str, ...] = ()
     trim_pieces: list[dict[str, Any]] | None = None
     sew_tolerance: float = 0.05
@@ -191,7 +195,8 @@ class ModelingController(ControllerBase):
             if session.selected_node not in model.sketch.nodes:
                 session.selected_node = None
             if session.tool == "trim":
-                session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
+                session.trim_sources, session.trim_replaces = self._trim_sources()
+                session.trim_result = ""
             session.fill_chain = [side for side in session.fill_chain if "curve" in side or model.get(side["entity"]) is not None]
         if self.deviation is not None and any(model.get(value) is None for value in self.deviation.entity_ids):
             self.deviation = None
@@ -232,7 +237,7 @@ class ModelingController(ControllerBase):
             self.session.brush_radius = self._default_brush_radius()
         if tool == "trim":
             model = self.state.model
-            self.session.trim_sources = tuple(entity.id for entity in model.visible() if not entity.is_body)
+            self.session.trim_sources, self.session.trim_replaces = self._trim_sources()
             picked = [entity for entity in (model.get(value) for value in model.selected_ids) if entity is not None and not entity.is_body]
             self.session.trim_selected = tuple(entity.id for entity in picked)
         if tool == "sketch":
@@ -407,15 +412,46 @@ class ModelingController(ControllerBase):
         )
         if not reply.ok:
             return _kernel_failure("Fit failed", reply)
-        session.preview = reply.value
-        session.preview["selection_revision"] = selection.revision
         result = reply.value
+        if result["kind"] == "plane":
+            self._plane_to_its_face(result, selection, options)
+        session.preview = result
+        session.preview["selection_revision"] = selection.revision
         net = f", {result['control_u']} x {result['control_v']} net" if result["kind"] == "freeform" else ""
         return CommandResult.ok(
             status=f"{result['kind'].title()}{net}: deviation RMS {result['rms']:.3f}, max {result['max_error']:.3f} "
             f"{self.state.units} ({reply.seconds:.1f} s). Create keeps it.",
             changed=True,
         )
+
+    def _plane_to_its_face(self, result: dict[str, Any], selection: ScanSelection, options: Any) -> None:
+        """Size a fitted plane to the whole face of the scan it lies on, not only the part
+        clicked: one click on a tall narrow chamfer selects a strip of it, and a plane sized
+        to the strip stopped short of the faces it must meet for a trim. Grows from the
+        selection across triangles lying on the plane (close to it, facing its way)."""
+
+        params = result.get("params") or {}
+        mesh_object = self.state.mesh_object
+        if mesh_object is None or "normal" not in params or "point" not in params:
+            return
+        normal = np.asarray(params["normal"], dtype=float).reshape(3)
+        normal = normal / max(float(np.linalg.norm(normal)), 1e-12)
+        point = np.asarray(params["point"], dtype=float).reshape(3)
+        world = _apply(self.transform.current_object_matrix(), np.asarray(selection.vertices, dtype=float))
+        corners = world[selection.triangles]
+        band = max(3.0 * float(result.get("rms", 0.0)), float(options.tolerance))
+        near = np.all(np.abs((corners - point) @ normal) <= band, axis=1)
+        facing = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+        facing /= np.maximum(np.linalg.norm(facing, axis=1), 1e-12)[:, None]
+        aligned = np.abs(facing @ normal) >= np.cos(np.radians(PLANE_FACE_ANGLE))
+        face = selection.grow(near & aligned)
+        if np.count_nonzero(face) <= selection.count:
+            return
+        reply = self.worker.call(
+            "plane_face", normal, point, world[np.unique(selection.triangles[face])], expand=options.expand, reach=self._plane_reach()
+        )
+        if reply.ok:
+            result.update({key: reply.value[key] for key in ("brep", "vertices", "triangles", "face_index", "edges", "area", "size")})
 
     def _plane_reach(self) -> float:
         """How far a fitted plane reaches past its selection at least: a small part of the
@@ -1612,10 +1648,28 @@ class ModelingController(ControllerBase):
 
     # -- Trim ----------------------------------------------------------------------------------
 
+    def _trim_sources(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """What Trim works on: the visible surfaces, plus the (hidden) surfaces an open shell
+        on view was trimmed from, so fitting the missing face and trimming again closes it;
+        and those open shells, which the new result replaces."""
+
+        model = self.state.model
+        sources = [entity.id for entity in model.visible() if not entity.is_body]
+        replaces = []
+        for shell in model.visible():
+            if not shell.not_closed:
+                continue
+            used = [value for value in shell.params.get("sources", shell.sources) if model.get(str(value)) is not None]
+            if used:
+                replaces.append(shell.id)
+                sources.extend(str(value) for value in used)
+        return tuple(dict.fromkeys(sources)), tuple(replaces)
+
     def trim_compute(self) -> CommandResult:
         session = self._session_for("trim")
         if isinstance(session, CommandResult):
             return session
+        session.trim_result = ""
         # two or more selected surfaces trim each other; one selected is cut by the cut lines
         # alone; otherwise every visible surface takes part (fit several, then Trim)
         selected = session.trim_selected
@@ -1721,7 +1775,6 @@ class ModelingController(ControllerBase):
             if not computed.success:
                 return computed
         assert session.trim_pieces is not None
-        session.trim_cuts = []  # applied: the next trim starts afresh
         kept = [piece for piece in session.trim_pieces if piece["keep"]]
         if not kept:
             return CommandResult.failure("No piece is kept: click pieces to keep them.")
@@ -1738,13 +1791,13 @@ class ModelingController(ControllerBase):
             reply = self.worker.call("sew", [piece["brep"] for piece in kept], tolerance=session.sew_tolerance)
             if not reply.ok:
                 return _kernel_failure("Sewing failed", reply)
-            body = entity_from_result(self.state.model, reply.value, tool="trim", params={**params, "sew": True}, sources=sources)
+            judged = not session.trim_manual and self.state.mesh_object is not None  # pieces were scored on a scan
+            past = _past_the_scan(kept) if judged and not reply.value.get("solid") else []
+            body = entity_from_result(
+                self.state.model, reply.value, tool="trim", params={**params, "sew": True, "past_scan": past}, sources=sources
+            )
             new_entities = [body]
-            detail = body.stats
-            if detail.get("solid"):
-                status = f"Solid: volume {detail.get('volume', 0.0):,.1f} {self.state.units}^3"
-            else:
-                status = f"Shell with {detail.get('free_edges', 0)} open edges (not closed yet)"
+            status = closure_text(body, self.state.units, self.state.model)
         else:
             new_entities = []
             for piece in kept:
@@ -1757,10 +1810,18 @@ class ModelingController(ControllerBase):
         before = self.state.model.snapshot()
         for source_id in session.trim_used or session.trim_sources:  # hidden, not deleted: trimming again stays possible
             self.state.model.set_visible(source_id, False)
+        used = set(session.trim_used or session.trim_sources)
+        for shell_id in session.trim_replaces:  # an open shell trimmed again: the new result replaces it
+            shell = self.state.model.get(shell_id)
+            if shell is not None and set(str(value) for value in shell.params.get("sources", shell.sources)) <= used:
+                self.state.model.set_visible(shell_id, False)
         for entity in new_entities:
             self.state.model.add(entity)
         self.state.model.selected_ids = [entity.id for entity in new_entities]  # the result is what you work on next
         session.trim_pieces = None
+        session.trim_cuts = []  # applied (and kept in the result's params): the next trim starts afresh
+        session.trim_result = status
+        session.trim_sources, session.trim_replaces = self._trim_sources()
         return self._changed("Trim Surfaces", before, status)
 
     # -- Compare -------------------------------------------------------------------------------
@@ -1875,9 +1936,11 @@ class ModelingController(ControllerBase):
         if not reply.ok:
             return _kernel_failure("Export failed", reply)
         info = reply.value
-        warnings: tuple[str, ...] = ()
+        warnings: tuple[str, ...] = tuple(
+            f"{entity.name} is not closed: it is written as surfaces, not a solid." for entity in targets if entity.not_closed
+        )
         if info["faces_back"] != info["faces"]:
-            warnings = (f"The file reads back with {info['faces_back']} faces instead of {info['faces']}.",)
+            warnings += (f"The file reads back with {info['faces_back']} faces instead of {info['faces']}.",)
         names = ", ".join(entity.name for entity in targets[:4]) + (f" and {len(targets) - 4} more" if len(targets) > 4 else "")
         return CommandResult.ok(
             status=f"Exported {names} ({info['faces']} faces, {self.state.units}) to {path}", warnings=warnings
@@ -2382,6 +2445,22 @@ class ModelingController(ControllerBase):
         inside = np.all((vertices >= lower - margin) & (vertices <= upper + margin), axis=1)
         points = vertices[inside]
         return points if len(points) >= 10 else None
+
+
+def _past_the_scan(kept: list[dict[str, Any]], *, share: float = 0.25, of_total: float = 0.02) -> list[str]:
+    """The surfaces whose kept pieces lie off the scan for a good share of them (more than
+    ``share`` of the piece, and ``of_total`` of all kept area): where a face is missing, its
+    neighbours run on past the part with nothing to cut them, and stay joined to the part of
+    them on the scan. The largest first."""
+
+    total = sum(float(piece.get("area", 0.0)) for piece in kept) or 1.0
+    off: dict[str, float] = {}
+    for piece in kept:
+        outside = 1.0 - float(piece.get("overlap", 1.0))
+        area = float(piece.get("area", 0.0))
+        if outside > share and outside * area > of_total * total:
+            off[str(piece["source_id"])] = off.get(str(piece["source_id"]), 0.0) + outside * area
+    return [source for source, _area in sorted(off.items(), key=lambda item: -item[1])][:3]
 
 
 def _apply(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:

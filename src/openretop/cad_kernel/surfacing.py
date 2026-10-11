@@ -729,6 +729,78 @@ def mark_pieces_on_scan(
     return pieces
 
 
+def free_edge_indices(shape: Any) -> list[int]:
+    """The open edges of a shell: 0-based, in ``edge_polylines`` (and ``jobs.shape_edges``)
+    order, the edges bounding exactly one face (a cylinder's seam bounds its face twice and a
+    cone's degenerated apex is no edge: neither counts)."""
+
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    edges = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_EDGE, edges)
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, owners)
+    free = []
+    for index in range(1, edges.Size() + 1):
+        edge = TopoDS.Edge_s(edges.FindKey(index))
+        if BRep_Tool.Degenerated_s(edge) or not owners.Contains(edge):
+            continue
+        faces = owners.FindFromKey(edge)
+        if faces.Size() != 1:
+            continue
+        if BRep_Tool.IsClosed_s(edge, TopoDS.Face_s(faces.First())):  # a seam
+            continue
+        free.append(index - 1)
+    return free
+
+
+def shell_count(shape: Any) -> int:
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+
+    count = 0
+    explorer = TopExp_Explorer(shape, TopAbs_SHELL)
+    while explorer.More():
+        count += 1
+        explorer.Next()
+    return count
+
+
+def edge_polylines(shape: Any, *, samples: int = 48, only: list[int] | None = None) -> list[np.ndarray]:
+    """Each edge of the shape as a polyline, in the shape's edge-map order (``only``: just
+    those indices); a degenerated edge gives an empty one."""
+
+    import math
+
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    edges = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_EDGE, edges)
+    numbers = range(edges.Size()) if only is None else only
+    polylines = []
+    for number in numbers:
+        edge = TopoDS.Edge_s(edges.FindKey(int(number) + 1))
+        try:
+            curve = BRepAdaptor_Curve(edge)
+        except Exception:  # a degenerated edge (a cone apex) has no curve
+            polylines.append(np.zeros((0, 3)))
+            continue
+        first, last = curve.FirstParameter(), curve.LastParameter()
+        if not (math.isfinite(first) and math.isfinite(last)) or last <= first:
+            polylines.append(np.zeros((0, 3)))
+            continue
+        polylines.append(np.asarray([curve.Value(t).Coord() for t in np.linspace(first, last, samples)], dtype=float))
+    return polylines
+
+
 def _scan_spacing(tree: Any, vertices: np.ndarray) -> float:
     """Typical distance between neighbouring scan vertices.
 
@@ -791,7 +863,7 @@ def sew(faces: list[object], *, tolerance: float = 0.01, make_solid: bool = True
     from OCP.ShapeFix import ShapeFix_Solid
     from OCP.TopAbs import TopAbs_SHELL
     from OCP.TopExp import TopExp_Explorer
-    from OCP.TopoDS import TopoDS
+    from OCP.TopoDS import TopoDS, TopoDS_Shell
 
     if not faces:
         raise ValueError("nothing to sew")
@@ -809,6 +881,14 @@ def sew(faces: list[object], *, tolerance: float = 0.01, make_solid: bool = True
     while explorer.More():
         shells.append(TopoDS.Shell_s(explorer.Current()))
         explorer.Next()
+    if not shells and free == 0 and len(faces) == 1:  # one closed face (a whole sphere): sewing returns it bare
+        from OCP.BRep import BRep_Builder
+
+        builder = BRep_Builder()
+        shell = TopoDS_Shell()
+        builder.MakeShell(shell)
+        builder.Add(shell, faces[0])
+        shells, shape = [shell], shell
     closed = free == 0 and len(shells) == 1
     if closed and make_solid:
         solid = BRepBuilderAPI_MakeSolid(shells[0]).Solid()
@@ -978,6 +1058,9 @@ __all__ = (
     "loft_surface",
     "mark_pieces_on_scan",
     "primitive_patch",
+    "free_edge_indices",
+    "shell_count",
+    "edge_polylines",
     "plane_patch",
     "sample_face",
     "scan_distance",

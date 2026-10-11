@@ -72,6 +72,18 @@ class ModelEntity:
     def label(self) -> str:
         return KIND_LABELS.get(self.kind, self.kind.title())
 
+    @property
+    def open_edges(self) -> list[int]:
+        """A sewn shell's open edges (indices into ``edges``): where a face is missing."""
+
+        if self.kind != "shell":
+            return []
+        return [int(index) for index in self.stats.get("free_edge_indices", ()) if 0 <= int(index) < len(self.edges)]
+
+    @property
+    def not_closed(self) -> bool:
+        return self.kind == "shell"
+
 
 @dataclass
 class ModelDocument:
@@ -198,7 +210,10 @@ def entity_from_result(
     body = kind in ("shell", "solid")
     stats: dict[str, Any] = {
         key: result[key]
-        for key in ("rms", "max_error", "area", "volume", "control_u", "control_v", "parameterization", "free_edges", "solid", "closed")
+        for key in (
+            "rms", "max_error", "area", "volume", "control_u", "control_v", "parameterization",
+            "free_edges", "free_edge_indices", "shells", "solid", "closed",
+        )
         if key in result
     }
     return ModelEntity(
@@ -217,4 +232,33 @@ def entity_from_result(
     )
 
 
-__all__ = ("KIND_LABELS", "PALETTE", "SOLID_COLOR", "ModelDocument", "ModelEntity", "entity_from_result")
+def closure_text(entity: ModelEntity, units: str, document: ModelDocument | None = None) -> str:
+    """What a sewn body is, in words that say what to do next (``document``: to name the
+    surfaces that run past the scan, where a face is probably missing)."""
+
+    if entity.kind == "solid":
+        return f"Closed solid: volume {float(entity.stats.get('volume', 0.0)):,.1f} {units}^3. Compare it with the scan, then Export."
+    if entity.kind != "shell":
+        return ""
+    count = len(entity.open_edges) or int(entity.stats.get("free_edges", 0))
+    if count:
+        # where a face is missing, its neighbours' pieces run on past the part (nothing cut
+        # them there) and are kept for the part of them that lies on the scan: name them
+        past = [document.get(str(value)) for value in entity.params.get("past_scan", ())] if document is not None else []
+        names = [surface.name for surface in past if surface is not None]
+        where = ""
+        if names:
+            listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            where = f" {listed} {'runs' if len(names) == 1 else 'run'} on past the scan: a face next to {'it' if len(names) == 1 else 'them'} is probably missing."
+        return (
+            f"Not closed yet: the red edges have no neighbouring face.{where} Fit the missing face, "
+            "or extend the surface that stops short, then Trim again."
+        )
+    shells = int(entity.stats.get("shells", 1))
+    return (
+        f"The faces close, but not into one body ({shells} pieces): look for a doubled or overlapping "
+        "surface, then Trim again."
+    )
+
+
+__all__ = ("KIND_LABELS", "PALETTE", "SOLID_COLOR", "ModelDocument", "ModelEntity", "closure_text", "entity_from_result")

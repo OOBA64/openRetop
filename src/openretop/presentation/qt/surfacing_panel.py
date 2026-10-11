@@ -218,6 +218,7 @@ class SurfacingPanel(QWidget):
                 if can_split
                 else "Needs two surfaces, or a cut line across one: click Cut Line and click across the surface."
             )
+            self.trim_show_gaps.setVisible(session.tool == "trim" and facts.extra.get("open_bounds") is not None)
             one_surface = session.tool == "trim" and int(facts.extra.get("surfaces", 2)) < 2
             self.sew.setEnabled(not one_surface)
             self.sew.setText("Sew into one body (a solid when it closes)" if not one_surface else "Sew (needs two or more surfaces)")
@@ -1012,6 +1013,10 @@ class SurfacingPanel(QWidget):
         layout.addWidget(self.trim_compute)
         self.trim_info = _hint()
         layout.addWidget(self.trim_info)
+        self.trim_show_gaps = _button("Show the Gaps")
+        self.trim_show_gaps.setToolTip("Turn the view to the red edges: where a face is missing or stops short.")
+        self.trim_show_gaps.clicked.connect(lambda: self._emit("view.frame_gaps"))
+        layout.addWidget(self.trim_show_gaps)
         self.sew = QCheckBox("Sew into one body (a solid when it closes)")
         self.sew.setChecked(True)
         layout.addWidget(self.sew)

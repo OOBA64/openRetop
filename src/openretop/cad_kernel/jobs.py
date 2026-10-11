@@ -8,7 +8,6 @@ mesh, sampled edges and the fit statistics.
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import numpy as np
@@ -42,29 +41,7 @@ def surface_result(shape: Any, **info: Any) -> dict[str, Any]:
 def shape_edges(shape: Any, samples: int = 48) -> list[np.ndarray]:
     """Each edge of the shape as a polyline (for display and for picking fill boundaries)."""
 
-    from OCP.BRepAdaptor import BRepAdaptor_Curve
-    from OCP.TopAbs import TopAbs_EDGE
-    from OCP.TopExp import TopExp
-    from OCP.TopoDS import TopoDS
-    from OCP.TopTools import TopTools_IndexedMapOfShape
-
-    edges = TopTools_IndexedMapOfShape()
-    TopExp.MapShapes_s(shape, TopAbs_EDGE, edges)
-    polylines = []
-    for index in range(1, edges.Size() + 1):
-        edge = TopoDS.Edge_s(edges.FindKey(index))
-        try:
-            curve = BRepAdaptor_Curve(edge)
-        except Exception:  # a degenerated edge (a cone apex) has no curve
-            polylines.append(np.zeros((0, 3)))
-            continue
-        first, last = curve.FirstParameter(), curve.LastParameter()
-        if not (math.isfinite(first) and math.isfinite(last)) or last <= first:
-            polylines.append(np.zeros((0, 3)))
-            continue
-        points = [curve.Value(t).Coord() for t in np.linspace(first, last, samples)]
-        polylines.append(np.asarray(points, dtype=float))
-    return polylines
+    return S.edge_polylines(shape, samples=samples)
 
 
 def edge_of(shape: Any, number: int) -> tuple[Any, Any]:
@@ -153,6 +130,12 @@ def fit_surface(
         point_distances=distances.astype(np.float32),
         **info,
     )
+
+
+def plane_face(normal: object, point: object, points: object, *, expand: float = 0.15, reach: float = 0.0) -> dict[str, Any]:
+    """A fitted plane's face sized to ``points`` (the whole face of the scan it lies on)."""
+
+    return surface_result(S.plane_patch(normal, point, points, expand, reach))
 
 
 def auto_surface_kind(points: np.ndarray, normals: np.ndarray | None, tolerance: float) -> str:
@@ -312,6 +295,9 @@ def sew(breps: list[bytes], *, tolerance: float = 0.05) -> dict[str, Any]:
         solid=result.solid,
         closed=result.closed,
         free_edges=result.free_edges,
+        # which of "edges" are open (drawn red), and how many shells (closed but apart)
+        free_edge_indices=[] if result.solid else S.free_edge_indices(result.shape),
+        shells=S.shell_count(result.shape),
         volume=result.volume,
         warnings=list(result.warnings),
     )
@@ -467,6 +453,7 @@ def selftest_crash() -> None:  # pragma: no cover - kills the worker process
 JOBS = frozenset(
     {
         "fit_surface",
+        "plane_face",
         "patch_from_curves",
         "loft",
         "fill",

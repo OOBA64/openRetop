@@ -113,9 +113,9 @@ log(f"bracket faces: {len(part.face_types)} {list(part.face_types)}")
 h.tab("Surface")
 h.click_toolbar("Fit Surface")
 log(f"  panel title {w.surfacing_panel.title.text()!r}; hint {h.hint()!r}")
-results = []
-order = sorted(range(len(part.face_types)), key=lambda f: -int(np.sum(scan.face_labels == f)))
-for face in order:
+def fit_face(face: int) -> tuple[int, str, str]:
+    """Look at the face, click it, Create (brushing it if the message says it is too narrow)."""
+
     seed, normal = view_of(face)
     # as a user orbits until the face is in view: look at it along its normal
     cam = w.viewport.renderer.GetActiveCamera()
@@ -130,14 +130,13 @@ for face in order:
     h.wait(100)
     spot = h.screen_of(centers[seed])
     if spot is None:
-        results.append((face, part.face_types[face], "off screen"))
-        continue
+        return (face, part.face_types[face], "off screen")
     h.click(*spot)
     selected = h.composition.modeling_controller.selection()
     count = 0 if selected is None else selected.count
     truth = 0.0 if not count else float(np.mean(scan.face_labels[selected.mask] == face))
     t = time.perf_counter()
-    created = h.click_panel("Create")
+    h.click_panel("Create")
     status = h.status()
     if "too small" in status:
         h.click_panel("Clear") if h.panel_button("Clear") else None
@@ -148,8 +147,14 @@ for face in order:
         h.click_panel("Create")
         status = "brushed: " + h.status()
         h.click_panel("Smart")
-    results.append((face, part.face_types[face], f"{count} tris ({truth:.0%} right) -> {status[:90]} [{time.perf_counter()-t:.1f}s]"))
     h.click_panel("Clear") if h.panel_button("Clear") else None
+    return (face, part.face_types[face], f"{count} tris ({truth:.0%} right) -> {status[:90]} [{time.perf_counter()-t:.1f}s]")
+
+
+# "--skip N": leave face N out, as a user who missed it; Trim then says where the gap is
+SKIP = int(sys.argv[sys.argv.index("--skip") + 1]) if "--skip" in sys.argv else None
+order = sorted(range(len(part.face_types)), key=lambda f: -int(np.sum(scan.face_labels == f)))
+results = [fit_face(face) for face in order if face != SKIP]
 for row in results:
     log(f"  face {row[0]} {row[1]}: {row[2]}")
 model = h.composition.state.model
@@ -167,7 +172,27 @@ h.shot("pieces")
 t = time.perf_counter()
 h.click_panel("Apply")
 h.say(f"applied [{time.perf_counter()-t:.1f}s]")
-bodies = [e for e in model.entities if e.is_body]
+log(f"  panel says: {w.surfacing_panel.trim_info.text()!r}")
+if SKIP is not None:
+    log(f"== face {SKIP} was left out: find the gap, fit it, Trim again")
+    h.shot("open_shell")
+    h.click_panel("Show the Gaps")
+    h.shot("gaps")
+    from openretop.application.guidance import build_guidance  # noqa: E402
+
+    guide = build_guidance(h.composition.state)
+    log(f"  next steps (nothing selected): {guide.title!r}: {[step.label for step in guide.steps]}")
+    h.click_panel("Done")
+    h.click_toolbar("Fit Surface")
+    log(f"  face {SKIP}: {fit_face(SKIP)[2]}")
+    h.click_panel("Done")
+    h.click_toolbar("Trim")
+    log(f"  trim panel: {w.surfacing_panel.trim_info.text()!r}")
+    h.click_panel("Split Surfaces")
+    h.say("split again")
+    h.click_panel("Apply")
+    h.say("applied again")
+bodies = [e for e in model.visible() if e.is_body]
 log(f"  bodies: {[(b.name, b.kind, round(b.stats.get('volume', 0), 1), b.stats.get('solid')) for b in bodies]}; true volume {part.truth.get('volume') if hasattr(part, 'truth') and isinstance(part.truth, dict) else '?'}")
 h.click_panel("Done")
 h.shot("solid")
