@@ -79,6 +79,9 @@ class ModelingSceneInput:
     # its own colour and width: (polyline (world), (r, g, b), width)
     sketch2d_lines: Sequence[tuple[np.ndarray, tuple[float, float, float], float]] = field(default=(), compare=False)
     profile_highlight: np.ndarray | None = field(default=None, compare=False)  # the picked segment  # per display vertex, 0..1: "Show body lines"
+    # Fit Surface: the surfaces already made are see-through, so the scan behind them (the
+    # next area to pick) shows; 1.0 elsewhere
+    surface_opacity: float = 1.0
 
 
 def modeling_items(
@@ -108,7 +111,8 @@ def modeling_items(
                 selected=selected,
                 role="body" if entity.is_body else "surface",
                 style=DisplayStyleSnapshot(
-                    color=_brighter(entity.color) if selected else tuple(entity.color), opacity=0.35 if sketch else 1.0
+                    color=_brighter(entity.color) if selected else tuple(entity.color),
+                    opacity=0.35 if sketch else (1.0 if entity.is_body else modeling.surface_opacity),
                 ),
                 selection_keys=(node,),
             )

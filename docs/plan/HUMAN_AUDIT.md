@@ -25,7 +25,7 @@ Scenarios:
 | Run | Workflow |
 |---|---|
 | s1 | First launch, Open Scan + units, orbit/pan/zoom, view keys, pick, Move with a typed value, section, region, measure, save, reopen |
-| s2 | Bracket: fit every face by clicking it, Trim into a solid, Compare, Export STEP |
+| s2 | Bracket: fit every face by clicking it (looking into holes at an angle; brushing the narrow chamfers, as the app's message says), Trim, Compare, Export STEP |
 | s3 | Housing in Solid: Section Sketch + Extrude, History edit, 3D Sketch drawn and dimensioned with mouse and panel, region extrude, undo |
 | s4 | Surface Sketch closed loop, Face From Curves, Loft from two sections, every menu |
 | s5 | The owner's scans: oil pan (fit the flange, Section Sketch) and TurboBumper (794k triangles, Surface Sketch) |
@@ -53,7 +53,11 @@ These were verified with real input. The figures come from the runs:
 - **Fitting surfaces:** Fit Surface, click a face, then Create. Bracket faces come out within 0.02 mm RMS.
 - **Resizing:** arrows on sides and corners; typed values are exact (−5 gives −5.000); undo works.
 - **Manual trim:** two clicks across the overhang, Enter, click the overhang, Apply. The result was one 7149 mm² surface.
-- **Trim into a solid, Compare, Export STEP:** the bracket becomes one valid solid, and Compare gives RMS 0.020 mm.
+- **Trim, Compare, Export STEP:** these work, but not all the way to a solid. With each face's exact scan area
+  (the kernel test), the bracket sews into a solid within 0.02% of the CAD volume. Driven like a person (click
+  each face, brush the chamfers), it ends as a shell with one hole: Trim dropped one chamfer's piece. The open
+  edges are not shown, so a person cannot find the hole to click that piece back in (H-06). Compare gives
+  RMS 0.021 mm.
 - **3D Sketch:** dimensions typed in the panel, region picking, extrude new/join/cut, History edit, undo. Constraints and degrees of freedom are shown.
 - **Help while working:** a tool hint on the canvas, a Next steps panel, and tooltips that say why a command is disabled.
 - **Ctrl+K palette:** finds every command the app has.

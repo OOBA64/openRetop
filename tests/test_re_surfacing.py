@@ -156,11 +156,80 @@ class TrimAndSewTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_KERNEL, "OpenCASCADE / CadQuery not installed")
+class PlanePatchTests(unittest.TestCase):
+    """H-03: a fitted plane is a rectangle along the face's outline, not a big square."""
+
+    def _corners(self, face: object) -> np.ndarray:
+        from OCP.BRep import BRep_Tool
+        from OCP.TopAbs import TopAbs_VERTEX
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopoDS import TopoDS
+
+        corners = []
+        explorer = TopExp_Explorer(face, TopAbs_VERTEX)
+        while explorer.More():
+            point = BRep_Tool.Pnt_s(TopoDS.Vertex_s(explorer.Current()))
+            corners.append((point.X(), point.Y(), point.Z()))
+            explorer.Next()
+        corners = np.unique(np.round(corners, 6), axis=0)
+        # in order around the rectangle (angle about the centre, in the plane)
+        centred = corners - corners.mean(axis=0)
+        _, _, axes = np.linalg.svd(centred)
+        angles = np.arctan2(centred @ axes[1], centred @ axes[0])
+        return corners[np.argsort(angles)]
+
+    def test_a_long_narrow_face_gets_a_rectangle_along_its_edges(self) -> None:
+        from openretop.cad_kernel import surfacing
+
+        # a 100 x 10 face turned 30 degrees in a tilted plane, sampled like a scan
+        rng = np.random.default_rng(3)
+        turn = np.radians(30.0)
+        u = np.array([np.cos(turn), np.sin(turn), 0.0])
+        v = np.array([-np.sin(turn), np.cos(turn), 0.0])
+        tilt = np.radians(20.0)
+        rotation = np.array([[1, 0, 0], [0, np.cos(tilt), -np.sin(tilt)], [0, np.sin(tilt), np.cos(tilt)]])
+        uv = rng.uniform([0.0, 0.0], [100.0, 10.0], size=(2000, 2))
+        points = (uv[:, :1] * u + uv[:, 1:] * v) @ rotation.T + np.array([5.0, -7.0, 12.0])
+        normal = rotation @ np.array([0.0, 0.0, 1.0])
+        face = surfacing.primitive_patch(
+            _plane_fit_through(normal, points[0]), points, expand=0.15
+        )
+        corners = self._corners(face)
+        self.assertEqual(len(corners), 4)
+        sides = np.linalg.norm(np.roll(corners, -1, axis=0) - corners, axis=1)
+        edges = sorted({round(float(side), 0) for side in sides})
+        # 100 x 10 plus 15 (15% of the long side) on every side
+        self.assertAlmostEqual(surfacing.face_area(face), 130.0 * 40.0, delta=130.0 * 40.0 * 0.01)
+        self.assertTrue(any(abs(edge - 130.0) < 1.0 for edge in edges), edges)
+        # the long sides run along the face's long edges
+        long_direction = rotation @ u
+        directions = [step / np.linalg.norm(step) for step in np.roll(corners, -1, axis=0) - corners]
+        best = max(abs(float(direction @ long_direction)) for direction in directions)
+        self.assertGreater(best, np.cos(np.radians(1.0)))
+        # on the plane, through the data
+        np.testing.assert_allclose((corners - points[0]) @ normal, 0.0, atol=1e-6)
+
+    def test_the_old_size_was_far_larger(self) -> None:
+        from openretop.cad_kernel import surfacing
+
+        points = np.array([[x, y, 0.0] for x in np.linspace(0, 100, 21) for y in np.linspace(0, 10, 5)])
+        face = surfacing.primitive_patch(_plane_fit(), points, expand=0.15)
+        self.assertLess(surfacing.face_area(face), 0.35 * (1.3 * float(np.hypot(100, 10))) ** 2)
+
+
+def _plane_fit_through(normal: np.ndarray, point: np.ndarray):
+    from openretop.fitting import PrimitiveFit
+
+    normal = np.asarray(normal, dtype=float) / np.linalg.norm(normal)
+    return PrimitiveFit("plane", True, {"normal": normal, "point": np.asarray(point, dtype=float), "offset": float(normal @ point)}, rms=0.0)
+
+
+@unittest.skipUnless(HAVE_KERNEL, "OpenCASCADE / CadQuery not installed")
 class DeviationTests(unittest.TestCase):
     def test_signed_distance_to_a_plane_face(self) -> None:
         from openretop.cad_kernel import surfacing
 
-        face = surfacing.primitive_patch(_plane_fit(), np.array([[-10, -10, 0], [10, 10, 0]]))
+        face = surfacing.primitive_patch(_plane_fit(), np.array([[-10, -10, 0], [10, -10, 0], [10, 10, 0], [-10, 10, 0]]))
         points = np.array([[0.0, 0.0, 0.5], [1.0, 2.0, -0.25], [3.0, -4.0, 0.0]])
         np.testing.assert_allclose(surfacing.signed_distances(face, points), [0.5, -0.25, 0.0], atol=1e-6)
 

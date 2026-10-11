@@ -100,11 +100,14 @@ def fit_surface(
     smoothness: float = 0.25,
     expand: float = 0.15,
     tolerance: float = 0.05,
+    reach: float = 0.0,
 ) -> dict[str, Any]:
     """ExModel's Fit Surface on a selected scan area.
 
     ``kind`` "auto" takes the simplest exact primitive that fits within ``tolerance`` and
     falls back to freeform. ``control_u``/``control_v`` 0 means "auto net" for freeform.
+    ``reach``: the least a plane grows past the selection (the controller sends a small part
+    of the scan's size, so a narrow face still crosses its neighbours for a trim).
     """
 
     from openretop.fitting import fit_primitive
@@ -140,7 +143,7 @@ def fit_surface(
         primitive = fit_primitive(chosen, points, normals)
         if not primitive.success:
             raise ValueError(primitive.reason or f"no {chosen} fits this area")
-        face = S.primitive_patch(primitive, points, expand=expand)
+        face = S.primitive_patch(primitive, points, expand=expand, reach=reach)
         distances = np.abs(_primitive_distances(primitive, points))
         info = {"kind": chosen, "params": _plain_params(primitive.params)}
     return surface_result(

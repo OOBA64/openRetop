@@ -54,6 +54,7 @@ TOOL_TITLES = {
 }
 SELECTION_MODES = ("smart", "brush", "erase")
 MAX_KERNEL_SCAN_POINTS = 200_000  # scan points sent for trimming (a dense scan is subsampled)
+PLANE_REACH = 0.03  # a fitted plane grows at least this part of the scan's diagonal past its selection
 
 
 @dataclass
@@ -402,6 +403,7 @@ class ModelingController(ControllerBase):
             smoothness=options.smoothness,
             expand=options.expand,
             tolerance=options.tolerance,
+            reach=self._plane_reach(),
         )
         if not reply.ok:
             return _kernel_failure("Fit failed", reply)
@@ -414,6 +416,18 @@ class ModelingController(ControllerBase):
             f"{self.state.units} ({reply.seconds:.1f} s). Create keeps it.",
             changed=True,
         )
+
+    def _plane_reach(self) -> float:
+        """How far a fitted plane reaches past its selection at least: a small part of the
+        scan's size (a selection stops short of rounded edges; a chamfer must meet both sides)."""
+
+        mesh_object = self.state.mesh_object
+        if mesh_object is None:
+            return 0.0
+        vertices = np.asarray(mesh_object.display_mesh.vertices, dtype=float)
+        if not len(vertices):
+            return 0.0
+        return PLANE_REACH * float(np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0)))
 
     def create_from_preview(self) -> CommandResult:
         session = self.session

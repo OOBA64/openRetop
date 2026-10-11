@@ -20,7 +20,7 @@ python scripts/usability/s5_real_scans.py out/s5 .
 | Script | What a user does |
 |---|---|
 | `s1_basics.py` | first launch, Open Scan + units, orbit / pan / zoom / view keys, pick, Move with a typed value, section, region, measure, save and reopen |
-| `s2_surface_bracket.py` | fit every face of the bracket by clicking it, Trim into a solid, Compare, Export STEP |
+| `s2_surface_bracket.py` | fit every face of the bracket by clicking it (looking into holes at an angle, brushing narrow chamfers), Trim, Compare, Export STEP |
 | `s3_solid_housing.py` | Section Sketch + Extrude from the scan, History edit, a 3D Sketch drawn and dimensioned with mouse and panel, region extrude |
 | `s4_curves_menus.py` | a closed Surface Sketch loop, Face From Curves, Loft, and what the menus offer |
 | `s5_real_scans.py` | the oil pan and the TurboBumper from `test_assets/` |

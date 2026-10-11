@@ -157,16 +157,82 @@ def _resample(polyline: np.ndarray, count: int) -> np.ndarray:
     return np.column_stack([np.interp(targets, length, polyline[:, axis]) for axis in range(polyline.shape[1])])
 
 
-def primitive_patch(fit: PrimitiveFit, points: object, expand: float = 0.15) -> object:
-    """A primitive face sized to the selected points plus a margin (Fit Surface, exact types)."""
+def primitive_patch(fit: PrimitiveFit, points: object, expand: float = 0.15, reach: float = 0.0) -> object:
+    """A primitive face sized to the selected points plus a margin (Fit Surface, exact types).
+    ``reach``: a plane reaches at least this far past the points (see ``plane_patch``)."""
 
     from openretop.cad_kernel.primitive_solid import primitive_face
 
     data = np.asarray(points, dtype=float).reshape(-1, 3)
+    if fit.kind == "plane":
+        return plane_patch(fit.params["normal"], fit.params["point"], data, expand, reach)
     lower, upper = data.min(axis=0), data.max(axis=0)
     center = 0.5 * (lower + upper)
     extent = float(np.linalg.norm(upper - lower)) * (0.5 + max(0.0, expand)) / 1.5
     return primitive_face(fit, center, max(extent, 1e-3))
+
+
+def plane_patch(normal: object, point: object, points: object, expand: float = 0.15, reach: float = 0.0) -> object:
+    """A rectangle on the plane around ``points``, turned to their outline (the smallest
+    rectangle that holds them, so its sides run along a face's edges) and grown on every side
+    by ``expand`` times its longer side, or ``reach`` if that is more: far enough to cross the
+    neighbouring faces for a trim (a selection stops short of a face's rounded edges, and a
+    narrow face such as a chamfer must still reach both neighbours), not a square half again
+    the size of the part."""
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+
+    n = np.asarray(normal, dtype=float).reshape(3)
+    n = n / np.linalg.norm(n)
+    data = np.asarray(points, dtype=float).reshape(-1, 3)
+    on_plane = np.asarray(point, dtype=float).reshape(3)
+    centre = data.mean(axis=0)
+    origin = centre - n * float((centre - on_plane) @ n)  # the data's centre, dropped onto the plane
+    u0 = np.cross(n, [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0])
+    u0 /= np.linalg.norm(u0)
+    v0 = np.cross(n, u0)
+    flat = np.c_[(data - origin) @ u0, (data - origin) @ v0]
+    angle = _outline_angle(flat)
+    u = np.cos(angle) * u0 + np.sin(angle) * v0
+    v = np.cross(n, u)
+    a, b = (data - origin) @ u, (data - origin) @ v
+    low, high = np.array([a.min(), b.min()]), np.array([a.max(), b.max()])
+    size = float(np.max(high - low))
+    margin = max(max(0.0, expand) * size, max(0.0, reach), 1e-3)
+    low, high = low - margin, high + margin
+    plane = gp_Pln(gp_Ax3(gp_Pnt(*(float(x) for x in origin)), gp_Dir(*(float(x) for x in n)), gp_Dir(*(float(x) for x in u))))
+    return BRepBuilderAPI_MakeFace(plane, float(low[0]), float(high[0]), float(low[1]), float(high[1])).Face()
+
+
+def _outline_angle(flat: np.ndarray) -> float:
+    """The turn of the smallest-area rectangle around 2D points (one side lies along an edge
+    of their convex hull: rotating calipers)."""
+
+    from scipy.spatial import ConvexHull, QhullError
+
+    unique = np.unique(np.round(flat, 9), axis=0)
+    if len(unique) < 3:
+        if len(unique) == 2:
+            step = unique[1] - unique[0]
+            return float(np.arctan2(step[1], step[0]))
+        return 0.0
+    try:
+        hull = unique[ConvexHull(unique).vertices]
+    except QhullError:  # all on a line
+        step = unique[np.argmax(np.linalg.norm(unique - unique[0], axis=1))] - unique[0]
+        return float(np.arctan2(step[1], step[0]))
+    edges = np.roll(hull, -1, axis=0) - hull
+    angles = np.unique(np.mod(np.arctan2(edges[:, 1], edges[:, 0]), np.pi / 2))
+    best, best_area = 0.0, np.inf
+    for angle in angles:
+        c, s = np.cos(angle), np.sin(angle)
+        x = hull @ np.array([c, s])
+        y = hull @ np.array([-s, c])
+        area = (x.max() - x.min()) * (y.max() - y.min())
+        if area < best_area - 1e-12:
+            best, best_area = float(angle), float(area)
+    return best
 
 
 # -- curves -----------------------------------------------------------------------------------
@@ -912,6 +978,7 @@ __all__ = (
     "loft_surface",
     "mark_pieces_on_scan",
     "primitive_patch",
+    "plane_patch",
     "sample_face",
     "scan_distance",
     "sew",

@@ -71,6 +71,7 @@ HANDLE_PIXELS = 42  # arrow length on screen
 SECTION_CUT_COLOR = (0.98, 0.55, 0.20)  # a trim's cut lines, once cut
 FEATURE_PREFIX = "feature:"
 SNAP_PIXELS = 10.0  # a click this close to a sketch point (on screen) means that point
+FITTING_SURFACE_OPACITY = 0.5  # surfaces already made, while Fit Surface picks the next area
 TOOL_HINTS = {
     "plane_sketch": "L line, R rectangle, C circle, A arc, S select. Select geometry, then constrain or dimension it (D). Enter / Finish Sketch keeps it.",
     "sketch": "Click points on the scan; Enter finishes. Click a point to select / drag it, double-click a curve to add a point, right-click for more.",
@@ -1260,6 +1261,7 @@ class SurfacingWorkbenchMixin:
         if session is not None and session.tool == "sketch" and session.show_creases:
             creases = modeling.sketch_crease_strength()
         return ModelingSceneInput(
+            surface_opacity=FITTING_SURFACE_OPACITY if session is not None and session.tool == "fit_surface" else 1.0,
             profile_highlight=highlight,
             creases=creases,
             section_lines=tuple(session.section_loops) if section else (),
