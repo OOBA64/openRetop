@@ -36,6 +36,8 @@ from openretop.application.transform_math import (
     plane_constrained_camera_move_delta,
     plane_constraint_normal,
     rotate_vector_around_axis,
+    rotation_angles,
+    rotation_matrix,
     transform_bounds,
     transform_point,
     world_axis_vector,
@@ -889,6 +891,30 @@ class TransformController(ControllerBase):
             np.allclose(plane_origin(plane), session.section_origin, atol=1e-8)
             and np.allclose(plane_normal(plane), session.section_normal, atol=1e-8)
         )
+
+    def capture_object(self) -> ObjectTransformSnapshot:
+        return self._capture_object()
+
+    def restore_object(self, snapshot: ObjectTransformSnapshot) -> None:
+        self._restore_object(self.state, snapshot)
+
+    def compose_world_transform(self, matrix: np.ndarray) -> None:
+        """Move the scan by a rigid world motion (Align to World): its pose becomes
+        ``matrix @ pose``, kept as location and rotation so a saved project reopens aligned."""
+
+        mesh_object = self.state.mesh_object
+        if mesh_object is None:
+            raise ValueError("No mesh is loaded.")
+        motion = np.asarray(matrix, dtype=float)
+        turn = motion[:3, :3]
+        if not np.allclose(turn @ turn.T, np.identity(3), atol=1e-9) or float(np.linalg.det(turn)) < 0:
+            raise ValueError("Align needs a rigid motion (a rotation and a shift).")
+        before = self.current_object_matrix()
+        mesh_object.rotation = rotation_angles(turn @ rotation_matrix(mesh_object.rotation))
+        mesh_object.location = turn @ np.asarray(mesh_object.location, dtype=float) + motion[:3, 3]
+        self._apply_object_transform()
+        if not np.allclose(self.current_object_matrix(), motion @ before, atol=1e-7):
+            raise ValueError("the scan's pose could not take this motion")
 
     def _capture_object(self, *, include_geometry: bool = False) -> ObjectTransformSnapshot:
         mesh_object = self.state.mesh_object

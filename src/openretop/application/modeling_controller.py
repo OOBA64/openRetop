@@ -18,7 +18,20 @@ from typing import Any
 
 import numpy as np
 
-from openretop.application.controller_support import CallbackUndoPayload, ControllerBase
+from openretop.application.alignment import (
+    breps_to_move,
+    capture_alignment_state,
+    move_built_geometry,
+    moved_text,
+    restore_alignment_state,
+)
+from openretop.application.controller_support import (
+    MODEL_SYNC_UI_REQUESTS,
+    MODEL_SYNC_VIEWPORT_REQUESTS,
+    CallbackUndoPayload,
+    ControllerBase,
+    publish_scene_change,
+)
 from openretop.application.events import EventPublisher
 from openretop.application.regeneration import regenerate, replace_entity
 from openretop.application.results import CommandResult
@@ -34,11 +47,21 @@ from openretop.modeling import (
     entity_from_result,
     selected_patch,
 )
+from openretop.modeling.alignment import (
+    AlignFeature,
+    AlignSolution,
+    apply_directions,
+    apply_points,
+    feature_from_fit,
+    point_feature,
+    solve_alignment,
+    world_plane_of,
+)
 from openretop.modeling.document import closure_text
 from openretop.modeling.profile2d import Profile2D, auto_tolerance, fit_profile
 from openretop.modeling.sketch import MeshProjector, boundary_loop, curve_on_mesh, loop_polylines, region_inside
 
-TOOLS = ("sketch", "plane_sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+TOOLS = ("sketch", "plane_sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare", "align")
 EXTRUDE_MODES = ("new", "add", "cut")
 SECTION_PLANES = SKETCH_PLANES  # name: (in-plane u, in-plane v, the world axis the offset runs along)
 TOOL_TITLES = {
@@ -52,8 +75,11 @@ TOOL_TITLES = {
     "plane_sketch": "3D Sketch",
     "section": "Section Sketch",
     "extrude": "Extrude",
+    "align": "Align to World",
 }
 SELECTION_MODES = ("smart", "brush", "erase")
+ALIGN_HINT = "Click a flat face (it goes on XY), a side face (it sets the turn), then a hole or a third face for the origin. Enter applies."
+ALIGN_ROWS = ("Main face", "Turn", "Origin")
 MAX_KERNEL_SCAN_POINTS = 200_000  # scan points sent for trimming (a dense scan is subsampled)
 PLANE_REACH = 0.03  # a fitted plane grows at least this part of the scan's diagonal past its selection
 PLANE_FACE_ANGLE = 12.0  # degrees: scan triangles turned less than this from a fitted plane belong to its face
@@ -84,6 +110,13 @@ class ToolSession:
     trim_tolerance: float = 0.1
     trim_overlap: float = 0.3
     trim_result: str = ""  # what the last Apply made, in words (shown in the panel)
+    # Align to World: the three picks (row 1 main face or axis, row 2 the turn, row 3 the
+    # origin), each row's chosen target ("" = automatic) and flip, the row the next click fills
+    align_features: list[Any] = field(default_factory=lambda: [None, None, None])
+    align_targets: list[str] = field(default_factory=lambda: ["", "", ""])
+    align_flips: list[bool] = field(default_factory=lambda: [False, False, False])
+    align_slot: int = 0
+    align_revision: int = 0
     trim_replaces: tuple[str, ...] = ()  # open shells on view whose surfaces join this trim
     trim_sources: tuple[str, ...] = ()
     trim_pieces: list[dict[str, Any]] | None = None
@@ -197,6 +230,9 @@ class ModelingController(ControllerBase):
             if session.tool == "trim":
                 session.trim_sources, session.trim_replaces = self._trim_sources()
                 session.trim_result = ""
+            if session.tool == "align":  # picked in the scan's old place: pick again
+                session.align_features, session.align_slot = [None, None, None], 0
+                session.align_revision += 1
             session.fill_chain = [side for side in session.fill_chain if "curve" in side or model.get(side["entity"]) is not None]
         if self.deviation is not None and any(model.get(value) is None for value in self.deviation.entity_ids):
             self.deviation = None
@@ -224,8 +260,10 @@ class ModelingController(ControllerBase):
     def start(self, tool: str) -> CommandResult:
         if tool not in TOOLS:
             return CommandResult.failure(f"Unknown tool: {tool}")
-        if tool in ("sketch", "fit_surface", "compare") and self.state.mesh_object is None:
+        if tool in ("sketch", "fit_surface", "compare", "align") and self.state.mesh_object is None:
             return CommandResult.failure("Open a scan first (File > Open Model).")
+        if tool == "align" and self.transform.active:
+            return CommandResult.failure("Finish the move or turn first (Enter or Esc).")
         previous = self.session
         self.session = ToolSession(tool)
         if previous is not None:  # keep the settings a user has dialled in across tools
@@ -281,6 +319,7 @@ class ModelingController(ControllerBase):
             "section": "Pick a plane (click the scan to move it there), then Fit Profile and Create.",
             "plane_sketch": "Draw lines, rectangles, circles and arcs on the plane; constrain and dimension them; Finish Sketch.",
             "extrude": "Extrude the sketch: the depth comes from the scan; adjust it, choose new / add / cut, then Create.",
+            "align": ALIGN_HINT,
         }
         return CommandResult.ok(status=f"{TOOL_TITLES[tool]}: {hints[tool]}", changed=True, metadata={"tool": tool})
 
@@ -304,7 +343,7 @@ class ModelingController(ControllerBase):
             if key.startswith("fit_") and hasattr(session.fit, key[4:]):
                 setattr(session.fit, key[4:], type(getattr(session.fit, key[4:]))(value))
             elif hasattr(session, key) and key not in (
-                "tool", "fit", "preview", "trim_pieces", "fill_chain", "section_key", "section_loops", "section_closed", "section_profiles",
+                "tool", "fit", "preview", "trim_pieces", "fill_chain", "align_features", "align_targets", "align_flips", "section_key", "section_loops", "section_closed", "section_profiles",
                 "extrude_holes", "selected_node", "section_selected", "section_drag_before", "section_editing",
                 "trim_drawing", "trim_cut", "trim_cut_direction", "trim_cuts", "trim_selected", "trim_used",
             ):
@@ -722,6 +761,9 @@ class ModelingController(ControllerBase):
         entity = next((item for item in candidates if item is not None and item.kind == "profile"), None)
         if entity is None:
             return CommandResult.failure("Select a sketch (in the tree) to edit.")
+        moved = _off_world_planes(entity)
+        if moved:
+            return CommandResult.failure(moved)
         if "sketch2d" in entity.params:
             return self.sketch2d_edit(entity.id)
         started = self.start("section")
@@ -1362,6 +1404,9 @@ class ModelingController(ControllerBase):
         entity = self.state.model.get(entity_id)
         if entity is None or "sketch2d" not in entity.params:
             return CommandResult.failure("Select a 3D Sketch to edit.")
+        moved = _off_world_planes(entity)
+        if moved:
+            return CommandResult.failure(moved)
         started = self.start("plane_sketch")
         if not started.success:
             return started
@@ -1823,6 +1868,234 @@ class ModelingController(ControllerBase):
         session.trim_result = status
         session.trim_sources, session.trim_replaces = self._trim_sources()
         return self._changed("Trim Surfaces", before, status)
+
+    # -- Align to World (H-01) -------------------------------------------------------------------
+
+    def align_pick(self, triangle: int | None, *, slot: int | None = None) -> CommandResult:
+        """Click on the scan: the smooth area around it, fitted (plane, cylinder, cone, sphere),
+        fills the active row."""
+
+        session = self._session_for("align")
+        if isinstance(session, CommandResult):
+            return session
+        selection = self.selection()
+        if triangle is None or selection is None:
+            return CommandResult.ok(status="Click on the scan: a flat face, a hole or a boss.")
+        region = selection.smart_region(int(triangle), session.smart_angle)
+        points, _triangles, normals = self._selected_scan_data(region)
+        if len(points) < 30:
+            return CommandResult.failure("That area is too small: click the middle of a face, or raise the smart angle.")
+        from openretop.fitting.primitives import classify_region
+
+        tolerance = float(session.fit.tolerance)
+        kind, fit, fits = classify_region(points, normals, tolerance=tolerance)
+        if fit is None:  # rough or curved: take the best simple shape if it is near enough
+            usable = [fits[name] for name in ("plane", "cylinder", "sphere") if name in fits and fits[name].success]
+            plane = fits.get("plane")
+            best = min(usable, key=lambda item: item.rms, default=None)
+            if best is not None and plane is not None and plane.success and best is not plane and best.rms * 1.5 > plane.rms:
+                best = plane
+            if best is None or best.rms > 3.0 * tolerance:
+                return CommandResult.failure(
+                    f"Not flat, round or ball-shaped within {tolerance:g} {self.state.units}: click a flat face, a hole or a boss."
+                )
+            fit = best
+        feature = feature_from_fit(fit, normals, triangles=np.flatnonzero(region), units=self.state.units)
+        if feature is None:
+            return CommandResult.failure("That shape gives no plane, axis or point to align by.")
+        return self._align_place(session, feature, slot)
+
+    def align_point(self, world_point: object) -> CommandResult:
+        session = self._session_for("align")
+        if isinstance(session, CommandResult):
+            return session
+        return self._align_place(session, point_feature(world_point), 2)
+
+    def align_use_entity(self, entity_id: str, *, slot: int | None = None) -> CommandResult:
+        """A fitted surface clicked in the view: its plane, axis or centre."""
+
+        session = self._session_for("align")
+        if isinstance(session, CommandResult):
+            return session
+        entity = self.state.model.get(entity_id)
+        if entity is None or entity.is_body:
+            return CommandResult.failure("Click a fitted plane, cylinder or sphere, or the scan.")
+        reply = self.worker.call("datum", entity.brep)
+        if not reply.ok:
+            return _kernel_failure("Align", reply)
+        datum = reply.value
+        rms = float(entity.stats.get("rms", float("nan")))
+        if datum["kind"] == "plane":
+            feature = AlignFeature("plane", np.asarray(datum["point"], dtype=float), np.asarray(datum["normal"], dtype=float), f"{entity.name}", entity.id, rms=rms)
+        elif datum["kind"] in ("cylinder", "cone"):
+            feature = AlignFeature("axis", np.asarray(datum["point"], dtype=float), np.asarray(datum["axis"], dtype=float), f"{entity.name} (axis)", entity.id, rms=rms)
+        else:
+            feature = AlignFeature("point", np.asarray(datum["center"], dtype=float), None, f"{entity.name} (centre)", entity.id, rms=rms)
+        return self._align_place(session, feature, slot)
+
+    def _align_place(self, session: ToolSession, feature: AlignFeature, slot: int | None) -> CommandResult:
+        features = session.align_features
+        row = session.align_slot if slot is None else int(slot)
+        note = ""
+        if feature.direction is None:
+            row = 2  # a point only places the origin
+        elif row == 1 and features[0] is not None and features[0].direction is not None:
+            across = feature.direction - float(feature.direction @ features[0].direction) * features[0].direction
+            if float(np.linalg.norm(across)) < np.sin(np.radians(5.0)):
+                if features[2] is None:
+                    row = 2
+                    note = " It is parallel to the first, so it sets the origin; click a side face for the turn."
+                else:
+                    return CommandResult.failure("That is parallel to the first pick: it cannot set the turn. Click a side face.")
+        elif row == 0 and feature.kind == "point":
+            row = 2
+        features[row] = feature
+        session.align_targets[row], session.align_flips[row] = "", False
+        session.align_revision += 1
+        empty = [index for index in range(3) if features[index] is None and index > row] or [index for index in range(3) if features[index] is None]
+        session.align_slot = empty[0] if empty else row
+        solution = self.align_solution()
+        place = "" if solution is None or row == 2 else f" -> {solution.targets[row]}"
+        follow = {  # what the next click is for
+            0: " Now click a flat face for the main plane, or Enter to apply.",
+            1: " Now click a side face to set the turn, or Enter to apply.",
+            2: " Now click a hole or a third face for the origin, or Enter to apply.",
+        }
+        after = " Enter applies." if all(item is not None for item in features) else follow[session.align_slot]
+        return CommandResult.ok(status=f"{row + 1}. {feature.label}{place}.{note or after}", changed=True)
+
+    def align_set(self, slot: int, *, target: str | None = None, flip: bool | None = None, clear: bool = False, active: bool = False) -> CommandResult:
+        session = self._session_for("align")
+        if isinstance(session, CommandResult):
+            return session
+        if not 0 <= int(slot) < 3:
+            return CommandResult.failure("No such row.")
+        slot = int(slot)
+        if clear:
+            session.align_features[slot] = None
+            session.align_targets[slot], session.align_flips[slot] = "", False
+            session.align_slot = slot
+        if active:
+            session.align_slot = slot
+        if target is not None:
+            session.align_targets[slot] = str(target)
+        if flip is not None:
+            session.align_flips[slot] = bool(flip)
+        session.align_revision += 1
+        return CommandResult.ok(status=self.align_summary() or ALIGN_HINT, changed=True)
+
+    def align_clear(self) -> CommandResult:
+        session = self._session_for("align")
+        if isinstance(session, CommandResult):
+            return session
+        session.align_features, session.align_targets, session.align_flips = [None, None, None], ["", "", ""], [False, False, False]
+        session.align_slot = 0
+        session.align_revision += 1
+        return CommandResult.ok(status=ALIGN_HINT, changed=True)
+
+    def align_solution(self) -> AlignSolution | None:
+        session = self.session
+        if session is None or session.tool != "align":
+            return None
+        return solve_alignment(session.align_features, session.align_targets, session.align_flips)
+
+    def align_summary(self) -> str:
+        solution = self.align_solution()
+        if solution is None:
+            return ""
+        return f"Turns {solution.angle:.1f} deg, moves {solution.shift:.2f} {self.state.units}." + "".join(f" {note}" for note in solution.notes)
+
+    def align_mask(self) -> np.ndarray | None:
+        """The scan triangles picked (display mesh), shown in the selection colour."""
+
+        session = self.session
+        selection = self.selection()
+        if session is None or session.tool != "align" or selection is None:
+            return None
+        mask = np.zeros(len(selection.triangles), dtype=bool)
+        for feature in session.align_features:
+            if feature is not None and feature.triangles is not None:
+                mask[np.asarray(feature.triangles, dtype=np.int64)] = True
+        return mask
+
+    def align_preview_lines(self) -> list[tuple[np.ndarray, tuple[float, float, float], float]]:
+        """Where the world axes will be, drawn where the scan is now: X red, Y green, Z blue."""
+
+        solution = self.align_solution()
+        mesh_object = self.state.mesh_object
+        if solution is None or mesh_object is None:
+            return []
+        vertices = np.asarray(mesh_object.display_mesh.vertices, dtype=float)
+        length = 0.3 * float(np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0))) if len(vertices) else 10.0
+        back = np.linalg.inv(solution.matrix)
+        origin = apply_points(back, np.zeros(3))
+        lines = []
+        for axis, color in zip(np.identity(3), ((0.95, 0.30, 0.30), (0.35, 0.85, 0.35), (0.35, 0.55, 1.0)), strict=True):
+            tip = origin + apply_directions(back, axis) * length
+            lines.append((np.vstack([origin, tip]), color, 3.0))
+        return lines
+
+    def align_labels(self) -> list[tuple[np.ndarray, str]]:
+        solution = self.align_solution()
+        lines = self.align_preview_lines()
+        if solution is None or not lines:
+            return []
+        return [(line[-1], name) for (line, _color, _width), name in zip(lines, ("X", "Y", "Z"), strict=True)]
+
+    def align_apply(self) -> CommandResult:
+        """Move the scan, and everything built on it, by the solved motion: one undo step."""
+
+        session = self._session_for("align")
+        if isinstance(session, CommandResult):
+            return session
+        solution = self.align_solution()
+        if solution is None:
+            return CommandResult.failure("Click a flat face first (or a hole, then a side face).")
+        if solution.angle < 1e-6 and solution.shift < 1e-9:
+            return CommandResult.ok(status="Already aligned: nothing moves.")
+        matrix = solution.matrix
+        model = self.state.model
+        breps = breps_to_move(model)
+        moved: list[bytes] = []
+        if breps:
+            reply = self.worker.call("transform_shapes", breps, matrix.tolist())
+            if not reply.ok:
+                return _kernel_failure("Align failed", reply)
+            moved = list(reply.value)
+        before = capture_alignment_state(self.state, self.transform)
+        self.transform.compose_world_transform(matrix)
+        counts = move_built_geometry(self.state, matrix, moved)
+        after = capture_alignment_state(self.state, self.transform)
+        labels = [feature.label for feature in session.align_features if feature is not None]
+        self.session = None
+        self.deviation = None
+        target_text = ", ".join(
+            f"{feature.label} on {target}" for feature, target in zip(session.align_features[:2], solution.targets, strict=True) if feature is not None and target
+        )
+        origin = session.align_features[2]
+        status = f"Aligned: {target_text or ', '.join(labels)}" + (f"; origin on {origin.label}" if origin is not None else "") + "."
+        others = moved_text(counts)
+        if others:
+            status += f" Moved with it: {others}."
+        status += " Ctrl+Z puts it back."
+
+        def restore(snapshot: Any, reason: str) -> None:
+            restore_alignment_state(self.state, self.transform, snapshot)
+            publish_scene_change(self.events, reason=reason, object_ids=("model",), changed_fields=("mesh_object", "model", "section_collection"))
+
+        payload = CallbackUndoPayload(
+            "Align to World",
+            undo_action=lambda: restore(before, "align_undo"),
+            redo_action=lambda: restore(after, "align_redo"),
+        )
+        return CommandResult.ok(
+            status=status,
+            changed=True,
+            dirty=True,
+            undo_payload=payload,
+            viewport_requests=MODEL_SYNC_VIEWPORT_REQUESTS,
+            ui_requests=MODEL_SYNC_UI_REQUESTS,
+        )
 
     # -- Compare -------------------------------------------------------------------------------
 
@@ -2445,6 +2718,16 @@ class ModelingController(ControllerBase):
         inside = np.all((vertices >= lower - margin) & (vertices <= upper + margin), axis=1)
         points = vertices[inside]
         return points if len(points) >= 10 else None
+
+
+def _off_world_planes(entity: ModelEntity) -> str:
+    """Why a sketch cannot be edited: Align to World turned it off the XY / XZ / YZ planes
+    (it still extrudes and rebuilds in place; editing it on its own plane is to come)."""
+
+    frame = entity.params.get("frame")
+    if frame is None or world_plane_of(frame, 1e-6) is not None:
+        return ""
+    return f"{entity.name} was turned off the world planes by Align to World, and cannot be edited there yet: undo the alignment to edit it, or draw a new sketch."
 
 
 def _past_the_scan(kept: list[dict[str, Any]], *, share: float = 0.25, of_total: float = 0.02) -> list[str]:

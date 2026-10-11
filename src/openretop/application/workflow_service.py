@@ -353,6 +353,7 @@ class WorkflowService:
             "model.extend": "extend",
             "model.trim": "trim",
             "model.compare": "compare",
+            "model.align": "align",
         }
         if action in starts:
             return modeling.start(starts[action])
@@ -436,6 +437,18 @@ class WorkflowService:
             return modeling.trim_finish_cut()
         if action == "model.trim_cut_clear":
             return modeling.trim_clear_cuts()
+        if action == "model.align_set":
+            return modeling.align_set(
+                int(payload.get("slot", 0)),  # type: ignore[call-overload]
+                target=None if payload.get("target") is None else str(payload.get("target")),
+                flip=None if payload.get("flip") is None else bool(payload.get("flip")),
+                clear=bool(payload.get("clear")),
+                active=bool(payload.get("active")),
+            )
+        if action == "model.align_clear":
+            return modeling.align_clear()
+        if action == "model.align_apply":
+            return modeling.align_apply()
         if action == "model.resize":
             changes = payload.get("changes") or {}
             return modeling.resize_surface(str(payload.get("entity", "")), dict(changes))  # type: ignore[arg-type]

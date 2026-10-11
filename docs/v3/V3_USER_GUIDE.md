@@ -28,6 +28,13 @@ changed in the panel. Blue geometry can still move, white is fully defined.
 Enter or Finish Sketch keeps it; Edit Sketch reopens it, and what was built
 from it rebuilds.
 
+**Align to World** (Scan > Align) squares a scan to the axes: click a flat face (it
+becomes the top, on XY), a side face (it sets the turn), then a hole or a third face (the
+origin); Shift+click puts the origin at a point. Each row can be sent to another plane or
+flipped. Enter applies: the scan and everything built on it move together, and Ctrl+Z puts
+them back. Align before sketching: sketches it turns off the world planes still extrude and
+rebuild, but cannot be edited yet.
+
 Tool hints appear on the canvas. Enter confirms and Escape cancels the active
 tool; right-button and middle-button navigation stay available inside tools.
 

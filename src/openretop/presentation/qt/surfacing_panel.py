@@ -15,6 +15,7 @@ from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -41,7 +42,7 @@ SURFACE_TYPES = (
     ("torus", "Torus"),
 )
 SELECTION_MODES = (("smart", "Smart"), ("brush", "Brush"), ("erase", "Erase"))
-PAGES = ("sketch", "plane_sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare")
+PAGES = ("sketch", "plane_sketch", "section", "extrude", "fit_surface", "loft", "fill", "extend", "trim", "compare", "align")
 EXTRUDE_MODES = (("new", "New body"), ("add", "Add"), ("cut", "Cut"))
 SECTION_PLANES = (("XY", "XY (top)"), ("XZ", "XZ (front)"), ("YZ", "YZ (side)"))
 SKETCH2D_TOOLS = (
@@ -149,6 +150,7 @@ class SurfacingPanel(QWidget):
             ("extend", self._build_extend),
             ("trim", self._build_trim),
             ("compare", self._build_compare),
+            ("align", self._build_align),
         ):
             page = QWidget(self)
             page_layout = QVBoxLayout(page)
@@ -183,6 +185,7 @@ class SurfacingPanel(QWidget):
             self._show_plane_sketch(session, facts)
             self._show_section(session, facts)
             self._show_extrude(session, facts)
+            self._show_align(session, facts)
             self.loft_info.setText(
                 f"{facts.selected_curves} curve(s) selected." if facts.selected_curves else "No curves selected."
             )
@@ -1023,6 +1026,100 @@ class SurfacingPanel(QWidget):
         self.trim_apply = _button("Apply", primary=True)
         self.trim_apply.clicked.connect(lambda: self._emit("model.trim_apply", {"sew": self.sew.isChecked()}))
         layout.addWidget(self.trim_apply)
+
+    def _build_align(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hint("Click a flat face, a side face, then the origin (a hole or a third face)."))
+        self.align_row_buttons: list[QToolButton] = []
+        self.align_labels: list[QLabel] = []
+        self.align_targets: list[QComboBox] = []
+        self.align_flips: list[QToolButton] = []
+        self.align_clear_buttons: list[QToolButton] = []
+        tips = (
+            "The main face (or a shaft's axis): it goes on the chosen world plane.",
+            "A side face or a hole across the first: it sets the turn about it.",
+            "The origin: a hole's axis, a ball's centre, a third face, or Shift+click a point.",
+        )
+        for row, (name, tip) in enumerate(zip(("1 Main face", "2 Turn", "3 Origin"), tips, strict=True)):
+            # each row on two lines (the panel is narrow): which row and what was picked, then
+            # where it goes, flip, and take it back
+            pick = QToolButton()
+            pick.setText(name)
+            pick.setCheckable(True)
+            pick.setMinimumWidth(84)
+            pick.setToolTip(tip + " Click to fill this row next.")
+            pick.clicked.connect(lambda _checked=False, row=row: self._emit("model.align_set", {"slot": row, "active": True}))
+            label = QLabel("-")
+            label.setWordWrap(True)
+            top = QHBoxLayout()
+            top.addWidget(pick)
+            top.addWidget(label, 1)
+            target = QComboBox()
+            target.setToolTip("Where it goes (Auto: the nearest).")
+            target.activated.connect(lambda index, row=row: self._align_target_chosen(row, index))
+            flip = QToolButton()
+            flip.setText("Flip")
+            flip.setCheckable(True)
+            flip.setToolTip("Turn it the other way round.")
+            flip.clicked.connect(lambda checked=False, row=row: self._emit("model.align_set", {"slot": row, "flip": bool(checked)}))
+            clear = QToolButton()
+            clear.setText("Clear")
+            clear.setToolTip("Take this pick back (Backspace: the last one).")
+            clear.clicked.connect(lambda _checked=False, row=row: self._emit("model.align_set", {"slot": row, "clear": True}))
+            bottom = QHBoxLayout()
+            bottom.addSpacing(16)
+            bottom.addWidget(target, 1)
+            bottom.addWidget(flip)
+            bottom.addWidget(clear)
+            layout.addLayout(top)
+            layout.addLayout(bottom)
+            self.align_row_buttons.append(pick)
+            self.align_labels.append(label)
+            self.align_targets.append(target)
+            self.align_flips.append(flip)
+            self.align_clear_buttons.append(clear)
+        self.align_summary = _hint()
+        layout.addWidget(self.align_summary)
+        self.align_moves = _hint()
+        layout.addWidget(self.align_moves)
+        row_layout = QHBoxLayout()
+        self.align_clear_all = _button("Clear All")
+        self.align_clear_all.clicked.connect(lambda: self._emit("model.align_clear"))
+        row_layout.addWidget(self.align_clear_all)
+        row_layout.addStretch(1)
+        self.align_apply = _button("Apply", primary=True)
+        self.align_apply.setToolTip("Move the scan and everything built on it (Enter). Ctrl+Z puts it back.")
+        self.align_apply.clicked.connect(lambda: self._emit("model.align_apply"))
+        row_layout.addWidget(self.align_apply)
+        layout.addLayout(row_layout)
+
+    def _align_target_chosen(self, row: int, index: int) -> None:
+        combo = self.align_targets[row]
+        value = combo.itemData(index)
+        self._emit("model.align_set", {"slot": row, "target": "" if value is None else str(value)})
+
+    def _show_align(self, session: Any, facts: PanelFacts) -> None:
+        rows = facts.extra.get("align_rows") if session.tool == "align" else None
+        if not rows:
+            return
+        active = int(facts.extra.get("align_active", 0))
+        for index, row in enumerate(rows):
+            self.align_row_buttons[index].setChecked(index == active)
+            self.align_labels[index].setText(row["label"] or ("click the scan" if index == active else "-"))
+            combo = self.align_targets[index]
+            combo.clear()
+            choices = tuple(row["choices"])
+            combo.setVisible(bool(choices))
+            if choices:
+                combo.addItem(f"Auto ({row['resolved']})" if row["resolved"] else "Auto", "")
+                for choice in choices:
+                    combo.addItem(choice, choice)
+                combo.setCurrentIndex(max(0, combo.findData(row["target"])) if row["target"] else 0)
+            self.align_flips[index].setVisible(index < 2 and row["filled"])
+            self.align_flips[index].setChecked(bool(row["flip"]))
+            self.align_clear_buttons[index].setVisible(bool(row["filled"]))
+        self.align_summary.setText(str(facts.extra.get("align_summary", "")))
+        self.align_moves.setText(str(facts.extra.get("align_moves", "")))
+        self.align_apply.setEnabled(bool(facts.extra.get("align_ready")) and not facts.busy)
 
     def _build_compare(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_hint("Colours the scan by its distance to the visible model surfaces."))

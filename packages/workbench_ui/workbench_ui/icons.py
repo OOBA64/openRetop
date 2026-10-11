@@ -38,6 +38,12 @@ ICONS: dict[str, str] = {
         '<path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>'
     ),
     "rotate": '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>',
+    # a tilted part squared to the world axes (Align to World)
+    "align": (
+        '<path d="M4 20V5M4 20h15"/>'
+        '<path d="m1.5 7.5 2.5-2.5 2.5 2.5M16.5 17.5l2.5 2.5-2.5 2.5"/>'
+        '<path d="m9 15 2-6 6 2-2 6z"/>'
+    ),
     # a cutting plane
     "section_plane": (
         '<path d="M3 16 8 8h13l-5 8z"/>'

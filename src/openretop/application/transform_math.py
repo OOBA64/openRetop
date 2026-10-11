@@ -30,6 +30,23 @@ def rotation_matrix(rotation: np.ndarray) -> np.ndarray:
     return _rotation_z(rz) @ _rotation_y(ry) @ _rotation_x(rx)
 
 
+def rotation_angles(matrix: np.ndarray) -> np.ndarray:
+    """Degrees (rx, ry, rz) with ``rotation_matrix(result) == matrix`` (R = Rz @ Ry @ Rx)."""
+
+    from math import asin, atan2, degrees
+
+    values = np.asarray(matrix, dtype=float)[:3, :3]
+    sine = max(-1.0, min(1.0, -float(values[2, 0])))
+    ry = asin(sine)
+    if abs(sine) < 1.0 - 1e-12:
+        rx = atan2(float(values[2, 1]), float(values[2, 2]))
+        rz = atan2(float(values[1, 0]), float(values[0, 0]))
+    else:  # gimbal lock (ry = +/-90): only rz -/+ rx is defined; take rx = 0
+        rx = 0.0
+        rz = atan2(-float(values[0, 1]), float(values[1, 1]))
+    return np.array([degrees(rx), degrees(ry), degrees(rz)])
+
+
 def rotate_vector_around_axis(
     vector: np.ndarray,
     axis_vector: np.ndarray,

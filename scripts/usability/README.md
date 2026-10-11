@@ -27,6 +27,7 @@ python scripts/usability/s5_real_scans.py out/s5 .
 | `s6_general.py` | command palette searches, Preferences, Delete, undo / redo chain, Help |
 | `trim_overhang.py` | fit a plane, cut its overhang with a Cut Line, drop it, Apply |
 | `resize_arrows.py` | drag a side arrow, a corner arrow, click an arrow and type a distance |
+| `align_bracket.py` | a tilted bracket: Align, click the top, a side, the boss hole, Apply; how square, and Ctrl+Z |
 
 `human.py` waits with a real Qt event loop: `QTest.qWait` starved the worker thread, which made
 a 1-second scan load look like a hang.

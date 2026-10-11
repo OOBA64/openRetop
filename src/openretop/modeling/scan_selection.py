@@ -71,6 +71,18 @@ class ScanSelection:
 
         if not 0 <= seed < len(self.triangles):
             return 0
+        reached = self.smart_region(seed, angle_degrees, connected=connected)
+        if add:
+            self.mask |= reached
+        else:
+            self.mask &= ~reached
+        self.revision += 1
+        return int(np.count_nonzero(reached))
+
+    def smart_region(self, seed: int, angle_degrees: float = DEFAULT_SMART_ANGLE, *, connected: bool = False) -> np.ndarray:
+        """What ``smart_select`` would reach from ``seed``, as a mask; the selection is not
+        changed (Align picks a face without touching Fit Surface's selection)."""
+
         offsets, neighbours = self._adjacency_arrays()
         normals = self._smooth_normals()
         raw = self._face_normals()
@@ -95,12 +107,7 @@ class ScanSelection:
             candidate = np.unique(candidate)
             reached[candidate] = True
             frontier = candidate
-        if add:
-            self.mask |= reached
-        else:
-            self.mask &= ~reached
-        self.revision += 1
-        return int(np.count_nonzero(reached))
+        return reached
 
     def grow(self, allowed: object, start: object | None = None) -> np.ndarray:
         """The triangles reached from ``start`` (the selection) across neighbours that are

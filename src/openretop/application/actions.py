@@ -337,6 +337,8 @@ _DESCRIPTIONS: Mapping[str, str] = MappingProxyType(
         "model.sketch2d_construction": "Make the selected sketch curves construction geometry (guides that do not form profiles), or back.",
         "model.sketch2d_finish": "Keep the sketch: its closed regions become profiles to extrude; editing it later rebuilds what was made from it.",
         "model.section_sketch": "A profile traced for you from a cut through the scan: exact lines and arcs (sharp corners, tangent fillets, H/V snap), ready to extrude. To draw a profile yourself with dimensions, use 3D Sketch.",
+        "model.align": "Square the scan to the world: click a flat face, a side face, then the origin (a hole or a third face); Apply moves the scan and everything built on it.",
+        "model.align_apply": "Move the scan, and everything built on it, so the picked faces lie on the world planes (one undo step).",
         "model.fit_surface": "Fit a surface to an area of the scan: select it (click or brush), choose the type (auto, freeform, plane, cylinder, ...), Fit, Create.",
         "model.loft": "A surface through two or more selected curves (e.g. curves drawn on the scan).",
         "model.fill": "Fill a gap bounded by curves and surface edges; edges can join smoothly (tangent).",
@@ -491,6 +493,10 @@ WORKFLOW_ACTIONS: tuple[ActionDefinition, ...] = (
     _workflow_action("transform.origin_to_world", "Move Origin to World Origin", "Transform", "move_origin_to_world_origin", enabled_when=(ActionCondition.HAS_MESH,)),
     _workflow_action("transform.center_geometry", "Center Geometry on Origin", "Transform", "center_geometry_on_origin", enabled_when=(ActionCondition.HAS_MESH,)),
     _workflow_action("transform.reset", "Reset Object Transform", "Transform", "reset_object_transform", enabled_when=(ActionCondition.HAS_MESH,)),
+    _workflow_action("model.align", "Align to World", "Transform", "start_align", enabled_when=_MESH),
+    _workflow_action("model.align_set", "Align Row", "Transform", "align_set", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,), requires_payload=True),
+    _workflow_action("model.align_clear", "Clear Align Picks", "Transform", "align_clear", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE,), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
+    _workflow_action("model.align_apply", "Apply Alignment", "Transform", "align_apply", enabled_when=(ActionCondition.MODEL_TOOL_ACTIVE, ActionCondition.NOT_BUSY), visible_when=(ActionCondition.MODEL_TOOL_ACTIVE,)),
 
     # Section workflows.
     _workflow_action("section.add_plane", "Add Section Plane", "Sections", "add_section_plane", enabled_when=_MESH),

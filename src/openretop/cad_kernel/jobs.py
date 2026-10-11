@@ -132,6 +132,54 @@ def fit_surface(
     )
 
 
+def transform_shapes(breps: list[bytes], matrix: list[list[float]]) -> list[bytes]:
+    """The shapes moved by a rigid 4 x 4 world motion (Align to World)."""
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf
+
+    m = np.asarray(matrix, dtype=float)
+    trsf = gp_Trsf()
+    trsf.SetValues(*(float(value) for value in m[0, :4]), *(float(value) for value in m[1, :4]), *(float(value) for value in m[2, :4]))
+    return [S.to_brep(BRepBuilderAPI_Transform(S.from_brep(brep), trsf, True).Shape()) for brep in breps]
+
+
+def datum(brep: bytes) -> dict[str, Any]:
+    """The plane, axis or centre of a single fitted face (an Align feature): plane (point,
+    normal facing out of the face), cylinder or cone (point, axis), sphere (center)."""
+
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_Sphere
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    faces = S.faces_of(S.from_brep(brep))
+    if len(faces) != 1:
+        raise ValueError("pick a single plane, cylinder, cone or sphere")
+    face = faces[0]
+    surface = BRepAdaptor_Surface(face)
+    kind = surface.GetType()
+
+    def coords(value: Any) -> list[float]:
+        return [float(value.X()), float(value.Y()), float(value.Z())]
+
+    if kind == GeomAbs_Plane:
+        position = surface.Plane().Position()
+        normal = np.asarray(coords(position.Direction()))
+        if face.Orientation() == TopAbs_REVERSED:
+            normal = -normal
+        return {"kind": "plane", "point": coords(position.Location()), "normal": normal.tolist()}
+    if kind == GeomAbs_Cylinder:
+        cylinder = surface.Cylinder()
+        return {"kind": "cylinder", "point": coords(cylinder.Location()), "axis": coords(cylinder.Axis().Direction()), "radius": float(cylinder.Radius())}
+    if kind == GeomAbs_Cone:
+        cone = surface.Cone()
+        return {"kind": "cone", "point": coords(cone.Apex()), "axis": coords(cone.Axis().Direction())}
+    if kind == GeomAbs_Sphere:
+        sphere = surface.Sphere()
+        return {"kind": "sphere", "center": coords(sphere.Location()), "radius": float(sphere.Radius())}
+    raise ValueError("pick a plane, cylinder, cone or sphere (a freeform surface has no axis)")
+
+
 def plane_face(normal: object, point: object, points: object, *, expand: float = 0.15, reach: float = 0.0) -> dict[str, Any]:
     """A fitted plane's face sized to ``points`` (the whole face of the scan it lies on)."""
 
@@ -454,6 +502,8 @@ JOBS = frozenset(
     {
         "fit_surface",
         "plane_face",
+        "transform_shapes",
+        "datum",
         "patch_from_curves",
         "loft",
         "fill",

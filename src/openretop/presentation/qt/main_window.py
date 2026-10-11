@@ -343,6 +343,7 @@ class OpenRetopV3Window(SurfacingWorkbenchMixin, ApplicationShell):
             ("view.frame_selected", "frame_selected", "Frame Selected", False),
         )
         scan = (  # preparing the scan: align it, cut it, look at it
+            ("model.align", "align", "Align", False),
             ("transform.move", "move", "Move", False),
             ("transform.rotate", "rotate", "Rotate", False),
             ("section.add_plane", "section_plane", "Section Plane", True),

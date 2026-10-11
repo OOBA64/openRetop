@@ -116,6 +116,7 @@ def build_guidance(state: AppState, *, selected_curve_count: int = 0) -> Guidanc
         summary,
         (
             GuidanceStep("model.fit_surface", "Fit Surface", "Select an area of the scan; a surface is fitted to it.", primary=True),
+            GuidanceStep("model.align", "Align to the world", "Square the scan to XY / XZ first: sketch and section planes then lie on its faces."),
             GuidanceStep("model.sketch", "Surface Sketch", "Click points on the scan; curves follow its surface."),
             GuidanceStep("model.section_sketch", "Section Sketch", "Cut the scan with a plane; lines and arcs are fitted."),
             GuidanceStep("measure.distance", "Measure the scan", "Check its size against the real part."),

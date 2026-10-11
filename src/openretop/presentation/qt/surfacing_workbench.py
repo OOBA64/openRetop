@@ -26,7 +26,7 @@ from workbench_ui import FieldDefinition, SceneNode
 NODE_MODEL = "model_surfaces"  # the scene tree group of model surfaces and bodies (NODE_MESH is "model")
 
 SURFACING_ACTIONS = frozenset(
-    {"model.sketch", "model.plane_sketch", "model.section_sketch", "model.extrude", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare"}
+    {"model.sketch", "model.plane_sketch", "model.section_sketch", "model.extrude", "model.fit_surface", "model.loft", "model.fill", "model.extend", "model.trim", "model.compare", "model.align"}
 )
 # kernel work that can take seconds: run off the UI thread
 SURFACING_HEAVY_ACTIONS = frozenset(
@@ -53,6 +53,7 @@ SURFACING_HEAVY_ACTIONS = frozenset(
         "model.rebuild",
         "model.sketch2d_finish",
         "model.trim_cut_finish",
+        "model.align_apply",
     }
 )
 NODE_SKETCH = "sketch_curves"  # the scene tree group of Surface Sketch curves
@@ -84,6 +85,7 @@ TOOL_HINTS = {
     "extend": "Select surfaces in the tree or the scene, set the distance, Extend.",
     "trim": "Split Surfaces, or Cut Line: click across a surface, Enter cuts. Click pieces to keep or drop them; Apply.",
     "compare": "Compute colours the scan by its distance to the model.",
+    "align": "Click a flat face (goes on XY), a side face (sets the turn), then a hole or third face (the origin); Shift+click a point for the origin. Enter applies.",
 }
 
 
@@ -158,6 +160,9 @@ class SurfacingWorkbenchMixin:
             self.tool_modes.enter("modeling", TOOL_HINTS.get(tool, ""))  # type: ignore[attr-defined]
         elif action_id == "model.finish" and result.success:
             self.tool_modes.finish()  # type: ignore[attr-defined]
+        elif action_id == "model.align_apply" and result.success and self.modeling.session is None:
+            self.tool_modes.finish()  # type: ignore[attr-defined]
+            self._camera_request = CameraRequest.named_view("isometric")  # see the part square to the axes
 
     def _surfacing_key(self, key: int, text: str = "") -> bool:
         if self._handle_key(key, text):
@@ -181,6 +186,11 @@ class SurfacingWorkbenchMixin:
             self._dispatch_application_action("model.finish")  # type: ignore[attr-defined]
             return True
         session = self.modeling.session
+        if self.modeling.tool == "align" and key == Qt.Key.Key_Backspace:  # take back the last pick
+            filled = [index for index, feature in enumerate(session.align_features) if feature is not None]
+            if filled:
+                self._dispatch_application_action("model.align_set", {"slot": filled[-1], "clear": True})  # type: ignore[attr-defined]
+            return True
         if (
             self.modeling.tool == "section"
             and key == Qt.Key.Key_Delete
@@ -199,6 +209,7 @@ class SurfacingWorkbenchMixin:
                 "loft": "model.loft_apply",
                 "section": "model.section_create",
                 "extrude": "model.extrude_apply",
+                "align": "model.align_apply",
             }.get(self.modeling.tool or "")
             if primary:
                 self._dispatch_application_action(primary)  # type: ignore[attr-defined]
@@ -599,6 +610,8 @@ class SurfacingWorkbenchMixin:
     def _sketch2d_lines(self) -> tuple[tuple[np.ndarray, tuple[float, float, float], float], ...]:
         lines: list[tuple[np.ndarray, tuple[float, float, float], float]] = self._handle_lines()
         session = self.modeling.session
+        if session is not None and session.tool == "align":  # where the world axes will be
+            return tuple(lines + self.modeling.align_preview_lines())
         if session is not None and session.tool == "trim":
             lines.extend((np.asarray(cut["points"], dtype=float), SECTION_CUT_COLOR, 2.5) for cut in session.trim_cuts)
             if len(session.trim_cut) >= 2:
@@ -632,6 +645,10 @@ class SurfacingWorkbenchMixin:
     def _surfacing_annotations(self) -> list[Any]:
         from openretop.presentation.qt.annotation_overlay import Annotation
 
+        if self.modeling.tool == "align":
+            return self._handle_annotations() + [
+                Annotation(tuple(float(value) for value in point), text, "glyph") for point, text in self.modeling.align_labels()  # type: ignore[arg-type]
+            ]
         view = self.modeling.sketch2d_view_world()
         if view is None:
             return self._handle_annotations()
@@ -859,6 +876,9 @@ class SurfacingWorkbenchMixin:
             return True
         if event_name != "left_release" or not self.viewport.last_pointer_release_was_click:
             return True  # drags orbit the view; nothing else to do
+        if tool == "align":
+            self._align_click(x_position, y_position, pick)
+            return True
         if tool == "fit_surface":
             hit = pick if isinstance(pick, MeshPickResult) else self.viewport.pick_mesh(x_position, y_position)
             result = self.modeling.select_at(hit.triangle_index if hit.hit else None)
@@ -1237,6 +1257,70 @@ class SurfacingWorkbenchMixin:
         if best is not None:
             self._consume_result("model.pointer", self.modeling.fill_add_edge(entity.id, best))  # type: ignore[attr-defined]
 
+    def _align_click(self, x_position: int, y_position: int, pick: object) -> None:
+        """Align: a click on a fitted surface uses its plane / axis; on the scan, the face
+        around the click is fitted; Shift+click puts the origin at the point."""
+
+        from PySide6.QtWidgets import QApplication
+
+        hit = pick if isinstance(pick, MeshPickResult) else self.viewport.pick_mesh(x_position, y_position)
+        if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+            result = self.modeling.align_point(hit.position) if hit.hit else CommandResult.ok(status="Shift+click on the scan to put the origin there.")
+            self._consume_result("model.pointer", result)  # type: ignore[attr-defined]
+            return
+        scene_pick = self.viewport.pick_scene_object(x_position, y_position)
+        kind, _sep, entity_id = str(scene_pick.object_id or "").partition(":")
+        entity = self.composition.state.model.get(entity_id) if scene_pick.hit and kind == "model-face" else None
+        if entity is not None and not entity.is_body and entity.kind in ("plane", "cylinder", "cone", "sphere"):
+            result = self.modeling.align_use_entity(entity.id)
+        else:
+            result = self.modeling.align_pick(hit.triangle_index if hit.hit else None)
+        self._consume_result("model.pointer", result)  # type: ignore[attr-defined]
+
+    def _align_facts(self, session: Any) -> dict[str, Any]:
+        from openretop.modeling.alignment import allowed_second_targets, default_first_target, targets_for
+
+        solution = self.modeling.align_solution()
+        rows = []
+        for index, feature in enumerate(session.align_features):
+            resolved = "" if solution is None or index == 2 else solution.targets[index]
+            if feature is None or index == 2 or feature.kind == "point":
+                choices: tuple[str, ...] = ()
+            elif index == 0:
+                choices = targets_for(feature.kind)
+            else:
+                first = solution.targets[0] if solution is not None else (default_first_target(session.align_features[0]) if session.align_features[0] is not None else "")
+                choices = allowed_second_targets(first, feature.kind)
+            rows.append(
+                {
+                    "label": "" if feature is None else feature.label,
+                    "target": session.align_targets[index],
+                    "resolved": resolved,
+                    "choices": choices,
+                    "flip": bool(session.align_flips[index]),
+                    "filled": feature is not None,
+                }
+            )
+        from openretop.application.alignment import moved_text
+
+        model = self.composition.state.model
+        moving = moved_text(
+            {
+                "surfaces": sum(1 for entity in model.entities if not entity.is_body and entity.kind != "profile"),
+                "bodies": sum(1 for entity in model.entities if entity.is_body),
+                "sketches": sum(1 for entity in model.entities if entity.kind == "profile"),
+                "curves": len(model.sketch.curves),
+                "sections": len(self.composition.state.section_collection.results),
+            }
+        )
+        return {
+            "align_rows": rows,
+            "align_active": session.align_slot,
+            "align_summary": self.modeling.align_summary(),
+            "align_moves": f"Moves with the scan: {moving}." if moving else "",
+            "align_ready": solution is not None,
+        }
+
     def _view_direction(self) -> np.ndarray | None:
         renderer = getattr(self.viewport, "renderer", None)
         if renderer is None:
@@ -1250,6 +1334,7 @@ class SurfacingWorkbenchMixin:
         modeling = self.modeling
         session = modeling.session
         selection = modeling.selection() if session is not None and session.tool == "fit_surface" else None
+        align_mask = modeling.align_mask() if session is not None and session.tool == "align" else None
         deviation = modeling.deviation
         chain: tuple[tuple[str, int], ...] = ()
         if session is not None and session.tool == "fill":
@@ -1268,7 +1353,7 @@ class SurfacingWorkbenchMixin:
         if session is not None and session.tool == "sketch" and session.show_creases:
             creases = modeling.sketch_crease_strength()
         return ModelingSceneInput(
-            surface_opacity=FITTING_SURFACE_OPACITY if session is not None and session.tool == "fit_surface" else 1.0,
+            surface_opacity=FITTING_SURFACE_OPACITY if session is not None and session.tool in ("fit_surface", "align") else 1.0,
             profile_highlight=highlight,
             creases=creases,
             section_lines=tuple(session.section_loops) if section else (),
@@ -1277,8 +1362,8 @@ class SurfacingWorkbenchMixin:
             sketch_curves=sketch_curves,
             entities=tuple(self.composition.state.model.entities),
             selected_ids=frozenset(self.composition.state.model.selected_ids),
-            selection_mask=None if selection is None else selection.mask,
-            selection_revision=0 if selection is None else selection.revision,
+            selection_mask=align_mask if align_mask is not None else (None if selection is None else selection.mask),
+            selection_revision=session.align_revision if align_mask is not None else (0 if selection is None else selection.revision),
             preview=None if session is None else session.preview,
             trim_pieces=None if session is None else session.trim_pieces,
             deviation=None if deviation is None else deviation.distances,
@@ -1397,6 +1482,8 @@ class SurfacingWorkbenchMixin:
             return self._section_facts(session)
         if session.tool == "extrude":
             return self._extrude_facts(session)
+        if session.tool == "align":
+            return self._align_facts(session)
         model = self.composition.state.model
         selected = [model.sketch.curve(value) for value in model.selected_curve_ids]
         selected = [curve for curve in selected if curve is not None]
