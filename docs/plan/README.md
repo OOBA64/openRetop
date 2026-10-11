@@ -4,6 +4,7 @@
 - [UX_AUDIT.md](UX_AUDIT.md) - findings from using the running app, and the design principles.
 - [HUMAN_AUDIT.md](HUMAN_AUDIT.md) - every workflow driven with real mouse and keys (2026-10-10): persona verdicts, bugs fixed, evidence for Track H.
 - [designs/](designs/README.md) - implementation studies for the Track H P0 tasks still to do.
+- [references/](references/README.md) - what QuickSurface, Fusion and Rhino 8 do, tool by tool (behaviour specs).
 - [ROADMAP_REVIEW.md](ROADMAP_REVIEW.md) - review of the multi-viewport roadmap and the decisions taken.
 
 `docs/v3/` holds the earlier Codex task files and status notes, kept as history.

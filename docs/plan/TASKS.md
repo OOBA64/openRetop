@@ -81,6 +81,8 @@ Every workflow driven through the real window with real mouse and key events
 (`scripts/usability`), judged as an experienced Design X / QuickSurface user and as a
 newcomer. Evidence, persona verdicts and the bugs fixed during the audit:
 [HUMAN_AUDIT.md](HUMAN_AUDIT.md). Order within a priority is the order to do them in.
+Behaviour to copy, per task: [references/](references/README.md) (QuickSurface, Fusion, Rhino 8);
+implementation studies: [designs/](designs/README.md).
 Each task is checked again with the usability scripts, not only unit tests.
 
 | ID | Pri | Size | Status | Task | Acceptance |
